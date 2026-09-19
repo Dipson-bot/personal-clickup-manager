@@ -552,6 +552,51 @@ function prioBadge(t) {
   return b;
 }
 
+
+// ---------- "Waiting on others" chip ----------
+// One compact slot per row; it only takes space when some row in the list has a
+// chip (CSS :has). Amber = waiting on someone else's open subtask; red = that
+// subtask is overdue. Hover lists the blockers; click opens the first in ClickUp.
+function cuWaitMap() { const st = (state && state.clickup && state.clickup.state) || null; return (st && st.waiting) || {}; }
+function cuWaitFor(t) {
+  const id = t && (t.id != null ? t.id : t.taskId);
+  return id != null ? cuWaitMap()[String(id)] || null : null;
+}
+function waitSlot(t) {
+  const span = document.createElement("span");
+  span.className = "cu-wait";
+  const w = cuWaitFor(t);
+  if (!w || !Array.isArray(w.blockers) || !w.blockers.length) return span;
+  const b = w.blockers;
+  const late = b.some((x) => x.overdue);
+  const people = Array.from(new Set(b.map((x) => String(x.who || "someone").split(/\s+/)[0])));
+  span.classList.add("on", late ? "late" : "waiting");
+  const icon = document.createElement("span");
+  icon.className = "wi";
+  icon.textContent = "\u23F3";
+  const label = document.createElement("span");
+  label.className = "wl";
+  label.textContent = (late ? "Blocked: " : "Waiting: ") + people[0] + (people.length > 1 ? " +" + (people.length - 1) : "") + (late ? " late" : "");
+  span.appendChild(icon);
+  span.appendChild(label);
+  const fmt = (ms) => new Date(ms).toLocaleDateString(undefined, { month: "short", day: "numeric" });
+  span.title = (late ? "Blocked by someone else's overdue subtask" : "Your part is done - waiting on someone else") + ":\n" +
+    b.map((x) => "\u2022 " + x.name + " \u00B7 " + x.who + (x.due ? " \u00B7 due " + fmt(x.due) : "") + (x.overdue ? " (overdue)" : "")).join("\n") +
+    "\nClick to open it in ClickUp.";
+  span.addEventListener("click", (e) => { e.preventDefault(); e.stopPropagation(); window.open(b[0].url, "_blank", "noopener"); });
+  return span;
+}
+// Time cell: "tracked / est". Tracked turns red past the estimate; a running
+// timer gets a dot. Called right after the tracked text is set.
+function markTrk(trk, t) {
+  const spent = Number(t && t.spentMs) || 0;
+  const est = Number(t && (t.estimateMs != null ? t.estimateMs : t.dayEstimateMs)) || 0;
+  if (est > 0 && spent > est) trk.classList.add("over");
+  const st = (state && state.clickup && state.clickup.state) || null;
+  const run = st && st.running;
+  const id = t && (t.id != null ? t.id : t.taskId);
+  if (run && id != null && String(run.taskId) === String(id)) trk.classList.add("running");
+}
 function appendNameCell(row, nm, t, opts) {
   row.appendChild(prioBadge(t));
   // Every task row passes through here, so it's also where the row learns its
@@ -560,7 +605,6 @@ function appendNameCell(row, nm, t, opts) {
   row._cuTask = t;
   const client = !(opts && opts.hideClient) && t && t.client ? String(t.client) : "";
   const due = dueChip(t);
-  if (!client && !due) { row.appendChild(nm); return; }
   const wrap = document.createElement("span");
   wrap.className = "nmwrap";
   wrap.appendChild(nm);
@@ -572,6 +616,7 @@ function appendNameCell(row, nm, t, opts) {
     wrap.appendChild(pill);
   }
   if (due) wrap.appendChild(due);
+  wrap.appendChild(waitSlot(t));
   row.appendChild(wrap);
 }
 
@@ -587,7 +632,7 @@ function dueChip(t) {
   const chip = document.createElement("span");
   chip.className = "cu-due" + (diff === 0 ? " today" : "") + (overdue ? " overdue" : "");
   chip.textContent = diff === 0 ? "Today" : diff === 1 ? "Tmrw" : diff === -1 ? "Yday"
-    : new Date(ms).toLocaleDateString(undefined, { month: "short", day: "numeric" });
+    : new Date(ms).toLocaleDateString(undefined, { month: "numeric", day: "numeric" }); // compact in the narrow popup
   chip.title = "Due " + new Date(ms).toLocaleDateString(undefined, { weekday: "short", month: "short", day: "numeric", year: "numeric" }) +
     (overdue ? " - overdue" : "");
   return chip;
@@ -619,7 +664,7 @@ function appendFilterTaskRows(container, tasks, deadlineTasks, trackedTasks = []
     if (Number(t.spentMs) > 0) {
       const trk = document.createElement("span");
       trk.className = "trk";
-      trk.textContent = "tracked " + fmtDur(t.spentMs);
+      trk.textContent = fmtDur(t.spentMs); markTrk(trk, t);
       spans.appendChild(trk);
     }
     appendNameCell(row, nm, t, opts);
@@ -647,7 +692,7 @@ function appendFilterTaskRows(container, tasks, deadlineTasks, trackedTasks = []
     if (Number(dt.spentMs) > 0) {
       const trk = document.createElement("span");
       trk.className = "trk";
-      trk.textContent = "tracked " + fmtDur(dt.spentMs);
+      trk.textContent = fmtDur(dt.spentMs); markTrk(trk, dt);
       spans.appendChild(trk);
     }
     appendNameCell(row, nm, dt, opts);
@@ -683,7 +728,7 @@ function appendFilterTaskRows(container, tasks, deadlineTasks, trackedTasks = []
       if (Number(t.spentMs) > 0) {
         const trk = document.createElement("span");
         trk.className = "trk";
-        trk.textContent = "tracked " + fmtDur(t.spentMs);
+        trk.textContent = fmtDur(t.spentMs); markTrk(trk, t);
         spans.appendChild(trk);
       }
       appendNameCell(row, nm, t, opts);
@@ -1312,7 +1357,7 @@ function renderWeekDetail(w, agg) {
       if (Number(t.spentMs) > 0) {
         const trk = document.createElement("span");
         trk.className = "trk";
-        trk.textContent = "tracked " + fmtDur(t.spentMs);
+        trk.textContent = fmtDur(t.spentMs); markTrk(trk, t);
         spans.appendChild(trk);
       }
       appendNameCell(row, nm, t, {});
@@ -1340,7 +1385,7 @@ function renderWeekDetail(w, agg) {
         if (Number(t.spentMs) > 0) {
           const trk = document.createElement("span");
           trk.className = "trk";
-          trk.textContent = "tracked " + fmtDur(t.spentMs);
+          trk.textContent = fmtDur(t.spentMs); markTrk(trk, t);
           spans.appendChild(trk);
         }
         appendNameCell(row, nm, t, {});
@@ -1362,7 +1407,7 @@ function renderWeekDetail(w, agg) {
 // the badge.
 // "Due today" is ticked by default (a saved choice always wins).
 let cuFilter = { dueToday: true, dueTomorrow: false, dueWeek: false, dueNextWeek: false, dueCustom: false, missingDue: false, customFrom: "", customTo: "", missingEst: false, hasTracked: false, deadlineCrossed: false, statuses: [], priorities: [], clients: [] };
-const CU_FILTER_KEYS = ["dueToday", "dueTomorrow", "dueWeek", "dueNextWeek", "dueCustom", "missingEst", "missingDue", "hasTracked", "deadlineCrossed"];
+const CU_FILTER_KEYS = ["dueToday", "dueTomorrow", "dueWeek", "dueNextWeek", "dueCustom", "missingEst", "missingDue", "hasTracked", "deadlineCrossed", "waitingOthers"];
 const CU_PRIORITY_ORDER = ["urgent", "high", "normal", "low", "none"];
 
 function cuTodayEndMs() { const d = new Date(); d.setHours(23, 59, 59, 999); return d.getTime(); }
@@ -1443,6 +1488,7 @@ function cuRefinePredicate(f) {
   return (t) => {
     if (f.missingEst && Number(t.estimateMs)) return false;
     if (f.missingDue && Number(t.dueDateMs)) return false;
+    if (f.waitingOthers && !cuWaitFor(t)) return false;
     if (f.hasTracked && !(Number(t.spentMs) > 0)) return false;
     if (f.deadlineCrossed) {
       if (t.done) return false;
@@ -1649,7 +1695,7 @@ function renderClickup() {
   // Refine boxes narrow the visible list only (headline/bars/badge stay on the
   // date scope). deadlineCrossed = not done AND due date on a day before today;
   // rows without a due date (some week-scope rows) simply never match.
-  const refineOn = cuFilter.missingEst || cuFilter.missingDue || cuFilter.deadlineCrossed || cuFilter.hasTracked
+  const refineOn = cuFilter.missingEst || cuFilter.missingDue || cuFilter.waitingOthers || cuFilter.deadlineCrossed || cuFilter.hasTracked
     || (cuFilter.statuses && cuFilter.statuses.length) || (cuFilter.priorities && cuFilter.priorities.length);
   if (refineOn) {
     const keep = cuRefinePredicate(cuFilter);
@@ -1659,6 +1705,7 @@ function renderClickup() {
     deadlineList = deadlineList.filter((d) => {
       if (cuFilter.missingEst && Number(d.dayEstimateMs)) return false;
       if (cuFilter.missingDue && Number(d.dueDateMs)) return false;
+      if (cuFilter.waitingOthers && !cuWaitFor(d)) return false;
       if (cuFilter.hasTracked && !(Number(d.spentMs) > 0)) return false;
       if (cuFilter.deadlineCrossed) {
         if (d.done) return false;
@@ -1698,6 +1745,7 @@ function renderClickup() {
     const tags = [];
     if (cuFilter.missingEst) tags.push("missing estimate");
     if (cuFilter.missingDue) tags.push("missing due date");
+    if (cuFilter.waitingOthers) tags.push("waiting on others");
     if (cuFilter.hasTracked) tags.push("tracked");
     if (cuFilter.deadlineCrossed) tags.push("deadline crossed");
     if (cuFilter.statuses && cuFilter.statuses.length) tags.push("status: " + cuFilter.statuses.join("/"));
@@ -2129,7 +2177,7 @@ function cuArrEq(a, b) { a = Array.isArray(a) ? a : []; b = Array.isArray(b) ? b
 // box unticks the others in its own group, so e.g. "Due today" + one client still
 // combine. Shared with the other page through the "cuFilterMode" storage key.
 const CU_DATE_KEYS = ["dueToday", "dueTomorrow", "dueWeek", "dueNextWeek", "dueCustom"];
-const CU_REFINE_KEYS = ["missingEst", "missingDue", "hasTracked", "deadlineCrossed"];
+const CU_REFINE_KEYS = ["missingEst", "missingDue", "hasTracked", "deadlineCrossed", "waitingOthers"];
 let cuFilterSingle = false;
 // Before a box is ticked in single mode, clear the rest of its group.
 function cuSingleClearGroup(el) {

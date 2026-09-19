@@ -329,6 +329,24 @@
   html[data-theme="dark"] .iconBtn:hover { background: #2a1416; }
   html[data-theme="dark"] .flt-row select, html[data-theme="dark"] .flt-row input[type="date"] { background: #0f1115; color: var(--text); border-color: var(--border); }
   html[data-theme="dark"] .week-toggle button.on { background: var(--indigo); color: #fff; }
+
+  /* ---- v3.4 row layout: fixed client / due / status / time columns; the
+     title takes whatever is left (ellipsis). ---- */
+  .cu-task .cu-client { flex: 0 0 auto; width: 84px; max-width: none; text-align: center; box-sizing: border-box; }
+  .cu-task .cu-due { flex: 0 0 auto; width: 42px; text-align: center; box-sizing: border-box; overflow: hidden; text-overflow: ellipsis; }
+  .cu-task .cu-wait { display: none; }
+  .cu-tasklist:has(.cu-wait.on) .cu-wait { display: inline-flex; flex: 0 0 auto; width: 18px; }
+  .cu-task .cu-wait.on { align-items: center; gap: 4px; font-size: 11px; font-weight: 700;  cursor: pointer; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; box-sizing: border-box; }
+  .cu-task .cu-wait .wl { display: none; }
+  .cu-task .cu-wait.waiting { color: var(--amber);  }
+  .cu-task .cu-wait.late { color: var(--red);  }
+  .cu-tasklist .cu-task .estpairs { min-width: 5.6em; justify-content: flex-end; gap: 3px; }
+  .cu-tasklist .cu-task .est { min-width: 0; order: 3; }
+  .cu-tasklist .cu-task .trk { min-width: 0; order: 1; font-size: inherit; }
+  .cu-tasklist .cu-task .estpairs:has(.trk) .est::before { content: "/ "; color: var(--muted); }
+  .cu-tasklist .cu-task .estpairs:not(:has(.trk)):has(.est:not(.zero))::before { content: "0m /"; color: var(--muted); opacity: .7; }
+  .cu-task .trk.over { color: var(--red); }
+  .cu-task .trk.running::after { content: " \25CF"; color: var(--green); }
 </style>
 </head>
 <body>
@@ -386,6 +404,7 @@
               <label title="Show only tasks that have no due date set."><input type="checkbox" data-cf="missingDue" /> <span>Missing due date</span></label>
               <label title="Show only tasks that already have time tracked today."><input type="checkbox" data-cf="hasTracked" /> <span>Has time tracked</span></label>
               <label title="Every task assigned to you whose due date has passed and whose status isn't complete yet - across ALL dates (overrides the Due selection)."><input type="checkbox" data-cf="deadlineCrossed" /> <span>Deadline crossed</span></label>
+              <label title="Tasks where your part is done but a subtask assigned to someone else is still open (or overdue)."><input type="checkbox" data-cf="waitingOthers" /> <span>Waiting on others</span></label>
             </div>
           </div>
         </div>

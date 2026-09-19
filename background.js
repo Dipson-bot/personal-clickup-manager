@@ -15,7 +15,7 @@ import {
   pullAccountsFromDrive,
 } from "./lib-drive.js";
 import { runAllAccounts, runAccountLogin, URLS, GITHUB_KEEP_COOKIES } from "./lib-automation.js";
-import { verifyToken, getTeams, fetchTodayEstimate, fetchWeeklySummary, fetchDateRangeEstimate, createTaskCache, fetchTeamMembers, fmtDuration, findExtraTaskByName, parseTaskIdFromUrl, getCurrentTimeEntry, getRunningTaskProgress, startTimer, stopTimer, getTaskById, setTaskStatus, taskUrlFor, clientLabelFromContainer, resolveSpaceNamesFor, taskContainer, cuPriorityName, isTaskDone } from "./lib-clickup.js";
+import { verifyToken, getTeams, fetchTodayEstimate, fetchWeeklySummary, fetchDateRangeEstimate, createTaskCache, fetchTeamMembers, fmtDuration, findExtraTaskByName, parseTaskIdFromUrl, getCurrentTimeEntry, getRunningTaskProgress, startTimer, stopTimer, getTaskById, setTaskStatus, taskUrlFor, clientLabelFromContainer, resolveSpaceNamesFor, taskContainer, cuPriorityName, isTaskDone, getSubtasksOfParent } from "./lib-clickup.js";
 import { resolveRelayKey, pickProbeModel, probeRelay } from "./lib-availability.js";
 
 const CHECK_ALARM = "dailyLoginCheck";
@@ -1439,6 +1439,88 @@ async function discoverClientSitesBg() {
   return { ok: true, clients: out, scanned: tasks.length, rateLimited };
 }
 
+// ---------- "Waiting on others" (dependency) detection ----------
+// A task assigned to me is WAITING when it has a subtask assigned to someone else
+// that is still open, and none of MY subtasks under it are open (my part is done).
+// It is BLOCKED (red) when such a subtask is already past its due date.
+// Subtasks are fetched per parent (team /task?parent=…), cached 15 min, and at
+// most 25 new parents are looked up per pass to stay far from ClickUp's limits.
+const WAIT_TTL_MS = 15 * 60 * 1000;
+const WAIT_MAX_FETCH = 25;
+let waitPassRunning = false;
+async function refreshWaitingInfo() {
+  if (waitPassRunning) return;
+  waitPassRunning = true;
+  try {
+    const cfg = await getClickupConfig();
+    if (!cfg || !cfg.token || !cfg.teamId || cfg.userId == null) return;
+    const me = String(cfg.userId);
+    const st = await getClickupState();
+    if (!st) return;
+    // Candidate parents: my top-level, not-done rows in every bundle the UI shows.
+    const ids = new Set();
+    const collect = (arr) => {
+      for (const t of Array.isArray(arr) ? arr : []) {
+        const id = t && (t.id != null ? t.id : t.taskId);
+        if (id != null && !t.isSubtask && !t.done) ids.add(String(id));
+      }
+    };
+    collect(st.tasks); collect(st.deadlineTasks);
+    for (const b of [st.todayFilter, st.thisWeek, st.nextWeek, overdueCache && overdueCache.data]) {
+      if (b) { collect(b.tasks); collect(b.deadlineTasks); }
+    }
+    const { cuWaitCache: cache0 } = await chrome.storage.local.get("cuWaitCache");
+    const cache = cache0 && typeof cache0 === "object" ? cache0 : {};
+    const now = Date.now();
+    let fetched = 0;
+    for (const id of ids) {
+      const c = cache[id];
+      if (c && now - c.at < WAIT_TTL_MS) continue;
+      if (fetched >= WAIT_MAX_FETCH) break;
+      fetched++;
+      try {
+        const subs = await getSubtasksOfParent(cfg.token, cfg.teamId, id, null); // every assignee
+        cache[id] = {
+          at: now,
+          subs: subs.map((x) => ({
+            id: String(x.id), name: x.name || "(subtask)", url: taskUrlFor(x.id), done: isTaskDone(x),
+            due: Number(x.due_date) || null,
+            who: (Array.isArray(x.assignees) ? x.assignees : []).map((a) => ({ id: String(a && a.id), name: (a && (a.username || a.email)) || "someone" })),
+          })),
+        };
+      } catch (e) {
+        if (e && e.status === 429) break; // rate-limited: try the rest next pass
+      }
+      await new Promise((r) => setTimeout(r, 200));
+    }
+    for (const k of Object.keys(cache)) if (!ids.has(k) && now - cache[k].at > 24 * 3600 * 1000) delete cache[k];
+    await chrome.storage.local.set({ cuWaitCache: cache });
+
+    const todayStart = new Date().setHours(0, 0, 0, 0);
+    const waiting = {};
+    for (const id of ids) {
+      const c = cache[id];
+      if (!c || !c.subs || !c.subs.length) continue;
+      const mineOpen = c.subs.some((x) => !x.done && x.who.some((a) => a.id === me));
+      if (mineOpen) continue; // still my own work to do
+      const others = c.subs.filter((x) => !x.done && x.who.length && !x.who.some((a) => a.id === me));
+      if (!others.length) continue;
+      waiting[id] = {
+        blockers: others.map((x) => ({
+          name: x.name, url: x.url, who: x.who[0].name, due: x.due,
+          overdue: !!x.due && new Date(x.due).setHours(0, 0, 0, 0) < todayStart,
+        })),
+      };
+    }
+    const st2 = await getClickupState();
+    if (st2 && JSON.stringify(st2.waiting || {}) !== JSON.stringify(waiting)) {
+      await setClickupState({ ...st2, waiting });
+    }
+  } finally {
+    waitPassRunning = false;
+  }
+}
+
 // Coalescing wrapper around the actual refresh. Prevents the ClickUp API from
 // being hammered into a 429: (1) auto (alarm) refreshes honour a persisted 429
 // cooldown and a minimum spacing; (2) a single in-flight refresh is shared by
@@ -1465,7 +1547,9 @@ async function refreshClickup(opts = {}) {
   if (clickupRefreshInFlight) return clickupRefreshInFlight;
   clickupRefreshInFlight = (async () => {
     try {
-      return await refreshClickupImpl(opts);
+      const r = await refreshClickupImpl(opts);
+      refreshWaitingInfo().catch(() => {}); // "Waiting on …" chips (cached, throttled)
+      return r;
     } finally {
       clickupRefreshInFlight = null;
     }
@@ -1542,6 +1626,7 @@ async function refreshClickupImpl({ includeTasks = false, viaAlarm = false, forc
     // per-cycle refresh below replaces the whole state object.
     const prevSt = await getClickupState();
     const members = (prevSt && Array.isArray(prevSt.members)) ? prevSt.members : null;
+    const waiting = (prevSt && prevSt.waiting && typeof prevSt.waiting === "object") ? prevSt.waiting : {};
     const membersAt = (prevSt && prevSt.membersAt) || 0;
 
     // "Due this week" and "Due next week" scopes, each the full Sunday→Saturday of
@@ -1666,6 +1751,7 @@ async function refreshClickupImpl({ includeTasks = false, viaAlarm = false, forc
       error: null,
       rateLimitedUntil: 0, // a clean fetch clears any prior 429 backoff
       members,
+      waiting, // parentId -> { blockers: [...] } (see refreshWaitingInfo)
       membersAt,
     };
     // The upper today card mirrors the Filter "Today + My tasks" default: attach

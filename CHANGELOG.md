@@ -1,5 +1,9 @@
 # Changelog
 
+## v3.4.0
+- **"Waiting on others"**: a task whose part is done by you but has a subtask assigned to someone else that's still open gets an amber "Waiting: Name" chip; it turns red "Blocked: Name late" once that subtask is overdue. Hover for details, click to open the blocking subtask in ClickUp. New "Waiting on others" filter in the Filter menu.
+- Cleaner rows: fixed client, due-date and status columns (the task title takes the rest), and time shown as "tracked / estimate" (red past the estimate, dot while the timer runs).
+
 ## v3.3.1
 - Maintenance release (used to verify one-click updates end to end). No functional changes.
 
