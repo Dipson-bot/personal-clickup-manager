@@ -178,6 +178,27 @@ $("copy").onclick = async () => {
   setTimeout(() => { b.textContent = "Copy"; }, 1600);
 };
 
+// Reminder controls (same settings as Options > ClickUp setup > Tracking settings).
+async function initReminder() {
+  const on = $("remOn"), at = $("remAt"), msg = $("remMsg");
+  let s = {};
+  try { s = (await chrome.storage.local.get("settings")).settings || {}; } catch (e) {}
+  on.checked = s.clickupWrapUp !== false;
+  at.value = s.clickupWrapUpTime || "16:45";
+  at.disabled = !on.checked;
+  const save = async () => {
+    at.disabled = !on.checked;
+    try {
+      await chrome.runtime.sendMessage({ type: "SET_SETTINGS", patch: { clickupWrapUp: on.checked, clickupWrapUpTime: at.value || "16:45" } });
+      msg.textContent = "Saved ✓";
+    } catch (e) { msg.textContent = "Couldn't save"; }
+    setTimeout(() => { msg.textContent = ""; }, 1500);
+  };
+  on.onchange = save;
+  at.onchange = save;
+}
+initReminder();
+
 (async () => {
   try {
     const { theme } = await chrome.storage.local.get("theme");

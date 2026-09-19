@@ -260,6 +260,9 @@ const DEFAULT_SETTINGS = {
   clickupIdleStartHour: 8, // office hours start (local hour 0-23), default 8am
   clickupIdleEndHour: 17, // office hours end (local hour 0-23), default 5pm
   clickupIdleRepeatMin: 60, // minutes between re-nudges while still not tracking
+  // Background ClickUp sync interval (minutes). One refresh is ~10-40 requests and
+  // ClickUp allows ~100/min per token, so 2 is the floor; reminders ride on it.
+  clickupSyncMin: 5,
   // ---- Away protection ----
   // Coming back after this long idle/locked while a timer kept running asks
   // "Remove away time / Keep it". Ignoring the question keeps the time.
@@ -985,6 +988,7 @@ async function clickupPublic() {
     awayMin: Number(settings.clickupAwayMin) || 15,
     wrapUp: settings.clickupWrapUp !== false,
     wrapUpTime: settings.clickupWrapUpTime || "16:45",
+    syncMin: syncMinutes(settings),
     workdayEndHour: Number(settings.clickupWorkdayEndHour) || 0,
     extendedMode: settings.clickupExtendedMode === "excl0" ? "excl0" : "days",
     weeklyTo: settings.clickupWeeklyTo === "friday" ? "friday" : "today",
@@ -1543,7 +1547,12 @@ async function refreshWaitingInfo() {
 // cooldown and a minimum spacing; (2) a single in-flight refresh is shared by
 // all concurrent callers (alarm + popup-open + task action) instead of stacking.
 let clickupRefreshInFlight = null;
-const AUTO_REFRESH_MIN_MS = 4 * 60 * 1000; // CLICKUP_ALARM is 5 min - collapse overlaps
+// Allowed background sync intervals (minutes); anything else falls back to 5.
+const SYNC_CHOICES = [2, 3, 5, 10, 15, 30];
+function syncMinutes(s) {
+  const n = Number(s && s.clickupSyncMin);
+  return SYNC_CHOICES.includes(n) ? n : 5;
+}
 
 async function refreshClickup(opts = {}) {
   const { viaAlarm = false } = opts;
@@ -1555,7 +1564,9 @@ async function refreshClickup(opts = {}) {
         return { ok: false, reason: "rate-limited" };
       }
       // Overlapping alarms / a refresh moments ago - skip, keep last-good numbers.
-      if (prev.at && Date.now() - prev.at < AUTO_REFRESH_MIN_MS) {
+      // Guard = interval minus a minute (5 min -> 4 min, as before).
+      const minGap = (syncMinutes(await getSettings().catch(() => ({}))) - 1) * 60000;
+      if (prev.at && Date.now() - prev.at < minGap) {
         return { ok: false, reason: "too-soon" };
       }
     }
@@ -3045,7 +3056,8 @@ async function ensurePeriodicAlarms() {
   // daily login check - expensive (opens tabs), so only every 30 min.
   await ensureAlarm(CHECK_ALARM, { periodInMinutes: 30 });
   // ClickUp estimate refresh - cheap API-only fetch; keeps numbers near-live.
-  await ensureAlarm(CLICKUP_ALARM, { periodInMinutes: 5 });
+  const syncS = await getSettings().catch(() => ({}));
+  await ensureAlarm(CLICKUP_ALARM, { periodInMinutes: syncMinutes(syncS) });
   // Drive auto-sync every 15 min - well inside the ~1h token lifetime.
   await ensureAlarm(SYNC_ALARM, { periodInMinutes: 15 });
   // Live balance poll every 5 min - cheap API-only fetch, no tabs.
@@ -3942,6 +3954,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
           const n = Number(p.clickupIdleRepeatMin);
           if (Number.isFinite(n) && n >= 5 && n <= 480) patch.clickupIdleRepeatMin = Math.floor(n);
         }
+        if (p.clickupSyncMin !== undefined && SYNC_CHOICES.includes(Number(p.clickupSyncMin))) patch.clickupSyncMin = Number(p.clickupSyncMin);
         if (p.clickupAwayNotify !== undefined) patch.clickupAwayNotify = !!p.clickupAwayNotify;
         if (p.clickupAwayMin !== undefined) {
           const n = Number(p.clickupAwayMin);
@@ -3970,6 +3983,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
           patch.clickupDeadlineTaskUrls = arr;
         }
         const next = await setSettings(patch);
+        if (patch.clickupSyncMin !== undefined) await ensureAlarm(CLICKUP_ALARM, { periodInMinutes: syncMinutes(next) }).catch(() => {});
         applyIdleInterval().catch(() => {});
         scheduleWrapUpAlarm().catch(() => {});
         // Deadline config, extended-mode, or extended-mode changes recompute the
@@ -3994,6 +4008,33 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
           await updateBadge();
         }
         sendResponse({ ok: true, settings: next });
+        break;
+      }
+      case "CLICKUP_SET_ENTRY_NOTE": {
+        // "Tracking now" note box: set the running (or just-stopped) time entry's
+        // description - the Description column in ClickUp Timesheet.
+        const cfg = await getClickupConfig();
+        if (!cfg || !cfg.token || !cfg.teamId) { sendResponse({ ok: false, reason: "not-configured" }); break; }
+        try {
+          let entryId = msg.entryId ? String(msg.entryId) : null;
+          let taskId = msg.taskId ? String(msg.taskId) : null;
+          if (!entryId) {
+            const cur = await getCurrentTimeEntry(cfg.token, cfg.teamId).catch(() => null);
+            if (cur) { entryId = cur.id; taskId = String(cur.taskId); }
+          }
+          if (!entryId) { sendResponse({ ok: false, reason: "no-timer" }); break; }
+          const description = String(msg.description || "").trim().slice(0, 500);
+          const body = { description };
+          if (taskId) body.tid = taskId;
+          await updateTimeEntry(cfg.token, cfg.teamId, entryId, body);
+          const st = await getClickupState().catch(() => null);
+          if (st && st.running && String(st.running.id) === entryId) {
+            await setClickupState({ ...st, running: { ...st.running, description } });
+          }
+          sendResponse({ ok: true, description });
+        } catch (e) {
+          sendResponse({ ok: false, error: String(e && e.message ? e.message : e) });
+        }
         break;
       }
       case "CLICKUP_MOVE_DUE": {

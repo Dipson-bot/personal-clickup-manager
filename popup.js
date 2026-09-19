@@ -1806,10 +1806,20 @@ function renderNowTracking() {
   if (!el) return;
   const st = (state && state.clickup && state.clickup.state) || null;
   const run = st && st.running && st.running.taskId ? st.running : null;
+  if (!run) { clearInterval(cuNowTimer); el.hidden = true; el.innerHTML = ""; el.dataset.key = ""; return; }
+  const key = String(run.taskId) + ":" + String(run.startMs || "");
+  const old = el.querySelector(".cu-now-note");
+  if (el.dataset.key === key && old) {
+    // Same timer: keep the note box as is (never wipe what's being typed).
+    if (document.activeElement !== old && !old.dataset.dirty) old.value = run.description || "";
+    return;
+  }
   clearInterval(cuNowTimer);
-  if (!run) { el.hidden = true; el.innerHTML = ""; return; }
+  el.dataset.key = key;
   el.hidden = false;
   el.innerHTML = "";
+  const top = document.createElement("div");
+  top.className = "cu-now-top";
   const dot = document.createElement("span");
   dot.className = "cu-now-dot";
   const lab = document.createElement("span");
@@ -1827,13 +1837,59 @@ function renderNowTracking() {
   const tick = () => { time.textContent = run.startMs ? fmtDur(Math.max(0, Date.now() - run.startMs)) : ""; };
   tick();
   cuNowTimer = setInterval(tick, 15000);
+
+  // Note = this time entry's Description in ClickUp. Saved on Enter / leaving the
+  // box, so it's already on the entry before Stop, Complete or switching tasks.
+  const note = document.createElement("input");
+  note.type = "text";
+  note.className = "cu-now-note";
+  note.maxLength = 500;
+  note.placeholder = "Add a note to this time entry (e.g. task completed, meeting time)";
+  note.title = "Shows in the Description column of your ClickUp Timesheet. Enter to save.";
+  note.value = run.description || "";
+  const saved = document.createElement("span");
+  saved.className = "cu-now-saved";
+  let last = note.value.trim();
+  let saving = null;
+  const commit = () => {
+    const v = note.value.trim();
+    if (v === last) { delete note.dataset.dirty; return saving || Promise.resolve(); }
+    saved.textContent = "Saving…";
+    saving = send({ type: "CLICKUP_SET_ENTRY_NOTE", entryId: run.id || null, taskId: String(run.taskId), description: v })
+      .catch((e) => ({ ok: false, error: String(e && e.message ? e.message : e) }))
+      .then((r) => {
+        if (r && r.ok) {
+          last = v;
+          delete note.dataset.dirty;
+          saved.textContent = "Saved ✓";
+          setTimeout(() => { if (saved.textContent === "Saved ✓") saved.textContent = ""; }, 1800);
+        } else {
+          saved.textContent = "Not saved";
+          saved.title = (r && (r.error || r.reason)) || "";
+        }
+      });
+    return saving;
+  };
+  note.oninput = () => { note.dataset.dirty = "1"; };
+  note.onkeydown = (e) => { if (e.key === "Enter") { e.preventDefault(); commit(); } };
+  note.onblur = () => { commit(); };
+
   const stop = document.createElement("button");
   stop.type = "button";
   stop.className = "cu-now-stop";
   stop.textContent = "\u25A0 Stop";
   stop.title = "Stop the ClickUp timer";
-  stop.onclick = () => { stop.disabled = true; stop.textContent = "\u2026"; sendTaskAction(String(run.taskId), "stop"); };
-  el.append(dot, lab, nm, time, stop);
+  stop.onclick = async () => {
+    stop.disabled = true;
+    stop.textContent = "\u2026";
+    await commit(); // note first, so it lands on this entry
+    sendTaskAction(String(run.taskId), "stop");
+  };
+  top.append(dot, lab, nm, time, stop);
+  const noteRow = document.createElement("div");
+  noteRow.className = "cu-now-noterow";
+  noteRow.append(note, saved);
+  el.append(top, noteRow);
 }
 
 
@@ -1956,19 +2012,13 @@ async function toggleExtraTimer(action) {
   await load();
 }
 
-// "📋" header button: shown on weekdays after the wrap-up time.
+// "📋" header button: opens the wrap-up page (any time, once ClickUp is connected).
 function updateWrapBtn() {
   const b = $("wrapBtn");
   if (!b) return;
   const cu = state && state.clickup;
   let show = false;
-  if (cu && cu.configured && cu.wrapUp !== false) {
-    const now = new Date();
-    const m = /^(\d{1,2}):(\d{2})$/.exec(String(cu.wrapUpTime || "16:45"));
-    const at = new Date(now);
-    at.setHours(m ? +m[1] : 16, m ? +m[2] : 45, 0, 0);
-    show = now.getDay() >= 1 && now.getDay() <= 5 && now >= at;
-  }
+  if (cu && cu.configured) show = true;
   b.hidden = !show;
 }
 

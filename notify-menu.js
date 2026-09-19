@@ -103,7 +103,7 @@
     bell.type = "button";
     bell.className = "nm-bell";
     const wrap = document.createElement("span");
-    wrap.style.cssText = "display:inline-flex;align-items:center;gap:4px;flex:none;";
+    wrap.style.cssText = "display:inline-flex;align-items:center;gap:6px;flex:none;margin-left:auto;";
     theme.parentNode.insertBefore(wrap, theme);
     wrap.append(bell, theme);
 

@@ -44,6 +44,10 @@
     border: 1px solid var(--border); border-radius: 8px; padding: 10px; background: var(--bg); color: var(--text); }
   .actions { display: flex; align-items: center; gap: 8px; margin-top: 10px; }
   .actions .hint { color: var(--muted); font-size: 12px; flex: 1; }
+  .remind { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; font-size: 13px; }
+  .remind label { display: inline-flex; align-items: center; gap: 6px; cursor: pointer; }
+  .remind input[type="time"] { font: inherit; padding: 4px 8px; border: 1px solid var(--border); border-radius: 7px; background: var(--bg); color: var(--text); }
+  .remind .hint { color: var(--muted); font-size: 12px; }
 </style>
 </head>
 <body>
@@ -70,6 +74,15 @@
         <span class="hint" id="standupHint">Edit freely before copying.</span>
         <button id="rebuild" hidden>Rebuild</button>
         <button class="primary" id="copy">Copy</button>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2><span>Reminder</span></h2>
+      <div class="remind">
+        <label><input type="checkbox" id="remOn" /> Remind me on weekdays at</label>
+        <input type="time" id="remAt" />
+        <span class="hint" id="remMsg"></span>
       </div>
     </div>
   </div>

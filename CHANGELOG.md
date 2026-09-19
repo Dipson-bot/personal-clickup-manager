@@ -6,6 +6,10 @@
 - **Smarter "not tracking" reminder.** It stays quiet while you are away from the computer, and has a *▶ Start* button for your most important open task due today.
 - **End-of-day wrap-up** (weekdays, default 16:45). One notification opens a small page with tracked vs target, today's open tasks with a one-click *→ Tomorrow* (Fridays: → Mon, same time of day), and a Slack-ready standup (Done / Next / Blocked) you can edit and copy. A 📋 button in the popup opens it after that time.
 - **Notification bell 🔔** next to the dark/light button (popup, side panel, options): turn all notifications off, **Pause 1 hour** (lunch, meetings; resumes by itself), or switch single reminders on/off. Shows 🔕 while muted or paused.
+- **Note on the task you're tracking.** The "Tracking now" strip has a note box: type e.g. "task completed" or "meeting time" and press Enter. It becomes that time entry's Description in ClickUp, so it's saved before you stop, complete or switch tasks. The Extra Task note can now be edited while it runs, too.
+- **Choose how often it syncs with ClickUp** (Options > ClickUp setup > Tracking settings): 2, 3, 5 (default), 10, 15 or 30 minutes. 2 minutes is the safe minimum for ClickUp's rate limit.
+- **Wrap-up is always one click away:** the 📋 button shows all the time, and the wrap-up page has its own reminder on/off and time.
+- Dark/light switch on the options page is now a clean pill button (no underline), with a matching round 🔔.
 - **Softer light mode:** grey-tinted background and cards instead of pure white.
 - In the side panel, **⇄** opens Chrome's setting to show the panel on the left or right.
 - New settings under Options > ClickUp setup > Settings: away minutes, wrap-up on/off and time, plus an *Open now* link.
