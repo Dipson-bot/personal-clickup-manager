@@ -2393,9 +2393,17 @@ async function checkForUpdate(force) {
       url: j.html_url || "https://github.com/" + UPDATE_REPO + "/releases/latest",
       zip: zip ? zip.browser_download_url : "",
       notifiedFor: prev && prev.notifiedFor,
+      notifiedAt: prev && prev.notifiedAt,
     };
-    if (info.newer && info.notifiedFor !== latest) {
+    // Notify when a version is new to us, again every 24h until its zip is
+    // downloaded (a dismissed or "What's new"-clicked toast is not lost), and
+    // whenever the user presses "Check for updates" themselves.
+    const { updateDownload: dl } = await chrome.storage.local.get("updateDownload");
+    const downloaded = dl && dl.version === latest;
+    const due = info.notifiedFor !== latest || Date.now() - (info.notifiedAt || 0) >= 24 * 3600 * 1000;
+    if (info.newer && (force || (due && !downloaded))) {
       info.notifiedFor = latest;
+      info.notifiedAt = Date.now();
       await chrome.storage.local.set({ updateInfo: info });
       await showUpdateNotification(info);
     }
@@ -2469,6 +2477,8 @@ chrome.notifications.onButtonClicked.addListener((id, btn) => {
       else {
         const { updateInfo: ui } = await chrome.storage.local.get("updateInfo");
         if (ui && ui.url) chrome.tabs.create({ url: ui.url }).catch(() => {});
+        // Keep the Download button one click away after reading the notes.
+        if (ui && ui.newer) setTimeout(() => showUpdateNotification(ui).catch(() => {}), 1500);
       }
     } else if (id === "update-downloaded") {
       chrome.runtime.reload(); // picks up the unzipped files
@@ -2752,6 +2762,7 @@ chrome.notifications.onClicked.addListener((id) => {
       const { updateInfo: ui } = await chrome.storage.local.get("updateInfo");
       if (ui && ui.url) chrome.tabs.create({ url: ui.url }).catch(() => {});
       chrome.notifications.clear(id).catch(() => {});
+      if (ui && ui.newer) setTimeout(() => showUpdateNotification(ui).catch(() => {}), 1500);
       return;
     }
     let url = notifTargetUrls.get(id);
