@@ -3976,8 +3976,50 @@ async function loadSiteMonitorConfig() {
   for (const s of sites) if (s && s.url && s.name && s.name !== s.url) smSiteNames[s.url] = s.name;
   $("siteMonitorEnabled").checked = !!cfg.enabled;
   $("siteMonitorBody").style.opacity = cfg.enabled ? "1" : "0.5";
-  $("siteMonitorUrls").value = sites.map((s) => s.url).join("\n");
+  $("siteMonitorUrls").value = smFormatLines(sites);
   renderSiteMonitorStatus(cfg);
+}
+
+// Site list lines: "Client | https://site.com", "Client, site.com", "site.com Client"
+// or a bare URL. The part that is a web address is the URL; the rest is the client
+// name, matched to your ClickUp client spelling when it's the same client.
+function smKnownClients() {
+  const st = (optClickup && optClickup.state) || {};
+  const names = new Map();
+  for (const b of [st, st.todayFilter, st.thisWeek, st.nextWeek]) {
+    if (!b) continue;
+    for (const t of [...(b.tasks || []), ...(b.deadlineTasks || []), ...(b.trackedTasks || [])]) {
+      if (t && t.client) names.set(String(t.client).toLowerCase().replace(/[^a-z0-9]+/g, ""), t.client);
+    }
+  }
+  return names;
+}
+function smParseLine(line, known) {
+  const parts = String(line).split(/\s*[|,\t]\s*|\s+(?=https?:\/\/)/).map((p) => p.trim()).filter(Boolean);
+  let url = "";
+  const rest = [];
+  for (const p of parts) {
+    if (!url && /^(https?:\/\/)?[^\s]+\.[a-z]{2,}(\/|$|:)/i.test(p) && smNormalizeUrl(p)) url = smNormalizeUrl(p);
+    else rest.push(p);
+  }
+  if (!url) {
+    // "site.com Client name": look for the web address among the words.
+    rest.length = 0;
+    for (const w of String(line).split(/\s+/)) {
+      if (!url && /\.[a-z]{2,}/i.test(w) && smNormalizeUrl(w)) url = smNormalizeUrl(w);
+      else if (w && w !== "|" && w !== ",") rest.push(w);
+    }
+  }
+  if (!url) return null;
+  let name = rest.join(" ").trim();
+  if (name && known) {
+    const hit = known.get(name.toLowerCase().replace(/[^a-z0-9]+/g, ""));
+    if (hit) name = hit;
+  }
+  return { url, name };
+}
+function smFormatLines(sites) {
+  return (sites || []).map((s) => (s.name && s.name !== s.url ? s.name + " | " : "") + s.url).join("\n");
 }
 
 async function saveSiteMonitorConfig() {
@@ -3985,16 +4027,19 @@ async function saveSiteMonitorConfig() {
   const lines = $("siteMonitorUrls").value.split("\n").map((s) => s.trim()).filter(Boolean);
   const sites = [];
   const bad = [];
+  const known = smKnownClients();
   for (const line of lines) {
-    const url = smNormalizeUrl(line);
-    if (!url) { bad.push(line); continue; }
-    if (sites.some((s) => s.url === url)) continue;
-    sites.push({ url, name: smSiteNames[url] || url });
+    const p = smParseLine(line, known);
+    if (!p) { bad.push(line); continue; }
+    if (sites.some((s) => s.url === p.url)) continue;
+    const name = p.name || smSiteNames[p.url] || p.url;
+    if (p.name) smSiteNames[p.url] = p.name;
+    sites.push({ url: p.url, name });
   }
   const cfg = { enabled, sites };
   const res = await send({ type: "SET_SITE_MONITOR_CONFIG", cfg }).catch(() => null);
   if (res && res.ok) {
-    $("siteMonitorUrls").value = sites.map((s) => s.url).join("\n");
+    $("siteMonitorUrls").value = smFormatLines(sites);
     $("siteMonitorSaved").style.display = "inline";
     setTimeout(() => { $("siteMonitorSaved").style.display = "none"; }, 2000);
     if (bad.length) smHint(bad.length + " line(s) skipped - not a web address: " + bad.slice(0, 3).join(", ") + (bad.length > 3 ? "…" : ""), true);
@@ -4037,7 +4082,7 @@ async function discoverClientSitesOpt() {
 function renderDetectedSites(clients) {
   const box = $("siteMonitorDetected");
   if (!box) return;
-  const monitored = new Set($("siteMonitorUrls").value.split("\n").map(smNormalizeUrl).filter(Boolean));
+  const monitored = new Set($("siteMonitorUrls").value.split("\n").map((l) => { const p = smParseLine(l); return p ? p.url : ""; }).filter(Boolean));
   box.innerHTML = "";
   box.style.display = "block";
   const table = document.createElement("div");
@@ -4113,7 +4158,7 @@ function renderDetectedSites(clients) {
   close.onclick = () => { box.innerHTML = ""; box.style.display = "none"; smHint(""); };
   add.onclick = () => {
     const lines = $("siteMonitorUrls").value.split("\n").map((s) => s.trim()).filter(Boolean);
-    const have = new Set(lines.map(smNormalizeUrl).filter(Boolean));
+    const have = new Set(lines.map((l) => { const p = smParseLine(l); return p ? p.url : ""; }).filter(Boolean));
     let added = 0;
     let bad = 0;
     for (const r of rows()) {
@@ -4123,7 +4168,7 @@ function renderDetectedSites(clients) {
       smSiteNames[url] = r._client.name;
       if (have.has(url)) continue;
       have.add(url);
-      lines.push(url);
+      lines.push(r._client.name + " | " + url);
       added++;
     }
     if (bad) { smHint(bad + " ticked row(s) need a valid web address (e.g. https://client.com) - fix the red fields or untick them.", true); return; }
@@ -4164,6 +4209,17 @@ function renderSiteMonitorStatus(cfg) {
 function escapeHtml(s) {
   return String(s || "").replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 }
+
+// Header: open the side panel / the wrap-up page from the options page too.
+(function initHeaderTools() {
+  const panel = $("optPanelBtn"), wrap = $("optWrapBtn");
+  if (wrap) wrap.onclick = () => chrome.tabs.create({ url: chrome.runtime.getURL("wrapup.html") }).catch(() => {});
+  if (!panel) return;
+  if (!chrome.sidePanel || !chrome.sidePanel.open) { panel.hidden = true; return; }
+  let winId = null;
+  chrome.windows.getCurrent().then((w) => { winId = w && w.id; }).catch(() => {});
+  panel.onclick = () => { if (winId != null) chrome.sidePanel.open({ windowId: winId }).catch(() => {}); };
+})();
 
 // Wire up site monitor UI
 const smEnabled = $("siteMonitorEnabled");

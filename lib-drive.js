@@ -229,7 +229,7 @@ async function importKeyB64(keyB64) {
 //     are newer and avoid clobbering fresh local changes with a stale remote.
 // (v4 blobs stored accounts+clickup+departments; v3 accounts+clickup; v2 just
 // the accounts array - pull still reads all of them.)
-export async function pushAccountsToDrive(token, accounts, clickup = null, departments = null, settings = null) {
+export async function pushAccountsToDrive(token, accounts, clickup = null, departments = null, settings = null, extras = null) {
   const keyB64 = await getOrCreateDriveKey(token);
   const key = await importKeyB64(keyB64);
   const iv = crypto.getRandomValues(new Uint8Array(12));
@@ -241,6 +241,7 @@ export async function pushAccountsToDrive(token, accounts, clickup = null, depar
       departments: departments || null,
       settings: settings || null,
       settingsAt,
+      extras: extras || null, // { values: {key: value}, stamps: {key: ms} } - site list, theme, filters, sounds
     })
   );
   const ct = await crypto.subtle.encrypt({ name: "AES-GCM", iv }, key, plaintext);
@@ -287,6 +288,7 @@ export async function pullAccountsFromDrive(token) {
       departments: Array.isArray(arr.departments) ? arr.departments : null,
       settings: arr.settings && typeof arr.settings === "object" ? arr.settings : null,
       settingsAt: Number(arr.settingsAt) || 0,
+      extras: arr.extras && typeof arr.extras === "object" ? arr.extras : null,
       updatedAt: blob.updatedAt || 0,
     };
   } catch (e) {
