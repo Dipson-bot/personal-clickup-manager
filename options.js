@@ -1422,17 +1422,45 @@ function showExtraMode(on) {
   const box = document.getElementById("cuXMode");
   if (box) box.style.display = on ? "" : "none";
 }
-function resetExtraMode() {
-  const c = document.querySelector('input[name="cuXModeRadio"][value="custom"]');
-  if (c) c.checked = true;
+// Shared with the other page (popup <-> options) via storage "cuXDraft".
+function applyExtraDraft(d) {
+  const mode = d && d.mode === "meeting" ? "meeting" : "custom";
+  const r = document.querySelector('input[name="cuXModeRadio"][value="' + mode + '"]');
+  if (r) r.checked = true;
   const n = document.getElementById("cuXNote");
-  if (n) { n.value = ""; n.disabled = false; }
+  if (n) {
+    if (document.activeElement !== n) n.value = (d && typeof d.note === "string") ? d.note : "";
+    n.disabled = mode === "meeting";
+  }
+}
+function saveExtraDraft() {
+  const m = document.querySelector('input[name="cuXModeRadio"]:checked');
+  const n = document.getElementById("cuXNote");
+  const d = { mode: m && m.value === "meeting" ? "meeting" : "custom", note: n ? n.value : "" };
+  try { chrome.storage.local.set({ cuXDraft: d }); } catch (e) {}
+}
+function resetExtraMode() {
+  const d = { mode: "custom", note: "" };
+  const n = document.getElementById("cuXNote");
+  if (n) n.value = "";
+  applyExtraDraft(d);
+  try { chrome.storage.local.set({ cuXDraft: d }); } catch (e) {}
 }
 document.addEventListener("change", (e) => {
   if (!e.target || e.target.name !== "cuXModeRadio") return;
   const n = document.getElementById("cuXNote");
   if (n) n.disabled = e.target.value === "meeting";
+  saveExtraDraft();
 });
+document.addEventListener("input", (e) => {
+  if (e.target && e.target.id === "cuXNote") saveExtraDraft();
+});
+try {
+  chrome.storage.local.get("cuXDraft").then(({ cuXDraft }) => applyExtraDraft(cuXDraft));
+  chrome.storage.onChanged.addListener((ch, area) => {
+    if (area === "local" && ch.cuXDraft) applyExtraDraft(ch.cuXDraft.newValue);
+  });
+} catch (e) {}
 
 function renderExtraTimerButton(extra, running) {
   const btn = $("cuTimerBtn");
