@@ -78,26 +78,41 @@ Drive).
    (for example `Documents\personal-clickup-manager`).
 2. Open `chrome://extensions` (or `edge://extensions`) and turn on **Developer mode**.
 3. Click **Load unpacked** and pick the unzipped folder.
-4. Click the extension's icon → **Manage**, open **ClickUp setup**, paste your ClickUp
+4. A page opens: **"Turn on one-click updates"**. Click **Choose folder**, pick the folder
+   you just unzipped into, and click **Allow**. (You can skip this and do it at your first
+   update instead.)
+5. Click the extension's icon → **Manage**, open **ClickUp setup**, paste your ClickUp
    personal API token (ClickUp → avatar → Settings → Apps → API Token) and pick your workspace.
 
-## Updating to a new version
+## Updating to a new version (one click)
 
-The extension checks GitHub for new releases about twice a day. When one is out you get
-a notification, an **"Update available"** banner in the popup and a chip on the options
-page (Options → General → *Version and updates* also has a **Check for updates** button).
+![Updating Personal ClickUp Manager: Update now, Install, choose the folder once, Allow - the extension installs the new version and restarts](docs/update-demo.gif)
 
-1. Click **Download** on the notification (or the popup banner / Options → General). The
-   zip lands in your Downloads folder.
-2. Unzip it **over the same folder** you installed from (replace the files).
-3. Click the **"Reload extension"** notification (or the button in Options → General).
+*A real update from v3.3.0 to v3.3.1. Folder names are blurred.*
+
+The extension checks GitHub for new releases about twice a day. When one is out:
+
+1. A notification appears: **"Update available"** - click **Update now**.
+   (Missed it? Click the orange banner in the popup, or Options → General → **Update now**.)
+2. On the page that opens, click **Install**.
+3. **First update only:** choose the folder the extension is installed in and click **Allow**.
+   It's remembered for next time.
+4. The extension installs the new version, restarts, and confirms **"Updated to vX ✓"**.
 
 Your accounts, settings and ClickUp connection are stored in the browser, not in the
 folder, so they are kept.
 
-> Chrome only updates extensions *fully automatically* when they come from the Chrome
-> Web Store. Publishing there is possible later; until then, updates are the two-minute
-> "download, unzip, reload" above.
+**Moved the extension's folder?** The updater checks the remembered folder really is the one
+Chrome is running before it changes anything. If it isn't, it asks you to pick the new
+location (shown in `chrome://extensions` → **Details** → **Source**). If an update ever fails
+halfway, the previous files are restored.
+
+<details><summary>Manual update (if you prefer)</summary>
+
+Download the zip from the [latest release](../../releases/latest), unzip it **over the same
+folder** you installed from (replace the files), then click the reload icon on the extension
+in `chrome://extensions`. Users on v3.2.0 need to do this once to get one-click updates.
+</details>
 
 ---
 
