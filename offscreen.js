@@ -29,17 +29,31 @@ function drainQueue() {
   if (draining) return;
   draining = true;
   const playNext = () => {
-    const id = q.shift();
-    if (!id) { draining = false; return; }
-    const el = document.getElementById(id) || document.getElementById("chime");
-    try {
-      if (el) {
-        el.currentTime = 0;
-        const p = el.play();
-        if (p && typeof p.catch === "function") p.catch(() => {});
+    const item = q.shift();
+    if (!item) { draining = false; return; }
+    const builtIn = () => {
+      const el = document.getElementById(item.id) || document.getElementById("chime");
+      try {
+        if (el) {
+          el.currentTime = 0;
+          const p = el.play();
+          if (p && typeof p.catch === "function") p.catch(() => {});
+        }
+      } catch (e) {
+        // Nothing actionable if playback is blocked - stay silent.
       }
-    } catch (e) {
-      // Nothing actionable if playback is blocked - stay silent.
+    };
+    if (item.src) {
+      // User's own sound (file data URL or web link); fall back to the built-in
+      // clip if it can't be loaded or played.
+      try {
+        const a = new Audio(item.src);
+        a.onerror = builtIn;
+        const p = a.play();
+        if (p && typeof p.catch === "function") p.catch(builtIn);
+      } catch (e) { builtIn(); }
+    } else {
+      builtIn();
     }
     // Small gap before the next queued clip so sequential sounds stay distinct.
     setTimeout(playNext, 200);
@@ -53,7 +67,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     // Worker retry of a logical play we've already queued - don't double it.
   } else {
     lastNonce = msg.nonce;
-    q.push(clipFor(msg.sound));
+    q.push({ id: clipFor(msg.sound), src: typeof msg.src === "string" && msg.src ? msg.src : "" });
     drainQueue();
   }
   // Always acknowledge so the worker stops retrying.

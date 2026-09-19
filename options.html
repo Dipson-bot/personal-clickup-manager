@@ -555,6 +555,28 @@
   .cu-now-time { flex: none; font-variant-numeric: tabular-nums; color: var(--green); font-weight: 700; }
   .cu-now-stop { flex: none; font-size: 11px; font-weight: 700; padding: 3px 9px; border-radius: 6px; border: 0; background: var(--red); color: #fff; cursor: pointer; }
   .cu-now-stop:disabled { opacity: .6; cursor: default; }
+
+  /* Extra Task mode: Custom (note) / Meeting */
+  .xmode { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; margin: 6px 0 2px; font-size: 13px; }
+  .xmode label { display: inline-flex; align-items: center; gap: 4px; margin: 0; font-weight: 600; cursor: pointer; }
+  .xmode input[type="radio"] { width: auto; margin: 0; accent-color: var(--indigo); }
+  .xmode input[type="text"] { flex: 1 1 160px; min-width: 120px; width: auto; padding: 6px 10px; font-size: inherit; border: 1px solid var(--border); border-radius: 7px; background: var(--card); color: var(--text); }
+  .xmode input[type="text"]:disabled { opacity: .45; }
+
+  /* Custom sounds */
+  .snd-box { margin: 12px 0 4px; border: 1px dashed var(--border); border-radius: 10px; padding: 8px 12px; }
+  .snd-box summary { cursor: pointer; font-size: 13.5px; font-weight: 600; }
+  .snd-row { padding: 8px 0; border-top: 1px dashed var(--border); }
+  .snd-head { font-size: 13px; margin-bottom: 6px; }
+  .snd-ctrl { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+  .snd-ctrl select { width: auto; min-width: 150px; padding: 6px 10px; font-size: 13px; }
+  .snd-ctrl .snd-url { flex: 1 1 220px; width: auto; padding: 6px 10px; font-size: 13px; }
+  .snd-ctrl .snd-file { font-size: 12px; }
+  .snd-play { padding: 5px 12px; font-size: 13px; }
+  .snd-msg { margin-top: 4px; min-height: 1em; }
+
+  /* Agent Router hidden */
+  body.no-ar [data-tab="agent"], body.no-ar .panel[data-panel="agent"] { display: none !important; }
 </style>
 </head>
 <body class="tabbed">
@@ -603,6 +625,11 @@
       <div style="margin-top:8px;display:flex;align-items:center;gap:10px;flex-wrap:wrap;">
         <button type="button" class="primary" id="cuTimerBtn" style="padding:6px 12px;">▶ Start tracking</button>
         <span class="hint" id="cuTimerHint"></span>
+      </div>
+      <div class="xmode" id="cuXMode">
+        <label><input type="radio" name="cuXModeRadio" value="custom" checked /> Custom</label>
+        <label><input type="radio" name="cuXModeRadio" value="meeting" /> Meeting</label>
+        <input type="text" id="cuXNote" maxlength="200" placeholder="What's it for? (optional)" />
       </div>
     </div>
     <div class="cu-autox" id="cuAutoExtraNote" style="display:none;">
@@ -1232,6 +1259,14 @@
     </div>
   </div>
 
+  <div class="card" id="featuresCard">
+    <h2>Features</h2>
+    <div class="checkbox" style="margin-top:0;">
+      <input type="checkbox" id="showAgentRouter" />
+      <label for="showAgentRouter" style="margin:0;font-weight:400;">Show <b>Agent Router</b> (optional daily-login helper) <span class="hint">- adds its section to the sidebar and the Accounts card to the popup. Turning it off only hides it.</span></label>
+    </div>
+  </div>
+
   <div class="card" id="generalCard">
     <h2>Notifications and sound</h2>
     <div class="checkbox">
@@ -1243,6 +1278,57 @@
       <button type="button" class="ghost" id="notifySoundTest" style="padding:0;">Test sound</button>
       <button type="button" class="ghost" id="notifyDangerTest" style="padding:0;">Test danger sound</button>
     </div>
+    <details class="snd-box" id="soundBox">
+      <summary>Use your own sounds <span class="hint">- optional</span></summary>
+      <p class="hint" style="margin:6px 0 8px;line-height:1.5;">
+        Pick a file from your computer or paste a link. <b>Formats:</b> MP3, WAV, OGG, M4A/AAC or WebM.
+        <b>Files:</b> up to 1 MB (a few seconds of sound). <b>Links:</b> must open the audio file itself
+        (usually ending in .mp3/.wav/.ogg) - pages like YouTube or Google Drive won't work. Each sound is
+        test-played before it's saved; if a saved sound ever fails, the default one plays instead.
+      </p>
+      <div class="snd-row" data-snd="notify">
+        <div class="snd-head"><b>Every notification</b> <span class="hint">- reminders, nudges, updates</span></div>
+        <div class="snd-ctrl">
+          <select class="snd-kind">
+            <option value="default">Default sound</option>
+            <option value="file">My file…</option>
+            <option value="url">Link (URL)…</option>
+          </select>
+          <input type="file" class="snd-file" accept=".mp3,.wav,.ogg,.oga,.m4a,.aac,.webm,audio/mpeg,audio/wav,audio/ogg,audio/mp4,audio/aac,audio/webm" style="display:none;" />
+          <input type="text" class="snd-url" placeholder="https://example.com/sound.mp3" style="display:none;" />
+          <button type="button" class="snd-play" title="Preview">▶</button>
+        </div>
+        <div class="snd-msg hint"></div>
+      </div>
+      <div class="snd-row" data-snd="danger">
+        <div class="snd-head"><b>Danger alarm</b> <span class="hint">- over estimate / behind target</span></div>
+        <div class="snd-ctrl">
+          <select class="snd-kind">
+            <option value="default">Default sound</option>
+            <option value="file">My file…</option>
+            <option value="url">Link (URL)…</option>
+          </select>
+          <input type="file" class="snd-file" accept=".mp3,.wav,.ogg,.oga,.m4a,.aac,.webm,audio/mpeg,audio/wav,audio/ogg,audio/mp4,audio/aac,audio/webm" style="display:none;" />
+          <input type="text" class="snd-url" placeholder="https://example.com/sound.mp3" style="display:none;" />
+          <button type="button" class="snd-play" title="Preview">▶</button>
+        </div>
+        <div class="snd-msg hint"></div>
+      </div>
+      <div class="snd-row" data-snd="winner">
+        <div class="snd-head"><b>Milestone</b> <span class="hint">- daily target reached</span></div>
+        <div class="snd-ctrl">
+          <select class="snd-kind">
+            <option value="default">Default sound</option>
+            <option value="file">My file…</option>
+            <option value="url">Link (URL)…</option>
+          </select>
+          <input type="file" class="snd-file" accept=".mp3,.wav,.ogg,.oga,.m4a,.aac,.webm,audio/mpeg,audio/wav,audio/ogg,audio/mp4,audio/aac,audio/webm" style="display:none;" />
+          <input type="text" class="snd-url" placeholder="https://example.com/sound.mp3" style="display:none;" />
+          <button type="button" class="snd-play" title="Preview">▶</button>
+        </div>
+        <div class="snd-msg hint"></div>
+      </div>
+    </details>
     <div class="btns">
       <button class="primary" id="saveSettings2">Save</button>
       <span class="saved" id="settingsSaved2" style="display:none;">Saved ✓</span>

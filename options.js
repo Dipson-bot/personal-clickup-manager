@@ -383,6 +383,8 @@ async function load() {
     // Keep the (pristine) Add form's Mode default in step with the global setting.
     if (!editingId) $("accMode").value = defaultMode;
     renderList(state.accounts || [], state.status || {}, state.today, !!state.running);
+    applyArVisibility(state);
+    if ($("showAgentRouter")) $("showAgentRouter").checked = arVisible(state);
     // Drive Sync card: cache the state so a live busy-phase message can repaint
     // the card without a full reload, then paint it.
     optLastState = state;
@@ -1406,11 +1408,38 @@ const cuRowConfirmOpt = {};
 // Render the Start/Stop toggle next to the auto-detected Extra Task. The label
 // and action come from the live running entry (cu.state.running) vs the detected
 // task; re-wired each render so the closure always sees fresh state.
+
+// ---------- Extra Task mode: Custom (optional note) / Meeting ----------
+// The choice becomes the time entry's description in ClickUp. The controls are
+// hidden while the Extra Task itself is being tracked.
+function extraModeDescription() {
+  const m = document.querySelector('input[name="cuXModeRadio"]:checked');
+  if (m && m.value === "meeting") return "Meeting";
+  const n = document.getElementById("cuXNote");
+  return n ? n.value.trim() : "";
+}
+function showExtraMode(on) {
+  const box = document.getElementById("cuXMode");
+  if (box) box.style.display = on ? "" : "none";
+}
+function resetExtraMode() {
+  const c = document.querySelector('input[name="cuXModeRadio"][value="custom"]');
+  if (c) c.checked = true;
+  const n = document.getElementById("cuXNote");
+  if (n) { n.value = ""; n.disabled = false; }
+}
+document.addEventListener("change", (e) => {
+  if (!e.target || e.target.name !== "cuXModeRadio") return;
+  const n = document.getElementById("cuXNote");
+  if (n) n.disabled = e.target.value === "meeting";
+});
+
 function renderExtraTimerButton(extra, running) {
   const btn = $("cuTimerBtn");
   const hint = $("cuTimerHint");
   if (!btn || !hint) return;
   const onExtra = running && running.taskId && String(running.taskId) === String(extra.id);
+  showExtraMode(!onExtra);
   btn.disabled = cuTimerBusy;
   if (onExtra) {
     btn.textContent = cuTimerBusy ? "…" : "⏸ Stop tracking";
@@ -1440,7 +1469,9 @@ async function toggleExtraTimer(action) {
     // which routinely exceeds the default 8s (the timer had already started, so
     // the popup - which waits 20s - succeeded while options wrongly showed "No
     // response"). Wait as long as the popup does.
-    const res = await send({ type }, 20000);
+    const description = action === "stop" ? undefined : extraModeDescription();
+    const res = await send({ type, description }, 20000);
+    if (res && res.ok !== false && action !== "stop") resetExtraMode();
     cuTimerBusy = false;
     if (!res || res.ok === false) {
       const reason = res && res.reason;
@@ -4120,7 +4151,9 @@ function refreshStatusStrip(delay) {
     const lastAt = last && (last.at || last.ts || (typeof last === "number" ? last : 0));
     chips.push({ tab: "general", cls: st.signedIn ? "ok" : "warn", text: st.signedIn ? "Drive synced" + (lastAt ? " " + new Date(lastAt).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" }) : "") : "Drive sync off" });
     const accs = st.accounts || [];
-    if (accs.length) {
+    if (!arVisible(st)) {
+      // Agent Router hidden - no chip.
+    } else if (accs.length) {
       const done = accs.filter((a) => ((st.status || {})[a.id] || {}).lastDone === st.today).length;
       chips.push({ tab: "agent", cls: done >= accs.length ? "ok" : "warn", text: "Agent Router " + done + "/" + accs.length + " done today" });
     } else {
@@ -4200,3 +4233,112 @@ if ($("checkUpdateBtn")) $("checkUpdateBtn").onclick = async () => {
   b.disabled = false; b.textContent = "Check for updates";
 };
 renderVersionRow();
+
+// ---------- Custom notification sounds (Options > General) ----------
+// Stored in chrome.storage.local "customSounds" = { notify|danger|winner: { kind, src, name } }
+// (kept out of settings so large sound files aren't copied to Drive).
+const SND_MAX_BYTES = 1024 * 1024;
+const SND_EXT = /\.(mp3|wav|ogg|oga|m4a|aac|webm)$/i;
+function sndTest(src) {
+  // Resolves when the browser can actually decode + play it (8s timeout).
+  return new Promise((resolve, reject) => {
+    const a = new Audio();
+    const t = setTimeout(() => { a.src = ""; reject(new Error("took too long to load")); }, 8000);
+    a.oncanplaythrough = () => { clearTimeout(t); resolve(a); };
+    a.onerror = () => { clearTimeout(t); reject(new Error("the browser can't play it (unsupported format or not an audio file)")); };
+    a.preload = "auto";
+    a.src = src;
+    a.load();
+  });
+}
+async function sndGetAll() {
+  try { const { customSounds } = await chrome.storage.local.get("customSounds"); return customSounds && typeof customSounds === "object" ? customSounds : {}; } catch (e) { return {}; }
+}
+async function sndSave(key, val) {
+  const all = await sndGetAll();
+  if (val) all[key] = val; else delete all[key];
+  await chrome.storage.local.set({ customSounds: all });
+}
+async function initSoundRows() {
+  const all = await sndGetAll();
+  document.querySelectorAll(".snd-row").forEach((row) => {
+    const key = row.dataset.snd;
+    const kind = row.querySelector(".snd-kind");
+    const fileIn = row.querySelector(".snd-file");
+    const urlIn = row.querySelector(".snd-url");
+    const play = row.querySelector(".snd-play");
+    const msg = row.querySelector(".snd-msg");
+    const say = (t, bad) => { msg.textContent = t || ""; msg.style.color = bad ? "var(--red)" : ""; };
+    const cur = all[key];
+    const layout = () => {
+      fileIn.style.display = kind.value === "file" ? "" : "none";
+      urlIn.style.display = kind.value === "url" ? "" : "none";
+    };
+    kind.value = cur ? cur.kind : "default";
+    if (cur && cur.kind === "url") urlIn.value = cur.src;
+    say(cur ? (cur.kind === "file" ? "Using your file: " + (cur.name || "sound") : "Using your link") : "");
+    layout();
+    kind.onchange = async () => {
+      layout();
+      if (kind.value === "default") { await sndSave(key, null); say("Back to the default sound."); }
+      else if (kind.value === "file") { say("Choose an audio file (MP3, WAV, OGG, M4A/AAC or WebM, up to 1 MB)."); fileIn.click(); }
+      else { say("Paste a direct link to an audio file, then press Enter."); urlIn.focus(); }
+    };
+    fileIn.onchange = async () => {
+      const f = fileIn.files && fileIn.files[0];
+      fileIn.value = "";
+      if (!f) return;
+      if (f.size > SND_MAX_BYTES) { say("That file is " + (f.size / 1048576).toFixed(1) + " MB - please use one under 1 MB (trim it to a few seconds).", true); return; }
+      if (!SND_EXT.test(f.name) && !/^audio\//.test(f.type)) { say("That isn't a supported audio file. Use MP3, WAV, OGG, M4A/AAC or WebM.", true); return; }
+      const dataUrl = await new Promise((res, rej) => { const r = new FileReader(); r.onload = () => res(r.result); r.onerror = () => rej(r.error); r.readAsDataURL(f); });
+      try {
+        const a = await sndTest(dataUrl);
+        await sndSave(key, { kind: "file", src: dataUrl, name: f.name });
+        say("Saved \u2713 Using your file: " + f.name);
+        a.play().catch(() => {});
+      } catch (e) { say("Couldn't use that file: " + e.message + ".", true); }
+    };
+    const saveUrl = async () => {
+      const u = urlIn.value.trim();
+      if (!u) return;
+      if (!/^https:\/\//i.test(u)) { say("Use a secure https:// link.", true); return; }
+      if (/youtube\.com|youtu\.be|drive\.google\.com|spotify\.com|soundcloud\.com/i.test(u)) { say("That's a web page, not an audio file. Use a link that opens the sound file itself (e.g. ending in .mp3).", true); return; }
+      say("Checking the link\u2026");
+      try {
+        const a = await sndTest(u);
+        await sndSave(key, { kind: "url", src: u, name: u });
+        say("Saved \u2713 Using your link.");
+        a.play().catch(() => {});
+      } catch (e) { say("Couldn't use that link: " + e.message + ".", true); }
+    };
+    urlIn.onkeydown = (e) => { if (e.key === "Enter") { e.preventDefault(); saveUrl(); } };
+    urlIn.onchange = saveUrl;
+    play.onclick = async () => {
+      const now = (await sndGetAll())[key];
+      if (now && now.src) { const a = new Audio(now.src); a.play().catch(() => say("Couldn't play it right now.", true)); }
+      else send({ type: "PLAY_TEST_SOUND", sound: key === "notify" ? undefined : key }).catch(() => {});
+    };
+  });
+}
+initSoundRows();
+
+// ---------- Agent Router visibility ----------
+// settings.showAgentRouter: true / false; unset = show only if accounts exist
+// (new users don't see it; existing Agent Router users keep it).
+function arVisible(st) {
+  const v = st && st.settings ? st.settings.showAgentRouter : undefined;
+  if (v === true || v === false) return v;
+  return !!(st && Array.isArray(st.accounts) && st.accounts.length);
+}
+function applyArVisibility(st) {
+  document.body.classList.toggle("no-ar", !arVisible(st));
+  if (!arVisible(st) && document.querySelector('.panel.on[data-panel="agent"]') && typeof showOptTab === "function") showOptTab("dashboard");
+}
+
+if ($("showAgentRouter")) $("showAgentRouter").onchange = async () => {
+  const on = $("showAgentRouter").checked;
+  try { await send({ type: "SET_SETTINGS", patch: { showAgentRouter: on } }); } catch (e) {}
+  document.body.classList.toggle("no-ar", !on);
+  if (!on && document.querySelector('.panel.on[data-panel="agent"]') && typeof showOptTab === "function") showOptTab("dashboard");
+  if (typeof refreshStatusStrip === "function") refreshStatusStrip(0);
+};

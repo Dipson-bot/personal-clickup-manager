@@ -2145,19 +2145,27 @@ async function playNotificationSound(force, sound) {
     // this (see notify) also keeps the service worker alive long enough for a
     // cold-start create + play to finish - the reason the chime used to be
     // dropped on some notifications.
+    // The user's own sound for this slot, if they set one (Options > General).
+    let src = "";
+    try {
+      const { customSounds } = await chrome.storage.local.get("customSounds");
+      const key = sound === "danger" ? "danger" : sound === "winner" ? "winner" : "notify";
+      const c = customSounds && customSounds[key];
+      if (c && typeof c.src === "string") src = c.src;
+    } catch (e) {}
     for (let attempt = 0; attempt < 6; attempt++) {
-      const ok = await sendPlaySound(sound, nonce);
+      const ok = await sendPlaySound(sound, nonce, src);
       if (ok) return;
       await new Promise((r) => setTimeout(r, 70));
     }
   } catch (e) {}
 }
 // One PLAY_SOUND round-trip. Resolves true only if the offscreen doc acked.
-function sendPlaySound(sound, nonce) {
+function sendPlaySound(sound, nonce, src) {
   return new Promise((resolve) => {
     try {
       chrome.runtime.sendMessage(
-        { type: "PLAY_SOUND", target: "offscreen", sound: sound || "notify", nonce },
+        { type: "PLAY_SOUND", target: "offscreen", sound: sound || "notify", nonce, src: src || "" },
         (resp) => {
           if (chrome.runtime.lastError) { resolve(false); return; }
           resolve(!!(resp && resp.ok));
@@ -3477,9 +3485,10 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
           if (cur) await stopTimer(cfg.token, cfg.teamId).catch(() => {});
           for (const rid of toRevert) await setTaskStatus(cfg.token, rid, "to do").catch(() => {});
 
-          // Set this task to "in progress" and start its timer
+          // Set this task to "in progress" and start its timer (with the optional
+          // Custom note / "Meeting" description from the Extra Task controls).
           await setTaskStatus(cfg.token, taskId, "in progress").catch(() => {});
-          await startTimer(cfg.token, cfg.teamId, taskId);
+          await startTimer(cfg.token, cfg.teamId, taskId, msg.description);
 
           await setClickupState({ ...st, activeTaskId: taskId });
           clearFilterCache();

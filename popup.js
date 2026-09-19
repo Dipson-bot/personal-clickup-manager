@@ -1807,6 +1807,32 @@ function renderNowTracking() {
   el.append(dot, lab, nm, time, stop);
 }
 
+
+// ---------- Extra Task mode: Custom (optional note) / Meeting ----------
+// The choice becomes the time entry's description in ClickUp. The controls are
+// hidden while the Extra Task itself is being tracked.
+function extraModeDescription() {
+  const m = document.querySelector('input[name="cuXModeRadio"]:checked');
+  if (m && m.value === "meeting") return "Meeting";
+  const n = document.getElementById("cuXNote");
+  return n ? n.value.trim() : "";
+}
+function showExtraMode(on) {
+  const box = document.getElementById("cuXMode");
+  if (box) box.style.display = on ? "" : "none";
+}
+function resetExtraMode() {
+  const c = document.querySelector('input[name="cuXModeRadio"][value="custom"]');
+  if (c) c.checked = true;
+  const n = document.getElementById("cuXNote");
+  if (n) { n.value = ""; n.disabled = false; }
+}
+document.addEventListener("change", (e) => {
+  if (!e.target || e.target.name !== "cuXModeRadio") return;
+  const n = document.getElementById("cuXNote");
+  if (n) n.disabled = e.target.value === "meeting";
+});
+
 function renderClickupTimer(st) {
   const row = $("cuTimerRow");
   const btn = $("cuTimerBtn");
@@ -1825,6 +1851,7 @@ function renderClickupTimer(st) {
     return;
   }
   const onExtra = running && String(running.taskId) === String(extra.id);
+  showExtraMode(!onExtra);
   btn.disabled = cuTimerBusy;
   if (onExtra) {
     btn.textContent = cuTimerBusy ? "…" : "⏸ Stop";
@@ -1850,7 +1877,9 @@ async function toggleExtraTimer(action) {
   if (btn) { btn.disabled = true; btn.textContent = "…"; }
   try {
     const type = action === "stop" ? "CLICKUP_STOP_TIMER" : "CLICKUP_START_TIMER";
-    const res = await send({ type }, 20000);
+    const description = action === "stop" ? undefined : extraModeDescription();
+    const res = await send({ type, description }, 20000);
+    if (res && res.ok !== false && action !== "stop") resetExtraMode();
     cuTimerBusy = false;
     if (!res || res.ok === false) {
       const reason = res && res.reason;
@@ -2099,6 +2128,7 @@ function render() {
 async function load() {
   const s = await send({ type: "GET_STATE" });
   if (s) state = s;
+  applyArVisibility(state);
   render();
 }
 
@@ -2469,3 +2499,15 @@ send({ type: "CLICKUP_REFRESH", forceWeekly: true }).catch(() => {});
     document.body.insertBefore(bar, document.body.firstChild);
   } catch (e) {}
 })();
+
+// ---------- Agent Router visibility ----------
+// settings.showAgentRouter: true / false; unset = show only if accounts exist
+// (new users don't see it; existing Agent Router users keep it).
+function arVisible(st) {
+  const v = st && st.settings ? st.settings.showAgentRouter : undefined;
+  if (v === true || v === false) return v;
+  return !!(st && Array.isArray(st.accounts) && st.accounts.length);
+}
+function applyArVisibility(st) {
+  document.body.classList.toggle("no-ar", !arVisible(st));
+}

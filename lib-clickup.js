@@ -709,8 +709,11 @@ export async function getCurrentTimeEntry(token, teamId) {
 // Start a timer on `taskId` for the token owner. ClickUp rejects this with an
 // error if a timer is already running (even on a different task), so callers
 // that want to switch tasks should stopTimer() first. Returns the started entry.
-export async function startTimer(token, teamId, taskId) {
-  const j = await cuPost(token, "/team/" + teamId + "/time_entries/start", { tid: String(taskId) });
+export async function startTimer(token, teamId, taskId, description) {
+  // Optional description shows on the time entry in ClickUp (e.g. "Meeting").
+  const body = { tid: String(taskId) };
+  if (description && String(description).trim()) body.description = String(description).trim().slice(0, 500);
+  const j = await cuPost(token, "/team/" + teamId + "/time_entries/start", body);
   return (j && j.data) || null;
 }
 

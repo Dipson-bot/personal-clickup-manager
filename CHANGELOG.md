@@ -1,6 +1,9 @@
 # Changelog
 
 ## v3.4.0
+- **Start Extra Task: Custom or Meeting.** Pick "Meeting" for a one-click meeting timer, or "Custom" with an optional note; it's saved as the time entry's description in ClickUp.
+- **Your own notification sounds** (Options > General > Notifications and sound): a file (MP3, WAV, OGG, M4A/AAC, WebM, up to 1 MB) or a direct link, for each of the three sounds, with preview; falls back to the default if it can't play.
+- **Agent Router is optional**: hidden unless you turn it on (Options > General > Features); existing users with accounts keep seeing it.
 - **"Waiting on others"**: a task whose part is done by you but has a subtask assigned to someone else that's still open gets an amber "Waiting: Name" chip; it turns red "Blocked: Name late" once that subtask is overdue. Hover for details, click to open the blocking subtask in ClickUp. New "Waiting on others" filter in the Filter menu.
 - **"Tracking now" strip** above the task list while a timer runs: task name, live time and a Stop button (hidden when nothing is running).
 - Fixed subtask lookup (the old request returned unrelated tasks), which also powers the "subtasks of due-today tasks" list.

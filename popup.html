@@ -359,6 +359,15 @@
   .cu-now-time { flex: none; font-variant-numeric: tabular-nums; color: var(--green); font-weight: 700; }
   .cu-now-stop { flex: none; font-size: 11px; font-weight: 700; padding: 3px 9px; border-radius: 6px; border: 0; background: var(--red); color: #fff; cursor: pointer; }
   .cu-now-stop:disabled { opacity: .6; cursor: default; }
+
+  /* Extra Task mode: Custom (note) / Meeting */
+  .xmode { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin: 6px 0 2px; font-size: 11.5px; }
+  .xmode label { display: inline-flex; align-items: center; gap: 4px; margin: 0; font-weight: 600; cursor: pointer; }
+  .xmode input[type="radio"] { width: auto; margin: 0; accent-color: var(--indigo); }
+  .xmode input[type="text"] { flex: 1 1 160px; min-width: 120px; width: auto; padding: 4px 8px; font-size: inherit; border: 1px solid var(--border); border-radius: 7px; background: var(--card); color: var(--text); }
+  .xmode input[type="text"]:disabled { opacity: .45; }
+
+  body.no-ar #accountsCard { display: none; }
 </style>
 </head>
 <body>
@@ -431,6 +440,11 @@
       <div class="cu-timer" id="cuTimerRow" style="display:none;">
         <button class="cu-timer-btn" id="cuTimerBtn">▶ Start Extra Task</button>
         <span class="cu-timer-hint" id="cuTimerHint"></span>
+      </div>
+      <div class="xmode" id="cuXMode">
+        <label><input type="radio" name="cuXModeRadio" value="custom" checked /> Custom</label>
+        <label><input type="radio" name="cuXModeRadio" value="meeting" /> Meeting</label>
+        <input type="text" id="cuXNote" maxlength="200" placeholder="What's it for? (optional)" />
       </div>
       <div id="cuNow" class="cu-now" hidden></div>
       <div id="cuTaskList" class="cu-tasklist" style="display:none;"></div>
