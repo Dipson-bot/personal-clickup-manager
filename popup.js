@@ -2370,15 +2370,12 @@ send({ type: "CLICKUP_REFRESH", forceWeekly: true }).catch(() => {});
     bar.id = "updateBanner";
     bar.className = "update-banner";
     bar.href = ui.url; bar.target = "_blank"; bar.rel = "noopener";
-    bar.textContent = "Update available: v" + ui.latest + " (you have v" + ui.current + ") - click to download";
+    bar.textContent = "Update available: v" + ui.latest + " (you have v" + ui.current + ") - click to update";
     // One click downloads the zip; Ctrl/middle-click still opens the release page.
     bar.addEventListener("click", (e) => {
       if (e.ctrlKey || e.metaKey || e.button === 1) return;
       e.preventDefault();
-      send({ type: "DOWNLOAD_UPDATE" }).then((r) => {
-        bar.textContent = r && r.ok ? "Downloading v" + ui.latest + "… unzip it over the extension folder, then reload it" : "Couldn't download - opening the release page";
-        if (!r || !r.ok) chrome.tabs.create({ url: ui.url });
-      }).catch(() => chrome.tabs.create({ url: ui.url }));
+      chrome.tabs.create({ url: chrome.runtime.getURL("update.html") });
     });
     document.body.insertBefore(bar, document.body.firstChild);
   } catch (e) {}

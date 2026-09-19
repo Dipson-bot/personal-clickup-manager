@@ -1,8 +1,10 @@
 # Changelog
 
 ## v3.3.0
-- Update notifications now have a **Download** button: the new version's zip goes straight to your Downloads folder, then a follow-up notification reloads the extension once you've unzipped it.
-- Options → General: **Download update** and **Reload extension** buttons; the popup's update banner downloads in one click.
+- **One-click updates.** Choose the extension's folder once (offered right after install, or in Options → General → *One-click updates…*); after that every update is **Update now → Install**: the extension downloads the new version, replaces its own files and restarts, keeping all your settings.
+- Safe by design: before writing anything it proves the chosen folder is the one Chrome is running (so a moved or copied folder is detected and you're asked for the new one), checks the package is the right version of this extension, and restores the previous files if anything fails.
+- Update notifications stay available (re-shown after "What's new", daily reminder until installed) and confirm "Updated to vX" after restarting.
+- Manual route still available: "Download the zip instead" on the update page.
 
 ## v3.2.0 — first GitHub release
 - Options page redesigned: sidebar with Dashboard, ClickUp setup, Agent Router, Site monitor, General; status strip.

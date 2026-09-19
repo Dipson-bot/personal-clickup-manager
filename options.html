@@ -1181,12 +1181,13 @@
     <h2>Version and updates</h2>
     <p class="hint" id="versionLine" style="margin:0 0 10px;line-height:1.5;">Checking…</p>
     <p class="hint" style="margin:0 0 10px;line-height:1.5;">New versions are published as GitHub Releases. When one is out you get a
-      notification with a <b>Download</b> button and an "Update available" chip at the top of this page.
-      To update: download the zip, unzip it over this extension's folder (replace the files), then click
-      <b>Reload extension</b> below (or the reload notification). Your accounts and settings are kept.</p>
+      notification with an <b>Update now</b> button and an "Update available" chip at the top of this page.
+      <b>One-click updates:</b> choose this extension's folder once (<i>One-click updates…</i>); after that each
+      update is <b>Update now → Install</b>. Your accounts and settings are kept.</p>
     <div class="btns">
       <button type="button" id="checkUpdateBtn">Check for updates</button>
-      <button type="button" class="primary" id="downloadUpdateBtn" style="display:none;">Download update</button>
+      <button type="button" class="primary" id="downloadUpdateBtn" style="display:none;">Update now</button>
+      <button type="button" id="setupUpdatesBtn">One-click updates…</button>
       <button type="button" id="reloadExtBtn" title="After unzipping a new version over this extension's folder">Reload extension</button>
       <span class="saved" id="updateMsg" style="display:none;"></span>
     </div>

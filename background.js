@@ -2428,10 +2428,10 @@ async function showUpdateNotification(info) {
       type: "basic",
       iconUrl: chrome.runtime.getURL("icons/icon128.png"),
       title: "Update available: v" + info.latest,
-      message: "You have v" + info.current + ". Download the new version in one click.",
+      message: "You have v" + info.current + ". Click Update now to install it.",
       priority: 2,
       requireInteraction: true,
-      buttons: [{ title: "Download v" + info.latest }, { title: "What's new" }],
+      buttons: [{ title: "Update now" }, { title: "What's new" }],
     });
   } catch (e) {}
   await playNotificationSound(false).catch(() => {});
@@ -2453,6 +2453,12 @@ async function confirmUpdateApplied() {
       message: "Right-click personal-clickup-manager-v" + d.version + ".zip in Downloads > Extract All > pick THIS extension’s folder (chrome://extensions > Details > Source) > Replace files. Then click here to reload.",
       buttons: [{ title: "Reload extension now" }, { title: "Show the zip" }] });
   }
+}
+
+// The one-click updater page (update.html). setup=true opens the first-run
+// "choose this extension's folder" step.
+function openUpdater(setup) {
+  chrome.tabs.create({ url: chrome.runtime.getURL("update.html" + (setup ? "?setup=1" : "")) }).catch(() => {});
 }
 
 // Download the release zip straight into the Downloads folder.
@@ -2494,7 +2500,7 @@ chrome.notifications.onButtonClicked.addListener((id, btn) => {
   (async () => {
     if (id.startsWith("update-available-")) {
       chrome.notifications.clear(id).catch(() => {});
-      if (btn === 0) await downloadUpdate();
+      if (btn === 0) openUpdater();
       else {
         const { updateInfo: ui } = await chrome.storage.local.get("updateInfo");
         if (ui && ui.url) chrome.tabs.create({ url: ui.url }).catch(() => {});
@@ -2711,7 +2717,9 @@ async function notifyAgentRouterQuota() {
   await maybeNotifyQuotaCredit();
 }
 
-chrome.runtime.onInstalled.addListener(() => {
+chrome.runtime.onInstalled.addListener((details) => {
+  // Brand-new install: offer one-click update setup while the folder is fresh in mind.
+  if (details && details.reason === "install") openUpdater(true);
   // After a reload: confirm a downloaded update actually got installed, then
   // refresh update info (no "Update available" pop-up on a plain reload).
   confirmUpdateApplied().catch(() => {}).finally(() => checkForUpdate(true, false).catch(() => {}));
@@ -2786,10 +2794,8 @@ chrome.notifications.onClicked.addListener((id) => {
     if (id === "update-downloaded" || id === "update-pending") { chrome.runtime.reload(); return; }
     if (id === "update-applied") { chrome.notifications.clear(id).catch(() => {}); return; }
     if (id.startsWith("update-available-")) {
-      const { updateInfo: ui } = await chrome.storage.local.get("updateInfo");
-      if (ui && ui.url) chrome.tabs.create({ url: ui.url }).catch(() => {});
       chrome.notifications.clear(id).catch(() => {});
-      if (ui && ui.newer) setTimeout(() => showUpdateNotification(ui).catch(() => {}), 1500);
+      openUpdater();
       return;
     }
     let url = notifTargetUrls.get(id);
@@ -2824,6 +2830,11 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         const clickup = await clickupPublic();
         const { driveLastSync } = await chrome.storage.local.get("driveLastSync");
         sendResponse({ accounts, status, balances, availability, settings, signedIn, clickup, running: isRunning, driveBusy, driveLastSync: driveLastSync || null, today: todayString(), resetHours: RESET_HOURS, now: Date.now() });
+        break;
+      }
+      case "OPEN_UPDATER": {
+        openUpdater(!!msg.setup);
+        sendResponse({ ok: true });
         break;
       }
       case "DOWNLOAD_UPDATE": {

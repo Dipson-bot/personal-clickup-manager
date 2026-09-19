@@ -4048,7 +4048,7 @@ function refreshStatusStrip(delay) {
     }
     try {
       const { updateInfo: ui } = await chrome.storage.local.get("updateInfo");
-      if (ui && ui.newer) chips.unshift({ href: ui.url, cls: "warn", text: "Update available: v" + ui.latest });
+      if (ui && ui.newer) chips.unshift({ href: chrome.runtime.getURL("update.html"), cls: "warn", text: "Update available: v" + ui.latest });
     } catch (e) {}
     el.innerHTML = "";
     for (const c of chips) {
@@ -4095,16 +4095,10 @@ async function renderVersionRow() {
   }
   el.appendChild(s);
   const dl = $("downloadUpdateBtn");
-  if (dl) { dl.style.display = ui && ui.newer ? "" : "none"; if (ui && ui.newer) dl.textContent = "Download v" + ui.latest; }
+  if (dl) { dl.style.display = ui && ui.newer ? "" : "none"; if (ui && ui.newer) dl.textContent = "Update to v" + ui.latest; }
 }
-if ($("downloadUpdateBtn")) $("downloadUpdateBtn").onclick = async () => {
-  const m = $("updateMsg");
-  try {
-    const r = await send({ type: "DOWNLOAD_UPDATE" }, 20000);
-    m.textContent = r && r.ok ? (r.openedPage ? "Opened the release page." : "Downloading… unzip it over this extension's folder, then click Reload extension.") : "Couldn't download: " + ((r && r.reason) || "unknown");
-  } catch (e) { m.textContent = "Couldn't download: " + (e && e.message ? e.message : e); }
-  m.style.display = "inline";
-};
+if ($("downloadUpdateBtn")) $("downloadUpdateBtn").onclick = () => { window.open(chrome.runtime.getURL("update.html"), "_blank"); };
+if ($("setupUpdatesBtn")) $("setupUpdatesBtn").onclick = () => { window.open(chrome.runtime.getURL("update.html?setup=1"), "_blank"); };
 if ($("reloadExtBtn")) $("reloadExtBtn").onclick = () => { send({ type: "RELOAD_EXTENSION" }).catch(() => {}); };
 if ($("checkUpdateBtn")) $("checkUpdateBtn").onclick = async () => {
   const b = $("checkUpdateBtn");
