@@ -87,9 +87,10 @@ The extension checks GitHub for new releases about twice a day. When one is out 
 a notification, an **"Update available"** banner in the popup and a chip on the options
 page (Options → General → *Version and updates* also has a **Check for updates** button).
 
-1. Download the new zip from the release.
-2. Unzip it **over the same folder** (replace the files).
-3. In `chrome://extensions`, click the reload icon on the extension.
+1. Click **Download** on the notification (or the popup banner / Options → General). The
+   zip lands in your Downloads folder.
+2. Unzip it **over the same folder** you installed from (replace the files).
+3. Click the **"Reload extension"** notification (or the button in Options → General).
 
 Your accounts, settings and ClickUp connection are stored in the browser, not in the
 folder, so they are kept.

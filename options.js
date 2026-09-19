@@ -4094,7 +4094,18 @@ async function renderVersionRow() {
     s.textContent = "not checked yet";
   }
   el.appendChild(s);
+  const dl = $("downloadUpdateBtn");
+  if (dl) { dl.style.display = ui && ui.newer ? "" : "none"; if (ui && ui.newer) dl.textContent = "Download v" + ui.latest; }
 }
+if ($("downloadUpdateBtn")) $("downloadUpdateBtn").onclick = async () => {
+  const m = $("updateMsg");
+  try {
+    const r = await send({ type: "DOWNLOAD_UPDATE" }, 20000);
+    m.textContent = r && r.ok ? (r.openedPage ? "Opened the release page." : "Downloading… unzip it over this extension's folder, then click Reload extension.") : "Couldn't download: " + ((r && r.reason) || "unknown");
+  } catch (e) { m.textContent = "Couldn't download: " + (e && e.message ? e.message : e); }
+  m.style.display = "inline";
+};
+if ($("reloadExtBtn")) $("reloadExtBtn").onclick = () => { send({ type: "RELOAD_EXTENSION" }).catch(() => {}); };
 if ($("checkUpdateBtn")) $("checkUpdateBtn").onclick = async () => {
   const b = $("checkUpdateBtn");
   b.disabled = true; b.textContent = "Checking…";

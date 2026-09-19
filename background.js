@@ -2396,8 +2396,8 @@ async function checkForUpdate(force) {
     };
     if (info.newer && info.notifiedFor !== latest) {
       info.notifiedFor = latest;
-      await notify("update-available-" + latest, "Update available: v" + latest,
-        "You have v" + current + ". Click to open the release and download the new version.", undefined, info.url);
+      await chrome.storage.local.set({ updateInfo: info });
+      await showUpdateNotification(info);
     }
     await chrome.storage.local.set({ updateInfo: info });
     return { ok: true, ...info };
@@ -2408,6 +2408,73 @@ async function checkForUpdate(force) {
     return { ok: false, reason: info.error };
   }
 }
+
+// Update notification: stays until dismissed; buttons = download / what's new.
+// Button + click targets are read back from storage (updateInfo), because the
+// service worker may have been restarted by the time the user clicks.
+async function showUpdateNotification(info) {
+  try {
+    await chrome.notifications.create("update-available-" + info.latest, {
+      type: "basic",
+      iconUrl: chrome.runtime.getURL("icons/icon128.png"),
+      title: "Update available: v" + info.latest,
+      message: "You have v" + info.current + ". Download the new version in one click.",
+      priority: 2,
+      requireInteraction: true,
+      buttons: [{ title: "Download v" + info.latest }, { title: "What's new" }],
+    });
+  } catch (e) {}
+  await playNotificationSound(false).catch(() => {});
+}
+// Download the release zip straight into the Downloads folder.
+async function downloadUpdate() {
+  const { updateInfo: ui } = await chrome.storage.local.get("updateInfo");
+  if (!ui || !ui.latest) return { ok: false, reason: "no-update" };
+  if (!ui.zip) { await chrome.tabs.create({ url: ui.url }); return { ok: true, openedPage: true }; }
+  const id = await chrome.downloads.download({
+    url: ui.zip,
+    filename: "personal-clickup-manager-v" + ui.latest + ".zip",
+    conflictAction: "overwrite",
+    saveAs: false,
+  });
+  await chrome.storage.local.set({ updateDownload: { id, version: ui.latest, at: Date.now(), done: false } });
+  return { ok: true, downloadId: id };
+}
+// When OUR update zip finishes: show it in the folder + a "click to reload" notification.
+chrome.downloads.onChanged.addListener((delta) => {
+  if (!delta || !delta.state || delta.state.current !== "complete") return;
+  (async () => {
+    const { updateDownload: d } = await chrome.storage.local.get("updateDownload");
+    if (!d || d.id !== delta.id) return;
+    await chrome.storage.local.set({ updateDownload: { ...d, done: true } });
+    try { chrome.downloads.show(delta.id); } catch (e) {}
+    try {
+      await chrome.notifications.create("update-downloaded", {
+        type: "basic",
+        iconUrl: chrome.runtime.getURL("icons/icon128.png"),
+        title: "v" + d.version + " downloaded",
+        message: "Unzip it over your extension folder (replace the files), then click here to reload the extension.",
+        priority: 2,
+        requireInteraction: true,
+        buttons: [{ title: "Reload extension now" }],
+      });
+    } catch (e) {}
+  })().catch(() => {});
+});
+chrome.notifications.onButtonClicked.addListener((id, btn) => {
+  (async () => {
+    if (id.startsWith("update-available-")) {
+      chrome.notifications.clear(id).catch(() => {});
+      if (btn === 0) await downloadUpdate();
+      else {
+        const { updateInfo: ui } = await chrome.storage.local.get("updateInfo");
+        if (ui && ui.url) chrome.tabs.create({ url: ui.url }).catch(() => {});
+      }
+    } else if (id === "update-downloaded") {
+      chrome.runtime.reload(); // picks up the unzipped files
+    }
+  })().catch(() => {});
+});
 
 chrome.runtime.onStartup.addListener(() => {
   checkForUpdate().catch(() => {});
@@ -2680,6 +2747,13 @@ chrome.alarms.onAlarm.addListener(async (alarm) => {
 // Clicking any desktop notification opens the relevant task or service URL.
 chrome.notifications.onClicked.addListener((id) => {
   (async () => {
+    if (id === "update-downloaded") { chrome.runtime.reload(); return; }
+    if (id.startsWith("update-available-")) {
+      const { updateInfo: ui } = await chrome.storage.local.get("updateInfo");
+      if (ui && ui.url) chrome.tabs.create({ url: ui.url }).catch(() => {});
+      chrome.notifications.clear(id).catch(() => {});
+      return;
+    }
     let url = notifTargetUrls.get(id);
     if (!url) {
       if (id.startsWith("ar-quota-") || id.startsWith("daily-login-")) {
@@ -2712,6 +2786,15 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         const clickup = await clickupPublic();
         const { driveLastSync } = await chrome.storage.local.get("driveLastSync");
         sendResponse({ accounts, status, balances, availability, settings, signedIn, clickup, running: isRunning, driveBusy, driveLastSync: driveLastSync || null, today: todayString(), resetHours: RESET_HOURS, now: Date.now() });
+        break;
+      }
+      case "DOWNLOAD_UPDATE": {
+        try { sendResponse(await downloadUpdate()); } catch (e) { sendResponse({ ok: false, reason: String(e && e.message ? e.message : e) }); }
+        break;
+      }
+      case "RELOAD_EXTENSION": {
+        sendResponse({ ok: true });
+        setTimeout(() => chrome.runtime.reload(), 150);
         break;
       }
       case "CHECK_UPDATE": {

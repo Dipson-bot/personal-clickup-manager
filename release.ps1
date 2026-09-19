@@ -28,8 +28,15 @@ if (Test-Path $zip) { Remove-Item $zip }
 Compress-Archive -Path $files -DestinationPath $zip
 Write-Host "Built $zip"
 
+# Release notes = only this version's section of CHANGELOG.md ("## v<version>" up to the next "## ").
+$notes = "dist/notes-$tag.md"
+$lines = Get-Content CHANGELOG.md
+$start = ($lines | Select-String -Pattern ("^## " + [regex]::Escape($tag) + "") | Select-Object -First 1).LineNumber
+if (-not $start) { throw "CHANGELOG.md has no ## $tag section - add one first." }
+$section = @(); for ($i = $start; $i -lt $lines.Count; $i++) { if ($lines[$i] -match "^## ") { break }; $section += $lines[$i] }
+$section -join "`n" | Set-Content -Encoding utf8 $notes
 git push
 git tag $tag
 git push origin $tag
-gh release create $tag $zip --title "$tag" --notes-file CHANGELOG.md
+gh release create $tag $zip --title "$tag" --notes-file $notes
 Write-Host "Published $tag - installed copies will see it within ~12 hours."
