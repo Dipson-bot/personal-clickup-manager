@@ -543,6 +543,18 @@
     .cu-tasklist:has(.cu-wait.on) .cu-wait { width: 20px; padding: 1px 3px; background: none; }
     .cu-task .cu-wait .wl { display: none; }
   }
+
+  /* "Tracking now" strip - only while a timer runs */
+  .cu-now { display: flex; align-items: center; gap: 8px; margin: 6px 0 4px; padding: 7px 10px; border-radius: 9px; border: 1px solid rgba(22, 163, 74, 0.35); background: rgba(22, 163, 74, 0.09); font-size: 12.5px; }
+  .cu-now[hidden] { display: none; }
+  .cu-now-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--green); flex: none; animation: cu-now-pulse 1.6s ease-in-out infinite; }
+  @keyframes cu-now-pulse { 50% { opacity: .35; } }
+  .cu-now-lab { color: var(--green); font-weight: 700; flex: none; }
+  .cu-now-name { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text); text-decoration: none; font-weight: 600; }
+  .cu-now-name:hover { text-decoration: underline; }
+  .cu-now-time { flex: none; font-variant-numeric: tabular-nums; color: var(--green); font-weight: 700; }
+  .cu-now-stop { flex: none; font-size: 11px; font-weight: 700; padding: 3px 9px; border-radius: 6px; border: 0; background: var(--red); color: #fff; cursor: pointer; }
+  .cu-now-stop:disabled { opacity: .6; cursor: default; }
 </style>
 </head>
 <body class="tabbed">
@@ -662,6 +674,7 @@
           </div>
         </div>
       </div>
+      <div id="cuNow" class="cu-now" hidden></div>
       <div id="dashTasks" class="dash-tasks"></div>
     </div>
 

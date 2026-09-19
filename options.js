@@ -2691,6 +2691,46 @@ function renderCuPreviewLoading(msg) {
   box.appendChild(wrap);
 }
 
+
+// ---------- "Tracking now" strip ----------
+// Shown above the task list ONLY while a ClickUp timer is running: task name
+// (opens in ClickUp), live elapsed time and a Stop button. Hidden otherwise.
+let cuNowTimer = null;
+function renderNowTracking() {
+  const el = document.getElementById("cuNow");
+  if (!el) return;
+  const st = (optClickup && optClickup.state) || null;
+  const run = st && st.running && st.running.taskId ? st.running : null;
+  clearInterval(cuNowTimer);
+  if (!run) { el.hidden = true; el.innerHTML = ""; return; }
+  el.hidden = false;
+  el.innerHTML = "";
+  const dot = document.createElement("span");
+  dot.className = "cu-now-dot";
+  const lab = document.createElement("span");
+  lab.className = "cu-now-lab";
+  lab.textContent = "Tracking now";
+  const nm = document.createElement("a");
+  nm.className = "cu-now-name";
+  nm.textContent = run.taskName || "(task)";
+  nm.title = run.taskName || "";
+  nm.href = "https://app.clickup.com/t/" + encodeURIComponent(run.taskId);
+  nm.target = "_blank";
+  nm.rel = "noopener";
+  const time = document.createElement("span");
+  time.className = "cu-now-time";
+  const tick = () => { time.textContent = run.startMs ? fmtDurOpt(Math.max(0, Date.now() - run.startMs)) : ""; };
+  tick();
+  cuNowTimer = setInterval(tick, 15000);
+  const stop = document.createElement("button");
+  stop.type = "button";
+  stop.className = "cu-now-stop";
+  stop.textContent = "\u25A0 Stop";
+  stop.title = "Stop the ClickUp timer";
+  stop.onclick = () => { stop.disabled = true; stop.textContent = "\u2026"; sendTaskActionOpt(String(run.taskId), "stop"); };
+  el.append(dot, lab, nm, time, stop);
+}
+
 function renderClickupPreview(st) {
   if (cuEstEditingOpt) { cuRenderPendingOpt = true; return; }
   const box = $("cuPreview");
@@ -2702,6 +2742,7 @@ function renderClickupPreview(st) {
   box.style.display = "block";
   box.innerHTML = "";
   if ($("dashTasks")) $("dashTasks").innerHTML = "";
+  renderNowTracking();
 
   if (st.error) {
     const e = document.createElement("div");

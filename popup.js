@@ -1650,6 +1650,7 @@ function renderClickup() {
 
   const st = cu.state || null;
   renderClickupTimer(st);
+  renderNowTracking();
   // The upper (today) card mirrors the Filter dropdown. The headline estimate +
   // tracked bars follow the WIDEST checked DATE scope (resolveCuFilterView);
   // nothing checked keeps the previous default (extended "active today" =
@@ -1766,6 +1767,46 @@ function renderClickup() {
 // One-click Start/Stop timer for the auto-detected "Extra(s) Task(s)". Reads the
 // live running entry (st.running) vs the detected task (st.extraTask) to decide
 // the label/action. Re-wired each render so the closure always has fresh state.
+
+// ---------- "Tracking now" strip ----------
+// Shown above the task list ONLY while a ClickUp timer is running: task name
+// (opens in ClickUp), live elapsed time and a Stop button. Hidden otherwise.
+let cuNowTimer = null;
+function renderNowTracking() {
+  const el = document.getElementById("cuNow");
+  if (!el) return;
+  const st = (state && state.clickup && state.clickup.state) || null;
+  const run = st && st.running && st.running.taskId ? st.running : null;
+  clearInterval(cuNowTimer);
+  if (!run) { el.hidden = true; el.innerHTML = ""; return; }
+  el.hidden = false;
+  el.innerHTML = "";
+  const dot = document.createElement("span");
+  dot.className = "cu-now-dot";
+  const lab = document.createElement("span");
+  lab.className = "cu-now-lab";
+  lab.textContent = "Tracking now";
+  const nm = document.createElement("a");
+  nm.className = "cu-now-name";
+  nm.textContent = run.taskName || "(task)";
+  nm.title = run.taskName || "";
+  nm.href = "https://app.clickup.com/t/" + encodeURIComponent(run.taskId);
+  nm.target = "_blank";
+  nm.rel = "noopener";
+  const time = document.createElement("span");
+  time.className = "cu-now-time";
+  const tick = () => { time.textContent = run.startMs ? fmtDur(Math.max(0, Date.now() - run.startMs)) : ""; };
+  tick();
+  cuNowTimer = setInterval(tick, 15000);
+  const stop = document.createElement("button");
+  stop.type = "button";
+  stop.className = "cu-now-stop";
+  stop.textContent = "\u25A0 Stop";
+  stop.title = "Stop the ClickUp timer";
+  stop.onclick = () => { stop.disabled = true; stop.textContent = "\u2026"; sendTaskAction(String(run.taskId), "stop"); };
+  el.append(dot, lab, nm, time, stop);
+}
+
 function renderClickupTimer(st) {
   const row = $("cuTimerRow");
   const btn = $("cuTimerBtn");

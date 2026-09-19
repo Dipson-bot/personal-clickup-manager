@@ -361,33 +361,27 @@ export async function getTasksDueToday(token, teamId, userId, now = Date.now()) 
 // people (unassigned subtasks are kept) so someone else's work can't inflate the
 // viewer's day. Returns the raw task objects (time_estimate/time_spent/dates).
 export async function getSubtasksOfParent(token, teamId, parentId, userId) {
-  const out = [];
+  // The team /task endpoint ignores a "parent" filter (it returned hundreds of
+  // unrelated tasks), so ask for the parent task itself WITH its subtasks - the
+  // documented way, one request per parent.
   const uid = userId != null ? String(userId) : null;
-  for (let page = 0; page < MAX_PAGES; page++) {
-    const params = [
-      ["parent", String(parentId)],
-      ["subtasks", "true"],
-      ["include_closed", "true"],
-      ["page", String(page)],
-    ];
-    let tasks = [];
-    let lastPage = false;
-    try {
-      const j = await cuFetch(token, "/team/" + teamId + "/task", params);
-      tasks = Array.isArray(j && j.tasks) ? j.tasks : [];
-      lastPage = j.last_page === true;
-    } catch (e) {
-      break;
+  let j;
+  try {
+    j = await cuFetch(token, "/task/" + encodeURIComponent(String(parentId)), [["include_subtasks", "true"]]);
+  } catch (e) {
+    if (e && e.status === 429) throw e; // let callers back off
+    return [];
+  }
+  const subs = Array.isArray(j && j.subtasks) ? j.subtasks : [];
+  const out = [];
+  for (const t of subs) {
+    if (!t || String(t.id) === String(parentId)) continue;
+    if (t.parent != null && String(t.parent) !== String(parentId)) continue; // direct children only
+    if (uid) {
+      const who = Array.isArray(t.assignees) ? t.assignees : [];
+      if (who.length && !who.some((a) => String(a && a.id) === uid)) continue;
     }
-    for (const t of tasks) {
-      if (String(t.id) === String(parentId)) continue; // the parent may echo back
-      if (uid) {
-        const who = Array.isArray(t.assignees) ? t.assignees : [];
-        if (who.length && !who.some((a) => String(a && a.id) === uid)) continue;
-      }
-      out.push(t);
-    }
-    if (tasks.length < 100 || lastPage) break;
+    out.push(t);
   }
   return out;
 }

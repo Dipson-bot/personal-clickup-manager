@@ -1469,7 +1469,7 @@ async function refreshWaitingInfo() {
     for (const b of [st.todayFilter, st.thisWeek, st.nextWeek, overdueCache && overdueCache.data]) {
       if (b) { collect(b.tasks); collect(b.deadlineTasks); }
     }
-    const { cuWaitCache: cache0 } = await chrome.storage.local.get("cuWaitCache");
+    const { cuWaitCache2: cache0 } = await chrome.storage.local.get("cuWaitCache2");
     const cache = cache0 && typeof cache0 === "object" ? cache0 : {};
     const now = Date.now();
     let fetched = 0;
@@ -1494,7 +1494,8 @@ async function refreshWaitingInfo() {
       await new Promise((r) => setTimeout(r, 200));
     }
     for (const k of Object.keys(cache)) if (!ids.has(k) && now - cache[k].at > 24 * 3600 * 1000) delete cache[k];
-    await chrome.storage.local.set({ cuWaitCache: cache });
+    await chrome.storage.local.set({ cuWaitCache2: cache });
+    chrome.storage.local.remove("cuWaitCache").catch(() => {}); // pre-fix cache (wrong subtasks)
 
     const todayStart = new Date().setHours(0, 0, 0, 0);
     const waiting = {};
