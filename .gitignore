@@ -1,0 +1,15 @@
+# Local / personal - never published
+PROGRESS.md
+ui-backup/
+.claude/
+analyze.js
+region.js
+
+# Build output (release zips are uploaded to GitHub Releases, not committed)
+dist/
+*.zip
+
+# OS / editor noise
+.DS_Store
+Thumbs.db
+*.log

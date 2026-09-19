@@ -1,0 +1,20 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <title>notify sound</title>
+  </head>
+  <body>
+    <!-- Hidden, no-UI page whose only job is to play the notification chime.
+         MV3 service workers have no DOM/Audio, so audio playback lives here and
+         is triggered by a PLAY_SOUND message from background.js. -->
+    <audio id="chime" src="sounds/notify.wav" preload="auto"></audio>
+    <!-- A separate, more urgent alarm for danger events (e.g. a task's tracked
+         time crossing its estimate). -->
+    <audio id="danger" src="sounds/danger.mp3" preload="auto"></audio>
+    <!-- A bright celebration clip for milestone wins (daily estimate / tracked
+         time reaching the day's target). -->
+    <audio id="winner" src="sounds/winner.wav" preload="auto"></audio>
+    <script src="offscreen.js"></script>
+  </body>
+</html>

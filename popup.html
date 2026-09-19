@@ -1,0 +1,568 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8" />
+<style>
+  :root {
+    --indigo: #4f46e5;
+    --indigo-dark: #4338ca;
+    --green: #22c55e;
+    --amber: #f59e0b;
+    --red: #ef4444;
+    --blue: #3b82f6;
+    --gray: #9ca3af;
+    --bg: #f6f7f9;
+    --card: #ffffff;
+    --text: #1f2937;
+    --muted: #6b7280;
+    --border: #e5e7eb;
+    --bg2: #eef2f7;
+    color-scheme: light;
+  }
+  * { box-sizing: border-box; }
+  /* Universal scrollbar: thin + translucent so it blends into the UI and stops
+     obstructing the content beside it (e.g. the est/tracked values in the task
+     list). A styled WebKit scrollbar also reserves its own gutter rather than
+     overlaying, so text never hides under it. Kept identical in popup.html and
+     options.html for one consistent look across the extension.
+       - Firefox: scrollbar-width / scrollbar-color.
+       - Chrome/Edge (Blink): the ::-webkit-scrollbar pseudo-elements.
+     The thumb uses background-color (not the `background` shorthand) so the theme
+     and :hover overrides below don't reset background-clip. */
+  * { scrollbar-width: thin; scrollbar-color: rgba(100, 116, 139, 0.4) transparent; }
+  ::-webkit-scrollbar { width: 10px; height: 10px; }
+  ::-webkit-scrollbar-track { background: transparent; }
+  ::-webkit-scrollbar-thumb {
+    background-color: rgba(100, 116, 139, 0.35);
+    border: 2px solid transparent;
+    border-radius: 999px;
+    background-clip: content-box;
+  }
+  ::-webkit-scrollbar-thumb:hover { background-color: rgba(100, 116, 139, 0.6); }
+  ::-webkit-scrollbar-corner { background: transparent; }
+  html[data-theme="dark"] * { scrollbar-color: rgba(154, 163, 178, 0.4) transparent; }
+  html[data-theme="dark"] ::-webkit-scrollbar-thumb { background-color: rgba(154, 163, 178, 0.32); }
+  html[data-theme="dark"] ::-webkit-scrollbar-thumb:hover { background-color: rgba(154, 163, 178, 0.55); }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    width: fit-content; min-width: 430px; margin: 0; padding: 12px; background: var(--bg); color: var(--text);
+  }
+  .header { display: flex; align-items: center; gap: 8px; margin-bottom: 10px; width: 100%; }
+  .header img { width: 22px; height: 22px; }
+  .header h1 { font-size: 14px; font-weight: 700; margin: 0; flex: 1 1 auto; min-width: 0; }
+  .header-actions { display: flex; align-items: center; gap: 4px; margin-left: auto; flex-shrink: 0; }
+  .gear { border: none; background: none; cursor: pointer; color: var(--muted); font-size: 12px; text-decoration: underline; padding: 2px; }
+  .gear:hover { color: var(--text); }
+  .themeBtn { border: none; background: none; cursor: pointer; font-size: 14px; padding: 2px 4px; line-height: 1; }
+
+  .grid { display: grid; gap: 10px; }
+
+  .card {
+    background: var(--card); border: 1px solid var(--border); border-radius: 11px;
+    padding: 10px 11px;
+  }
+  .card-title {
+    display: flex; align-items: center; gap: 6px;
+    font-size: 11.5px; font-weight: 700; color: var(--muted);
+    text-transform: uppercase; letter-spacing: .04em; margin-bottom: 8px;
+  }
+  .card-title .spacer { flex: 1; }
+  .card-action { border: none; background: none; cursor: pointer; color: var(--muted); font-size: 12px; padding: 0 2px; }
+  .card-action:hover { color: var(--indigo); }
+  .card-action.spin { animation: cu-spin .8s linear infinite; }
+  @keyframes cu-spin { to { transform: rotate(360deg); } }
+
+  /* Collapsible cards (Weekly Totals + Filter Tasks): collapse the whole card
+     body so the space closes, like the security notice's ✕ but the header stays. */
+  .card.collapsed > .card-body { display: none; }
+  .collapse-btn { border: none; background: none; cursor: pointer; color: var(--muted); font-size: 12px; padding: 0 4px; line-height: 1; }
+  .collapse-btn:hover { color: var(--indigo); }
+
+  /* Accounts grid */
+  #list .acct {
+    border: 1px solid var(--border); border-radius: 9px; padding: 8px 9px;
+    display: flex; align-items: flex-start; gap: 8px; margin-bottom: 7px;
+  }
+  .dot { width: 9px; height: 9px; border-radius: 50%; flex-shrink: 0; margin-top: 4px; background: var(--gray); }
+  .dot.done { background: var(--green); }
+  .dot.pending { background: var(--amber); }
+  .dot.attention { background: var(--red); }
+  .dot.running { background: var(--blue); animation: pulse 1s infinite; }
+  @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.3; } }
+  .acct .meta { flex: 1; min-width: 0; }
+  .acct .name { font-size: 12.5px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .acct .stat { font-size: 11px; color: var(--muted); margin-top: 2px; }
+  .acct .stat.attention { color: #b91c1c; }
+  .acct .user { font-size: 10.5px; color: var(--muted); margin-top: 1px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .acct .balance { font-size: 10.5px; color: var(--indigo); font-weight: 600; margin-top: 1px; }
+  .acct .substat { font-size: 10.5px; color: #9ca3af; margin-top: 2px; line-height: 1.3; }
+  .acct .actions { display: flex; flex-direction: column; gap: 4px; align-items: center; flex-shrink: 0; }
+  .runBtn {
+    background: var(--indigo); color: #fff; border: none; border-radius: 7px;
+    padding: 5px 11px; font-size: 12px; font-weight: 600; cursor: pointer;
+    min-width: 54px; height: 28px; transition: background .12s;
+  }
+  .runBtn:hover:not(:disabled) { background: var(--indigo-dark); }
+  .runBtn:disabled { background: var(--gray); cursor: not-allowed; }
+  .iconBtn {
+    background: transparent; border: 1px solid var(--border); border-radius: 7px;
+    width: 28px; height: 28px; cursor: pointer; color: var(--muted);
+    display: flex; align-items: center; justify-content: center;
+    font-size: 13px; transition: all .12s;
+  }
+  .iconBtn:hover { color: var(--red); border-color: var(--red); background: #fef2f2; }
+  .iconBtn.confirm { color: #fff; background: var(--red); border-color: var(--red); }
+  .iconBtn:disabled { opacity: 0.5; cursor: default; }
+  .refreshBalanceBtn { background: transparent; border: none; cursor: pointer; color: var(--muted); font-size: 10px; padding: 0 0 0 4px; }
+  .refreshBalanceBtn:hover { color: var(--indigo); }
+
+  /* Availability chip: can this account actually use Claude right now? */
+  .acct .avail { display: flex; align-items: center; gap: 5px; font-size: 10.5px; margin-top: 2px; flex-wrap: wrap; }
+  .acct .avail .adot { width: 7px; height: 7px; border-radius: 50%; background: var(--gray); flex-shrink: 0; }
+  .acct .avail .adot.ok { background: var(--green); }
+  .acct .avail .adot.blocked { background: var(--red); }
+  .acct .avail .alabel { color: var(--muted); }
+  .acct .avail .alabel.blocked { color: #b91c1c; font-weight: 600; }
+  .acct .avail .abtn { background: transparent; border: none; cursor: pointer; color: var(--indigo); font-size: 10px; padding: 0 2px; text-decoration: underline; }
+  .acct .avail .abtn:hover { color: var(--indigo-dark); }
+  .acct .avail .abtn:disabled { opacity: 0.6; cursor: default; text-decoration: none; }
+
+  .empty { color: var(--muted); font-size: 12.5px; padding: 6px 2px 8px; line-height: 1.5; }
+  button.primary {
+    width: 100%; padding: 9px; margin-top: 4px; font-size: 13px; font-weight: 600;
+    border-radius: 9px; border: none; background: var(--indigo); color: #fff; cursor: pointer;
+  }
+  button.primary:hover { background: var(--indigo-dark); }
+  button.primary:disabled { opacity: 0.6; cursor: default; }
+
+  /* Stats card: big numbers + dual progress bars */
+  .stats-total { font-size: 18px; font-weight: 800; margin: 2px 0 4px; }
+  .stats-total .target { font-size: 12px; font-weight: 600; color: var(--muted); }
+  .bar-label { display: flex; justify-content: space-between; gap: 8px; font-size: 10.5px; font-weight: 700; color: var(--text); }
+  .bar-label .val { color: var(--muted); font-weight: 600; font-variant-numeric: tabular-nums; }
+  .cu-bar { height: 6px; border-radius: 999px; background: var(--border); margin: 3px 0 7px; overflow: hidden; }
+  .cu-fill { height: 100%; width: 0%; background: var(--amber); transition: width .3s; border-radius: 999px; }
+  .cu-fill.met { background: var(--green); }
+  .cu-fill.trk { background: var(--blue); }
+  .cu-fill.trk.met { background: var(--green); }
+  .cu-sub { font-size: 10.5px; color: var(--muted); margin-top: 6px; line-height: 1.45; }
+  .cu-sub.err { color: var(--red); }
+
+  /* Start/Stop Extra Task timer */
+  .cu-timer { display: flex; align-items: center; gap: 8px; margin-top: 8px; flex-wrap: wrap; }
+  .cu-timer-btn {
+    border: none; border-radius: 7px; padding: 5px 11px; font-size: 12px; font-weight: 600;
+    cursor: pointer; background: var(--green); color: #fff; transition: background .12s, opacity .12s;
+  }
+  .cu-timer-btn:hover:not(:disabled) { filter: brightness(0.94); }
+  .cu-timer-btn.stop { background: var(--red); }
+  .cu-timer-btn:disabled { background: var(--gray); cursor: not-allowed; opacity: 0.7; }
+  .cu-timer-hint { font-size: 10.5px; color: var(--muted); flex: 1; min-width: 0; line-height: 1.35; }
+
+  /* Filter card */
+  .flt-row { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
+  .flt-row select, .flt-row input[type="date"] {
+    font-size: 12px; padding: 5px 7px; border: 1px solid var(--border); border-radius: 7px;
+    background: #fff; color: var(--text); flex: 1; min-width: 0;
+  }
+  .flt-row .lbl { font-size: 10.5px; color: var(--muted); font-weight: 600; }
+  .flt-result { margin-top: 8px; border-top: 1px dashed var(--border); padding-top: 6px; }
+
+  /* Weekly card */
+  .week-flex { display: flex; gap: 12px; align-items: center; }
+  .week-num { flex: 1; }
+  .week-num .lbl { font-size: 10.5px; color: var(--muted); font-weight: 600; }
+  .week-num .val { font-size: 16px; font-weight: 700; font-variant-numeric: tabular-nums; }
+  .week-num .val .v2 { font-size: 11px; color: var(--muted); font-weight: 600; }
+  .week-toggle { display: inline-flex; border: 1px solid var(--border); border-radius: 7px; overflow: hidden; }
+  .week-toggle button { background: transparent; border: none; padding: 4px 8px; font-size: 11px; font-weight: 600; cursor: pointer; color: var(--muted); }
+  .week-toggle button + button { border-left: 1px solid var(--border); }
+  .week-toggle button.on { background: var(--indigo); color: #fff; }
+
+  /* Task list */
+  .cu-tasklist { margin-top: 6px; border-top: 1px dashed var(--border); padding-top: 5px; max-height: 200px; overflow-y: auto; overflow-x: hidden; }
+  .cu-task { display: flex; gap: 8px; padding: 3px 0; font-size: 11px; align-items: baseline; }
+  .cu-task.cu-sub { padding-left: 12px; }
+  .cu-task .nm { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text); cursor: pointer; text-decoration: none; }
+  .cu-task .nm:hover { color: var(--indigo); text-decoration: underline; }
+  .cu-task .estpairs { display: inline-flex; gap: 5px; flex-shrink: 0; align-items: baseline; }
+  .cu-task .est { color: var(--muted); font-variant-numeric: tabular-nums; }
+  .cu-task .est.zero { color: var(--amber); }
+  .cu-task .trk { color: var(--green); font-variant-numeric: tabular-nums; font-size: 10.5px; }
+  .cu-task .tick { color: var(--green); font-weight: 700; margin-left: 3px; }
+  /* Per-task action buttons (Start / Stop / Complete). Compact icon buttons so a
+     row fits name + est/tracked + controls without wrapping. */
+  .cu-task .cu-actions { display: inline-flex; gap: 3px; flex-shrink: 0; align-items: center; }
+  .cu-iconbtn {
+    width: 20px; height: 18px; padding: 0; border: 1px solid var(--border); border-radius: 5px;
+    background: var(--card); color: var(--muted); font-size: 10px; line-height: 1; cursor: pointer;
+    display: inline-flex; align-items: center; justify-content: center;
+  }
+  .cu-iconbtn:hover:not(:disabled) { filter: brightness(0.96); }
+  .cu-iconbtn.start { color: #fff; background: var(--indigo); border-color: var(--indigo); }
+  .cu-iconbtn.stop { color: #fff; background: var(--red); border-color: var(--red); }
+  .cu-iconbtn.done { font-weight: 700;color: var(--green); border-color: var(--green); }
+  .cu-iconbtn.done:hover:not(:disabled) { color: #fff; background: var(--green); }
+  .cu-iconbtn:disabled { opacity: 0.55; cursor: not-allowed; }
+  /* Inline per-row message (e.g. the multi-assignee refusal). Spans the row width
+     below the controls so a long reason wraps instead of widening the popup. */
+  .cu-rowmsg { flex-basis: 100%; font-size: 10px; color: var(--amber); line-height: 1.3; margin: 1px 0 2px; }
+  .popup-toast {
+    position: fixed; bottom: 12px; left: 12px; right: 12px;
+    background: #1f2937; color: #fff; font-size: 11px; line-height: 1.4;
+    padding: 8px 12px; border-radius: 6px; box-shadow: 0 4px 12px rgba(0,0,0,0.25);
+    z-index: 9999; opacity: 0; pointer-events: none;
+    transform: translateY(10px); transition: all 0.2s ease-in-out;
+  }
+  .popup-toast.show { opacity: 1; pointer-events: auto; transform: translateY(0); }
+  .popup-toast.warn { background: #92400e; border: 1px solid #f59e0b; color: #fef3c7; }
+  .popup-toast.info { background: #1e3a8a; border: 1px solid #3b82f6; color: #dbeafe; }
+  .cu-rowconfirm { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+  .cu-confirm-btns { display: inline-flex; gap: 4px; }
+  .cu-rowconfirm .cu-iconbtn { font-size: 10px; padding: 1px 7px; width: auto; }
+  .cu-rowconfirm a { color: var(--amber); text-decoration: underline; font-weight: 600; }
+  .cu-dhead { font-size: 10.5px; font-weight: 700; color: var(--muted); margin-top: 6px; padding: 2px 0; }
+  /* Client tag: a small pill tucked right after the (ellipsizing) task name so
+     the row shows which client a task belongs to without opening ClickUp. The
+     name+pill share a flex wrapper - only the name shrinks, the pill stays put. */
+  .cu-task .nmwrap { flex: 1; min-width: 0; display: inline-flex; align-items: baseline; gap: 6px; }
+  .cu-task .nmwrap .nm { flex: 0 1 auto; }
+  .cu-client {
+    flex: 0 0 auto; max-width: 18ch; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    font-size: 9px; font-weight: 700; letter-spacing: 0.02em; line-height: 1.55;
+    padding: 0 6px; border-radius: 999px; border: 1px solid var(--border);
+    background: var(--bg2); color: var(--muted); cursor: default;
+  }
+  /* Due-date chip beside the client pill. The task name is the only part of the
+     row that shrinks (ellipsis), so the client + due chips stay readable. */
+  .cu-due {
+    flex: 0 0 auto; white-space: nowrap; font-size: 9px; font-weight: 700; line-height: 1.55;
+    padding: 0 6px; border-radius: 999px; border: 1px solid var(--border);
+    background: var(--bg2); color: var(--muted); cursor: default; font-variant-numeric: tabular-nums;
+  }
+  .cu-due.today { color: var(--indigo); border-color: var(--indigo); }
+  .cu-due.overdue { color: var(--red); border-color: var(--red); }
+  .cu-task .nmwrap .nm { min-width: 6ch; flex: 1 1 auto; }
+  /* Priority badge (U / H / N / L) before each task name. */
+  .cu-task .cu-prio {
+    flex: 0 0 auto; width: 15px; height: 15px; border-radius: 50%; display: inline-flex; align-items: center; justify-content: center;
+    font-size: 9px; font-weight: 800; line-height: 1; color: #fff; align-self: center; cursor: default;
+  }
+  .cu-task .cu-prio.p-urgent { background: #ef4444; }
+  .cu-task .cu-prio.p-high { background: #f97316; }
+  .cu-task .cu-prio.p-normal { background: #eab308; color: #3f2d00; }
+  .cu-task .cu-prio.p-low { background: #94a3b8; }
+  .cu-task .cu-prio.p-none { visibility: hidden; }
+
+  .cu-task .estpairs { min-width: 4.4em; justify-content: flex-end; }
+  /* Every estimate is click-to-edit (one delegated handler in the page script). */
+  .cu-task .est { cursor: pointer; border-bottom: 1px dotted transparent; }
+  .cu-task .est:hover { border-bottom-color: currentColor; color: var(--indigo); }
+  /* Saved-to-ClickUp, waiting for the recompute: small spinner after the value. */
+  .cu-task .est.syncing::after {
+    content: ""; display: inline-block; width: 8px; height: 8px; margin-left: 5px; vertical-align: -1px;
+    border: 1.5px solid currentColor; border-right-color: transparent; border-radius: 50%;
+    animation: cu-est-spin .7s linear infinite;
+  }
+  .cu-task .est.syncing { color: var(--indigo); }
+  @keyframes cu-est-spin { to { transform: rotate(360deg); } }
+
+  .cu-task .est .est-input {
+    width: 84px; font: inherit; padding: 1px 5px; border: 1px solid var(--indigo); border-radius: 4px;
+    background: var(--card); color: var(--text); outline: none;
+  }
+
+  /* Per-client section header (shown when the Client filter is active): client
+     name on the left, its est/tracked subtotal on the right. */
+  .cu-clienthead { display: flex; align-items: baseline; gap: 8px; }
+  .cu-clienthead .cu-chname { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text); }
+  .cu-clienthead .cu-chsub { flex-shrink: 0; font-weight: 600; color: var(--muted); font-size: 10px; }
+
+  .sync { display: flex; align-items: center; gap: 8px; font-size: 11.5px; color: var(--muted); }
+  .sync .syncdot { width: 7px; height: 7px; border-radius: 50%; background: var(--gray); }
+  .sync .syncdot.on { background: var(--green); }
+  .sync .syncdot.running { background: var(--blue); animation: pulse 1s infinite; }
+  .sync .spacer { flex: 1; }
+  .link { border: none; background: none; color: var(--muted); font-size: 11.5px; padding: 3px; cursor: pointer; text-decoration: underline; }
+  .link:hover { color: var(--text); }
+  .link:disabled { opacity: 0.6; cursor: default; }
+  .footer { display: flex; gap: 6px; margin-top: 8px; }
+  .note { font-size: 11px; color: var(--muted); margin-top: 8px; line-height: 1.45; }
+
+  .cu-setup-text { font-size: 11px; color: var(--muted); margin: 4px 0 6px; line-height: 1.45; }
+
+  /* Quick-filter button + dropdown in the stats-card title (replaces the old
+     "Due today only" toggle). Panel colours come from theme vars incl. --bg2
+     (now defined in both themes) so it stays readable in dark mode. */
+  .cu-filter { position: relative; display: inline-flex; margin-right: 4px; }
+  .cu-filter-btn { display: inline-flex; align-items: center; gap: 4px; font-size: 10.5px; font-weight: 600; color: var(--muted); cursor: pointer; user-select: none; white-space: nowrap; background: none; border: 1px solid var(--border); border-radius: 6px; padding: 2px 7px; line-height: 1.4; }
+  .cu-filter-btn:hover { color: var(--text); background: var(--bg2); }
+  .cu-filter-btn.active { color: var(--indigo); border-color: var(--indigo); }
+  .cu-filter-menu { position: absolute; top: calc(100% + 4px); right: 0; z-index: 50; min-width: 178px; max-width: 260px; max-height: 360px; overflow-y: auto; background: var(--card); color: var(--text); border: 1px solid var(--border); border-radius: 9px; box-shadow: 0 10px 24px rgba(0, 0, 0, 0.18); padding: 5px; }
+  .cu-filter-menu[hidden] { display: none; }
+  .cu-filter-menu label { display: flex; align-items: center; gap: 7px; padding: 5px 7px; font-size: 12px; font-weight: 500; color: var(--text); cursor: pointer; border-radius: 6px; white-space: nowrap; }
+  .cu-filter-menu label:hover { background: var(--bg2); }
+  .cu-filter-menu label span { overflow: hidden; text-overflow: ellipsis; }
+  .cu-filter-menu input { width: auto; margin: 0; cursor: pointer; flex-shrink: 0; }
+  .cu-filter-sep { height: 1px; background: var(--border); margin: 4px 3px; }
+  .cu-filter-group[hidden] { display: none; }
+
+
+  .update-banner { display: block; margin: 0 0 8px; padding: 6px 10px; border-radius: 8px; font-size: 11px; font-weight: 600; text-decoration: none; background: rgba(217,119,6,.13); color: var(--amber); border: 1px solid rgba(217,119,6,.35); }
+  .update-banner:hover { text-decoration: underline; }
+  .cu-filter-dates { display: flex; flex-wrap: wrap; align-items: center; gap: 4px; padding: 0 6px 6px 26px; font-size: 11px; color: var(--muted); }
+  .cu-filter-dates[hidden] { display: none; }
+  .cu-filter-dates input { width: 118px; font: inherit; font-size: 11px; padding: 3px 4px; border: 1px solid var(--border); border-radius: 6px; background: var(--card); color: var(--text); color-scheme: light dark; }
+  .cu-filter-mode { display: flex; gap: 0; margin: 2px 4px 6px; border: 1px solid var(--border); border-radius: 7px; overflow: hidden; }
+  .cu-filter-mode button { flex: 1; border: 0; border-radius: 0; background: transparent; color: var(--muted); font-size: 11px; font-weight: 600; padding: 5px 6px; cursor: pointer; white-space: nowrap; }
+  .cu-filter-mode button + button { border-left: 1px solid var(--border); }
+  .cu-filter-mode button.on { background: var(--indigo); color: #fff; }
+  .cu-filter-h { font-size: 9px; font-weight: 700; letter-spacing: 0.06em; text-transform: uppercase; color: var(--muted); padding: 4px 7px 2px; }
+  html[data-theme="dark"] .cu-filter-menu { box-shadow: 0 10px 24px rgba(0, 0, 0, 0.5); }
+
+  html[data-theme="dark"] {
+    --bg: #0f1115; --card: #181b21; --text: #e8eaed; --muted: #9aa3b2; --border: #2b3038; --bg2: #22262e;
+  }
+  html[data-theme="dark"] .runBtn { background: #22262e; color: var(--text); }
+  html[data-theme="dark"] .runBtn:hover { background: #2b303a; }
+  html[data-theme="dark"] .runBtn:disabled { opacity: 0.5; }
+  html[data-theme="dark"] .iconBtn:hover { background: #2a1416; }
+  html[data-theme="dark"] .flt-row select, html[data-theme="dark"] .flt-row input[type="date"] { background: #0f1115; color: var(--text); border-color: var(--border); }
+  html[data-theme="dark"] .week-toggle button.on { background: var(--indigo); color: #fff; }
+</style>
+</head>
+<body>
+  <div class="header">
+    <img src="icons/icon48.png" alt="" />
+    <h1>Daily Login</h1>
+    <div class="header-actions">
+      <button class="themeBtn" id="themeToggle" title="Toggle dark mode">🌙</button>
+      <button class="gear" id="manage">Manage</button>
+    </div>
+  </div>
+
+  <div class="grid">
+    <!-- Stats card: total estimate + tracked, big numbers + bars -->
+    <div class="card" id="statsCard" style="display:none;">
+      <div class="card-title">
+        <span>Today · Estimate &amp; Tracked</span>
+        <span class="spacer"></span>
+        <div class="cu-filter">
+          <button type="button" class="cu-filter-btn" id="cuFilterBtn" aria-expanded="false" aria-haspopup="true" title="Filter today's estimate &amp; task list">&#9662; Filter</button>
+          <div class="cu-filter-menu" id="cuFilterMenu" hidden role="menu">
+            <div class="cu-filter-mode" role="group" aria-label="Selection mode" title="One at a time: ticking a box replaces the other tick in the same group. Multiple: combine freely.">
+              <button type="button" data-fmode="single">One at a time</button>
+              <button type="button" data-fmode="multi">Multiple</button>
+            </div>
+<div class="cu-filter-group">
+              <div class="cu-filter-h">Due</div>
+              <label title="Only tasks whose DUE DATE is today (same basis as the daily notification)."><input type="checkbox" data-cf="dueToday" /> <span>Due today</span></label>
+              <label title="Tasks due tomorrow (next calendar day)."><input type="checkbox" data-cf="dueTomorrow" /> <span>Due tomorrow</span></label>
+              <label title="Tasks due any day this week (this Sunday through Saturday)."><input type="checkbox" data-cf="dueWeek" /> <span>Due this week</span></label>
+              <label title="Tasks due any day next week (next Sunday through Saturday)."><input type="checkbox" data-cf="dueNextWeek" /> <span>Due next week</span></label>
+              <label title="Pick one day (From only) or a date range (From and To)."><input type="checkbox" data-cf="dueCustom" /> <span>Custom date / range</span></label>
+              <div class="cu-filter-dates" data-cf-dates hidden>
+                <input type="date" data-cf-from aria-label="From date" title="From (or the single day)" />
+                <span>to</span>
+                <input type="date" data-cf-to aria-label="To date (optional)" title="To - leave empty for a single day" />
+              </div>
+            </div>
+            <div class="cu-filter-group" id="cuFilterClientGroup" hidden>
+              <div class="cu-filter-h">Client</div>
+              <div id="cuFilterClientList"></div>
+            </div>
+            <div class="cu-filter-group" id="cuFilterStatusGroup" hidden>
+              <div class="cu-filter-h">Status</div>
+              <div id="cuFilterStatusList"></div>
+            </div>
+            <div class="cu-filter-group" id="cuFilterPriorityGroup" hidden>
+              <div class="cu-filter-h">Priority</div>
+              <div id="cuFilterPriorityList"></div>
+            </div>
+            <div class="cu-filter-sep"></div>
+            <div class="cu-filter-group">
+              <div class="cu-filter-h">Refine</div>
+              <label title="Show only tasks that have no time estimate set."><input type="checkbox" data-cf="missingEst" /> <span>Missing estimate</span></label>
+              <label title="Show only tasks that have no due date set."><input type="checkbox" data-cf="missingDue" /> <span>Missing due date</span></label>
+              <label title="Show only tasks that already have time tracked today."><input type="checkbox" data-cf="hasTracked" /> <span>Has time tracked</span></label>
+              <label title="Every task assigned to you whose due date has passed and whose status isn't complete yet - across ALL dates (overrides the Due selection)."><input type="checkbox" data-cf="deadlineCrossed" /> <span>Deadline crossed</span></label>
+            </div>
+          </div>
+        </div>
+        <button class="card-action" id="cuRefresh" title="Refresh from ClickUp">⟳</button>
+      </div>
+      <div class="stats-total"><span id="cuTotal">-</span> <span class="target" id="cuTarget"></span></div>
+      <div class="bar-label"><span>Estimated Time</span><span class="val" id="cuEstVal"></span></div>
+      <div class="cu-bar"><div class="cu-fill" id="cuFill"></div></div>
+      <div class="bar-label"><span>Tracked Time</span><span class="val" id="cuTrkVal"></span></div>
+      <div class="cu-bar"><div class="cu-fill trk" id="cuFillTrk"></div></div>
+      <div class="cu-sub" id="cuSub"></div>
+      <div class="cu-timer" id="cuTimerRow" style="display:none;">
+        <button class="cu-timer-btn" id="cuTimerBtn">▶ Start Extra Task</button>
+        <span class="cu-timer-hint" id="cuTimerHint"></span>
+      </div>
+      <div id="cuTaskList" class="cu-tasklist" style="display:none;"></div>
+    </div>
+
+    <!-- Filter Tasks card -->
+    <div class="card" id="filterCard" style="display:none;">
+      <div class="card-title"><span>Filter Tasks</span><span class="spacer"></span><button class="collapse-btn" data-collapse="filter" title="Show / hide">▾</button></div>
+      <div class="card-body">
+      <div class="flt-row">
+        <select id="fltType" title="Filter type">
+          <option value="today">Today</option>
+          <option value="week">This Week</option>
+          <option value="custom">Custom date</option>
+        </select>
+      </div>
+      <div class="flt-row" id="fltWeekRow" style="display:none;margin-top:6px;">
+        <select id="fltWeekMode" title="Week mode">
+          <option value="all">All (Mon-Fri)</option>
+          <option value="day">Each day</option>
+        </select>
+        <select id="fltWeekDay" title="Day of week" style="display:none;">
+          <option value="1">Monday</option>
+          <option value="2">Tuesday</option>
+          <option value="3">Wednesday</option>
+          <option value="4">Thursday</option>
+          <option value="5">Friday</option>
+        </select>
+      </div>
+      <div class="flt-row" id="fltCustomRow" style="display:none;margin-top:6px;">
+        <span class="lbl">Start</span>
+        <input type="date" id="fltCustomStart" />
+        <span class="lbl">Due</span>
+        <input type="date" id="fltCustomDue" />
+      </div>
+      <div class="flt-row" style="margin-top:6px;">
+        <label class="lbl" style="display:flex;align-items:center;gap:5px;margin:0;cursor:pointer;font-weight:600;font-size:12px;line-height:1;">
+          <input type="checkbox" id="fltOnlyMissing" style="width:auto;margin:0;vertical-align:middle;" />
+          Only missing estimates
+        </label>
+      </div>
+      <div class="flt-row" style="margin-top:4px;">
+        <label class="lbl" style="display:flex;align-items:center;gap:5px;margin:0;cursor:pointer;font-weight:600;font-size:12px;line-height:1;">
+          <input type="checkbox" id="fltMissingStart" style="width:auto;margin:0;vertical-align:middle;" />
+          Missing start date
+        </label>
+      </div>
+      <div class="flt-row" style="margin-top:4px;">
+        <label class="lbl" style="display:flex;align-items:center;gap:5px;margin:0;cursor:pointer;font-weight:600;font-size:12px;line-height:1;">
+          <input type="checkbox" id="fltMissingDue" style="width:auto;margin:0;vertical-align:middle;" />
+          Missing due date
+        </label>
+      </div>
+      <div class="flt-row" style="margin-top:4px;">
+        <label class="lbl" style="display:flex;align-items:center;gap:5px;margin:0;cursor:pointer;font-weight:600;font-size:12px;line-height:1;">
+          <input type="checkbox" id="fltIncomplete" style="width:auto;margin:0;vertical-align:middle;" />
+          Incomplete (not completed)
+        </label>
+      </div>
+      <div class="flt-row" style="margin-top:4px;">
+        <label class="lbl" style="display:flex;align-items:center;gap:5px;margin:0;cursor:pointer;font-weight:600;font-size:12px;line-height:1;">
+          <input type="checkbox" id="fltOverdue" style="width:auto;margin:0;vertical-align:middle;" />
+          Deadline crossed (incomplete)
+        </label>
+      </div>
+      <div class="flt-row" style="margin-top:4px;">
+        <label class="lbl" style="display:flex;align-items:center;gap:5px;margin:0;cursor:pointer;font-weight:600;font-size:12px;line-height:1;">
+          <input type="checkbox" id="fltSpan" style="width:auto;margin:0;vertical-align:middle;" />
+          Start ≠ due date (extended)
+        </label>
+      </div>
+      <div class="flt-row" style="margin-top:6px;">
+        <label class="lbl" style="display:flex;align-items:center;gap:5px;margin:0;font-weight:600;font-size:12px;line-height:1;">
+          <span style="margin-right:4px;">Department</span>
+          <select id="fltDept" style="max-width:150px;">
+            <option value="">My tasks</option>
+          </select>
+        </label>
+      </div>
+      <div class="flt-row" style="margin-top:4px;display:none;" id="fltDeptUserRow">
+        <label class="lbl" style="display:flex;align-items:center;gap:5px;margin:0;font-weight:600;font-size:12px;line-height:1;">
+          <span style="margin-right:4px;">User</span>
+          <select id="fltDeptUser" style="max-width:150px;">
+            <option value="">Full department</option>
+          </select>
+        </label>
+      </div>
+      <div class="flt-result" id="fltResult" style="display:none;"></div>
+      </div>
+    </div>
+
+    <!-- Weekly totals card -->
+    <div class="card" id="weekCard" style="display:none;">
+      <div class="card-title">
+        <span>Weekly Totals</span>
+        <span class="spacer"></span>
+        <button class="collapse-btn" data-collapse="weekly" title="Show / hide per-day detail">▾</button>
+        <div class="week-toggle" id="weekToggle">
+          <button data-to="today" class="on">To Today</button>
+          <button data-to="friday">To Friday</button>
+        </div>
+      </div>
+      <div class="week-flex">
+        <div class="week-num">
+          <div class="lbl">Estimated</div>
+          <div class="val"><span id="weekEst">-</span> <span class="v2" id="weekEstTarget"></span></div>
+        </div>
+        <div class="week-num">
+          <div class="lbl">Tracked</div>
+          <div class="val"><span id="weekTrk">-</span></div>
+        </div>
+      </div>
+      <div class="cu-sub" id="weekSub"></div>
+      <div class="card-body">
+        <div id="weekList"></div>
+      </div>
+    </div>
+
+    <!-- ClickUp setup card (shown when not configured) -->
+    <div class="card" id="clickupSetup" style="display:none;">
+      <div class="card-title">ClickUp time tracking</div>
+      <div class="cu-setup-text">See your total time estimate and tracked time for today's tasks against your daily goal, right here. Add a ClickUp API token to turn it on.</div>
+      <button class="link" id="cuSetupBtn" style="padding-left:0;">Set up in Manage →</button>
+    </div>
+
+    <!-- Accounts card -->
+    <div class="card" id="accountsCard">
+      <div class="card-title">
+        <span>Accounts</span>
+      </div>
+      <div id="list"><div class="empty">Loading…</div></div>
+      <button class="primary" id="runAll">Run all now</button>
+  <button class="primary" id="stopAll" style="display:none; background: var(--red);">Stop</button>
+      <div id="reminderNote" class="note" style="display:none;">
+        Reminder-only mode: the daily run just opens the login page. Add credentials and switch to Auto-login in Manage.
+      </div>
+    </div>
+
+    <!-- Sync & footer card -->
+    <div class="card" id="syncCard">
+      <div class="card-title">
+        <span>Drive Sync</span>
+        <span class="spacer"></span>
+        <button class="link" id="resetAll" style="font-size:10.5px;">Reset status</button>
+        <button class="link" id="refresh" style="font-size:10.5px;">Refresh</button>
+      </div>
+      <div class="sync">
+        <span class="syncdot" id="syncDot"></span>
+        <span id="syncLabel">Drive sync off</span>
+        <span class="spacer"></span>
+        <button class="link" id="googleBtn">Sign in</button>
+        <button class="link" id="syncNow" style="display:none;">Sync</button>
+      </div>
+      <div class="note" id="lastSyncLine" style="margin-top:4px;display:none;"></div>
+      <div class="note" id="syncHelp" style="margin-top:6px;">
+        Sync mirrors your <b>accounts</b> (usernames, passwords, TOTP) and <b>done/not-done status</b>
+        to your Google Drive. New machines or profiles restore everything automatically -
+        no need to re-enter credentials. <b>Credentials are obfuscated in Drive</b> (same as
+        local storage - anyone with Drive access could recover them). See Manage → Backup &amp; restore
+        for a passphrase-protected export.
+      </div>
+    </div>
+  </div>
+
+  <script src="popup.js"></script>
+</body>
+</html>
