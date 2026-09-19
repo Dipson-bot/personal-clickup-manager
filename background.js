@@ -2374,7 +2374,9 @@ function cmpVersion(a, b) {
   }
   return 0;
 }
-async function checkForUpdate(force) {
+// force: fetch now (ignore the 12h throttle). forceNotify: show the
+// notification even if already shown (only for the user's own "Check for updates").
+async function checkForUpdate(force, forceNotify = false) {
   if (!/^[\w.-]+\/[\w.-]+$/.test(UPDATE_REPO) || UPDATE_REPO === "OWNER/REPO") return { ok: false, reason: "not-configured" };
   const current = chrome.runtime.getManifest().version;
   const { updateInfo: prev } = await chrome.storage.local.get("updateInfo");
@@ -2401,7 +2403,7 @@ async function checkForUpdate(force) {
     const { updateDownload: dl } = await chrome.storage.local.get("updateDownload");
     const downloaded = dl && dl.version === latest;
     const due = info.notifiedFor !== latest || Date.now() - (info.notifiedAt || 0) >= 24 * 3600 * 1000;
-    if (info.newer && (force || (due && !downloaded))) {
+    if (info.newer && (forceNotify || (due && !downloaded))) {
       info.notifiedFor = latest;
       info.notifiedAt = Date.now();
       await chrome.storage.local.set({ updateInfo: info });
@@ -2434,6 +2436,25 @@ async function showUpdateNotification(info) {
   } catch (e) {}
   await playNotificationSound(false).catch(() => {});
 }
+// Runs on every install/reload. If the user downloaded an update, tell them
+// plainly whether it is now installed, or exactly what is still missing.
+async function confirmUpdateApplied() {
+  const { updateDownload: d } = await chrome.storage.local.get("updateDownload");
+  if (!d || !d.done || !d.version) return;
+  const current = chrome.runtime.getManifest().version;
+  const base = { type: "basic", iconUrl: chrome.runtime.getURL("icons/icon128.png"), priority: 2 };
+  if (cmpVersion(current, d.version) >= 0) {
+    await chrome.storage.local.remove("updateDownload");
+    await chrome.notifications.create("update-applied", { ...base,
+      title: "Updated to v" + current + " ✓", message: "The new version is installed. Your settings and accounts were kept." });
+  } else {
+    await chrome.notifications.create("update-pending", { ...base, requireInteraction: true,
+      title: "Update not installed yet (still v" + current + ")",
+      message: "Right-click personal-clickup-manager-v" + d.version + ".zip in Downloads > Extract All > pick THIS extension’s folder (chrome://extensions > Details > Source) > Replace files. Then click here to reload.",
+      buttons: [{ title: "Reload extension now" }, { title: "Show the zip" }] });
+  }
+}
+
 // Download the release zip straight into the Downloads folder.
 async function downloadUpdate() {
   const { updateInfo: ui } = await chrome.storage.local.get("updateInfo");
@@ -2461,7 +2482,7 @@ chrome.downloads.onChanged.addListener((delta) => {
         type: "basic",
         iconUrl: chrome.runtime.getURL("icons/icon128.png"),
         title: "v" + d.version + " downloaded",
-        message: "Unzip it over your extension folder (replace the files), then click here to reload the extension.",
+        message: "Next: right-click the zip > Extract All > choose THIS extension’s folder > Replace the files. THEN click here to reload.",
         priority: 2,
         requireInteraction: true,
         buttons: [{ title: "Reload extension now" }],
@@ -2480,8 +2501,11 @@ chrome.notifications.onButtonClicked.addListener((id, btn) => {
         // Keep the Download button one click away after reading the notes.
         if (ui && ui.newer) setTimeout(() => showUpdateNotification(ui).catch(() => {}), 1500);
       }
-    } else if (id === "update-downloaded") {
+    } else if (id === "update-downloaded" || (id === "update-pending" && btn === 0)) {
       chrome.runtime.reload(); // picks up the unzipped files
+    } else if (id === "update-pending" && btn === 1) {
+      const { updateDownload: d } = await chrome.storage.local.get("updateDownload");
+      if (d && d.id != null) { try { chrome.downloads.show(d.id); } catch (e) {} }
     }
   })().catch(() => {});
 });
@@ -2688,7 +2712,9 @@ async function notifyAgentRouterQuota() {
 }
 
 chrome.runtime.onInstalled.addListener(() => {
-  checkForUpdate(true).catch(() => {}); // re-evaluate right after an update/reload
+  // After a reload: confirm a downloaded update actually got installed, then
+  // refresh update info (no "Update available" pop-up on a plain reload).
+  confirmUpdateApplied().catch(() => {}).finally(() => checkForUpdate(true, false).catch(() => {}));
   ensurePeriodicAlarms();
   updateBadge().catch(() => {});
   autoSyncIfSignedIn();
@@ -2757,7 +2783,8 @@ chrome.alarms.onAlarm.addListener(async (alarm) => {
 // Clicking any desktop notification opens the relevant task or service URL.
 chrome.notifications.onClicked.addListener((id) => {
   (async () => {
-    if (id === "update-downloaded") { chrome.runtime.reload(); return; }
+    if (id === "update-downloaded" || id === "update-pending") { chrome.runtime.reload(); return; }
+    if (id === "update-applied") { chrome.notifications.clear(id).catch(() => {}); return; }
     if (id.startsWith("update-available-")) {
       const { updateInfo: ui } = await chrome.storage.local.get("updateInfo");
       if (ui && ui.url) chrome.tabs.create({ url: ui.url }).catch(() => {});
@@ -2809,7 +2836,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         break;
       }
       case "CHECK_UPDATE": {
-        sendResponse(await checkForUpdate(!!msg.force));
+        sendResponse(await checkForUpdate(!!msg.force, !!msg.force));
         break;
       }
       case "GET_SITE_MONITOR_CONFIG": {
