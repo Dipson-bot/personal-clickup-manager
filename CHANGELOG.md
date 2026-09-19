@@ -1,5 +1,8 @@
 # Changelog
 
+## v3.5.1
+- **Fixed: Agent Router "last credit" not updating.** After a reinstall the extension lost the balance it compares against, so a successful login after the 24-hour window was not recorded as the credit. Now such a login always counts, and records affected by this are repaired automatically.
+
 ## v3.5.0
 - **Side panel.** Click ⇥ in the popup header (or right-click the extension icon > Open side panel) to keep your task list open next to any website. It no longer closes when you click elsewhere.
 - **Away time protection.** Come back after 15+ minutes away from the computer (idle or locked) with a timer still running, and one notification asks: *Remove away time* or *Keep it*. Removing ends the entry when you left and restarts the same task now (same note). Ignoring it keeps the time.

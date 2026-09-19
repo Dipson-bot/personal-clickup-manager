@@ -2571,6 +2571,27 @@ async function clearStaleRunningOnce() {
   } catch (e) {}
 }
 
+async function healUnanchoredCredits() {
+  try {
+    const status = await getStatus();
+    let changed = false;
+    for (const id of Object.keys(status)) {
+      const r = status[id];
+      const doneAt = effectiveDoneAt(r);
+      if (r && r.lastResult === "success" && doneAt > 0 && r.lastRunAt && r.lastRunAt >= doneAt + RESET_MS) {
+        status[id] = { ...r, lastDone: todayString(r.lastRunAt), lastDoneAt: r.lastRunAt, creditSource: "login" };
+        changed = true;
+      }
+    }
+    if (changed) {
+      await chrome.storage.local.set({ status });
+      updateBadge().catch(() => {});
+      mirrorToDrive(status).catch(() => {});
+    }
+  } catch (e) {}
+}
+healUnanchoredCredits();
+
 async function runAccounts(accountsToRun, { active, manual = false }) {
   // Make sure the earning checkpoint from Drive is in place before we stamp any
   // new status, so a post-reinstall Run doesn't look like a first-time login.
@@ -2623,6 +2644,13 @@ async function runAccounts(accountsToRun, { active, manual = false }) {
               if (credit.credited && credit.lastCreditAt) {
                 checkpoint = credit.lastCreditAt;
                 source = "balance";
+              } else if (effectiveDoneAt(prev) > 0) {
+                // The last credit is KNOWN and 24h+ old, so by Agent Router's rule
+                // this login is the credit - even when the balance can't show a
+                // rise (baseline lost after a reinstall, or read after the credit
+                // already landed). Unknown history keeps the baseline-only path.
+                checkpoint = Date.now();
+                source = "login";
               }
               // First balance ever seen (no baseline): just plant it. Treating it
               // as a credit mis-anchored a manual run made inside the real window.
