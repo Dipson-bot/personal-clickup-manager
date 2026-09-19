@@ -31,7 +31,7 @@ Write-Host "Built $zip"
 # Release notes = only this version's section of CHANGELOG.md ("## v<version>" up to the next "## ").
 $notes = "dist/notes-$tag.md"
 $lines = Get-Content CHANGELOG.md
-$start = ($lines | Select-String -Pattern ("^## " + [regex]::Escape($tag) + "") | Select-Object -First 1).LineNumber
+$start = ($lines | Select-String -Pattern ("^## " + [regex]::Escape($tag) + "(\s|$)") | Select-Object -First 1).LineNumber
 if (-not $start) { throw "CHANGELOG.md has no ## $tag section - add one first." }
 $section = @(); for ($i = $start; $i -lt $lines.Count; $i++) { if ($lines[$i] -match "^## ") { break }; $section += $lines[$i] }
 $section -join "`n" | Set-Content -Encoding utf8 $notes
