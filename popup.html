@@ -11,12 +11,12 @@
     --red: #ef4444;
     --blue: #3b82f6;
     --gray: #9ca3af;
-    --bg: #f6f7f9;
-    --card: #ffffff;
+    --bg: #e9ecf1;
+    --card: #f7f8fa;
     --text: #1f2937;
     --muted: #6b7280;
-    --border: #e5e7eb;
-    --bg2: #eef2f7;
+    --border: #dadfe6;
+    --bg2: #e3e7ee;
     color-scheme: light;
   }
   * { box-sizing: border-box; }
@@ -58,7 +58,7 @@
   .header-actions { display: flex; align-items: center; gap: 4px; margin-left: auto; flex-shrink: 0; }
   .gear { border: none; background: none; cursor: pointer; color: var(--muted); font-size: 12px; text-decoration: underline; padding: 2px; }
   .gear:hover { color: var(--text); }
-  .themeBtn { border: none; background: none; cursor: pointer; font-size: 14px; padding: 2px 4px; line-height: 1; }
+  .themeBtn { border: none; background: none; cursor: pointer; font-size: 14px; padding: 2px 4px; line-height: 1; color: var(--text); }
 
   .grid { display: grid; gap: 10px; }
 
@@ -382,6 +382,7 @@
     <div class="header-actions">
       <button class="themeBtn" id="wrapBtn" title="Wrap up the day: move leftovers to tomorrow, copy your standup" hidden>📋</button>
       <button class="themeBtn" id="panelBtn" title="Keep it open in the side panel">⇥</button>
+      <button class="themeBtn" id="sideBtn" title="Show this panel on the left or right (opens Chrome's setting)" hidden>⇄</button>
       <button class="themeBtn" id="themeToggle" title="Toggle dark mode">🌙</button>
       <button class="gear" id="manage">Manage</button>
     </div>
@@ -616,6 +617,7 @@
     </div>
   </div>
 
+  <script src="notify-menu.js"></script>
   <script src="popup.js"></script>
 </body>
 </html>

@@ -5,6 +5,9 @@
 - **Away time protection.** Come back after 15+ minutes away from the computer (idle or locked) with a timer still running, and one notification asks: *Remove away time* or *Keep it*. Removing ends the entry when you left and restarts the same task now (same note). Ignoring it keeps the time.
 - **Smarter "not tracking" reminder.** It stays quiet while you are away from the computer, and has a *▶ Start* button for your most important open task due today.
 - **End-of-day wrap-up** (weekdays, default 16:45). One notification opens a small page with tracked vs target, today's open tasks with a one-click *→ Tomorrow* (Fridays: → Mon, same time of day), and a Slack-ready standup (Done / Next / Blocked) you can edit and copy. A 📋 button in the popup opens it after that time.
+- **Notification bell 🔔** next to the dark/light button (popup, side panel, options): turn all notifications off, **Pause 1 hour** (lunch, meetings; resumes by itself), or switch single reminders on/off. Shows 🔕 while muted or paused.
+- **Softer light mode:** grey-tinted background and cards instead of pure white.
+- In the side panel, **⇄** opens Chrome's setting to show the panel on the left or right.
 - New settings under Options > ClickUp setup > Settings: away minutes, wrap-up on/off and time, plus an *Open now* link.
 
 ## v3.4.0

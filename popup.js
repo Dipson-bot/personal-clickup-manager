@@ -159,6 +159,12 @@ function initHeaderExtras() {
     chrome.tabs.create({ url: chrome.runtime.getURL("wrapup.html") }).catch(() => {});
     if (!IN_PANEL) window.close();
   };
+  const side = $("sideBtn");
+  if (side && IN_PANEL) {
+    side.hidden = false;
+    // Chrome decides left/right for every extension's panel (Settings > Appearance).
+    side.onclick = () => chrome.tabs.create({ url: "chrome://settings/appearance" }).catch(() => {});
+  }
   const b = $("panelBtn");
   if (!b) return;
   if (IN_PANEL || !chrome.sidePanel || !chrome.sidePanel.open) { b.hidden = true; return; }

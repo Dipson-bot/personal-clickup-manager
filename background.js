@@ -220,6 +220,9 @@ const DEFAULT_SETTINGS = {
   arCloseTabs: true, // close each Agent Router tab after a successful login (manual runs too)
   notify: true,
   notifySound: true, // play a chime when any notification/reminder pops up
+  // Bell menu (popup/panel/options): master switch + "Pause 1 hour" (lunch).
+  notifyAll: true,
+  notifyPausedUntil: 0, // ms timestamp; reminders stay silent until then
   // ---- ClickUp "estimate due today" tracker (all opt-in; off until a token is saved) ----
   clickupTargetHours: 7, // daily goal to compare the summed estimate against
   clickupBadge: true, // tint the toolbar badge by ClickUp progress (login "needs you" still wins)
@@ -2369,6 +2372,11 @@ const notifTargetUrls = new Map();
 // `sound` = "danger" for the urgent alarm, "winner" for a milestone celebration,
 // or omitted for the default chime. `targetUrl` = optional link to open on click.
 async function notify(id, title, message, sound, targetUrl, opts) {
+  // Bell menu: everything off, or paused (e.g. lunch). Update notices don't use notify().
+  try {
+    const ms = await getSettings();
+    if (ms.notifyAll === false || Number(ms.notifyPausedUntil) > Date.now()) return;
+  } catch (e) {}
   if (targetUrl) {
     notifTargetUrls.set(id, targetUrl);
   } else if (id.startsWith("clickup-") || id.startsWith("cu-")) {
@@ -3553,6 +3561,8 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         const prevSettings = await getSettings();
         const next = await setSettings(msg.patch || {});
         await scheduleAgentRouterAlarms(next).catch(() => {});
+        applyIdleInterval().catch(() => {});
+        scheduleWrapUpAlarm().catch(() => {});
         // If the client-label level changed, re-stamp the already-cached ClickUp
         // data in place (every row keeps its `.container`, so this only relabels -
         // no network refetch) and drop the filter cache so the next filter fetch
