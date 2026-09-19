@@ -17,3 +17,7 @@ Thumbs.db
 # Raw screen recordings (only the converted docs/*.gif is published)
 *.mp4
 *.mov
+
+# Private handoff notes and local dev tools
+HANDOFF.md
+dev-tools/
