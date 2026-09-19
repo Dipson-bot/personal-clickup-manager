@@ -10,6 +10,10 @@
 - **Choose how often it syncs with ClickUp** (Options > ClickUp setup > Tracking settings): 2, 3, 5 (default), 10, 15 or 30 minutes. 2 minutes is the safe minimum for ClickUp's rate limit.
 - **Wrap-up is always one click away:** the 📋 button shows all the time, and the wrap-up page has its own reminder on/off and time.
 - Dark/light switch on the options page is now a clean pill button (no underline), with a matching round 🔔.
+- **Fixed: Agent Router skipped a day.** A login inside the 24-hour window (for example a manual run late in the evening) pushed the next automatic login 24 hours past itself. Now only the last credited login counts.
+- **Google Drive now also backs up the client site list**, theme, filter choices and custom sounds, so a reinstall brings them back. Each item keeps its own timestamp, so the newest copy wins. Changes are pushed to Drive within seconds.
+- **Paste your whole client site list at once:** one per line as `Client name | website` (or `Client, website`, or just the website). Names match your ClickUp client spelling.
+- ⇥ (side panel) and 📋 (wrap-up) buttons also on the options page; ⇥ now comes before 📋.
 - **Softer light mode:** grey-tinted background and cards instead of pure white.
 - In the side panel, **⇄** opens Chrome's setting to show the panel on the left or right.
 - New settings under Options > ClickUp setup > Settings: away minutes, wrap-up on/off and time, plus an *Open now* link.

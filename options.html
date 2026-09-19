@@ -592,8 +592,9 @@
   button.ghost.themeBtn:hover { background: var(--bg2); border-color: var(--indigo); }
   html[data-theme="dark"] button.ghost.themeBtn { background: var(--card); }
   html[data-theme="dark"] button.ghost.themeBtn:hover { background: var(--bg2); }
-  #notifyBell { border: 1px solid var(--border); background: var(--card); border-radius: 999px; padding: 6px 10px; font-size: 13px; }
-  #notifyBell:hover { background: var(--bg2); border-color: var(--indigo); }</style>
+  #notifyBell, .hdr-pill { border: 1px solid var(--border); background: var(--card); color: var(--text); border-radius: 999px; padding: 6px 10px; font-size: 13px; line-height: 1; cursor: pointer; }
+  #notifyBell:hover, .hdr-pill:hover { background: var(--bg2); border-color: var(--indigo); }
+  .hdr-tools { display: inline-flex; align-items: center; gap: 6px; margin-left: auto; flex: none; }</style>
 </head>
 <body class="tabbed">
 <div class="wrap">
@@ -602,7 +603,11 @@
       <h1>ClickUp - Time Estimate &amp; Tracking</h1>
       <p class="sub">Track your daily ClickUp time estimate &mdash; and keep your Agent Router accounts logged in each day.</p>
     </div>
-    <button id="themeToggle" class="ghost themeBtn" title="Toggle dark mode">🌙 Dark</button>
+    <span class="hdr-tools">
+      <button id="optPanelBtn" class="hdr-pill" type="button" title="Open in Chrome's side panel (stays open while you browse)">⇥</button>
+      <button id="optWrapBtn" class="hdr-pill" type="button" title="Wrap up the day: move leftovers to tomorrow, copy your standup">📋</button>
+      <button id="themeToggle" class="ghost themeBtn" title="Toggle dark mode">🌙 Dark</button>
+    </span>
   </div>
 
   <!-- Status strip: one glance at every integration (filled by options.js). -->
@@ -1270,8 +1275,8 @@
       </div>
       
       <div id="siteMonitorBody">
-        <label style="margin-top: 8px;">Monitored sites <span class="hint">- one URL per line</span></label>
-        <textarea id="siteMonitorUrls" rows="4" placeholder="https://client1.com&#10;https://client2.com" style="font-family: ui-monospace, monospace; font-size: 12.5px;"></textarea>
+        <label style="margin-top: 8px;">Monitored sites <span class="hint">- one per line: <b>Client name | website</b> (or just the website). Paste a whole list at once; "Client, website" works too. Saved to Google Drive.</span></label>
+        <textarea id="siteMonitorUrls" rows="6" placeholder="PennAir HVAC | https://pennairhvac.com&#10;K Charles SEO | kcharles.com&#10;https://client3.com" style="font-family: ui-monospace, monospace; font-size: 12.5px;"></textarea>
         <p class="hint" style="margin-top: 6px; line-height: 1.4;">
           Each site is checked every 5 minutes. A site must fail 2 consecutive checks before
           you're notified. You'll only get one notification per outage.

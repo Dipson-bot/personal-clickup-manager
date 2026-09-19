@@ -316,7 +316,12 @@ function shouldRun(st) {
   // After ANY successful login, wait out the 24h window even if the credit
   // hasn't been confirmed yet — prevents re-login loops while the balance
   // poll (no tab) catches the credit and anchors lastDoneAt.
-  if (s.lastResult === "success" && s.lastRunAt && now - s.lastRunAt < RESET_MS) return false;
+  // Only for a login made AFTER the window that hasn't been credited yet. A login
+  // inside the window (e.g. a manual run) earns nothing and must not push the next
+  // run 24h past itself - that silently skipped a whole day (Sep 18 11:12 PM run
+  // delayed Sep 19's 7:57 AM credit).
+  if (s.lastResult === "success" && s.lastRunAt && now - s.lastRunAt < RESET_MS &&
+      s.lastRunAt >= effectiveDoneAt(s) + RESET_MS) return false;
   if (s.lastResult && s.lastResult !== "success" && s.lastRunAt && now - s.lastRunAt < RETRY_COOLDOWN_MS)
     return false; // back off briefly after a failed / needs-attention attempt
   return true;
@@ -841,8 +846,66 @@ async function pushAllToDrive(tok, accounts) {
   const ccfg = await getClickupConfig().catch(() => null);
   const settings = await getSettings().catch(() => null);
   const departments = (settings && Array.isArray(settings.clickupDepartments)) ? settings.clickupDepartments : null;
-  await pushAccountsToDrive(tok, accounts, ccfg && ccfg.token ? ccfg : null, departments, settings);
+  await pushAccountsToDrive(tok, accounts, ccfg && ccfg.token ? ccfg : null, departments, settings, await collectExtras());
 }
+
+// ---------- Drive "extras": local-only data that must survive a reinstall ----------
+// Each key carries its own "last changed" stamp (extrasStamps) so the newest copy
+// wins per key: a fresh install adopts the Drive copy, while a newer local edit is
+// never overwritten by an older remote one.
+const EXTRA_KEYS = ["siteMonitorConfig", "theme", "cuFilter", "cuFilterMode", "customSounds"];
+const EXTRAS_MAX_SOUNDS = 1500000; // skip very large custom-sound files in the Drive copy
+async function collectExtras() {
+  const got = await chrome.storage.local.get([...EXTRA_KEYS, "extrasStamps"]);
+  const stamps = (got.extrasStamps && typeof got.extrasStamps === "object") ? got.extrasStamps : {};
+  const values = {};
+  const outStamps = {};
+  for (const k of EXTRA_KEYS) {
+    if (got[k] === undefined) continue;
+    if (k === "customSounds" && JSON.stringify(got[k]).length > EXTRAS_MAX_SOUNDS) continue;
+    values[k] = got[k];
+    outStamps[k] = Number(stamps[k]) || 0;
+  }
+  return { values, stamps: outStamps };
+}
+async function adoptRemoteExtras(remote) {
+  if (!remote || !remote.values || typeof remote.values !== "object") return;
+  const got = await chrome.storage.local.get([...EXTRA_KEYS, "extrasStamps"]);
+  const stamps = { ...((got.extrasStamps && typeof got.extrasStamps === "object") ? got.extrasStamps : {}) };
+  const patch = {};
+  for (const k of EXTRA_KEYS) {
+    if (!(k in remote.values)) continue;
+    const rAt = Number(remote.stamps && remote.stamps[k]) || 0;
+    const lAt = Number(stamps[k]) || 0;
+    // Take the remote when it's newer, or when this machine has nothing for the key.
+    if (rAt > lAt || got[k] === undefined) {
+      patch[k] = remote.values[k];
+      stamps[k] = Math.max(rAt, lAt);
+    }
+  }
+  if (!Object.keys(patch).length) return;
+  patch.extrasStamps = stamps; // same write, so the change listener doesn't re-stamp it
+  await chrome.storage.local.set(patch);
+  if (patch.siteMonitorConfig) {
+    const c = patch.siteMonitorConfig;
+    if (c && c.enabled && Array.isArray(c.sites) && c.sites.length) await ensureAlarm(SITE_MONITOR_ALARM, { periodInMinutes: SITE_MONITOR_PERIOD_MIN });
+  }
+}
+// Stamp local edits, then push to Drive shortly after (not just every 15 min).
+let extrasPushTimer = null;
+chrome.storage.onChanged.addListener((changes, area) => {
+  if (area !== "local" || changes.extrasStamps) return;
+  const keys = EXTRA_KEYS.filter((k) => changes[k]);
+  if (!keys.length) return;
+  (async () => {
+    const { extrasStamps } = await chrome.storage.local.get("extrasStamps");
+    const stamps = { ...((extrasStamps && typeof extrasStamps === "object") ? extrasStamps : {}) };
+    for (const k of keys) stamps[k] = Date.now();
+    await chrome.storage.local.set({ extrasStamps: stamps });
+    clearTimeout(extrasPushTimer);
+    extrasPushTimer = setTimeout(() => { autoSyncIfSignedIn({ light: true }); }, 4000);
+  })().catch(() => {});
+});
 
 // Adopt synced settings (target hours, deadline task URLs, notification prefs,
 // Agent Router URL, all ClickUp prefs) from Drive. Last-writer-wins by the
@@ -868,7 +931,7 @@ async function adoptRemoteSettings(remoteSettings, remoteSettingsAt) {
 // self-heals an expired token via silent re-auth, and driveFetch retries on 401,
 // so this keeps working across the ~1h implicit-token lifetime without a manual
 // re-sign-in. Returns { ok, reason? }.
-async function syncNow() {
+async function syncNow({ light = false } = {}) {
   const tok = await getValidToken(false);
   if (!tok) return { ok: false, reason: "not signed in" };
   let statusOk = false;
@@ -882,6 +945,7 @@ async function syncNow() {
     if (remote) await adoptRemoteClickup(remote.clickup);
     if (remote) await adoptRemoteDepartments(remote.departments);
     if (remote) await adoptRemoteSettings(remote.settings, remote.settingsAt);
+    if (remote) await adoptRemoteExtras(remote.extras);
     if (remote) await scheduleAgentRouterAlarms().catch(() => {});
     // Push our accounts + settings so other machines see them.
     await pushAllToDrive(tok, await getAccounts()).catch(() => {});
@@ -897,7 +961,7 @@ async function syncNow() {
     // next 5-minute poll) - this is what makes a sign-in or a manual sync show
     // up-to-date ClickUp data immediately instead of looking "stuck" until the
     // alarm next fires.
-    const ccfg = await getClickupConfig().catch(() => null);
+    const ccfg = light ? null : await getClickupConfig().catch(() => null);
     if (ccfg && ccfg.token && ccfg.teamId) {
       await refreshClickup({ includeTasks: false }).catch(() => {});
     }
@@ -2648,10 +2712,10 @@ async function checkAndMaybeRun() {
 // prompting. Keeps the implicit-flow token warm (each silent refresh resets the
 // ~1h clock) and mirrors accounts/status so you don't have to keep re-signing-in
 // or hitting "Sync now" by hand.
-async function autoSyncIfSignedIn() {
+async function autoSyncIfSignedIn(opts) {
   try {
     if (!(await isSignedIn())) return; // no valid/silently-refreshable token
-    await syncNow();
+    await syncNow(opts);
   } catch (e) {}
 }
 
