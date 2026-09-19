@@ -9,6 +9,10 @@ helper** and a **client-site uptime monitor**.
 > Built for people who live in ClickUp all day (agencies, freelancers, SEO / dev
 > teams) and want answers to *"am I on track today?"* in one glance.
 
+![Setting up Personal ClickUp Manager: load the extension, connect ClickUp with your API token, then use the Dashboard, filters and weekly view](docs/demo.gif)
+
+*Setup in under a minute: load the extension, paste your ClickUp API token, and your day appears. Client names and task titles are blurred.*
+
 ---
 
 ## Why use this instead of just ClickUp?

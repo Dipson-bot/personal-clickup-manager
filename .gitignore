@@ -13,3 +13,7 @@ dist/
 .DS_Store
 Thumbs.db
 *.log
+
+# Raw screen recordings (only the converted docs/*.gif is published)
+*.mp4
+*.mov
