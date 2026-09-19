@@ -984,6 +984,28 @@
         </div>
       </div>
 
+      <div class="checkbox">
+        <input type="checkbox" id="cuAwayNotify" />
+        <label for="cuAwayNotify" style="margin:0;font-weight:400;">Ask me about away time <span class="hint">- if a timer kept running while I was away from the computer (idle or locked), offer to remove that time when I'm back</span></label>
+      </div>
+      <div class="row" style="margin-top:8px;max-width:260px;">
+        <div>
+          <label>Away for at least <span class="hint">- minutes, 5-240</span></label>
+          <input type="text" id="cuAwayMin" inputmode="numeric" placeholder="15" />
+        </div>
+      </div>
+
+      <div class="checkbox">
+        <input type="checkbox" id="cuWrapUp" />
+        <label for="cuWrapUp" style="margin:0;font-weight:400;">End-of-day wrap-up <span class="hint">- weekdays: move leftover tasks to tomorrow and copy a standup for Slack</span> <a href="wrapup.html" target="_blank" rel="noopener">Open now</a></label>
+      </div>
+      <div class="row" style="margin-top:8px;max-width:260px;">
+        <div>
+          <label>Remind me at <span class="hint">- local time</span></label>
+          <input type="time" id="cuWrapUpTime" style="width:100%;" />
+        </div>
+      </div>
+
       <div class="btns">
         <button class="primary" id="cuSave">Save settings</button>
         <button id="cuRefreshNow">Refresh now</button>

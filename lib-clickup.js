@@ -631,6 +631,7 @@ export async function getTaskById(token, taskId) {
     hasEstimate: (Number(t.time_estimate) || 0) > 0,
     startDateMs: t.start_date ? Number(t.start_date) : null,
     dueDateMs: t.due_date ? Number(t.due_date) : null,
+    dueDateHasTime: t.due_date_time == null ? null : !!t.due_date_time,
     assignees,
     assigneeCount: assignees.length,
     listId: (t.list && t.list.id) || null,
@@ -702,7 +703,7 @@ export async function getCurrentTimeEntry(token, teamId) {
   if (!d || !d.task || !d.task.id) return null;
   const startMs = Number(d.start) || 0;
   if (!startMs) return null;
-  return { taskId: d.task.id, taskName: d.task.name || "", startMs };
+  return { taskId: d.task.id, taskName: d.task.name || "", startMs, id: d.id != null ? String(d.id) : null, description: d.description || "" };
 }
 
 // ---------- timer control (start / stop the running timer for this token's user) ----------
@@ -715,6 +716,18 @@ export async function startTimer(token, teamId, taskId, description) {
   if (description && String(description).trim()) body.description = String(description).trim().slice(0, 500);
   const j = await cuPost(token, "/team/" + teamId + "/time_entries/start", body);
   return (j && j.data) || null;
+}
+
+// Edit a time entry (e.g. end it earlier to drop away-from-desk time).
+export async function updateTimeEntry(token, teamId, entryId, body) {
+  return cuPut(token, "/team/" + teamId + "/time_entries/" + encodeURIComponent(entryId), body || {});
+}
+
+// Change a task's due date. hasTime null = leave ClickUp's date-only/timed flag alone.
+export async function setTaskDueDate(token, taskId, dueMs, hasTime) {
+  const body = { due_date: Number(dueMs) };
+  if (hasTime != null) body.due_date_time = !!hasTime;
+  return cuPut(token, "/task/" + encodeURIComponent(taskId), body);
 }
 
 // Stop the currently-running timer for the token owner. Only call when something

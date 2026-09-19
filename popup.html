@@ -49,6 +49,11 @@
   }
   .header { display: flex; align-items: center; gap: 8px; margin-bottom: 10px; width: 100%; }
   .header img { width: 22px; height: 22px; }
+  /* Side panel: fill the panel instead of the popup's fixed minimum width */
+  html.in-panel body { width: auto; min-width: 0; }
+  html.in-panel .grid { grid-template-columns: minmax(0, 1fr); }
+  html.in-panel .card { min-width: 0; }
+  @media (max-width: 440px) { html.in-panel .cu-task .cu-client { display: none; } }
   .header h1 { font-size: 14px; font-weight: 700; margin: 0; flex: 1 1 auto; min-width: 0; }
   .header-actions { display: flex; align-items: center; gap: 4px; margin-left: auto; flex-shrink: 0; }
   .gear { border: none; background: none; cursor: pointer; color: var(--muted); font-size: 12px; text-decoration: underline; padding: 2px; }
@@ -375,6 +380,8 @@
     <img src="icons/icon48.png" alt="" />
     <h1>Daily Login</h1>
     <div class="header-actions">
+      <button class="themeBtn" id="wrapBtn" title="Wrap up the day: move leftovers to tomorrow, copy your standup" hidden>📋</button>
+      <button class="themeBtn" id="panelBtn" title="Keep it open in the side panel">⇥</button>
       <button class="themeBtn" id="themeToggle" title="Toggle dark mode">🌙</button>
       <button class="gear" id="manage">Manage</button>
     </div>

@@ -3,6 +3,9 @@
 // "Filter Tasks", "Weekly Totals", and "Today estimate/tracked" cards.
 
 const $ = (id) => document.getElementById(id);
+// Same page runs as the toolbar popup and in Chrome's side panel (?view=panel).
+const IN_PANEL = new URLSearchParams(location.search).get("view") === "panel";
+if (IN_PANEL) document.documentElement.classList.add("in-panel");
 // "12:10 PM · Sep 6" - used for the "Last synced" line and the transient
 // "Synced ✓" confirmation.
 function fmtSyncStamp(ts) {
@@ -147,6 +150,26 @@ function fmtBalance(raw) {
   const per = (state.settings && Number(state.settings.quotaPerUnit)) || DEFAULT_QUOTA_PER_UNIT;
   const div = per > 0 ? per : DEFAULT_QUOTA_PER_UNIT;
   return "$" + (n / div).toFixed(2);
+}
+
+// ---------- header: side panel + wrap-up ----------
+function initHeaderExtras() {
+  const w = $("wrapBtn");
+  if (w) w.onclick = () => {
+    chrome.tabs.create({ url: chrome.runtime.getURL("wrapup.html") }).catch(() => {});
+    if (!IN_PANEL) window.close();
+  };
+  const b = $("panelBtn");
+  if (!b) return;
+  if (IN_PANEL || !chrome.sidePanel || !chrome.sidePanel.open) { b.hidden = true; return; }
+  // Fetch the window id up front: sidePanel.open must run straight from the click.
+  let winId = null;
+  chrome.windows.getCurrent().then((win) => { winId = win && win.id; }).catch(() => {});
+  b.onclick = () => {
+    if (winId == null) return;
+    chrome.sidePanel.open({ windowId: winId }).then(() => window.close())
+      .catch(() => { b.title = "Right-click the extension icon, then \"Open side panel\""; });
+  };
 }
 
 // ---------- theme (persisted, shared with the options page) ----------
@@ -1927,7 +1950,24 @@ async function toggleExtraTimer(action) {
   await load();
 }
 
+// "📋" header button: shown on weekdays after the wrap-up time.
+function updateWrapBtn() {
+  const b = $("wrapBtn");
+  if (!b) return;
+  const cu = state && state.clickup;
+  let show = false;
+  if (cu && cu.configured && cu.wrapUp !== false) {
+    const now = new Date();
+    const m = /^(\d{1,2}):(\d{2})$/.exec(String(cu.wrapUpTime || "16:45"));
+    const at = new Date(now);
+    at.setHours(m ? +m[1] : 16, m ? +m[2] : 45, 0, 0);
+    show = now.getDay() >= 1 && now.getDay() <= 5 && now >= at;
+  }
+  b.hidden = !show;
+}
+
 function render() {
+  updateWrapBtn();
   if (cuEstEditing) { cuRenderPending = true; return; }
   const list = $("list");
   const accounts = state.accounts || [];
@@ -2491,12 +2531,13 @@ setInterval(render, 30000);
 // CLICKUP_SYNC_RUNNING is a single lightweight GET and only rewrites clickupState
 // (-> the storage listener above repaints) when the running state changed.
 setInterval(() => {
-  if (state && state.clickup && state.clickup.configured) {
+  if (!document.hidden && state && state.clickup && state.clickup.configured) {
     send({ type: "CLICKUP_SYNC_RUNNING" }).catch(() => {});
   }
 }, 30000);
 
 initTheme();
+initHeaderExtras();
 load();
 // Kick one throttled, reuse-only availability sweep per popup open. The chips
 // paint instantly from cache; fresh verdicts arrive via AVAILABILITY_UPDATED.

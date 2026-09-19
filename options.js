@@ -1772,6 +1772,10 @@ function renderClickupSettings(cu) {
   $("cuIdleStart").value = cu.idleStartHour != null ? String(cu.idleStartHour) : "8";
   $("cuIdleEnd").value = cu.idleEndHour != null ? String(cu.idleEndHour) : "17";
   $("cuIdleRepeat").value = cu.idleRepeatMin != null ? String(cu.idleRepeatMin) : "60";
+  $("cuAwayNotify").checked = cu.awayNotify !== false;
+  $("cuAwayMin").value = cu.awayMin != null ? String(cu.awayMin) : "15";
+  $("cuWrapUp").checked = cu.wrapUp !== false;
+  $("cuWrapUpTime").value = cu.wrapUpTime || "16:45";
   if (configured) {
     populateTeams(cuTeams, cu.teamId, cu.teamName || cuTeamName || "");
     // Configured but the first refresh hasn't landed yet -> show a spinner so the
@@ -3284,6 +3288,12 @@ $("cuSave").onclick = async () => {
     cuMsg("cuSaveMsg", "\"Re-remind every\" must be a whole number of minutes from 5 to 480.", false);
     return;
   }
+  const awayMin = parseInt($("cuAwayMin").value.trim(), 10);
+  if (!Number.isInteger(awayMin) || awayMin < 5 || awayMin > 240) {
+    cuMsg("cuSaveMsg", "\"Away for at least\" must be a whole number of minutes from 5 to 240.", false);
+    return;
+  }
+  const wrapUpTime = $("cuWrapUpTime").value || "16:45";
   const deadlineUrls = $("cuDeadlineUrls").value.split("\n").map((s) => s.trim()).filter(Boolean);
   try {
     await send({
@@ -3304,6 +3314,10 @@ $("cuSave").onclick = async () => {
         clickupIdleStartHour: idleStart,
         clickupIdleEndHour: idleEnd,
         clickupIdleRepeatMin: idleRepeat,
+        clickupAwayNotify: $("cuAwayNotify").checked,
+        clickupAwayMin: awayMin,
+        clickupWrapUp: $("cuWrapUp").checked,
+        clickupWrapUpTime: wrapUpTime,
         clickupDeadlineTaskUrls: deadlineUrls,
       },
     });

@@ -15,7 +15,7 @@ import {
   pullAccountsFromDrive,
 } from "./lib-drive.js";
 import { runAllAccounts, runAccountLogin, URLS, GITHUB_KEEP_COOKIES } from "./lib-automation.js";
-import { verifyToken, getTeams, fetchTodayEstimate, fetchWeeklySummary, fetchDateRangeEstimate, createTaskCache, fetchTeamMembers, fmtDuration, findExtraTaskByName, parseTaskIdFromUrl, getCurrentTimeEntry, getRunningTaskProgress, startTimer, stopTimer, getTaskById, setTaskStatus, taskUrlFor, clientLabelFromContainer, resolveSpaceNamesFor, taskContainer, cuPriorityName, isTaskDone, getSubtasksOfParent } from "./lib-clickup.js";
+import { verifyToken, getTeams, fetchTodayEstimate, fetchWeeklySummary, fetchDateRangeEstimate, createTaskCache, fetchTeamMembers, fmtDuration, findExtraTaskByName, parseTaskIdFromUrl, getCurrentTimeEntry, getRunningTaskProgress, startTimer, stopTimer, getTaskById, setTaskStatus, taskUrlFor, clientLabelFromContainer, resolveSpaceNamesFor, taskContainer, cuPriorityName, isTaskDone, getSubtasksOfParent, updateTimeEntry, setTaskDueDate } from "./lib-clickup.js";
 import { resolveRelayKey, pickProbeModel, probeRelay } from "./lib-availability.js";
 
 const CHECK_ALARM = "dailyLoginCheck";
@@ -257,6 +257,15 @@ const DEFAULT_SETTINGS = {
   clickupIdleStartHour: 8, // office hours start (local hour 0-23), default 8am
   clickupIdleEndHour: 17, // office hours end (local hour 0-23), default 5pm
   clickupIdleRepeatMin: 60, // minutes between re-nudges while still not tracking
+  // ---- Away protection ----
+  // Coming back after this long idle/locked while a timer kept running asks
+  // "Remove away time / Keep it". Ignoring the question keeps the time.
+  clickupAwayNotify: true,
+  clickupAwayMin: 15, // minutes, 5-240
+  // ---- End-of-day wrap-up ----
+  // Weekday notification that opens wrapup.html (leftovers -> tomorrow, standup copy).
+  clickupWrapUp: true,
+  clickupWrapUpTime: "16:45", // local "HH:MM"
   // ---- Departments (Department Creator) ----
   // Each department holds a name + a list of ClickUp users { id, name }. The
   // Filter Tasks card can then scope its task queries to a department's users.
@@ -969,6 +978,10 @@ async function clickupPublic() {
     idleStartHour: Number.isFinite(Number(settings.clickupIdleStartHour)) ? Number(settings.clickupIdleStartHour) : 8,
     idleEndHour: Number.isFinite(Number(settings.clickupIdleEndHour)) ? Number(settings.clickupIdleEndHour) : 17,
     idleRepeatMin: Number(settings.clickupIdleRepeatMin) || 60,
+    awayNotify: settings.clickupAwayNotify !== false,
+    awayMin: Number(settings.clickupAwayMin) || 15,
+    wrapUp: settings.clickupWrapUp !== false,
+    wrapUpTime: settings.clickupWrapUpTime || "16:45",
     workdayEndHour: Number(settings.clickupWorkdayEndHour) || 0,
     extendedMode: settings.clickupExtendedMode === "excl0" ? "excl0" : "days",
     weeklyTo: settings.clickupWeeklyTo === "friday" ? "friday" : "today",
@@ -1970,6 +1983,8 @@ async function maybeNotifyNotTracking(cfg, { viaAlarm = false } = {}) {
   const hour = now.getHours();
   // Inside office hours [start, end). If misconfigured (start >= end), skip.
   if (!(startHour < endHour && hour >= startHour && hour < endHour)) return;
+  // Stay quiet while the user is away from the computer (idle 5+ min or locked).
+  try { if ((await chrome.idle.queryState(300)) !== "active") return; } catch (e) {}
 
   // Is a timer running right now?
   let entry;
@@ -1996,10 +2011,178 @@ async function maybeNotifyNotTracking(cfg, { viaAlarm = false } = {}) {
   const lastAt = Number(seen.idleNudgeAt) || 0;
   if (lastAt && Date.now() - lastAt < repeatMs) return;
 
+  // Offer a one-click Start on the most important open task due today.
+  const top = pickTopTask(await getClickupState().catch(() => null));
+  if (top) await chrome.storage.local.set({ cuNudgeTask: { id: String(top.id), name: top.name || "" } });
+  const label = top ? String(top.name || "task") : "";
   await notify("clickup-idle-" + Date.now(), "Time tracking hasn't started yet ⏱️",
     "No ClickUp timer is running. Are you working? Start your timer so today's time gets tracked.",
-    "danger");
+    "danger", null,
+    top ? { buttons: [{ title: "▶ Start: " + (label.length > 38 ? label.slice(0, 37) + "…" : label) }] } : null);
   await chrome.storage.local.set({ clickupNotified: { ...seen, idleNudgeAt: Date.now() } });
+}
+
+// Most important open task due today (priority, then biggest estimate). Skips
+// the Extra Task and tasks waiting on someone else.
+const TOP_PRIO_RANK = { urgent: 0, high: 1, normal: 2, low: 3 };
+function pickTopTask(st) {
+  const b = (st && st.todayFilter && Array.isArray(st.todayFilter.tasks)) ? st.todayFilter : (st || {});
+  const waiting = (st && st.waiting) || {};
+  const rank = (t) => { const r = TOP_PRIO_RANK[String(t.priority || "").toLowerCase()]; return r == null ? 4 : r; };
+  const open = (Array.isArray(b.tasks) ? b.tasks : []).filter((t) => t && t.id != null && !t.done &&
+    t.type !== "extra" && !/^extras?\s+tasks?\b/i.test(t.name || "") && !waiting[String(t.id)]);
+  open.sort((a, c) => rank(a) - rank(c) || (Number(c.estimateMs) || 0) - (Number(a.estimateMs) || 0));
+  return open[0] || null;
+}
+
+// "▶ Start" button on the not-tracking reminder. Never switches away from a
+// timer that started meanwhile; shared tasks just open in ClickUp.
+async function startTaskFromNudge(taskId) {
+  const cfg = await getClickupConfig();
+  if (!cfg || !cfg.token || !cfg.teamId) return;
+  try {
+    const task = await getTaskById(cfg.token, taskId).catch(() => null);
+    if (task && task.assigneeCount > 1) { chrome.tabs.create({ url: task.url || taskUrlFor(taskId) }).catch(() => {}); return; }
+    const cur = await getCurrentTimeEntry(cfg.token, cfg.teamId).catch(() => null);
+    if (cur) return;
+    const st = (await getClickupState().catch(() => null)) || {};
+    if (st.activeTaskId && String(st.activeTaskId) !== String(taskId)) await setTaskStatus(cfg.token, String(st.activeTaskId), "to do").catch(() => {});
+    await setTaskStatus(cfg.token, taskId, "in progress").catch(() => {});
+    await startTimer(cfg.token, cfg.teamId, taskId);
+    const st2 = (await getClickupState().catch(() => null)) || {};
+    await setClickupState({ ...st2, activeTaskId: String(taskId) });
+    clearFilterCache();
+    refreshClickup({ includeTasks: true }).catch(() => {});
+  } catch (e) {
+    await notify("cu-start-fail-" + Date.now(), "Couldn't start the timer", String((e && e.message) || e), "danger", taskUrlFor(taskId));
+  }
+}
+
+// ---------- away protection ----------
+// Chrome reports "idle" after N seconds without input (N = the away threshold)
+// or "locked" at once. When the user comes back and a ClickUp timer ran through
+// the whole away stretch, ask once: remove the away time, or keep it.
+async function awaySettings() {
+  const s = await getSettings();
+  return { on: s.clickupAwayNotify !== false, min: Math.min(240, Math.max(5, Number(s.clickupAwayMin) || 15)) };
+}
+async function applyIdleInterval() {
+  try { const { min } = await awaySettings(); chrome.idle.setDetectionInterval(min * 60); } catch (e) {}
+}
+async function onIdleStateChanged(newState) {
+  const now = Date.now();
+  const { cuAway } = await chrome.storage.local.get("cuAway");
+  if (newState === "idle" || newState === "locked") {
+    if (cuAway && cuAway.since) return; // keep the earliest moment (idle, then locked)
+    const { min } = await awaySettings();
+    await chrome.storage.local.set({ cuAway: { since: newState === "idle" ? now - min * 60000 : now } });
+    return;
+  }
+  if (!cuAway || !cuAway.since) return; // back to "active"
+  await chrome.storage.local.remove("cuAway");
+  const { on, min } = await awaySettings();
+  const awayMs = now - cuAway.since;
+  if (!on || awayMs < min * 60000) return;
+  const cfg = await getClickupConfig();
+  if (!cfg || !cfg.token || !cfg.teamId) return;
+  let cur = null;
+  try { cur = await getCurrentTimeEntry(cfg.token, cfg.teamId); } catch (e) { return; }
+  if (!cur || !cur.id || !(cur.startMs < cuAway.since)) return; // no timer ran through the away time
+  const p = { entryId: cur.id, taskId: String(cur.taskId), taskName: cur.taskName || "", description: cur.description || "", startMs: cur.startMs, since: cuAway.since };
+  await chrome.storage.local.set({ cuAwayPending: p });
+  const at = new Date(p.since).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+  await notify("away-" + now, "You were away " + fmtDuration(awayMs),
+    "Your timer on \"" + (p.taskName || "a task") + "\" kept running since " + at + ". Remove the away time?",
+    undefined, null, { priority: 2, requireInteraction: true, buttons: [{ title: "Remove away time" }, { title: "Keep it" }] });
+}
+// "Remove away time": end the entry at the moment the user left and, if it was
+// still running, start the same task again now (same description). ClickUp then
+// shows two rows with the away gap removed.
+async function removeAwayTime() {
+  const { cuAwayPending: p } = await chrome.storage.local.get("cuAwayPending");
+  await chrome.storage.local.remove("cuAwayPending");
+  if (!p || !p.entryId) return;
+  const cfg = await getClickupConfig();
+  if (!cfg || !cfg.token || !cfg.teamId) return;
+  try {
+    const cur = await getCurrentTimeEntry(cfg.token, cfg.teamId).catch(() => null);
+    const stillRunning = !!(cur && String(cur.id) === String(p.entryId));
+    if (stillRunning) await stopTimer(cfg.token, cfg.teamId);
+    await updateTimeEntry(cfg.token, cfg.teamId, p.entryId, { start: p.startMs, end: p.since, duration: p.since - p.startMs, tid: p.taskId });
+    if (stillRunning) await startTimer(cfg.token, cfg.teamId, p.taskId, p.description);
+    clearFilterCache();
+    refreshClickup({ includeTasks: true }).catch(() => {});
+    const at = new Date(p.since).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+    await notify("cu-away-done-" + Date.now(), "Away time removed",
+      "\"" + (p.taskName || "Your task") + "\" now stops at " + at + (stillRunning ? ", and its timer is running again from now." : "."));
+  } catch (e) {
+    await notify("cu-away-fail-" + Date.now(), "Couldn't remove the away time",
+      String((e && e.message) || e) + " You can edit the entry in ClickUp Timesheet.", "danger", "https://app.clickup.com");
+  }
+}
+
+// ---------- end-of-day wrap-up ----------
+const WRAPUP_ALARM = "cuWrapUp";
+function parseHM(str, def) {
+  const m = /^(\d{1,2}):(\d{2})$/.exec(String(str || "").trim());
+  if (!m || +m[1] > 23 || +m[2] > 59) return def;
+  return [+m[1], +m[2]];
+}
+function nextWrapUpAt(timeStr, now = Date.now()) {
+  const [h, m] = parseHM(timeStr, [16, 45]);
+  const d = new Date(now);
+  d.setHours(h, m, 0, 0);
+  if (d.getTime() <= now) d.setDate(d.getDate() + 1);
+  return d.getTime();
+}
+async function scheduleWrapUpAlarm() {
+  try {
+    const s = await getSettings();
+    if (s.clickupWrapUp === false) { await chrome.alarms.clear(WRAPUP_ALARM); return; }
+    const when = nextWrapUpAt(s.clickupWrapUpTime);
+    const ex = await chrome.alarms.get(WRAPUP_ALARM);
+    if (ex && Math.abs(ex.scheduledTime - when) < 60000) return;
+    await chrome.alarms.create(WRAPUP_ALARM, { when });
+  } catch (e) {}
+}
+// Open tasks due TODAY (the ones worth moving), from the Today view's rows.
+function wrapUpOpenTasks(st) {
+  const b = (st && st.todayFilter && Array.isArray(st.todayFilter.tasks)) ? st.todayFilter : (st || {});
+  const today = new Date().setHours(0, 0, 0, 0);
+  return (Array.isArray(b.tasks) ? b.tasks : []).filter((t) => t && !t.done && t.type !== "extra" &&
+    !/^extras?\s+tasks?\b/i.test(t.name || "") && t.dueDateMs && new Date(t.dueDateMs).setHours(0, 0, 0, 0) === today);
+}
+async function onWrapUpAlarm() {
+  await scheduleWrapUpAlarm(); // tomorrow's
+  const s = await getSettings();
+  if (s.clickupWrapUp === false) return;
+  const now = new Date();
+  if (now.getDay() === 0 || now.getDay() === 6) return;
+  const [h, m] = parseHM(s.clickupWrapUpTime, [16, 45]);
+  const at = new Date(now);
+  at.setHours(h, m, 0, 0);
+  if (now.getTime() < at.getTime() - 60000) return; // a missed alarm from an earlier day
+  const { cuWrapUpShown } = await chrome.storage.local.get("cuWrapUpShown");
+  if (cuWrapUpShown === todayString()) return;
+  const cfg = await getClickupConfig();
+  if (!cfg || !cfg.token) return;
+  const st = await getClickupState().catch(() => null);
+  if (!st) return;
+  await chrome.storage.local.set({ cuWrapUpShown: todayString() });
+  const open = wrapUpOpenTasks(st).length;
+  const target = Number(st.targetMs) > 0 ? " of " + fmtDuration(st.targetMs) : "";
+  await notify("wrapup-" + Date.now(), "Time to wrap up the day 📋",
+    "Tracked " + fmtDuration(Number(st.spentMs) || 0) + target + ". " +
+      (open ? open + " task" + (open === 1 ? "" : "s") + " due today still open." : "Everything due today is done ✓") +
+      " Click to review and copy your standup.",
+    undefined, chrome.runtime.getURL("wrapup.html"));
+}
+// Keep a task's time of day when moving its due date to another day.
+function shiftDueToDay(oldDueMs, dayMs) {
+  const d = new Date(dayMs);
+  if (oldDueMs) { const o = new Date(oldDueMs); d.setHours(o.getHours(), o.getMinutes(), o.getSeconds(), o.getMilliseconds()); }
+  else d.setHours(12, 0, 0, 0);
+  return d.getTime();
 }
 
 // ---------- badge ----------
@@ -2185,7 +2368,7 @@ const notifTargetUrls = new Map();
 // chain do await it), so the chime is no longer dropped on a cold worker.
 // `sound` = "danger" for the urgent alarm, "winner" for a milestone celebration,
 // or omitted for the default chime. `targetUrl` = optional link to open on click.
-async function notify(id, title, message, sound, targetUrl) {
+async function notify(id, title, message, sound, targetUrl, opts) {
   if (targetUrl) {
     notifTargetUrls.set(id, targetUrl);
   } else if (id.startsWith("clickup-") || id.startsWith("cu-")) {
@@ -2200,6 +2383,7 @@ async function notify(id, title, message, sound, targetUrl) {
         title,
         message,
         priority: 0,
+        ...(opts || {}),
       },
       () => void chrome.runtime.lastError // swallow "no icon"/permission edge cases
     );
@@ -2602,6 +2786,14 @@ chrome.notifications.onButtonClicked.addListener((id, btn) => {
         // Keep the Download button one click away after reading the notes.
         if (ui && ui.newer) setTimeout(() => showUpdateNotification(ui).catch(() => {}), 1500);
       }
+    } else if (id.startsWith("away-")) {
+      chrome.notifications.clear(id).catch(() => {});
+      if (btn === 0) await removeAwayTime();
+      else await chrome.storage.local.remove("cuAwayPending");
+    } else if (id.startsWith("clickup-idle-")) {
+      chrome.notifications.clear(id).catch(() => {});
+      const { cuNudgeTask: t } = await chrome.storage.local.get("cuNudgeTask");
+      if (t && t.id) await startTaskFromNudge(t.id);
     } else if (id === "update-downloaded" || (id === "update-pending" && btn === 0)) {
       chrome.runtime.reload(); // picks up the unzipped files
     } else if (id === "update-pending" && btn === 1) {
@@ -2861,6 +3053,11 @@ clearStaleRunningOnce().catch(() => {});
 // Beijing time to whatever moment that is for this user). These are absolute
 // `when` alarms (not a countdown), so re-deriving them each wake is harmless.
 scheduleAgentRouterAlarms().catch(() => {});
+// End-of-day wrap-up (absolute "when" alarm, re-derived harmlessly on each wake)
+// and away detection (idle/locked -> active).
+scheduleWrapUpAlarm().catch(() => {});
+applyIdleInterval().catch(() => {});
+try { chrome.idle.onStateChanged.addListener((st) => { onIdleStateChanged(st).catch(() => {}); }); } catch (e) {}
 chrome.alarms.onAlarm.addListener(async (alarm) => {
   if (alarm.name === CHECK_ALARM) {
     checkForUpdate().catch(() => {}); // self-throttled to ~12h
@@ -2876,6 +3073,8 @@ chrome.alarms.onAlarm.addListener(async (alarm) => {
     autoSyncIfSignedIn();
   } else if (alarm.name === SITE_MONITOR_ALARM) {
     checkSites().catch(() => {});
+  } else if (alarm.name === WRAPUP_ALARM) {
+    await onWrapUpAlarm().catch(() => {});
   } else if (alarm.name.startsWith(AR_ALARM_PREFIX)) {
     // Awaited so the worker stays alive long enough to play the chime - unlike
     // the refresh branches above, this path has no in-flight fetch to hold it.
@@ -2898,6 +3097,8 @@ chrome.notifications.onClicked.addListener((id) => {
       if (id.startsWith("ar-quota-") || id.startsWith("daily-login-")) {
         const settings = await getSettings().catch(() => null);
         url = (settings && settings.targetUrl) || URLS.agentRouterLogin;
+      } else if (id.startsWith("wrapup-")) {
+        url = chrome.runtime.getURL("wrapup.html");
       } else if (id.startsWith("clickup-") || id.startsWith("cu-")) {
         url = "https://app.clickup.com";
       }
@@ -3731,6 +3932,16 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
           const n = Number(p.clickupIdleRepeatMin);
           if (Number.isFinite(n) && n >= 5 && n <= 480) patch.clickupIdleRepeatMin = Math.floor(n);
         }
+        if (p.clickupAwayNotify !== undefined) patch.clickupAwayNotify = !!p.clickupAwayNotify;
+        if (p.clickupAwayMin !== undefined) {
+          const n = Number(p.clickupAwayMin);
+          if (Number.isFinite(n) && n >= 5 && n <= 240) patch.clickupAwayMin = Math.floor(n);
+        }
+        if (p.clickupWrapUp !== undefined) patch.clickupWrapUp = !!p.clickupWrapUp;
+        if (p.clickupWrapUpTime !== undefined && parseHM(p.clickupWrapUpTime, null)) {
+          const [h, m] = parseHM(p.clickupWrapUpTime, null);
+          patch.clickupWrapUpTime = String(h).padStart(2, "0") + ":" + String(m).padStart(2, "0");
+        }
         if (p.clickupWorkdayEndHour !== undefined) {
           const n = Number(p.clickupWorkdayEndHour);
           if (Number.isFinite(n) && n >= 0 && n <= 23) patch.clickupWorkdayEndHour = Math.floor(n);
@@ -3749,6 +3960,8 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
           patch.clickupDeadlineTaskUrls = arr;
         }
         const next = await setSettings(patch);
+        applyIdleInterval().catch(() => {});
+        scheduleWrapUpAlarm().catch(() => {});
         // Deadline config, extended-mode, or extended-mode changes recompute the
         // estimate itself, so refetch from the API. The weeklyTo toggle is cheap:
         // it just re-renders from the cached Mon→today / Mon→Friday aggregates
@@ -3771,6 +3984,26 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
           await updateBadge();
         }
         sendResponse({ ok: true, settings: next });
+        break;
+      }
+      case "CLICKUP_MOVE_DUE": {
+        // Wrap-up "→ Tomorrow": move a task's due date to msg.dayMs, keeping its
+        // time of day (and ClickUp's date-only vs timed flag).
+        const cfg = await getClickupConfig();
+        if (!cfg || !cfg.token) { sendResponse({ ok: false, reason: "not-configured" }); break; }
+        const taskId = msg.taskId ? String(msg.taskId) : null;
+        const dayMs = Number(msg.dayMs);
+        if (!taskId || !Number.isFinite(dayMs)) { sendResponse({ ok: false, reason: "bad-args" }); break; }
+        try {
+          const task = await getTaskById(cfg.token, taskId);
+          const due = shiftDueToDay(task && task.dueDateMs, dayMs);
+          await setTaskDueDate(cfg.token, taskId, due, task ? task.dueDateHasTime : null);
+          clearFilterCache();
+          refreshClickup({ includeTasks: true, forceWeeks: true }).catch(() => {});
+          sendResponse({ ok: true, dueDateMs: due });
+        } catch (e) {
+          sendResponse({ ok: false, error: String(e && e.message ? e.message : e) });
+        }
         break;
       }
       case "CLICKUP_REFRESH": {

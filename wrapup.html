@@ -1,0 +1,78 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Wrap up the day</title>
+<style>
+  :root {
+    --indigo: #4f46e5; --green: #22c55e; --amber: #f59e0b; --red: #ef4444;
+    --bg: #f6f7f9; --card: #ffffff; --text: #1f2937; --muted: #6b7280; --border: #e5e7eb; --bg2: #eef2f7;
+    color-scheme: light;
+  }
+  html[data-theme="dark"] {
+    --bg: #0f1115; --card: #181b21; --text: #e8eaed; --muted: #9aa3b2; --border: #2b3038; --bg2: #22262e;
+    color-scheme: dark;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; padding: 28px 16px 40px; background: var(--bg); color: var(--text);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; font-size: 14px; }
+  .wrap { max-width: 620px; margin: 0 auto; display: flex; flex-direction: column; gap: 14px; }
+  h1 { font-size: 20px; margin: 0; }
+  .sub { color: var(--muted); font-size: 13px; margin-top: 2px; }
+  .card { background: var(--card); border: 1px solid var(--border); border-radius: 12px; padding: 14px 16px; }
+  .card h2 { font-size: 13px; text-transform: uppercase; letter-spacing: .04em; color: var(--muted); margin: 0 0 10px; display: flex; align-items: center; gap: 8px; }
+  .card h2 .sp { flex: 1; }
+  .prog { display: flex; align-items: baseline; gap: 8px; font-size: 15px; }
+  .prog b { font-size: 22px; }
+  .bar { height: 8px; border-radius: 99px; background: var(--bg2); overflow: hidden; margin-top: 10px; }
+  .bar > i { display: block; height: 100%; background: var(--indigo); border-radius: 99px; }
+  .bar.met > i { background: var(--green); }
+  .row { display: flex; align-items: center; gap: 10px; padding: 8px 0; border-top: 1px solid var(--border); }
+  .row:first-of-type { border-top: 0; }
+  .row .nm { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text); text-decoration: none; }
+  .row .nm:hover { text-decoration: underline; }
+  .row .cl { flex: none; font-size: 11px; color: var(--muted); max-width: 140px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .row .ok { flex: none; color: var(--green); font-weight: 600; font-size: 12.5px; }
+  button { font: inherit; font-size: 12.5px; font-weight: 600; border-radius: 7px; border: 1px solid var(--border); background: var(--card); color: var(--text); padding: 5px 11px; cursor: pointer; }
+  button:hover { background: var(--bg2); }
+  button:disabled { opacity: .6; cursor: default; }
+  button.primary { background: var(--indigo); border-color: var(--indigo); color: #fff; }
+  button.primary:hover { filter: brightness(1.08); background: var(--indigo); }
+  .empty { color: var(--muted); font-size: 13px; }
+  textarea { width: 100%; min-height: 190px; resize: vertical; font: 13px/1.5 ui-monospace, SFMono-Regular, Consolas, monospace;
+    border: 1px solid var(--border); border-radius: 8px; padding: 10px; background: var(--bg); color: var(--text); }
+  .actions { display: flex; align-items: center; gap: 8px; margin-top: 10px; }
+  .actions .hint { color: var(--muted); font-size: 12px; flex: 1; }
+</style>
+</head>
+<body>
+  <div class="wrap">
+    <div>
+      <h1>Wrap up the day 📋</h1>
+      <div class="sub" id="today"></div>
+    </div>
+
+    <div class="card" id="progCard">
+      <div class="prog"><b id="tracked">-</b><span id="target"></span></div>
+      <div class="bar" id="bar"><i style="width:0"></i></div>
+    </div>
+
+    <div class="card">
+      <h2><span>Still open, due today</span><span class="sp"></span><button id="moveAll" hidden></button></h2>
+      <div id="openList"></div>
+    </div>
+
+    <div class="card">
+      <h2><span>Standup for Slack</span></h2>
+      <textarea id="standup" spellcheck="false"></textarea>
+      <div class="actions">
+        <span class="hint" id="standupHint">Edit freely before copying.</span>
+        <button id="rebuild" hidden>Rebuild</button>
+        <button class="primary" id="copy">Copy</button>
+      </div>
+    </div>
+  </div>
+<script src="wrapup.js"></script>
+</body>
+</html>
