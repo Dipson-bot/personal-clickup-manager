@@ -2280,6 +2280,27 @@ function cuScopeEstimateMs(st, f) {
   if (f.dueNextWeek && st.nextWeek) return Number(st.nextWeek.estimateMs) || 0;
   if (f.dueWeek && st.thisWeek) return Number(st.thisWeek.estimateMs) || 0;
   if (f.dueWorkweek && st.thisWeek) return Number(st.thisWeek.estimateMs) || 0; // legacy "Due Mon-Fri" -> this week
+  if (f.dueTomorrow) {
+    // Same rows the popup shows for tomorrow (they live in the week bundles).
+    const start = new Date(); start.setDate(start.getDate() + 1); start.setHours(0, 0, 0, 0);
+    const from = start.getTime();
+    const to = from + 86399999;
+    const seen = new Set();
+    let ms = 0;
+    for (const b of [st.thisWeek, st.nextWeek]) {
+      if (!b) continue;
+      for (const [key, field] of [["tasks", "estimateMs"], ["deadlineTasks", "dayEstimateMs"]]) {
+        for (const t of (Array.isArray(b[key]) ? b[key] : [])) {
+          const d = Number(t && t.dueDateMs) || 0;
+          const id = String((t && (t.id != null ? t.id : t.taskId)) || "");
+          if (d < from || d > to || !id || seen.has(id)) continue;
+          seen.add(id);
+          ms += Number(t[field]) || 0;
+        }
+      }
+    }
+    return ms;
+  }
   if (f.dueToday) return Number(st.estimateMs) || 0;
   const tf = st.todayFilter || st;
   return Number(tf.estimateMs) || 0;

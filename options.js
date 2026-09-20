@@ -2650,10 +2650,10 @@ function initDeptCreator() {
 // Priority sections narrow the visible task LIST only; they never change the
 // headline totals or the toolbar badge.
 // "Due today" is ticked by default (a saved choice always wins).
-let cuFilter = { dueToday: true, dueWeek: false, dueNextWeek: false, dueCustom: false, missingDue: false, customFrom: "", customTo: "", missingEst: false, hasTracked: false, deadlineCrossed: false, statuses: [], priorities: [], clients: [] };
-const CU_FILTER_KEYS = ["dueToday", "dueWeek", "dueNextWeek", "dueCustom", "missingEst", "missingDue", "hasTracked", "deadlineCrossed", "waitingOthers"];
+let cuFilter = { dueToday: true, dueTomorrow: false, dueWeek: false, dueNextWeek: false, dueCustom: false, missingDue: false, customFrom: "", customTo: "", missingEst: false, hasTracked: false, deadlineCrossed: false, waitingOthers: false, statuses: [], priorities: [], clients: [] };
+const CU_FILTER_KEYS = ["dueToday", "dueTomorrow", "dueWeek", "dueNextWeek", "dueCustom", "missingEst", "missingDue", "hasTracked", "deadlineCrossed", "waitingOthers"];
 const CU_PRIORITY_ORDER = ["urgent", "high", "normal", "low", "none"];
-const CU_SCOPE_LABEL = { today: "due today", week: "this week", nextweek: "due next week", extended: "active today" };
+const CU_SCOPE_LABEL = { today: "due today", tomorrow: "due tomorrow", week: "this week", nextweek: "due next week", extended: "active today" };
 
 function cuTodayEndMs() { const d = new Date(); d.setHours(23, 59, 59, 999); return d.getTime(); }
 function cuActiveFilterCount(f) {
@@ -2705,15 +2705,33 @@ function resolveCuFilterView(st, f) {
     return { estimateMs: tw.estimateMs, spentMs: tw.spentMs, tasks: Array.isArray(tw.tasks) ? tw.tasks : [], deadlineTasks: Array.isArray(tw.deadlineTasks) ? tw.deadlineTasks : [], trackedTasks: Array.isArray(tw.trackedTasks) ? tw.trackedTasks : [], scope: "week" };
   }
   if (f.dueTomorrow) {
-    // Filter today's bundle by dueDateMs falling within tomorrow's calendar day.
+    // Tomorrow's tasks live in the WEEK bundles - today's bundle only ever holds
+    // tasks due today, so filtering that one always came back empty. Pull from
+    // this week AND next week (tomorrow crosses the week boundary on Saturday),
+    // then keep the rows whose due date falls on tomorrow.
     const tomorrowStart = new Date(); tomorrowStart.setDate(tomorrowStart.getDate() + 1); tomorrowStart.setHours(0, 0, 0, 0);
     const tomorrowEnd = new Date(tomorrowStart); tomorrowEnd.setHours(23, 59, 59, 999);
     const tStart = tomorrowStart.getTime();
     const tEnd = tomorrowEnd.getTime();
     const inRange = (t) => { const d = Number(t && t.dueDateMs) || 0; return d >= tStart && d <= tEnd; };
-    const tasks = (Array.isArray(st.tasks) ? st.tasks : []).filter(inRange);
-    const deadlineTasks = (Array.isArray(st.deadlineTasks) ? st.deadlineTasks : []).filter(inRange);
-    const trackedTasks = (Array.isArray(st.trackedTasks) ? st.trackedTasks : []).filter(inRange);
+    const pick = (key) => {
+      const out = [];
+      const seen = new Set();
+      for (const b of [st.thisWeek, st.nextWeek, st.todayFilter, st]) {
+        if (!b || !Array.isArray(b[key])) continue;
+        for (const t of b[key]) {
+          if (!inRange(t)) continue;
+          const id = String((t && (t.id != null ? t.id : t.taskId)) || "");
+          if (!id || seen.has(id)) continue;
+          seen.add(id);
+          out.push(t);
+        }
+      }
+      return out;
+    };
+    const tasks = pick("tasks");
+    const deadlineTasks = pick("deadlineTasks");
+    const trackedTasks = pick("trackedTasks");
     const sum = (arr, key) => arr.reduce((n, t) => n + (Number(t && t[key]) || 0), 0);
     return {
       estimateMs: sum(tasks, "estimateMs") + sum(deadlineTasks, "dayEstimateMs"),
