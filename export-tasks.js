@@ -147,7 +147,9 @@
         else {
           note("Creating in Google Drive…");
           const res = await chrome.runtime.sendMessage({
-            type: "EXPORT_TO_GOOGLE", kind, name: file, html: toHtml(m, title),
+            type: "EXPORT_TO_GOOGLE", kind, name: file,
+            html: toHtml(m, title), // Docs keeps the bold "main" rows
+            csv: toCsv(m), // Sheets: Drive only converts csv/xls into a spreadsheet
           });
           if (!res || !res.ok) throw new Error((res && (res.error || res.reason)) || "Google export failed");
           note("Opening…");

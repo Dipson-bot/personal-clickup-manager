@@ -28,7 +28,7 @@ const STATE_FILENAME = "daily-login-state.json";
 const ACCOUNTS_FILENAME = "daily-login-accounts.json";
 const KEY_FILENAME = "daily-login-key.json";
 
-function buildAuthUrl({ prompt = "", scope = SCOPE } = {}) {
+function buildAuthUrl({ prompt = "", scope = SCOPE, loginHint = "" } = {}) {
   const redirectUri = chrome.identity.getRedirectURL();
   const params = new URLSearchParams({
     client_id: GOOGLE_CLIENT_ID,
@@ -37,13 +37,17 @@ function buildAuthUrl({ prompt = "", scope = SCOPE } = {}) {
     scope,
   });
   if (prompt) params.set("prompt", prompt);
+  // Which account to renew for. Without it, a browser signed into several Google
+  // accounts can't refresh silently ("account selection required") and the user
+  // looks signed out every hour.
+  if (loginHint) params.set("login_hint", loginHint);
   return `https://accounts.google.com/o/oauth2/v2/auth?${params.toString()}`;
 }
 
-async function launchAuth({ interactive = false, prompt = "", scope = SCOPE } = {}) {
+async function launchAuth({ interactive = false, prompt = "", scope = SCOPE, loginHint = "" } = {}) {
   try {
     const redirectedTo = await chrome.identity.launchWebAuthFlow({
-      url: buildAuthUrl({ prompt, scope }),
+      url: buildAuthUrl({ prompt, scope, loginHint }),
       interactive,
     });
     const hash = new URL(redirectedTo).hash.substring(1);
@@ -72,15 +76,22 @@ export async function getFileToken(interactive = true) {
 }
 // Upload an HTML table and let Drive convert it into a Google Sheet / Doc,
 // which keeps the bold "main" rows and the header row.
-export async function createGoogleFile(token, { name, html, kind }) {
-  const mimeType = kind === "docs" ? "application/vnd.google-apps.document" : "application/vnd.google-apps.spreadsheet";
+export async function createGoogleFile(token, { name, html, csv, kind }) {
+  // Drive imports HTML as a DOC only; Sheets accepts csv/tsv/xls(x)/ods. Sending
+  // HTML with a spreadsheet target produced an empty Google Doc, so each target
+  // gets the source format it actually supports.
+  const docs = kind === "docs";
+  const mimeType = docs ? "application/vnd.google-apps.document" : "application/vnd.google-apps.spreadsheet";
+  const srcType = docs ? "text/html" : "text/csv";
+  const content = docs ? html : csv;
+  if (!content) throw new Error("Nothing to export.");
   const boundary = "pcm" + Math.random().toString(36).slice(2);
   const body =
     "--" + boundary + "\r\nContent-Type: application/json; charset=UTF-8\r\n\r\n" +
     JSON.stringify({ name, mimeType }) + "\r\n" +
-    "--" + boundary + "\r\nContent-Type: text/html; charset=UTF-8\r\n\r\n" +
-    html + "\r\n--" + boundary + "--";
-  const res = await fetch("https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart&fields=id,webViewLink", {
+    "--" + boundary + "\r\nContent-Type: " + srcType + "; charset=UTF-8\r\n\r\n" +
+    content + "\r\n--" + boundary + "--";
+  const res = await fetch("https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart&fields=id,webViewLink,mimeType", {
     method: "POST",
     headers: { Authorization: "Bearer " + token, "Content-Type": "multipart/related; boundary=" + boundary },
     body,
@@ -93,7 +104,10 @@ export async function createGoogleFile(token, { name, html, kind }) {
   const j = await res.json();
   const id = j && j.id;
   if (!id) throw new Error("Google Drive returned no file id.");
-  return { id, url: (j && j.webViewLink) || (kind === "docs" ? "https://docs.google.com/document/d/" : "https://docs.google.com/spreadsheets/d/") + id + "/edit" };
+  if (j.mimeType && j.mimeType !== mimeType) {
+    throw new Error("Google Drive created a " + (j.mimeType.includes("document") ? "Doc" : j.mimeType) + " instead - try the other format.");
+  }
+  return { id, url: (j && j.webViewLink) || (docs ? "https://docs.google.com/document/d/" : "https://docs.google.com/spreadsheets/d/") + id + "/edit" };
 }
 
 // Cached token so we don't re-auth on every check.
@@ -102,6 +116,7 @@ export async function createGoogleFile(token, { name, html, kind }) {
 //  2. chrome.storage.local (persists across restarts)
 // If the cached token is expired or rejected, try silent re-auth first
 // (prompt=none) before bothering the user with an interactive prompt.
+let lastSilentFailAt = 0;
 let memToken = null;
 let memTokenExpiresAt = 0;
 
@@ -119,11 +134,16 @@ export async function getValidToken(allowInteractive) {
     return memToken;
   }
 
-  // 3. Try silent re-auth (works if user previously consented, and Drive session is alive)
-  let result = await launchAuth({ interactive: false, prompt: "none" });
+  // A silent attempt that just failed is not worth repeating on every poll.
+  if (!allowInteractive && Date.now() - lastSilentFailAt < 60000) return null;
+  // 3. Silent re-auth, naming the account that was connected (see login_hint).
+  const hint = await getDriveAccount();
+  let result = await launchAuth({ interactive: false, prompt: "none", loginHint: hint });
+  if (!result && hint) result = await launchAuth({ interactive: false, prompt: "none" }); // stale hint
   // 4. Last resort: interactive (only if caller allows it)
-  if (!result && allowInteractive) result = await launchAuth({ interactive: true });
-  if (!result) return null;
+  if (!result && allowInteractive) result = await launchAuth({ interactive: true, loginHint: hint });
+  if (!result) { lastSilentFailAt = Date.now(); return null; }
+  lastSilentFailAt = 0;
 
   const expiresAt = now + result.expiresIn * 1000;
   memToken = result.token;
@@ -131,7 +151,27 @@ export async function getValidToken(allowInteractive) {
   await chrome.storage.local.set({
     authCache: { accessToken: result.token, expiresAt },
   });
+  rememberDriveAccount(result.token).catch(() => {});
   return result.token;
+}
+
+// The connected Google account's email, used as login_hint above. Looked up once
+// (Drive's own "about" endpoint, no extra scope) and kept until sign-out.
+export async function getDriveAccount() {
+  const { driveAccount } = await chrome.storage.local.get("driveAccount");
+  return (driveAccount && driveAccount.email) || "";
+}
+async function rememberDriveAccount(token) {
+  if (await getDriveAccount()) return;
+  try {
+    const res = await fetch("https://www.googleapis.com/drive/v3/about?fields=user(emailAddress,displayName)", {
+      headers: { Authorization: "Bearer " + token },
+    });
+    if (!res.ok) return;
+    const j = await res.json();
+    const email = j && j.user && j.user.emailAddress;
+    if (email) await chrome.storage.local.set({ driveAccount: { email, name: (j.user && j.user.displayName) || "" } });
+  } catch (e) {}
 }
 
 // Invalidate the cached token WITHOUT revoking the grant. Used to self-heal a
@@ -148,6 +188,7 @@ export function invalidateToken() {
 // Clear both in-memory and persisted tokens. Also tell Google's authorization
 // server to forget the grant so a re-sign-in is required.
 export async function signOut() {
+  await chrome.storage.local.remove(["driveAccount", "driveFileToken"]);
   // Read the cached token BEFORE clearing it, so the server-side revoke can run
   // (previously we removed authCache first, so the revoke never had a token).
   let cachedToken = memToken;
