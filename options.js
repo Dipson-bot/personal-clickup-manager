@@ -1230,7 +1230,10 @@ function cuPrioRank(t) {
 }
 function cuPrioCmp(a, b) {
   return cuPrioRank(a) - cuPrioRank(b) ||
-    (Number(b.estimateMs != null ? b.estimateMs : b.dayEstimateMs) || 0) - (Number(a.estimateMs != null ? a.estimateMs : a.dayEstimateMs) || 0);
+    (Number(b.estimateMs != null ? b.estimateMs : b.dayEstimateMs) || 0) - (Number(a.estimateMs != null ? a.estimateMs : a.dayEstimateMs) || 0) ||
+    // Same priority and same estimate: fall back to the name, read the way a
+    // person would (ACT-025.S1 before ACT-025.S3), instead of ClickUp's order.
+    String(a.name || "").localeCompare(String(b.name || ""), undefined, { numeric: true, sensitivity: "base" });
 }
 function sortByPriority(rows) {
   const list = Array.isArray(rows) ? rows : [];
@@ -1250,7 +1253,9 @@ function sortByPriority(rows) {
   for (const p of top) {
     out.push(p);
     const s = subs.get(idOf(p));
-    if (s) out.push(...s.slice().sort(cuPrioCmp));
+    // Grouped view: keep ClickUp's own order (S1, S2, S3…) rather than
+    // re-sorting the breakdown by priority.
+    if (s) out.push(...(cuFilter.groupSubtasks ? s : s.slice().sort(cuPrioCmp)));
   }
   return out;
 }
@@ -2246,6 +2251,7 @@ async function renderOptionsFilter() {
         spentShown = [].concat(shownTasks, shownDeadline, shownTracked).reduce((x, t) => x + (Number(t.spentMs) || 0), 0);
       }
     }
+    shownTasks = cuGroupSubtaskRowsOpt(shownTasks);
     cuExportRowsOpt(shownTasks, shownDeadline, shownTracked, label + (clientPick ? " - " + clientPick : ""));
     optFltExport = { rows: cuExportDataOpt.rows, title: cuExportDataOpt.title };
     const total = shownTasks.length + shownDeadline.length + shownTracked.length;
@@ -2668,7 +2674,7 @@ function initDeptCreator() {
 // headline totals or the toolbar badge.
 // "Due today" is ticked by default (a saved choice always wins).
 let cuFilter = { dueToday: true, dueTomorrow: false, dueWeek: false, dueNextWeek: false, dueCustom: false, missingDue: false, customFrom: "", customTo: "", missingEst: false, hasTracked: false, deadlineCrossed: false, waitingOthers: false, statuses: [], priorities: [], clients: [] };
-const CU_FILTER_KEYS = ["dueToday", "dueTomorrow", "dueWeek", "dueNextWeek", "dueCustom", "missingEst", "missingDue", "hasTracked", "deadlineCrossed", "waitingOthers"];
+const CU_FILTER_KEYS = ["dueToday", "dueTomorrow", "dueWeek", "dueNextWeek", "dueCustom", "missingEst", "missingDue", "hasTracked", "deadlineCrossed", "waitingOthers", "groupSubtasks"];
 const CU_PRIORITY_ORDER = ["urgent", "high", "normal", "low", "none"];
 const CU_SCOPE_LABEL = { today: "due today", tomorrow: "due tomorrow", week: "this week", nextweek: "due next week", extended: "active today" };
 
@@ -3034,6 +3040,19 @@ function renderNowTracking() {
   el.append(top, noteRow);
 }
 
+// "Group subtasks under their parent": arrange the rows ALREADY in view so a
+// parent is followed by its own subtasks, indented. Nothing extra is fetched,
+// and a subtask whose parent is not in this view simply stays where it was.
+function cuGroupSubtaskRowsOpt(rows) {
+  if (!cuFilter.groupSubtasks) return rows;
+  const list = Array.isArray(rows) ? rows : [];
+  const present = new Set(list.map((t) => String(t && (t.id != null ? t.id : t.taskId))));
+  return list.map((t) => {
+    const p = t && t.parentId != null ? String(t.parentId) : null;
+    return p && present.has(p) ? { ...t, isSubtask: true } : t;
+  });
+}
+
 function renderClickupPreview(st) {
   if (cuEstEditingOpt) { cuRenderPendingOpt = true; return; }
   const box = $("cuPreview");
@@ -3117,6 +3136,7 @@ function renderClickupPreview(st) {
   }
   cuExportRowsOpt(viewTasks, viewDeadline, viewTracked,
     (CU_SCOPE_LABEL[view.scope] || "tasks") + (clientsSel.length ? " - " + clientsSel.join(", ") : ""));
+  viewTasks = cuGroupSubtaskRowsOpt(viewTasks);
   const noEst = viewTasks.filter((t) => !Number(t.estimateMs)).length;
   const scopeLabel = (view.scope && view.scope !== "extended") ? (view.label || CU_SCOPE_LABEL[view.scope]) : "";
 
