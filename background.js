@@ -269,6 +269,9 @@ const DEFAULT_SETTINGS = {
   // Admin tools (publishing a new version). Off by default; the GitHub token it
   // uses is stored encrypted on THIS machine only and never ships in a release.
   showAdmin: false,
+  // Include the admin GitHub token in the Drive backup, so a reinstall restores
+  // it. Off means the token stays on this computer only.
+  adminSyncToken: true,
   // Which days a "week" covers for the Due this week / next week views.
   clickupWeekMode: "sun-sat", // sun-sat | mon-sun | mon-fri | sun-thu
   // ---- Away protection ----
@@ -854,7 +857,13 @@ async function pushAllToDrive(tok, accounts) {
   const ccfg = await getClickupConfig().catch(() => null);
   const settings = await getSettings().catch(() => null);
   const departments = (settings && Array.isArray(settings.clickupDepartments)) ? settings.clickupDepartments : null;
-  await pushAccountsToDrive(tok, accounts, ccfg && ccfg.token ? ccfg : null, departments, settings, await collectExtras());
+  let admin = null;
+  if (!settings || settings.adminSyncToken !== false) {
+    const { adminEnc } = await chrome.storage.local.get("adminEnc");
+    const saved = await decryptJSON(adminEnc, null);
+    if (saved && saved.token) admin = { token: saved.token };
+  }
+  await pushAccountsToDrive(tok, accounts, ccfg && ccfg.token ? ccfg : null, departments, settings, await collectExtras(), admin);
 }
 
 // ---------- Drive "extras": local-only data that must survive a reinstall ----------
@@ -875,6 +884,17 @@ async function collectExtras() {
     outStamps[k] = Number(stamps[k]) || 0;
   }
   return { values, stamps: outStamps };
+}
+// Restore the publishing token from Drive when this machine has none (after a
+// reinstall, or on a second computer). A token already here always wins.
+async function adoptRemoteAdmin(remote) {
+  if (!remote || !remote.token) return;
+  const s = await getSettings().catch(() => ({}));
+  if (s.adminSyncToken === false) return;
+  const { adminEnc } = await chrome.storage.local.get("adminEnc");
+  const local = await decryptJSON(adminEnc, null);
+  if (local && local.token) return;
+  await chrome.storage.local.set({ adminEnc: await encryptJSON({ token: remote.token }) });
 }
 async function adoptRemoteExtras(remote) {
   if (!remote || !remote.values || typeof remote.values !== "object") return;
@@ -954,6 +974,7 @@ async function syncNow({ light = false } = {}) {
     if (remote) await adoptRemoteDepartments(remote.departments);
     if (remote) await adoptRemoteSettings(remote.settings, remote.settingsAt);
     if (remote) await adoptRemoteExtras(remote.extras);
+    if (remote) await adoptRemoteAdmin(remote.admin);
     if (remote) await scheduleAgentRouterAlarms().catch(() => {});
     // Push our accounts + settings so other machines see them.
     await pushAllToDrive(tok, await getAccounts()).catch(() => {});
@@ -1062,6 +1083,7 @@ async function clickupPublic() {
     wrapUpTime: settings.clickupWrapUpTime || "16:45",
     syncMin: syncMinutes(settings),
     weekMode: settings.clickupWeekMode || "sun-sat",
+    adminSyncToken: settings.adminSyncToken !== false,
     workdayEndHour: Number(settings.clickupWorkdayEndHour) || 0,
     extendedMode: settings.clickupExtendedMode === "excl0" ? "excl0" : "days",
     weeklyTo: settings.clickupWeeklyTo === "friday" ? "friday" : "today",
@@ -4294,6 +4316,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
           ok: true,
           repo: UPDATE_REPO,
           hasToken: !!(tok && tok.token),
+          syncToken: (await getSettings()).adminSyncToken !== false,
           tokenHint: tok && tok.token ? String(tok.token).slice(0, 4) + "…" + String(tok.token).slice(-4) : "",
           version: chrome.runtime.getManifest().version,
         });

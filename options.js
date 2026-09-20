@@ -4874,6 +4874,7 @@ async function admRefresh() {
     p[p.length - 1] = (p[p.length - 1] || 0) + 1; // suggest the next patch version
     $("admVersion").value = p.join(".");
   }
+  if ($("admSyncToken") && st) $("admSyncToken").checked = st.syncToken !== false;
   if ($("admTokenState")) {
     $("admTokenState").textContent = st && st.hasToken ? "- saved (" + st.tokenHint + ")" : "- not saved yet";
   }
@@ -4947,8 +4948,17 @@ if ($("admSaveToken")) $("admSaveToken").onclick = async () => {
   const res = await send({ type: "ADMIN_SET_TOKEN", token: $("admToken").value }).catch((e) => ({ ok: false, error: String(e) }));
   btn.disabled = false;
   cuMsg("admTokenMsg", res && res.ok ? "Saved ✓" : (res && res.error) || "Couldn't save", !!(res && res.ok));
-  if (res && res.ok) $("admToken").value = "";
+  if (res && res.ok) {
+    $("admToken").value = "";
+    send({ type: "SYNC_NOW" }).catch(() => {}); // back it up straight away when allowed
+  }
   admRefresh();
+};
+if ($("admSyncToken")) $("admSyncToken").onchange = async () => {
+  const on = $("admSyncToken").checked;
+  try { await send({ type: "SET_SETTINGS", patch: { adminSyncToken: on } }); } catch (e) {}
+  cuMsg("admTokenMsg", on ? "Will be backed up to Drive" : "Kept on this computer only", true);
+  if (on) send({ type: "SYNC_NOW" }).catch(() => {});
 };
 if ($("admForgetToken")) $("admForgetToken").onclick = async () => {
   await send({ type: "ADMIN_SET_TOKEN", token: "" }).catch(() => {});
