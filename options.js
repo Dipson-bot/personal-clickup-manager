@@ -385,6 +385,8 @@ async function load() {
     renderList(state.accounts || [], state.status || {}, state.today, !!state.running);
     applyArVisibility(state);
     if ($("showAgentRouter")) $("showAgentRouter").checked = arVisible(state);
+    applyAdminVisibility(state);
+    if ($("showAdmin")) $("showAdmin").checked = adminVisible(state);
     // Drive Sync card: cache the state so a live busy-phase message can repaint
     // the card without a full reload, then paint it.
     optLastState = state;
@@ -4734,6 +4736,243 @@ function arVisible(st) {
   if (v === true || v === false) return v;
   return !!(st && Array.isArray(st.accounts) && st.accounts.length);
 }
+
+// ======================= Admin: publish a new version =======================
+// Packages the extension's own files (Chrome can read them) into a zip and
+// publishes it as a GitHub release, so a new version can go out without leaving
+// the browser. The GitHub token lives encrypted in the background, never here.
+const ADMIN_FILES = [
+  "manifest.json", "background.js", "popup.html", "popup.js", "options.html", "options.js",
+  "offscreen.html", "offscreen.js", "update.html", "update.js", "wrapup.html", "wrapup.js",
+  "notify-menu.js", "export-tasks.js", "lib-zip.js", "lib-unzip.js", "lib-automation.js",
+  "lib-availability.js", "lib-clickup.js", "lib-crypto.js", "lib-drive.js",
+  "icons/icon16.png", "icons/icon48.png", "icons/icon128.png",
+  "sounds/notify.wav", "sounds/danger.mp3", "sounds/winner.wav",
+  "README.md", "CHANGELOG.md",
+];
+let admZip = null; // { blob, version, files }
+
+function admSay(text, cls) {
+  const box = $("admLog");
+  if (!box) return;
+  const line = document.createElement("div");
+  if (cls) line.className = cls;
+  line.textContent = text;
+  box.appendChild(line);
+  box.scrollTop = box.scrollHeight;
+}
+function admClear() { if ($("admLog")) $("admLog").innerHTML = ""; }
+function admBusy(on) {
+  for (const id of ["admPublish", "admGithub", "admBuild", "admSetVersion"]) if ($(id)) $(id).disabled = on;
+}
+const admFmtSize = (n) => (n > 1048576 ? (n / 1048576).toFixed(1) + " MB" : Math.round(n / 1024) + " KB");
+
+// Read this extension's own files and zip them, exactly as they run right now.
+async function admBuildZip() {
+  const files = [];
+  let missing = 0;
+  for (const path of ADMIN_FILES) {
+    try {
+      const res = await fetch(chrome.runtime.getURL(path));
+      if (!res.ok) { missing++; continue; }
+      files.push({ path, data: new Uint8Array(await res.arrayBuffer()) });
+    } catch (e) { missing++; }
+  }
+  if (!files.length) throw new Error("Couldn't read the extension's files.");
+  const version = JSON.parse(new TextDecoder().decode(files.find((f) => f.path === "manifest.json").data)).version;
+  const blob = window.pcmZip.makeZip(files);
+  admZip = { blob, version, files: files.length };
+  admSay("Packaged " + files.length + " files (" + admFmtSize(blob.size) + ") for v" + version + (missing ? " - " + missing + " file(s) skipped" : ""), "ok");
+  return admZip;
+}
+function admDownload(blob, name) {
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = name;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 5000);
+}
+const admB64 = (blob) => new Promise((res, rej) => {
+  const fr = new FileReader();
+  fr.onload = () => res(String(fr.result).split(",")[1] || "");
+  fr.onerror = () => rej(new Error("Couldn't read the package."));
+  fr.readAsDataURL(blob);
+});
+
+// The version lives in manifest.json, which sits in the extension's folder. The
+// same folder handle the one-click updater remembers is used to rewrite it.
+function admFolderHandle() {
+  return new Promise((resolve) => {
+    let req;
+    try { req = indexedDB.open("pcm-updater", 1); } catch (e) { return resolve(null); }
+    req.onupgradeneeded = () => { try { req.result.createObjectStore("kv"); } catch (e) {} };
+    req.onerror = () => resolve(null);
+    req.onsuccess = () => {
+      try {
+        const tx = req.result.transaction("kv", "readonly").objectStore("kv").get("extDir");
+        tx.onsuccess = () => resolve(tx.result || null);
+        tx.onerror = () => resolve(null);
+      } catch (e) { resolve(null); }
+    };
+  });
+}
+async function admSetVersion() {
+  const want = String($("admVersion").value || "").replace(/^v/, "").trim();
+  if (!/^\d+\.\d+(\.\d+)?$/.test(want)) { admSay("Version must look like 3.7.0", "err"); return; }
+  const dir = await admFolderHandle();
+  if (!dir) {
+    admSay("This extension's folder isn't remembered yet. Open General > One-click updates… , choose the folder, then try again.", "err");
+    return;
+  }
+  try {
+    if ((await dir.queryPermission({ mode: "readwrite" })) !== "granted" &&
+        (await dir.requestPermission({ mode: "readwrite" })) !== "granted") {
+      admSay("Permission to write to the folder was refused.", "err");
+      return;
+    }
+    const fh = await dir.getFileHandle("manifest.json");
+    const text = await (await fh.getFile()).text();
+    const next = text.replace(/("version"\s*:\s*")[^"]+(")/, "$1" + want + "$2");
+    if (next === text) { admSay("Couldn't find the version line in manifest.json.", "err"); return; }
+    const w = await fh.createWritable();
+    await w.write(next);
+    await w.close();
+    admSay("manifest.json now says " + want + " - restarting the extension…", "ok");
+    setTimeout(() => { send({ type: "RELOAD_EXTENSION" }).catch(() => {}); }, 800);
+  } catch (e) {
+    admSay("Couldn't write manifest.json: " + (e && e.message ? e.message : e), "err");
+  }
+}
+
+// Release notes: start from this version's section of CHANGELOG.md.
+async function admNotesFromChangelog(version) {
+  try {
+    const text = await (await fetch(chrome.runtime.getURL("CHANGELOG.md"))).text();
+    const lines = text.split("\n");
+    const start = lines.findIndex((l) => new RegExp("^##\\s+v?" + version.replace(/\./g, "\\.") + "(\\s|$)").test(l.trim()));
+    if (start < 0) return "";
+    const out = [];
+    for (let i = start + 1; i < lines.length; i++) {
+      if (/^##\s/.test(lines[i])) break;
+      out.push(lines[i]);
+    }
+    return out.join("\n").trim();
+  } catch (e) { return ""; }
+}
+
+async function admRefresh() {
+  let st = null;
+  try { st = await send({ type: "ADMIN_STATE" }); } catch (e) {}
+  const version = (st && st.version) || chrome.runtime.getManifest().version;
+  if ($("admCurrent")) $("admCurrent").textContent = "v" + version;
+  if ($("admRepo") && st && st.repo) $("admRepo").textContent = st.repo;
+  if ($("admVersion") && !$("admVersion").value) {
+    const p = version.split(".").map(Number);
+    p[p.length - 1] = (p[p.length - 1] || 0) + 1; // suggest the next patch version
+    $("admVersion").value = p.join(".");
+  }
+  if ($("admTokenState")) {
+    $("admTokenState").textContent = st && st.hasToken ? "- saved (" + st.tokenHint + ")" : "- not saved yet";
+  }
+  if ($("admNotes") && !$("admNotes").value) $("admNotes").value = await admNotesFromChangelog(version);
+}
+
+if ($("admSetVersion")) $("admSetVersion").onclick = () => { admClear(); admSetVersion(); };
+if ($("admBuild")) $("admBuild").onclick = async () => {
+  admClear();
+  admBusy(true);
+  try {
+    const z = await admBuildZip();
+    admDownload(z.blob, "personal-clickup-manager-v" + z.version + ".zip");
+    admSay("Saved to your Downloads folder.", "ok");
+  } catch (e) { admSay(String(e && e.message ? e.message : e), "err"); }
+  admBusy(false);
+};
+if ($("admGithub")) $("admGithub").onclick = async () => {
+  admClear();
+  admBusy(true);
+  try {
+    const z = await admBuildZip();
+    const version = String($("admVersion").value || z.version).replace(/^v/, "").trim();
+    if (version !== z.version) admSay("Note: the package says v" + z.version + ". Use \"Set version & reload\" first if that's wrong.", "err");
+    admDownload(z.blob, "personal-clickup-manager-v" + z.version + ".zip");
+    const st = await send({ type: "ADMIN_STATE" }).catch(() => null);
+    const repo = (st && st.repo) || "";
+    const notes = String($("admNotes").value || "");
+    const url = "https://github.com/" + repo + "/releases/new?tag=v" + encodeURIComponent(version) +
+      "&title=" + encodeURIComponent("v" + version) + "&body=" + encodeURIComponent(($("admCritical").checked ? "[critical]\n\n" : "") + notes);
+    chrome.tabs.create({ url }).catch(() => {});
+    admSay("GitHub is open with everything filled in. Drag the zip from your Downloads into the \"Attach binaries\" box, then press Publish release.", "ok");
+  } catch (e) { admSay(String(e && e.message ? e.message : e), "err"); }
+  admBusy(false);
+};
+if ($("admPublish")) $("admPublish").onclick = async () => {
+  admClear();
+  admBusy(true);
+  try {
+    const st = await send({ type: "ADMIN_STATE" });
+    if (!st || !st.hasToken) throw new Error("Save a GitHub token below first, or use \"Open GitHub page instead\".");
+    const version = String($("admVersion").value || "").replace(/^v/, "").trim();
+    const z = await admBuildZip();
+    if (version !== z.version) {
+      throw new Error("The running extension is v" + z.version + ", so that is what would be published. Press \"Set version & reload\" to make it v" + version + " first.");
+    }
+    admSay("Uploading v" + version + " to GitHub…");
+    const res = await send({
+      type: "ADMIN_PUBLISH",
+      version,
+      notes: $("admNotes").value || "",
+      critical: !!($("admCritical") && $("admCritical").checked),
+      zipB64: await admB64(z.blob),
+    }, 120000);
+    if (!res || !res.ok) throw new Error((res && res.error) || "Publish failed.");
+    admSay("Published " + res.tag + " ✓ - everyone gets the update prompt within ~12 hours (or straight away via Check for updates).", "ok");
+    const a = document.createElement("a");
+    a.href = res.url;
+    a.target = "_blank";
+    a.rel = "noopener";
+    a.textContent = "Open the release on GitHub";
+    const line = document.createElement("div");
+    line.appendChild(a);
+    $("admLog").appendChild(line);
+  } catch (e) { admSay(String(e && e.message ? e.message : e), "err"); }
+  admBusy(false);
+};
+if ($("admSaveToken")) $("admSaveToken").onclick = async () => {
+  const btn = $("admSaveToken");
+  btn.disabled = true;
+  const res = await send({ type: "ADMIN_SET_TOKEN", token: $("admToken").value }).catch((e) => ({ ok: false, error: String(e) }));
+  btn.disabled = false;
+  cuMsg("admTokenMsg", res && res.ok ? "Saved ✓" : (res && res.error) || "Couldn't save", !!(res && res.ok));
+  if (res && res.ok) $("admToken").value = "";
+  admRefresh();
+};
+if ($("admForgetToken")) $("admForgetToken").onclick = async () => {
+  await send({ type: "ADMIN_SET_TOKEN", token: "" }).catch(() => {});
+  $("admToken").value = "";
+  cuMsg("admTokenMsg", "Forgotten", true);
+  admRefresh();
+};
+function adminVisible(st) {
+  return !!(st && st.settings && st.settings.showAdmin);
+}
+function applyAdminVisibility(st) {
+  const on = adminVisible(st);
+  document.body.classList.toggle("no-admin", !on);
+  if (!on && document.querySelector('.panel.on[data-panel="admin"]') && typeof showOptTab === "function") showOptTab("dashboard");
+  if (on) admRefresh();
+}
+if ($("showAdmin")) $("showAdmin").onchange = async () => {
+  const on = $("showAdmin").checked;
+  try { await send({ type: "SET_SETTINGS", patch: { showAdmin: on } }); } catch (e) {}
+  document.body.classList.toggle("no-admin", !on);
+  if (on) admRefresh();
+  else if (document.querySelector('.panel.on[data-panel="admin"]') && typeof showOptTab === "function") showOptTab("dashboard");
+};
+
 function applyArVisibility(st) {
   document.body.classList.toggle("no-ar", !arVisible(st));
   if (!arVisible(st) && document.querySelector('.panel.on[data-panel="agent"]') && typeof showOptTab === "function") showOptTab("dashboard");

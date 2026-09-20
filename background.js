@@ -266,6 +266,9 @@ const DEFAULT_SETTINGS = {
   // Background ClickUp sync interval (minutes). One refresh is ~10-40 requests and
   // ClickUp allows ~100/min per token, so 2 is the floor; reminders ride on it.
   clickupSyncMin: 5,
+  // Admin tools (publishing a new version). Off by default; the GitHub token it
+  // uses is stored encrypted on THIS machine only and never ships in a release.
+  showAdmin: false,
   // Which days a "week" covers for the Due this week / next week views.
   clickupWeekMode: "sun-sat", // sun-sat | mon-sun | mon-fri | sun-thu
   // ---- Away protection ----
@@ -2830,6 +2833,9 @@ async function checkForUpdate(force, forceNotify = false) {
     const info = {
       checkedAt: Date.now(), current, latest,
       newer: !!latest && cmpVersion(latest, current) > 0,
+      // The publisher can mark a release important ("[critical]" in its notes):
+      // the reminder then comes back every 4 hours instead of daily.
+      critical: /[critical]/i.test(String(j.body || "")),
       url: j.html_url || "https://github.com/" + UPDATE_REPO + "/releases/latest",
       zip: zip ? zip.browser_download_url : "",
       notifiedFor: prev && prev.notifiedFor,
@@ -2840,7 +2846,8 @@ async function checkForUpdate(force, forceNotify = false) {
     // whenever the user presses "Check for updates" themselves.
     const { updateDownload: dl } = await chrome.storage.local.get("updateDownload");
     const downloaded = dl && dl.version === latest;
-    const due = info.notifiedFor !== latest || Date.now() - (info.notifiedAt || 0) >= 24 * 3600 * 1000;
+    const gap = (info.critical ? 4 : 24) * 3600 * 1000;
+    const due = info.notifiedFor !== latest || Date.now() - (info.notifiedAt || 0) >= gap;
     if (info.newer && (forceNotify || (due && !downloaded))) {
       info.notifiedFor = latest;
       info.notifiedAt = Date.now();
@@ -2865,8 +2872,8 @@ async function showUpdateNotification(info) {
     await chrome.notifications.create("update-available-" + info.latest, {
       type: "basic",
       iconUrl: chrome.runtime.getURL("icons/icon128.png"),
-      title: "Update available: v" + info.latest,
-      message: "You have v" + info.current + ". Click Update now to install it.",
+      title: (info.critical ? "Important update: v" : "Update available: v") + info.latest,
+      message: "You have v" + info.current + ". Click Update now to install it." + (info.critical ? " Please do this today." : ""),
       priority: 2,
       requireInteraction: true,
       buttons: [{ title: "Update now" }, { title: "What's new" }],
@@ -4274,6 +4281,91 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
           // Google files are private by default; share on request so the link works for the team.
           const shared = msg.share === false ? false : await shareAnyoneWithLink(tok, r.id).catch(() => false);
           sendResponse({ ok: true, url: r.url, shared });
+        } catch (e) {
+          sendResponse({ ok: false, error: String(e && e.message ? e.message : e) });
+        }
+        break;
+      }
+      case "ADMIN_STATE": {
+        // What the Admin panel needs to draw itself (never the token itself).
+        const { adminEnc } = await chrome.storage.local.get("adminEnc");
+        const tok = await decryptJSON(adminEnc, null);
+        sendResponse({
+          ok: true,
+          repo: UPDATE_REPO,
+          hasToken: !!(tok && tok.token),
+          tokenHint: tok && tok.token ? String(tok.token).slice(0, 4) + "…" + String(tok.token).slice(-4) : "",
+          version: chrome.runtime.getManifest().version,
+        });
+        break;
+      }
+      case "ADMIN_SET_TOKEN": {
+        const t = String(msg.token || "").trim();
+        if (!t) { await chrome.storage.local.remove("adminEnc"); sendResponse({ ok: true, cleared: true }); break; }
+        // Check it works (and that it can see the repo) before saving it.
+        try {
+          const res = await fetch("https://api.github.com/repos/" + UPDATE_REPO, {
+            headers: { Authorization: "Bearer " + t, Accept: "application/vnd.github+json" },
+          });
+          if (res.status === 401) { sendResponse({ ok: false, error: "GitHub rejected that token." }); break; }
+          if (!res.ok) { sendResponse({ ok: false, error: "GitHub said HTTP " + res.status + " for " + UPDATE_REPO + "." }); break; }
+          const j = await res.json();
+          if (!j || !j.permissions || !j.permissions.push) {
+            sendResponse({ ok: false, error: "That token can read the repo but not write to it (needs Contents: read and write)." });
+            break;
+          }
+          await chrome.storage.local.set({ adminEnc: await encryptJSON({ token: t }) });
+          sendResponse({ ok: true });
+        } catch (e) {
+          sendResponse({ ok: false, error: String(e && e.message ? e.message : e) });
+        }
+        break;
+      }
+      case "ADMIN_PUBLISH": {
+        // Create the GitHub release and attach the package the Admin panel built.
+        const { adminEnc } = await chrome.storage.local.get("adminEnc");
+        const saved = await decryptJSON(adminEnc, null);
+        const token = saved && saved.token;
+        if (!token) { sendResponse({ ok: false, error: "No GitHub token saved." }); break; }
+        const version = String(msg.version || "").replace(/^v/, "").trim();
+        if (!/^\d+\.\d+(\.\d+)?$/.test(version)) { sendResponse({ ok: false, error: "Version must look like 3.7.0." }); break; }
+        const tag = "v" + version;
+        try {
+          const head = { Authorization: "Bearer " + token, Accept: "application/vnd.github+json" };
+          const exists = await fetch("https://api.github.com/repos/" + UPDATE_REPO + "/releases/tags/" + tag, { headers: head });
+          if (exists.ok) { sendResponse({ ok: false, error: tag + " is already published. Use a higher version number." }); break; }
+          const body = String(msg.notes || "").trim() || ("Version " + version);
+          const create = await fetch("https://api.github.com/repos/" + UPDATE_REPO + "/releases", {
+            method: "POST",
+            headers: { ...head, "Content-Type": "application/json" },
+            body: JSON.stringify({ tag_name: tag, name: tag, body: msg.critical ? "[critical]\n\n" + body : body, draft: false, prerelease: false }),
+          });
+          if (!create.ok) {
+            let why = "HTTP " + create.status;
+            try { const j = await create.json(); if (j && j.message) why = j.message; } catch (e2) {}
+            sendResponse({ ok: false, error: "Couldn't create the release: " + why });
+            break;
+          }
+          const rel = await create.json();
+          // Upload the zip as the release asset (raw binary, base64 from the page).
+          const bin = Uint8Array.from(atob(String(msg.zipB64 || "")), (c) => c.charCodeAt(0));
+          const name = "personal-clickup-manager-" + tag + ".zip";
+          const up = await fetch("https://uploads.github.com/repos/" + UPDATE_REPO + "/releases/" + rel.id + "/assets?name=" + encodeURIComponent(name), {
+            method: "POST",
+            headers: { ...head, "Content-Type": "application/zip" },
+            body: bin,
+          });
+          if (!up.ok) {
+            let why = "HTTP " + up.status;
+            try { const j = await up.json(); if (j && j.message) why = j.message; } catch (e2) {}
+            sendResponse({ ok: false, error: "Release created but the package upload failed (" + why + "). Attach it by hand: " + rel.html_url });
+            break;
+          }
+          // Everyone else picks it up on their next update check (within ~12h, or
+          // instantly via "Check for updates").
+          await chrome.storage.local.remove("updateInfo");
+          checkForUpdate(true, false).catch(() => {});
+          sendResponse({ ok: true, url: rel.html_url, tag });
         } catch (e) {
           sendResponse({ ok: false, error: String(e && e.message ? e.message : e) });
         }
