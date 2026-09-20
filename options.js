@@ -2759,7 +2759,17 @@ function resolveCuFilterView(st, f) {
       }
       return out;
     };
-    const tasks = pick("tasks");
+    // A task that only SPANS tomorrow (the recurring Extra Task, or anything
+    // with a start today and a due date later) is due another day, so the rule
+    // above skips it - but its estimate is divided per day and tomorrow owns a
+    // share. The weekly per-day breakdown already carries that share.
+    const spansTomorrow = () => {
+      const perDay = (st.weekly && Array.isArray(st.weekly.perDay)) ? st.weekly.perDay : [];
+      const day = perDay.find((d) => Number(d && d.ts) === tStart);
+      if (!day || !Array.isArray(day.tasks)) return [];
+      return day.tasks.filter((t) => t && (t.type === "cfg" || t.type === "extra"));
+    };
+    const tasks = pick("tasks").concat(spansTomorrow().filter((x) => !pick("tasks").some((t) => String(t.id) === String(x.id))));
     const deadlineTasks = pick("deadlineTasks");
     const trackedTasks = pick("trackedTasks");
     const sum = (arr, key) => arr.reduce((n, t) => n + (Number(t && t[key]) || 0), 0);
