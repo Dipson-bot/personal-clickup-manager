@@ -4,7 +4,6 @@
 Markdown export now shows a suggested working order, ClickUp dependencies (waiting for / blocks), who is holding a task up, priority and estimate, and warns when two tasks share a name.
 
 ## Unreleased
-- **You choose how subtask estimates count** (Options > ClickUp setup > Tracking settings): add a task and its subtasks together (unchanged default), count the task only, or let the subtasks replace it. A 4h task split into four 1h subtasks used to show as 8h for the day; now that is your decision. Tracked time was never doubled and is untouched.
 - Markdown export now spells out how to work through the list: a numbered "Suggested order" (unblocked first, then priority, then due date), each task's client, priority, status, due date, week and estimate, ClickUp dependencies as "Waiting for" / "Blocks", the "Held up by <teammate>" hold-ups, subtasks nested under their parent, a warning when two tasks share a name, and a short legend so an assistant reads it the same way you would.
 
 ## v3.7.4

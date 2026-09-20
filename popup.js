@@ -1634,8 +1634,7 @@ function resolveCuFilterView(st, f) {
     const tasks = pick("tasks");
     const deadlineTasks = pick("deadlineTasks");
     const trackedTasks = pick("trackedTasks");
-    // estimateCounted:false = the parent/subtask rule left this row out.
-    const sum = (arr, key) => arr.reduce((n, t) => n + (key === "estimateMs" && t && t.estimateCounted === false ? 0 : (Number(t && t[key]) || 0)), 0);
+    const sum = (arr, key) => arr.reduce((n, t) => n + (Number(t && t[key]) || 0), 0);
     return {
       estimateMs: sum(tasks, "estimateMs") + sum(deadlineTasks, "dayEstimateMs"),
       spentMs: sum(tasks, "spentMs") + sum(deadlineTasks, "spentMs") + sum(trackedTasks, "spentMs"),

@@ -274,10 +274,6 @@ const DEFAULT_SETTINGS = {
   adminSyncToken: true,
   // Which days a "week" covers for the Due this week / next week views.
   clickupWeekMode: "sun-sat", // sun-sat | mon-sun | mon-fri | sun-thu
-  // A parent and its subtasks can both carry an estimate. "both" adds them up
-  // (the original behaviour), "parent" counts only the parent, "subtasks" lets
-  // the breakdown replace the parent's number. Tracked time is unaffected.
-  clickupSubEstimates: "both", // both | parent | subtasks
   // ---- Away protection ----
   // Coming back after this long idle/locked while a timer kept running asks
   // "Remove away time / Keep it". Ignoring the question keeps the time.
@@ -1087,7 +1083,6 @@ async function clickupPublic() {
     wrapUpTime: settings.clickupWrapUpTime || "16:45",
     syncMin: syncMinutes(settings),
     weekMode: settings.clickupWeekMode || "sun-sat",
-    subEstimates: settings.clickupSubEstimates || "both",
     adminSyncToken: settings.adminSyncToken !== false,
     workdayEndHour: Number(settings.clickupWorkdayEndHour) || 0,
     extendedMode: settings.clickupExtendedMode === "excl0" ? "excl0" : "days",
@@ -1209,9 +1204,6 @@ async function computeFilterData(cfg, settings, assigneeIds, fromTs, toTs) {
   });
   // Stamp each row with its client name (used by the client tag + client filter).
   await annotateClients(cfg.token, data, settings.cuClientLevel || "auto");
-  // Today, this week, next week, a custom range and Explore all come through
-  // here, so the estimate rule is applied once, in one place.
-  applySubEstimateRule(data, settings.clickupSubEstimates || "both");
   return data;
 }
 
@@ -1708,8 +1700,7 @@ async function refreshClickupImpl({ includeTasks = false, viaAlarm = false, forc
   // by-URL task is fetched from the API at most once per refresh.
   const taskCache = createTaskCache();
   try {
-    const data = await fetchTodayEstimate({ token: cfg.token, teamId: cfg.teamId, userId: cfg.userId, targetHours, deadlineTaskUrls, extendedMode, taskCache,
-      subEstimates: settings.clickupSubEstimates || "both" });
+    const data = await fetchTodayEstimate({ token: cfg.token, teamId: cfg.teamId, userId: cfg.userId, targetHours, deadlineTaskUrls, extendedMode, taskCache });
 
     // Weekly accumulation (current week Mon→Fri). fetchWeeklySummary computes BOTH
     // the Mon→today and Mon→Friday aggregates in one pass, so the popup's
@@ -1746,7 +1737,6 @@ async function refreshClickupImpl({ includeTasks = false, viaAlarm = false, forc
           extendedMode,
           taskCache,
         });
-      applyWeeklySubEstimateRule(weekly, settings.clickupSubEstimates || "both");
         weekly.at = Date.now();
       }
       // Remember which slice the user last picked so the popup can settle its toggle.
@@ -2352,55 +2342,6 @@ async function ghPutFile(head, path, change, message) {
   return true;
 }
 
-// A parent and its subtasks can both carry an estimate, and both rows can turn
-// up in the same view (a subtask with its own due date arrives as a normal
-// task). clickupSubEstimates decides whose number counts: "both" adds them up,
-// "parent" ignores the children's, "subtasks" lets the children replace the
-// parent's. Rows left out are marked estimateCounted:false so the pages can
-// skip them in their own sums too.
-function applySubEstimateRule(bundle, mode) {
-  if (!bundle || mode === "both" || !Array.isArray(bundle.tasks)) return bundle;
-  const rows = bundle.tasks;
-  const byId = new Map(rows.map((t) => [String(t.id), t]));
-  const kids = new Map();
-  for (const t of rows) {
-    const p = t && t.parentId != null ? String(t.parentId) : null;
-    if (!p || !byId.has(p)) continue;
-    if (!kids.has(p)) kids.set(p, []);
-    kids.get(p).push(t);
-  }
-  let removed = 0;
-  for (const [parentId, children] of kids) {
-    const parent = byId.get(parentId);
-    const kidEst = children.reduce((a, t) => a + (Number(t.estimateMs) || 0), 0);
-    if (mode === "parent") {
-      for (const t of children) {
-        if (!(Number(t.estimateMs) > 0)) continue;
-        removed += Number(t.estimateMs) || 0;
-        t.estimateCounted = false;
-      }
-    } else if (mode === "subtasks" && kidEst > 0 && Number(parent.estimateMs) > 0) {
-      removed += Number(parent.estimateMs) || 0;
-      parent.estimateCounted = false;
-    }
-  }
-  if (removed) bundle.estimateMs = Math.max(0, (Number(bundle.estimateMs) || 0) - removed);
-  return bundle;
-}
-
-// The Weekly totals card keeps its own per-day bundles, so the parent/subtask
-// estimate rule is applied to each day and the week aggregates rebuilt from
-// the days that survive.
-function applyWeeklySubEstimateRule(weekly, mode) {
-  if (!weekly || mode === "both" || !Array.isArray(weekly.perDay)) return weekly;
-  for (const day of weekly.perDay) applySubEstimateRule(day, mode);
-  const sum = (days) => days.reduce((n, d) => n + (Number(d.estimateMs) || 0), 0);
-  const todayFloor = new Date().setHours(0, 0, 0, 0);
-  if (weekly.today) weekly.today.estimateMs = sum(weekly.perDay.filter((d) => Number(d.ts) <= todayFloor));
-  if (weekly.friday) weekly.friday.estimateMs = sum(weekly.perDay);
-  return weekly;
-}
-
 // ---------- badge ----------
 // Resolve the badge's estimate to the SAME widest-checked date scope the popup/
 // options headline uses. Date scopes are nested (today ⊂ this-week ⊂ Friday), so
@@ -2428,7 +2369,7 @@ function cuScopeEstimateMs(st, f) {
         for (const t of (Array.isArray(b[key]) ? b[key] : [])) {
           const d = Number(t && t.dueDateMs) || 0;
           const id = String((t && (t.id != null ? t.id : t.taskId)) || "");
-          if (d < from || d > to || !id || seen.has(id) || t.estimateCounted === false) continue;
+          if (d < from || d > to || !id || seen.has(id)) continue;
           seen.add(id);
           ms += Number(t[field]) || 0;
         }
@@ -4226,7 +4167,6 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         }
         if (p.clickupSyncMin !== undefined && SYNC_CHOICES.includes(Number(p.clickupSyncMin))) patch.clickupSyncMin = Number(p.clickupSyncMin);
         if (p.clickupWeekMode !== undefined && CU_WEEK_MODES[p.clickupWeekMode]) patch.clickupWeekMode = p.clickupWeekMode;
-        if (["both", "parent", "subtasks"].includes(p.clickupSubEstimates)) patch.clickupSubEstimates = p.clickupSubEstimates;
         if (p.clickupAwayNotify !== undefined) patch.clickupAwayNotify = !!p.clickupAwayNotify;
         if (p.clickupAwayMin !== undefined) {
           const n = Number(p.clickupAwayMin);
@@ -4262,15 +4202,6 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         // estimate itself, so refetch from the API. The weeklyTo toggle is cheap:
         // it just re-renders from the cached Mon→today / Mon→Friday aggregates
         // (fetchWeeklySummary already computed both), so no network here.
-        if (patch.clickupSubEstimates !== undefined) {
-          // Answer first: a full refresh takes longer than the page waits, and
-          // the setting is already saved. New totals arrive via clickupState.
-          clearFilterCache();
-          sendResponse({ ok: true, settings: next });
-          overdueCache = null;
-          refreshClickup({ includeTasks: true, forceWeeks: true }).catch(() => {});
-          break;
-        }
         if (patch.clickupWeekMode !== undefined) {
           // Same here: the week bundles rebuild in the background.
           sendResponse({ ok: true, settings: next });
@@ -4651,8 +4582,6 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
             estimateMs: tasks.reduce((n, t) => n + t.estimateMs, 0), spentMs: tasks.reduce((n, t) => n + t.spentMs, 0) };
           const settings = await getSettings();
           await annotateClients(cfg.token, data, settings.cuClientLevel || "auto");
-          // Overdue rows come from their own query, so apply the rule here as well.
-          applySubEstimateRule(data, settings.clickupSubEstimates || "both");
           overdueCache = { at: Date.now(), data };
           sendResponse({ ok: true, data });
         } catch (e) {
