@@ -148,8 +148,7 @@
     return parts.join("");
   }
 
-  // Markdown: plain text that reads well on its own and pastes straight into an
-  // AI chat ("here are my tasks, how would you do this one?").
+  // Markdown: plain text that reads well on its own and travels anywhere.
   function toMarkdown(rows, title) {
     const out = ["# " + title, ""];
     const meta = (t) => [t.status || (t.done ? "complete" : ""), weekLabel(t.dueDateMs)].filter(Boolean).join(" · ");
@@ -307,7 +306,7 @@
       buttons.forEach((b) => (b.disabled = false));
       if (item) item.blur();
     };
-    for (const [kind, label] of [["csv", "📄 CSV file"], ["xls", "📊 Excel file (.xls)"], ["md", "🤖 Markdown (.md) - paste into an AI"], ["sheets", "🟩 Google Sheets"], ["docs", "📝 Google Docs"]]) {
+    for (const [kind, label] of [["csv", "📄 CSV file"], ["xls", "📊 Excel file (.xls)"], ["md", "📑 Markdown (.md)"], ["sheets", "🟩 Google Sheets"], ["docs", "📝 Google Docs"]]) {
       const b = document.createElement("button");
       b.type = "button";
       b.className = "xp-item";
