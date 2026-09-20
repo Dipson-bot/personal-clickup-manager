@@ -19,7 +19,7 @@ import {
   pullAccountsFromDrive,
 } from "./lib-drive.js";
 import { runAllAccounts, runAccountLogin, URLS, GITHUB_KEEP_COOKIES } from "./lib-automation.js";
-import { verifyToken, getTeams, fetchTodayEstimate, fetchWeeklySummary, fetchDateRangeEstimate, createTaskCache, fetchTeamMembers, fmtDuration, findExtraTaskByName, parseTaskIdFromUrl, getCurrentTimeEntry, getRunningTaskProgress, startTimer, stopTimer, getTaskById, setTaskStatus, taskUrlFor, clientLabelFromContainer, resolveSpaceNamesFor, taskContainer, cuPriorityName, isTaskDone, getSubtasksOfParent, getTaskTree, updateTimeEntry, setTaskDueDate } from "./lib-clickup.js";
+import { verifyToken, getTeams, fetchTodayEstimate, fetchWeeklySummary, fetchDateRangeEstimate, createTaskCache, fetchTeamMembers, fmtDuration, findExtraTaskByName, parseTaskIdFromUrl, getCurrentTimeEntry, getRunningTaskProgress, startTimer, stopTimer, getTaskById, setTaskStatus, taskUrlFor, clientLabelFromContainer, resolveSpaceNamesFor, taskContainer, cuPriorityName, isTaskDone, getSubtasksOfParent, getTaskTree, getTaskDetail, updateTimeEntry, setTaskDueDate } from "./lib-clickup.js";
 import { resolveRelayKey, pickProbeModel, probeRelay } from "./lib-availability.js";
 
 const CHECK_ALARM = "dailyLoginCheck";
@@ -4171,22 +4171,46 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         // so it only runs when someone ticks "include subtasks").
         const cfg = await getClickupConfig();
         if (!cfg || !cfg.token || !cfg.teamId) { sendResponse({ ok: false, reason: "not-configured" }); break; }
-        const ids = Array.isArray(msg.taskIds) ? msg.taskIds.slice(0, 150) : [];
+        const ids = Array.isArray(msg.taskIds) ? msg.taskIds.slice(0, 200) : [];
         const subtasks = {};
         const parents = {}; // taskId -> its own parent id (so the export nests correctly)
         const details = {}; // taskId -> name/description/status/due, straight from ClickUp
+        let missed = 0;
+        // One 429 shouldn't lose the rest of the export: wait what ClickUp asks
+        // for (capped) and try that task once more.
+        const withRetry = async (fn) => {
+          try { return await fn(); } catch (e) {
+            if (!e || e.status !== 429) throw e;
+            await new Promise((r) => setTimeout(r, Math.min(8000, Number(e.retryAfterMs) || 3000)));
+            return fn();
+          }
+        };
         for (const id of ids) {
           try {
-            const tree = await getTaskTree(cfg.token, String(id), null);
+            const tree = await withRetry(() => getTaskTree(cfg.token, String(id), null));
             parents[String(id)] = tree.parent;
             details[String(id)] = tree.self;
             subtasks[String(id)] = tree.subtaskRows;
           } catch (e) {
             subtasks[String(id)] = [];
-            if (e && e.status === 429) break; // rate limited - return what we have
+            missed++;
           }
         }
-        sendResponse({ ok: true, subtasks, parents, details });
+        // ClickUp's subtask list has no description, so ask for each subtask the
+        // export will actually show (capped, so a huge range can't run away).
+        if (msg.includeSubtasks !== false) {
+          const want = [];
+          for (const list of Object.values(subtasks)) {
+            for (const st of list) if (st && st.id && !st.description && !details[String(st.id)]) want.push(String(st.id));
+          }
+          for (const id of want.slice(0, 200)) {
+            try {
+              const d = await withRetry(() => getTaskDetail(cfg.token, id));
+              details[id] = d;
+            } catch (e) { missed++; }
+          }
+        }
+        sendResponse({ ok: true, subtasks, parents, details, missed });
         break;
       }
       case "EXPORT_TO_GOOGLE": {
