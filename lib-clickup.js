@@ -364,7 +364,12 @@ export async function getTasksDueToday(token, teamId, userId, now = Date.now()) 
 // so each subtask has to be asked for separately).
 export async function getTaskDetail(token, taskId) {
   const t = await cuFetch(token, "/task/" + encodeURIComponent(String(taskId)));
+  const rows = Array.isArray(t && t.dependencies) ? t.dependencies : [];
+  const id = String((t && t.id) || "");
   return {
+    dependsOn: rows.filter((d) => String(d.task_id) === id && d.depends_on).map((d) => String(d.depends_on)),
+    blocks: rows.filter((d) => String(d.depends_on) === id && d.task_id).map((d) => String(d.task_id)),
+    priority: cuPriorityName(t),
     id: t && t.id,
     name: (t && t.name) || "",
     description: String((t && (t.description || t.text_content)) || "").trim(),
@@ -398,7 +403,19 @@ export async function getTaskTree(token, parentId, userId) {
     }
     out.push(t);
   }
+  // ClickUp lists dependencies as { task_id, depends_on }: task_id waits for
+  // depends_on. Split them per task so an export can say what blocks what.
+  const deps = (t) => {
+    const rows = Array.isArray(t && t.dependencies) ? t.dependencies : [];
+    const id = String((t && t.id) || "");
+    return {
+      dependsOn: rows.filter((d) => String(d.task_id) === id && d.depends_on).map((d) => String(d.depends_on)),
+      blocks: rows.filter((d) => String(d.depends_on) === id && d.task_id).map((d) => String(d.task_id)),
+    };
+  };
   const plain = (t) => ({
+    ...deps(t),
+    priority: cuPriorityName(t),
     id: t && t.id,
     name: (t && t.name) || "",
     description: String((t && (t.description || t.text_content)) || "").trim(),

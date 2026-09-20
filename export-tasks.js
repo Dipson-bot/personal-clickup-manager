@@ -28,6 +28,11 @@
   `;
   document.head.appendChild(css);
 
+  const fmtEstimate = (ms) => {
+    const m = Math.round((Number(ms) || 0) / 60000);
+    const h = Math.floor(m / 60);
+    return h ? h + "h" + (m % 60 ? " " + (m % 60) + "m" : "") : m + "m";
+  };
   const esc = (s) => String(s == null ? "" : s).replace(/[&<>]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" }[c]));
   const csvCell = (s) => '"' + String(s == null ? "" : s).replace(/"/g, '""') + '"';
 
@@ -149,25 +154,99 @@
   }
 
   // Markdown: plain text that reads well on its own and travels anywhere.
+  const PRIO_RANK = { urgent: 0, high: 1, normal: 2, low: 3 };
+  const prioRank = (t) => { const r = PRIO_RANK[String(t.priority || "").toLowerCase()]; return r == null ? 4 : r; };
+  const dueDay = (ms) => (ms ? new Date(ms).toLocaleDateString([], { weekday: "short", month: "short", day: "numeric" }) : "no due date");
+
+  // Markdown aimed at being read by a person OR an assistant: it spells out the
+  // order to work in, what blocks what, and who is holding a task up, instead of
+  // leaving that to be guessed from the list order.
   function toMarkdown(rows, title) {
-    const out = ["# " + title, ""];
-    const meta = (t) => [t.client || "", t.status || (t.done ? "complete" : ""), weekLabel(t.dueDateMs)].filter(Boolean).join(" · ");
+    const byId = new Map(rows.map((t) => [String(t.id), t]));
+    const nameOf = (id) => { const t = byId.get(String(id)); return t ? t.name : "task " + id; };
     const link = (t) => (t.url ? " [(open in ClickUp)](" + t.url + ")" : "");
-    const count = rows.length;
-    out.push("_" + count + " task" + (count === 1 ? "" : "s") + " · exported " + new Date().toLocaleDateString([], { year: "numeric", month: "long", day: "numeric" }) + "_", "");
+    // Two tasks with the same name really do happen in ClickUp, so say so rather
+    // than letting someone redo work that is already done elsewhere.
+    const nameCount = new Map();
+    for (const t of rows) nameCount.set((t.name || "").trim(), (nameCount.get((t.name || "").trim()) || 0) + 1);
+
+    const mains = rows.filter((t) => !t.isSubtask);
+    const kids = new Map();
     for (const t of rows) {
-      const info = cleanInfo(t.info);
-      const m = meta(t);
-      if (!t.isSubtask) {
-        out.push("## " + (t.name || "(task)"));
-        if (m || t.url) out.push("*" + m + "*" + link(t));
-        if (info) { out.push(""); for (const line of info.split("\n")) out.push(line); }
-        out.push("");
-      } else {
-        out.push("- **" + (t.name || "(subtask)") + "**" + (m ? " (" + m + ")" : "") + link(t));
-        if (info) for (const line of info.split("\n")) out.push("  " + line);
-      }
+      if (!t.isSubtask) continue;
+      const parent = mains.find((m) => (kids.get(String(m.id)) || []).length >= 0 && rows.indexOf(m) < rows.indexOf(t) &&
+        !rows.slice(rows.indexOf(m) + 1, rows.indexOf(t)).some((x) => !x.isSubtask));
+      const key = parent ? String(parent.id) : "";
+      if (!kids.has(key)) kids.set(key, []);
+      kids.get(key).push(t);
     }
+    // Work order: unblocked first, then priority, then the earliest due date.
+    const blocked = (t) => (Array.isArray(t.dependsOn) && t.dependsOn.some((id) => byId.has(String(id)) && !byId.get(String(id)).done)) || !!t.waitingOn;
+    const order = mains.slice().sort((x, y) =>
+      (blocked(x) ? 1 : 0) - (blocked(y) ? 1 : 0) ||
+      prioRank(x) - prioRank(y) ||
+      (Number(x.dueDateMs) || Infinity) - (Number(y.dueDateMs) || Infinity));
+
+    const out = ["# " + title, ""];
+    out.push("_" + rows.length + " task" + (rows.length === 1 ? "" : "s") + " · exported " +
+      new Date().toLocaleDateString([], { year: "numeric", month: "long", day: "numeric" }) + "_", "");
+    out.push("**How to read this:** `##` is a task, the bullets under it are its subtasks and belong to that task only.",
+      "`Waiting for` means the task cannot start until the listed task is done. `Blocks` means other work waits on this one.",
+      "`Held up by` means a teammate owns an open part of it. Tasks are listed in a sensible working order, and anything blocked is flagged.", "");
+
+    if (order.length > 1) {
+      out.push("## Suggested order", "");
+      order.forEach((t, i) => {
+        const marks = [];
+        if (t.priority) marks.push(t.priority);
+        if (t.dueDateMs) marks.push("due " + dueDay(t.dueDateMs));
+        if (blocked(t)) marks.push("BLOCKED");
+        out.push((i + 1) + ". " + (t.name || "(task)") + (marks.length ? " — " + marks.join(", ") : ""));
+      });
+      out.push("");
+    }
+
+    const block = (t, isSub) => {
+      const lines = [];
+      const facts = [];
+      if (t.client) facts.push(t.client);
+      if (t.priority) facts.push("priority: " + t.priority);
+      facts.push("status: " + (t.status || (t.done ? "complete" : "unknown")));
+      facts.push("due: " + dueDay(t.dueDateMs));
+      if (weekLabel(t.dueDateMs)) facts.push("week: " + weekLabel(t.dueDateMs));
+      if (Number(t.estimateMs) > 0) facts.push("estimate: " + fmtEstimate(t.estimateMs));
+      const waits = (Array.isArray(t.dependsOn) ? t.dependsOn : []).map(nameOf);
+      const gates = (Array.isArray(t.blocks) ? t.blocks : []).map(nameOf);
+      if (isSub) {
+        lines.push("- **" + (t.name || "(subtask)") + "** (" + facts.join(" · ") + ")" + link(t));
+        if (waits.length) lines.push("  Waiting for: " + waits.join("; "));
+        if (gates.length) lines.push("  Blocks: " + gates.join("; "));
+        if (t.waitingOn) lines.push("  Held up by " + t.waitingOn.who + (t.waitingOn.overdue ? " (overdue)" : "") + (t.waitingOn.what ? ": " + t.waitingOn.what : ""));
+        const info = cleanInfo(t.info);
+        if (info) for (const l of info.split("\n")) lines.push("  " + l);
+      } else {
+        lines.push("## " + (t.name || "(task)"));
+        lines.push("*" + facts.join(" · ") + "*" + link(t));
+        if (nameCount.get((t.name || "").trim()) > 1) lines.push("> Careful: another task in this list has the same name. Check which one you actually need.");
+        if (waits.length) lines.push("**Waiting for:** " + waits.join("; "));
+        if (gates.length) lines.push("**Blocks:** " + gates.join("; "));
+        if (t.waitingOn) lines.push("**Held up by " + t.waitingOn.who + (t.waitingOn.overdue ? " (overdue)" : "") + "**" + (t.waitingOn.what ? ": " + t.waitingOn.what : ""));
+        const info = cleanInfo(t.info);
+        if (info) { lines.push(""); for (const l of info.split("\n")) lines.push(l); }
+      }
+      return lines;
+    };
+
+    for (const t of order) {
+      out.push(...block(t, false));
+      const subs = kids.get(String(t.id)) || [];
+      if (subs.length) {
+        out.push("", "Subtasks (do these to finish the task above):");
+        for (const sub of subs) out.push(...block(sub, true));
+      }
+      out.push("");
+    }
+    for (const orphan of kids.get("") || []) out.push(...block(orphan, true));
     return out.join("\n").replace(/\n{3,}/g, "\n\n").trim() + "\n";
   }
 
@@ -199,7 +278,18 @@
     // Task info / status / due come from ClickUp itself, not the cached row.
     rows = rows.map((t) => {
       const d = detailOf[String(t.id)];
-      return d ? { ...t, info: d.description, status: d.status || t.status, dueDateMs: d.dueDateMs != null ? d.dueDateMs : t.dueDateMs, done: d.done } : t;
+      if (!d) return t;
+      return {
+        ...t,
+        info: d.description,
+        status: d.status || t.status,
+        dueDateMs: d.dueDateMs != null ? d.dueDateMs : t.dueDateMs,
+        done: d.done,
+        priority: d.priority || t.priority || "",
+        dependsOn: d.dependsOn || t.dependsOn || [],
+        blocks: d.blocks || t.blocks || [],
+        estimateMs: Number(d.estimateMs) || Number(t.estimateMs) || 0,
+      };
     });
     const byId = new Map(rows.map((t) => [String(t.id), t]));
     const kids = new Map(); // parent id -> child rows, in the order they appear
