@@ -123,12 +123,18 @@ async function removeFile(root, path) {
 }
 
 // ---------- the update ----------
-async function install() {
+async function install(target) {
   busy(true);
   $("log").innerHTML = "";
   try {
-    const { updateInfo: ui } = await chrome.storage.local.get("updateInfo");
-    if (!ui || !ui.newer || !ui.zip) throw new Error("No newer version to install right now.");
+    let ui = target || null;
+    if (!ui) {
+      const got = await chrome.storage.local.get("updateInfo");
+      ui = got.updateInfo;
+      if (!ui || !ui.newer || !ui.zip) throw new Error("No newer version to install right now.");
+    }
+    if (!ui.zip) throw new Error("That version has no downloadable package.");
+    const older = ui.latest && running.version && cmpVer(ui.latest, running.version) < 0;
 
     // 1. The folder: remembered + still valid, or ask for it (user gesture = this click).
     let root = await rememberedFolder();
@@ -141,7 +147,7 @@ async function install() {
     step("Folder confirmed: “" + root.name + "” is the folder Chrome runs this extension from.");
 
     // 2. Download + unpack.
-    say("Downloading v" + ui.latest + "…");
+    say((older ? "Rolling back to v" : "Downloading v") + ui.latest + "…");
     const res = await fetch(ui.zip, { cache: "no-store" });
     if (!res.ok) throw new Error("Download failed (HTTP " + res.status + ").");
     const files = await unzip(await res.arrayBuffer());
@@ -179,7 +185,7 @@ async function install() {
 
     // 5. Reload into the new version; the background confirms "Updated to vX".
     await chrome.storage.local.set({ updateDownload: { version: ui.latest, done: true, at: Date.now(), via: "updater" } });
-    say("Done - restarting the extension on v" + ui.latest + "…", "ok");
+    say("Done - restarting the extension on v" + ui.latest + (older ? " (rolled back)" : "") + "…", "ok");
     setTimeout(() => chrome.runtime.reload(), 900);
   } catch (e) {
     const msg = e && e.name === "AbortError" ? "No folder chosen - nothing was changed." : (e && e.message ? e.message : String(e));
@@ -213,7 +219,43 @@ async function render() {
   }
 }
 
-$("installBtn").onclick = install;
+// Compare "3.5.1" style versions: -1 / 0 / 1.
+function cmpVer(a, b) {
+  const x = String(a).split(".").map(Number), y = String(b).split(".").map(Number);
+  for (let i = 0; i < Math.max(x.length, y.length); i++) {
+    const d = (x[i] || 0) - (y[i] || 0);
+    if (d) return d < 0 ? -1 : 1;
+  }
+  return 0;
+}
+// Every published release, so a bad version can be rolled back.
+let releases = [];
+async function loadVersions() {
+  const sel = $("versSel");
+  sel.innerHTML = "<option>Loading…</option>";
+  let r = null;
+  try { r = await chrome.runtime.sendMessage({ type: "LIST_RELEASES" }); } catch (e) {}
+  if (!r || !r.ok || !Array.isArray(r.releases) || !r.releases.length) {
+    $("versBox").hidden = true;
+    return;
+  }
+  releases = r.releases;
+  sel.innerHTML = releases.map((x, i) => {
+    const when = x.publishedAt ? new Date(x.publishedAt).toLocaleDateString(undefined, { year: "numeric", month: "short", day: "numeric" }) : "";
+    const tag = x.version === running.version ? " - installed" : (cmpVer(x.version, running.version) < 0 ? " - older" : " - newer");
+    return '<option value="' + i + '">v' + x.version + (when ? " (" + when + ")" : "") + tag + (x.prerelease ? " [pre-release]" : "") + "</option>";
+  }).join("");
+  const cur = releases.findIndex((x) => x.version === running.version);
+  sel.value = String(cur >= 0 ? cur : 0);
+}
+$("versBtn").onclick = () => {
+  const x = releases[Number($("versSel").value)];
+  if (!x) return;
+  if (x.version === running.version) { say("That's the version you're already running.", "ok"); return; }
+  install({ latest: x.version, zip: x.zip, url: x.url, newer: cmpVer(x.version, running.version) > 0 });
+};
+
+$("installBtn").onclick = () => install();
 $("pickBtn").onclick = async () => {
   busy(true);
   try {
@@ -237,3 +279,4 @@ try {
   chrome.storage.local.get("theme").then(({ theme }) => { if (theme) document.documentElement.dataset.theme = theme; });
 } catch (e) {}
 render();
+loadVersions();

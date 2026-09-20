@@ -1,5 +1,11 @@
 # Changelog
 
+## v3.6.0
+- **Export the tasks you're looking at.** An "⤓ Export" button next to Filter (popup, side panel, options and Explore tasks) writes whatever the list currently shows, with your filters applied: **CSV**, **Excel**, **Google Sheets** or **Google Docs**. The sheet uses the team layout: column A "main" / "sub task", column B the task, main rows bold. Optional "include subtasks" and "include details" (client, due, estimate, tracked, status, link).
+- **Edit a due date from the list**, the same way estimates work: click the date chip, pick a date, Enter. Rows with no due date show "+ due"; clearing the box removes the date.
+- **Explore tasks: Client filter**, alongside department and teammate, with totals that follow the choice.
+- **Roll back to an older version.** The updater page lists every published version with its date, and installs the one you pick. Your settings are kept.
+
 ## v3.5.1
 - **Fixed: Agent Router "last credit" not updating.** After a reinstall the extension lost the balance it compares against, so a successful login after the 24-hour window was not recorded as the credit. Now such a login always counts, and records affected by this are repaired automatically.
 
