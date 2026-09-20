@@ -743,7 +743,8 @@
     </div>
 
     <div class="card cu-needs-config" id="dashExploreCard" style="display:none;">
-      <div class="dash-h"><h3>Explore tasks</h3><span class="hint">any date range, department or teammate</span><span class="spacer"></span>
+      <div class="dash-h"><h3>Explore tasks</h3><span class="hint">any date range, client, department or teammate</span><span class="spacer"></span>
+        <button type="button" class="cu-filter-btn" id="optFltExportBtn" title="Export these tasks (CSV, Excel, Google Sheets/Docs)">&#10515; Export</button>
         <button type="button" class="cu-collapse-btn" data-optcollapse="filter" data-optcolltarget="optFltColl" title="Show / hide">▸ Show</button>
       </div>
       <div class="opt-coll" id="optFltColl">
@@ -806,6 +807,12 @@
         <div class="chk">
           <input type="checkbox" id="optFltSpan" />
           <label for="optFltSpan" style="margin:0;font-weight:400;color:var(--text);font-size:12px;">Start ≠ due date (extended)</label>
+        </div>
+        <div>
+          <label>Client</label>
+          <select id="optFltClient">
+            <option value="">All clients</option>
+          </select>
         </div>
         <div>
           <label>Department</label>

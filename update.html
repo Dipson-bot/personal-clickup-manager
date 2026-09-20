@@ -27,6 +27,11 @@
   ol { margin: 10px 0 0; padding-left: 20px; font-size: 13px; color: var(--muted); line-height: 1.6; }
   .links { margin-top: 16px; font-size: 13px; display: flex; gap: 16px; }
   a { color: var(--indigo); }
+  .vers { margin: 14px 0 4px; }
+  .vers label { display: block; font-size: 13px; font-weight: 600; margin-bottom: 6px; }
+  .vers .hint { font-weight: 400; color: var(--muted); font-size: 12px; }
+  .versRow { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+  .versRow select { flex: 1 1 260px; min-width: 200px; font: inherit; font-size: 13px; padding: 7px 9px; border: 1px solid var(--border); border-radius: 8px; background: var(--card); color: var(--text); }
 </style>
 </head>
 <body>
@@ -44,6 +49,13 @@
       <button id="pickBtn">Choose folder</button>
       <button id="checkBtn">Check for updates</button>
       <button id="skipBtn">Close</button>
+    </div>
+    <div class="vers" id="versBox">
+      <label for="versSel">Other versions <span class="hint">- install an older one if a new version misbehaves. Your settings are kept.</span></label>
+      <div class="versRow">
+        <select id="versSel"></select>
+        <button id="versBtn">Install this version</button>
+      </div>
     </div>
     <p class="status" id="status"></p>
     <ol id="log" hidden></ol>

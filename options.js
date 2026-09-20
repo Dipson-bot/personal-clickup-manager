@@ -2062,6 +2062,8 @@ function renderOptionsWeekly(cu) {
 // Filter Tasks section in the options page. Same CLICKUP_FILTER call as the
 // popup uses; here it's driven by the options form controls.
 let optFltSeq = 0; // bumped per renderOptionsFilter() so a superseded load never overwrites a newer one
+// Rows currently shown in Explore tasks, for its Export button.
+let optFltExport = { rows: [], title: "tasks" };
 async function renderOptionsFilter() {
   if (cuEstEditingOpt) { cuRenderPendingOpt = true; return; }
   const box = $("optFltResult");
@@ -2196,13 +2198,39 @@ async function renderOptionsFilter() {
         }
         return true;
       });
-    const shownTasks = tasks.filter(passTask);
-    const shownTracked = (Array.isArray(d.trackedTasks) ? d.trackedTasks : []).filter(passTask);
-    const shownDeadline = deadline.filter((dt) => {
+    let shownTasks = tasks.filter(passTask);
+    let shownTracked = (Array.isArray(d.trackedTasks) ? d.trackedTasks : []).filter(passTask);
+    let shownDeadline = deadline.filter((dt) => {
       if (dt.error) return false;
       const t = { estimateMs: dt.dayEstimateMs, startDateMs: dt.startDateMs, dueDateMs: dt.dueDateMs, done: dt.done };
       return passTask(t);
     });
+    // Client dropdown: options come from the tasks this query returned, and the
+    // chosen client narrows every section (tasks, configured tasks, tracked).
+    let estShown = null, spentShown = null;
+    const clientSel = $("optFltClient");
+    let clientPick = "";
+    if (clientSel) {
+      clientPick = clientSel.value;
+      const names = [...new Set([].concat(shownTasks, shownDeadline, shownTracked)
+        .map((t) => String((t && t.client) || "").trim()).filter(Boolean))].sort((a, b) => a.localeCompare(b));
+      if (clientPick && !names.includes(clientPick)) clientPick = "";
+      clientSel.innerHTML = '<option value="">All clients</option>' +
+        names.map((n) => '<option value="' + escapeHtml(n) + '"' + (n === clientPick ? " selected" : "") + ">" + escapeHtml(n) + "</option>").join("");
+      clientSel.value = clientPick;
+      if (clientPick) {
+        const keep = (t) => String((t && t.client) || "").trim() === clientPick;
+        shownTasks = shownTasks.filter(keep);
+        shownDeadline = shownDeadline.filter(keep);
+        shownTracked = shownTracked.filter(keep);
+        // Headline totals follow the chosen client too.
+        estShown = shownTasks.reduce((x, t) => x + (Number(t.estimateMs) || 0), 0)
+          + shownDeadline.reduce((x, t) => x + (Number(t.dayEstimateMs) || 0), 0);
+        spentShown = [].concat(shownTasks, shownDeadline, shownTracked).reduce((x, t) => x + (Number(t.spentMs) || 0), 0);
+      }
+    }
+    cuExportRowsOpt(shownTasks, shownDeadline, shownTracked, label + (clientPick ? " - " + clientPick : ""));
+    optFltExport = { rows: cuExportDataOpt.rows, title: cuExportDataOpt.title };
     const total = shownTasks.length + shownDeadline.length + shownTracked.length;
     const filterTags = active.map((k) => ({
       estimate: "missing estimates",
@@ -2213,9 +2241,10 @@ async function renderOptionsFilter() {
       span: "start ≠ due",
     }[k] || k)).join(" · ");
     box.innerHTML =
-      '<div class="flt-tot"><b>' + label + "</b> · est <b>" + fmtDurOpt(est) +
-      "</b> · tracked <b>" + fmtDurOpt(spent) + "</b>" +
+      '<div class="flt-tot"><b>' + label + "</b> · est <b>" + fmtDurOpt(estShown == null ? est : estShown) +
+      "</b> · tracked <b>" + fmtDurOpt(spentShown == null ? spent : spentShown) + "</b>" +
       " · " + total + " task" + (total === 1 ? "" : "s") +
+      (clientPick ? " <span class=\"hint\">· client: " + escapeHtml(clientPick) + "</span>" : "") +
       (active.length ? " <span class=\"hint\">(filter: " + filterTags + ")</span>" : "") + "</div>";
     const list = document.createElement("div");
     list.className = "cu-tasklist";
@@ -4325,6 +4354,10 @@ function escapeHtml(s) {
 }
 
 // Header: open the side panel / the wrap-up page from the options page too.
+// Explore tasks: its own export (rows as filtered there, including the client).
+if (window.pcmExport) window.pcmExport.attach($("optFltExportBtn"), () => optFltExport);
+if ($("optFltClient")) $("optFltClient").addEventListener("change", () => renderOptionsFilter());
+
 // Export button on the ClickUp card (exports exactly what the card shows).
 if (window.pcmExport) window.pcmExport.attach($("optCuExportBtn"), () => cuExportDataOpt);
 
