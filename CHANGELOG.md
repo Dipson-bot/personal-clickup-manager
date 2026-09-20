@@ -1,5 +1,8 @@
 # Changelog
 
+## v3.7.5
+Markdown export now shows a suggested working order, ClickUp dependencies (waiting for / blocks), who is holding a task up, priority and estimate, and warns when two tasks share a name.
+
 ## Unreleased
 - Markdown export now spells out how to work through the list: a numbered "Suggested order" (unblocked first, then priority, then due date), each task's client, priority, status, due date, week and estimate, ClickUp dependencies as "Waiting for" / "Blocks", the "Held up by <teammate>" hold-ups, subtasks nested under their parent, a warning when two tasks share a name, and a short legend so an assistant reads it the same way you would.
 
