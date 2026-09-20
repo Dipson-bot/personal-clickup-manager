@@ -1903,6 +1903,10 @@ export async function fetchDateRangeEstimate({ token, teamId, userId, fromTs, to
       extended: !!scaled,
       divisor,
       totalDays,
+      // ClickUp returns a subtask as an ordinary task when it carries its own
+      // due date, so remember the link - the estimate rule needs it.
+      parentId: t.parent != null ? String(t.parent) : null,
+      isSubtask: t.parent != null,
       container: taskContainer(t),
       url: taskUrlFor(t.id),
     });
