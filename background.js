@@ -274,6 +274,10 @@ const DEFAULT_SETTINGS = {
   adminSyncToken: true,
   // Which days a "week" covers for the Due this week / next week views.
   clickupWeekMode: "sun-sat", // sun-sat | mon-sun | mon-fri | sun-thu
+  // A parent and its subtasks can both carry an estimate. "both" adds them up
+  // (the original behaviour), "parent" counts only the parent, "subtasks" lets
+  // the breakdown replace the parent's number. Tracked time is unaffected.
+  clickupSubEstimates: "both", // both | parent | subtasks
   // ---- Away protection ----
   // Coming back after this long idle/locked while a timer kept running asks
   // "Remove away time / Keep it". Ignoring the question keeps the time.
@@ -1083,6 +1087,7 @@ async function clickupPublic() {
     wrapUpTime: settings.clickupWrapUpTime || "16:45",
     syncMin: syncMinutes(settings),
     weekMode: settings.clickupWeekMode || "sun-sat",
+    subEstimates: settings.clickupSubEstimates || "both",
     adminSyncToken: settings.adminSyncToken !== false,
     workdayEndHour: Number(settings.clickupWorkdayEndHour) || 0,
     extendedMode: settings.clickupExtendedMode === "excl0" ? "excl0" : "days",
@@ -1700,7 +1705,8 @@ async function refreshClickupImpl({ includeTasks = false, viaAlarm = false, forc
   // by-URL task is fetched from the API at most once per refresh.
   const taskCache = createTaskCache();
   try {
-    const data = await fetchTodayEstimate({ token: cfg.token, teamId: cfg.teamId, userId: cfg.userId, targetHours, deadlineTaskUrls, extendedMode, taskCache });
+    const data = await fetchTodayEstimate({ token: cfg.token, teamId: cfg.teamId, userId: cfg.userId, targetHours, deadlineTaskUrls, extendedMode, taskCache,
+      subEstimates: settings.clickupSubEstimates || "both" });
 
     // Weekly accumulation (current week Mon→Fri). fetchWeeklySummary computes BOTH
     // the Mon→today and Mon→Friday aggregates in one pass, so the popup's
@@ -4167,6 +4173,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         }
         if (p.clickupSyncMin !== undefined && SYNC_CHOICES.includes(Number(p.clickupSyncMin))) patch.clickupSyncMin = Number(p.clickupSyncMin);
         if (p.clickupWeekMode !== undefined && CU_WEEK_MODES[p.clickupWeekMode]) patch.clickupWeekMode = p.clickupWeekMode;
+        if (["both", "parent", "subtasks"].includes(p.clickupSubEstimates)) patch.clickupSubEstimates = p.clickupSubEstimates;
         if (p.clickupAwayNotify !== undefined) patch.clickupAwayNotify = !!p.clickupAwayNotify;
         if (p.clickupAwayMin !== undefined) {
           const n = Number(p.clickupAwayMin);
@@ -4202,6 +4209,12 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         // estimate itself, so refetch from the API. The weeklyTo toggle is cheap:
         // it just re-renders from the cached Mon→today / Mon→Friday aggregates
         // (fetchWeeklySummary already computed both), so no network here.
+        if (patch.clickupSubEstimates !== undefined) {
+          clearFilterCache();
+          await refreshClickup({ includeTasks: true });
+          sendResponse({ ok: true, settings: next });
+          break;
+        }
         if (patch.clickupWeekMode !== undefined) {
           // The week bundles are cached per range, so rebuild them right away.
           await refreshClickup({ includeTasks: false, forceWeeks: true });

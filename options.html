@@ -1037,6 +1037,17 @@
 
       <div class="row" style="margin-top:12px;max-width:520px;">
         <div>
+          <label>When a task and its subtasks both have estimates <span class="hint">- subtasks of a task due today are folded into the day; this decides whose estimate counts. Tracked time is never doubled either way.</span></label>
+          <select id="cuSubEstimates">
+            <option value="both">Count both (add them up)</option>
+            <option value="parent">Count the task only (its subtasks break it down)</option>
+            <option value="subtasks">Count the subtasks only (they replace the task's estimate)</option>
+          </select>
+        </div>
+      </div>
+
+      <div class="row" style="margin-top:12px;max-width:520px;">
+        <div>
           <label>A week runs <span class="hint">- used by "Due this week" and "Due next week", by Explore's week view and by the Week column in exports</span></label>
           <select id="cuWeekMode">
             <option value="sun-sat">Sunday to Saturday</option>
