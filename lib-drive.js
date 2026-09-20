@@ -28,22 +28,22 @@ const STATE_FILENAME = "daily-login-state.json";
 const ACCOUNTS_FILENAME = "daily-login-accounts.json";
 const KEY_FILENAME = "daily-login-key.json";
 
-function buildAuthUrl({ prompt = "" } = {}) {
+function buildAuthUrl({ prompt = "", scope = SCOPE } = {}) {
   const redirectUri = chrome.identity.getRedirectURL();
   const params = new URLSearchParams({
     client_id: GOOGLE_CLIENT_ID,
     response_type: "token",
     redirect_uri: redirectUri,
-    scope: SCOPE,
+    scope,
   });
   if (prompt) params.set("prompt", prompt);
   return `https://accounts.google.com/o/oauth2/v2/auth?${params.toString()}`;
 }
 
-async function launchAuth({ interactive = false, prompt = "" } = {}) {
+async function launchAuth({ interactive = false, prompt = "", scope = SCOPE } = {}) {
   try {
     const redirectedTo = await chrome.identity.launchWebAuthFlow({
-      url: buildAuthUrl({ prompt }),
+      url: buildAuthUrl({ prompt, scope }),
       interactive,
     });
     const hash = new URL(redirectedTo).hash.substring(1);
@@ -54,6 +54,46 @@ async function launchAuth({ interactive = false, prompt = "" } = {}) {
   } catch (e) {
     return null;
   }
+}
+
+// ---------- "create files in Drive" (export to Google Sheets / Docs) ----------
+// Kept apart from the sync scope above: the extension only asks for it the first
+// time someone exports, and the sync token is untouched.
+const SCOPE_FILE = "https://www.googleapis.com/auth/drive.file";
+export async function getFileToken(interactive = true) {
+  const now = Date.now();
+  const { driveFileToken: c } = await chrome.storage.local.get("driveFileToken");
+  if (c && c.token && c.expiresAt > now + 60000) return c.token;
+  let r = await launchAuth({ interactive: false, scope: SCOPE_FILE });
+  if (!r && interactive) r = await launchAuth({ interactive: true, scope: SCOPE_FILE });
+  if (!r || !r.token) return null;
+  await chrome.storage.local.set({ driveFileToken: { token: r.token, expiresAt: now + (r.expiresIn - 60) * 1000 } });
+  return r.token;
+}
+// Upload an HTML table and let Drive convert it into a Google Sheet / Doc,
+// which keeps the bold "main" rows and the header row.
+export async function createGoogleFile(token, { name, html, kind }) {
+  const mimeType = kind === "docs" ? "application/vnd.google-apps.document" : "application/vnd.google-apps.spreadsheet";
+  const boundary = "pcm" + Math.random().toString(36).slice(2);
+  const body =
+    "--" + boundary + "\r\nContent-Type: application/json; charset=UTF-8\r\n\r\n" +
+    JSON.stringify({ name, mimeType }) + "\r\n" +
+    "--" + boundary + "\r\nContent-Type: text/html; charset=UTF-8\r\n\r\n" +
+    html + "\r\n--" + boundary + "--";
+  const res = await fetch("https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart&fields=id,webViewLink", {
+    method: "POST",
+    headers: { Authorization: "Bearer " + token, "Content-Type": "multipart/related; boundary=" + boundary },
+    body,
+  });
+  if (res.status === 401) {
+    await chrome.storage.local.remove("driveFileToken");
+    throw new Error("Google sign-in expired - try the export again.");
+  }
+  if (!res.ok) throw new Error("Google Drive refused the file (HTTP " + res.status + ").");
+  const j = await res.json();
+  const id = j && j.id;
+  if (!id) throw new Error("Google Drive returned no file id.");
+  return { id, url: (j && j.webViewLink) || (kind === "docs" ? "https://docs.google.com/document/d/" : "https://docs.google.com/spreadsheets/d/") + id + "/edit" };
 }
 
 // Cached token so we don't re-auth on every check.

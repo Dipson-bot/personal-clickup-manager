@@ -6,6 +6,8 @@
 
 import { encryptJSON, decryptJSON, encryptWithPassphrase, decryptWithPassphrase, generateTOTP, totpSecondsRemaining } from "./lib-crypto.js";
 import {
+  getFileToken,
+  createGoogleFile,
   getValidToken,
   signOut as driveSignOut,
   isSignedIn,
@@ -4124,6 +4126,93 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
             await setClickupState({ ...st, running: { ...st.running, description } });
           }
           sendResponse({ ok: true, description });
+        } catch (e) {
+          sendResponse({ ok: false, error: String(e && e.message ? e.message : e) });
+        }
+        break;
+      }
+      case "CLICKUP_SET_DUE": {
+        // Row due-date editor: msg.dueMs (ms) or null to clear it.
+        const cfg = await getClickupConfig();
+        if (!cfg || !cfg.token) { sendResponse({ ok: false, reason: "not-configured" }); break; }
+        const taskId = msg.taskId ? String(msg.taskId) : null;
+        if (!taskId) { sendResponse({ ok: false, reason: "no-task" }); break; }
+        try {
+          const due = msg.dueMs == null || msg.dueMs === "" ? null : Number(msg.dueMs);
+          const task = due ? await getTaskById(cfg.token, taskId).catch(() => null) : null;
+          await setTaskDueDate(cfg.token, taskId, due, task ? task.dueDateHasTime : null);
+          clearFilterCache();
+          refreshClickup({ includeTasks: true, forceWeeks: true }).catch(() => {});
+          sendResponse({ ok: true, dueDateMs: due });
+        } catch (e) {
+          sendResponse({ ok: false, error: String(e && e.message ? e.message : e) });
+        }
+        break;
+      }
+      case "CLICKUP_EXPORT_SUBTASKS": {
+        // Export helper: every subtask of the given tasks (one request per task,
+        // so it only runs when someone ticks "include subtasks").
+        const cfg = await getClickupConfig();
+        if (!cfg || !cfg.token || !cfg.teamId) { sendResponse({ ok: false, reason: "not-configured" }); break; }
+        const ids = Array.isArray(msg.taskIds) ? msg.taskIds.slice(0, 150) : [];
+        const subtasks = {};
+        for (const id of ids) {
+          try {
+            const subs = await getSubtasksOfParent(cfg.token, cfg.teamId, String(id), null);
+            subtasks[String(id)] = subs.map((t) => ({
+              id: t.id,
+              name: t.name || "",
+              done: isTaskDone(t),
+              status: (t.status && t.status.status) || "",
+              dueDateMs: t.due_date ? Number(t.due_date) : null,
+              estimateMs: Number(t.time_estimate) || 0,
+              spentMs: Number(t.time_spent) || 0,
+              url: taskUrlFor(t.id),
+            }));
+          } catch (e) {
+            subtasks[String(id)] = [];
+            if (e && e.status === 429) break; // rate limited - return what we have
+          }
+        }
+        sendResponse({ ok: true, subtasks });
+        break;
+      }
+      case "EXPORT_TO_GOOGLE": {
+        // Create a Google Sheet / Doc from the export HTML. Asks for the
+        // "create files in Drive" permission the first time only.
+        try {
+          const tok = await getFileToken(true);
+          if (!tok) { sendResponse({ ok: false, reason: "Google didn't grant permission to create the file." }); break; }
+          const r = await createGoogleFile(tok, { name: msg.name || "tasks", html: msg.html || "", kind: msg.kind === "docs" ? "docs" : "sheets" });
+          sendResponse({ ok: true, url: r.url });
+        } catch (e) {
+          sendResponse({ ok: false, error: String(e && e.message ? e.message : e) });
+        }
+        break;
+      }
+      case "LIST_RELEASES": {
+        // Every published version, newest first - the updater page lists them so
+        // a bad release can be rolled back.
+        try {
+          const res = await fetch("https://api.github.com/repos/" + UPDATE_REPO + "/releases?per_page=30", {
+            headers: { Accept: "application/vnd.github+json" },
+          });
+          if (!res.ok) throw new Error("GitHub said HTTP " + res.status);
+          const list = (await res.json()) || [];
+          sendResponse({
+            ok: true,
+            releases: list.filter((r) => r && !r.draft).map((r) => {
+              const zip = (r.assets || []).find((a) => /\.zip$/i.test(a.name || ""));
+              return {
+                version: String(r.tag_name || "").replace(/^v/, ""),
+                name: r.name || r.tag_name || "",
+                publishedAt: r.published_at || "",
+                prerelease: !!r.prerelease,
+                url: r.html_url || "",
+                zip: zip ? zip.browser_download_url : "",
+              };
+            }).filter((r) => r.version && r.zip),
+          });
         } catch (e) {
           sendResponse({ ok: false, error: String(e && e.message ? e.message : e) });
         }

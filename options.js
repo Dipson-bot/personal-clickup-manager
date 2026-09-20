@@ -1310,6 +1310,112 @@ function markTrk(trk, t) {
   const id = t && (t.id != null ? t.id : t.taskId);
   if (run && id != null && String(run.taskId) === String(id)) trk.classList.add("running");
 }
+
+// Small floating message used by the due-date editor (both pages).
+function cuDueToastOpt(text) {
+  const el = document.createElement("div");
+  el.textContent = text;
+  el.style.cssText = "position:fixed;left:50%;bottom:16px;transform:translateX(-50%);z-index:1200;max-width:90%;padding:8px 12px;border-radius:8px;background:var(--red);color:#fff;font-size:12px;box-shadow:0 8px 20px rgba(0,0,0,.25)";
+  document.body.appendChild(el);
+  setTimeout(() => el.remove(), 4000);
+}
+// ---------- export: remember what the list is showing right now ----------
+let cuExportDataOpt = { rows: [], title: "tasks" };
+function cuExportRowsOpt(tasks, deadlineTasks, trackedTasks, scope) {
+  const all = [].concat(tasks || [], deadlineTasks || [], trackedTasks || []);
+  const seen = new Set();
+  const rows = [];
+  for (const t of all) {
+    if (!t || t.id == null || t.error) continue;
+    const id = String(t.id);
+    if (seen.has(id)) continue;
+    seen.add(id);
+    rows.push({
+      id,
+      name: t.name || "(untitled task)",
+      isSubtask: !!t.isSubtask,
+      client: t.client || "",
+      dueDateMs: Number(t.dueDateMs) || null,
+      estimateMs: Number(t.totalEstimateMs || t.estimateMs || t.dayEstimateMs) || 0,
+      spentMs: Number(t.spentMs) || 0,
+      status: t.status || "",
+      done: !!t.done,
+      url: t.url || "",
+    });
+  }
+  cuExportDataOpt = { rows, title: scope || "tasks" };
+}
+
+// ---------- due date: click the chip to set / change / clear it ----------
+function startEditDueOpt(chip, task) {
+  if (chip._editing) return;
+  const taskId = task.id || task.taskId;
+  if (!taskId) return;
+  chip._editing = true;
+  const prevText = chip.textContent;
+  const prevClass = chip.className;
+  const prevTitle = chip.title;
+  const ms = Number(task.dueDateMs) || 0;
+  const input = document.createElement("input");
+  input.type = "date";
+  input.className = "due-input";
+  input.title = "Enter = save, Esc = cancel. Empty = no due date.";
+  if (ms) {
+    const d = new Date(ms);
+    input.value = d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0") + "-" + String(d.getDate()).padStart(2, "0");
+  }
+  chip.textContent = "";
+  chip.appendChild(input);
+  input.focus();
+  let done = false;
+  let saving = false;
+  const finish = (text, cls, title) => {
+    if (done) return;
+    done = true;
+    chip.textContent = text;
+    chip.className = cls;
+    chip.title = title;
+    chip._editing = false;
+  };
+  const cancel = () => finish(prevText, prevClass, prevTitle);
+  const save = async () => {
+    if (done || saving) return;
+    saving = true;
+    const v = input.value;
+    let newMs = null;
+    if (v) {
+      const [y, m, d] = v.split("-").map(Number);
+      const keep = ms ? new Date(ms) : null;
+      newMs = new Date(y, m - 1, d, keep ? keep.getHours() : 12, keep ? keep.getMinutes() : 0, 0, 0).getTime();
+    }
+    if ((newMs || 0) === ms) { cancel(); return; }
+    input.disabled = true;
+    try {
+      const r = await send({ type: "CLICKUP_SET_DUE", taskId: String(taskId), dueMs: newMs }, 15000);
+      if (!r || !r.ok) throw new Error((r && (r.error || r.reason)) || "save failed");
+      task.dueDateMs = newMs;
+      finish(newMs ? new Date(newMs).toLocaleDateString(undefined, { month: "numeric", day: "numeric" }) : "+ due",
+        "cu-due" + (newMs ? " syncing" : " nodue"), "Saved to ClickUp - syncing…");
+    } catch (e) {
+      cancel();
+      cuDueToastOpt("Couldn't save the due date: " + (e && e.message ? e.message : e));
+    }
+  };
+  input.addEventListener("blur", save);
+  input.addEventListener("keydown", (e) => {
+    if (e.key === "Enter") { e.preventDefault(); save(); }
+    else if (e.key === "Escape") { e.preventDefault(); input.removeEventListener("blur", save); cancel(); }
+  });
+  input.addEventListener("click", (e) => e.stopPropagation());
+}
+function makeDueEditableOpt(chip, t) {
+  if (!chip || !t || (t.id == null && t.taskId == null)) return chip;
+  chip.style.cursor = "pointer";
+  chip.title = (chip.title ? chip.title + " · " : "") + "Click to edit the due date";
+  chip.addEventListener("click", (e) => { e.stopPropagation(); e.preventDefault(); startEditDueOpt(chip, t); });
+  return chip;
+}
+
 function appendNameCellOpt(row, nm, t) {
   row.appendChild(prioBadge(t));
   // Every task row passes through here, so it's also where the row learns its
@@ -1336,7 +1442,13 @@ function appendNameCellOpt(row, nm, t) {
 // done). Returns null when the task has no due date.
 function dueChipOpt(t) {
   const ms = Number(t && t.dueDateMs) || 0;
-  if (!ms) return null;
+  if (!ms) {
+    const add = document.createElement("span");
+    add.className = "cu-due nodue";
+    add.textContent = "+ due";
+    add.title = "No due date";
+    return makeDueEditableOpt(add, t);
+  }
   const day = new Date(ms).setHours(0, 0, 0, 0);
   const today = new Date().setHours(0, 0, 0, 0);
   const diff = Math.round((day - today) / 86400000);
@@ -1347,7 +1459,7 @@ function dueChipOpt(t) {
     : new Date(ms).toLocaleDateString(undefined, { month: "short", day: "numeric" });
   chip.title = "Due " + new Date(ms).toLocaleDateString(undefined, { weekday: "short", month: "short", day: "numeric", year: "numeric" }) +
     (overdue ? " - overdue" : "");
-  return chip;
+  return makeDueEditableOpt(chip, t);
 }
 function appendDoneTickOpt(anchor, t) {
   if (t && t.done) {
@@ -2932,6 +3044,8 @@ function renderClickupPreview(st) {
     spentTot = viewTasks.concat(viewDeadline, viewTracked).reduce((a, t) => a + (Number(t.spentMs) || 0), 0);
     met = targetMs > 0 && estMs >= targetMs;
   }
+  cuExportRowsOpt(viewTasks, viewDeadline, viewTracked,
+    (CU_SCOPE_LABEL[view.scope] || "tasks") + (clientsSel.length ? " - " + clientsSel.join(", ") : ""));
   const noEst = viewTasks.filter((t) => !Number(t.estimateMs)).length;
   const scopeLabel = (view.scope && view.scope !== "extended") ? (view.label || CU_SCOPE_LABEL[view.scope]) : "";
 
@@ -4211,6 +4325,9 @@ function escapeHtml(s) {
 }
 
 // Header: open the side panel / the wrap-up page from the options page too.
+// Export button on the ClickUp card (exports exactly what the card shows).
+if (window.pcmExport) window.pcmExport.attach($("optCuExportBtn"), () => cuExportDataOpt);
+
 (function initHeaderTools() {
   const panel = $("optPanelBtn"), wrap = $("optWrapBtn");
   if (wrap) wrap.onclick = () => chrome.tabs.create({ url: chrome.runtime.getURL("wrapup.html") }).catch(() => {});
