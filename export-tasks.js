@@ -2,9 +2,10 @@
 // Exports exactly the rows a page hands over (so it follows whatever filters are
 // on screen) as CSV, Excel, Google Sheets or Google Docs.
 //
-// Sheet layout matches the one the team already uses:
-//   column A: "main" / "sub task"      column B: the task text (main rows bold)
-// "Include details" adds Client / Due / Estimate / Tracked / Status / Link.
+// Fixed layout, matching the team sheet: main / sub task | Task | Task info |
+// Status | Week. "Task info" is the ClickUp description with its planning
+// boilerplate stripped (see cleanInfo), keeping the instructions and the WHY.
+// Google Docs gets headings + bullets instead of a grid.
 // No AI anywhere - this just reformats data the extension already holds.
 (function () {
   const PCM = {};
@@ -37,6 +38,43 @@
   }
   const fmtDate = (ms) => (ms ? new Date(ms).toLocaleDateString([], { year: "numeric", month: "short", day: "numeric" }) : "");
 
+  // ClickUp descriptions here carry a planning wrapper: quoted blocks
+  // (Pre Description: "…"), empty fields (Pre File: "") and labelled lines
+  // (WEEK:, DEPARTMENT (plan):, DONE WHEN:, STEP 2 of 4 …). The sheet only wants
+  // the plain instruction sentences, plus the WHY line for context.
+  // A "labelled" line is one whose text before the first colon reads as a field
+  // name: DONE WHEN:, DEPARTMENT (plan):, PAGES / SYSTEMS AFFECTED:, PARENT TASK: …
+  function isLabelLine(line) {
+    const i = line.indexOf(":");
+    if (i < 2 || i > 60) return false;
+    const head = line.slice(0, i).replace(/\([^)]*\)|\[[^\]]*\]/g, "").trim();
+    return /[A-Z]{2}/.test(head) && !/[a-z]/.test(head);
+  }
+  const WHY_RE = /^(?:CONTEXT:\s*)?WHY\b[^:]*:\s*(.+)$/i;
+  function cleanInfo(text) {
+    let t = String(text || "");
+    if (!t.trim()) return "";
+    t = t.replace(/\r/g, "");
+    // Drop empty "Field: """ lines and unwrap the quoted blocks around real text.
+    t = t.replace(/^[A-Za-z][A-Za-z ]{0,30}:\s*""\s*$/gm, "");
+    t = t.replace(/^((?:Pre )?Description|Checklist File|Pre File|File)\s*:\s*"?/gim, "");
+    t = t.replace(/"\s*$/gm, "");
+    const prose = [];
+    let why = "";
+    for (const raw of t.split("\n")) {
+      const line = raw.trim();
+      if (!line) continue;
+      if (/^STEP\s+\d+\s+of\s+\d+/i.test(line)) continue; // "STEP 3 of 4 — ACT-040"
+      const w = line.match(WHY_RE);
+      if (w) { if (!why) why = w[1].trim(); continue; }
+      if (isLabelLine(line)) continue; // WEEK:, DONE WHEN (parent):, PARENT TASK: …
+      prose.push(line);
+    }
+    let out = prose.join(" ").replace(/\s{2,}/g, " ").trim();
+    if (why) out = (out ? out + "\n" : "") + "Why: " + why;
+    return out.slice(0, 1500);
+  }
+
   // The Mon-Sun week a due date falls in, e.g. "Sep 22 - Sep 28".
   function weekLabel(ms) {
     if (!ms) return "";
@@ -57,7 +95,7 @@
       out.push([
         t.isSubtask ? "sub task" : "main",
         t.name || "",
-        String(t.info || "").replace(/\s*\n\s*\n+/g, "\n").trim(),
+        cleanInfo(t.info),
         t.status || (t.done ? "complete" : ""),
         weekLabel(t.dueDateMs),
       ]);
@@ -68,10 +106,10 @@
   // HTML table: Excel opens it, and Google Drive converts it keeping the bold.
   function toHtml(m, title) {
     const rows = m.map((r, i) => {
-      if (!i) return "<tr>" + r.map((c) => '<td style="background:#000000;color:#ffffff;font-weight:bold">' + esc(c) + "</td>").join("") + "</tr>";
+      if (!i) return "<tr>" + r.map((c) => '<td style="background:#4a86e8;color:#ffffff;font-weight:bold">' + esc(c) + "</td>").join("") + "</tr>";
       const main = r[0] === "main";
       const a = '<td style="font-style:italic;vertical-align:bottom">' + esc(r[0]) + "</td>";
-      const b = '<td style="vertical-align:top' + (main ? ";font-weight:bold" : "") + '">' + esc(r[1]).replace(/\n/g, "<br>") + "</td>";
+      const b = '<td style="vertical-align:bottom' + (main ? ";font-weight:bold" : "") + '">' + esc(r[1]).replace(/\n/g, "<br>") + "</td>";
       const rest = r.slice(2).map((c) => '<td style="vertical-align:top">' + esc(c) + "</td>").join("");
       return "<tr>" + a + b + rest + "</tr>";
     }).join("");
@@ -79,6 +117,33 @@
       '<table border="1" cellspacing="0" cellpadding="4"><colgroup><col style="width:90px"><col style="width:640px"></colgroup>' +
       rows + "</table></body></html>";
   }
+  // Google Docs export: headings and bullets rather than a grid.
+  function toDocHtml(rows, title) {
+    const parts = ['<html><head><meta charset="utf-8"><title>' + esc(title) + "</title></head><body>"];
+    parts.push("<h1>" + esc(title) + "</h1>");
+    parts.push("<p><i>" + esc(new Date().toLocaleDateString([], { weekday: "long", year: "numeric", month: "long", day: "numeric" })) + "</i></p>");
+    let openList = false;
+    const closeList = () => { if (openList) { parts.push("</ul>"); openList = false; } };
+    const infoHtml = (t) => cleanInfo(t.info).split("\n").filter(Boolean).map(esc);
+    for (const t of rows) {
+      const meta = [t.status || (t.done ? "complete" : ""), weekLabel(t.dueDateMs)].filter(Boolean).join(" · ");
+      if (!t.isSubtask) {
+        closeList();
+        parts.push("<h2>" + esc(t.name || "(task)") + "</h2>");
+        if (meta) parts.push("<p><b>" + esc(meta) + "</b></p>");
+        for (const line of infoHtml(t)) parts.push("<p>" + line + "</p>");
+      } else {
+        if (!openList) { parts.push("<ul>"); openList = true; }
+        const info = infoHtml(t).join(" ");
+        parts.push("<li><b>" + esc(t.name || "(subtask)") + "</b>" + (meta ? " <i>(" + esc(meta) + ")</i>" : "") +
+          (info ? "<br>" + info : "") + "</li>");
+      }
+    }
+    closeList();
+    parts.push("</body></html>");
+    return parts.join("");
+  }
+
   function download(name, mime, text) {
     const url = URL.createObjectURL(new Blob([text], { type: mime }));
     const a = document.createElement("a");
@@ -195,7 +260,7 @@
           const res = await chrome.runtime.sendMessage({
             type: "EXPORT_TO_GOOGLE", kind, name: file, share: share.checked,
             mainRows, colCount: m[0].length,
-            html: toHtml(m, title), // Docs keeps the bold "main" rows
+            html: toDocHtml(rows, title), // Docs: headings + bullets
             csv: toCsv(m), // Sheets: Drive only converts csv/xls into a spreadsheet
           });
           if (!res || !res.ok) throw new Error((res && (res.error || res.reason)) || "Google export failed");
