@@ -76,6 +76,63 @@ export async function getFileToken(interactive = true) {
 }
 // Upload an HTML table and let Drive convert it into a Google Sheet / Doc,
 // which keeps the bold "main" rows and the header row.
+// Make the imported sheet look like the team template: black header row, italic
+// bottom-aligned labels in column A, wrapped task text, bold "main" rows.
+export async function formatExportedSheet(token, spreadsheetId, mainRows, colCount) {
+  const meta = await fetch("https://sheets.googleapis.com/v4/spreadsheets/" + spreadsheetId + "?fields=sheets.properties.sheetId", {
+    headers: { Authorization: "Bearer " + token },
+  });
+  if (!meta.ok) return { ok: false, reason: await apiReason(meta) };
+  const mj = await meta.json();
+  const sheetId = mj && mj.sheets && mj.sheets[0] && mj.sheets[0].properties && mj.sheets[0].properties.sheetId;
+  if (sheetId == null) return { ok: false, reason: "no sheet found" };
+
+  // Merge consecutive "main" rows into as few ranges as possible.
+  const rows = (mainRows || []).slice().sort((a, b) => a - b);
+  const ranges = [];
+  for (const r of rows) {
+    const last = ranges[ranges.length - 1];
+    if (last && last.end === r) last.end = r + 1;
+    else ranges.push({ start: r, end: r + 1 });
+  }
+  const requests = [
+    { repeatCell: { range: { sheetId, startRowIndex: 0, endRowIndex: 1 },
+      cell: { userEnteredFormat: { backgroundColor: { red: 0, green: 0, blue: 0 },
+        textFormat: { bold: true, foregroundColor: { red: 1, green: 1, blue: 1 } } } },
+      fields: "userEnteredFormat(backgroundColor,textFormat)" } },
+    { repeatCell: { range: { sheetId, startRowIndex: 1, startColumnIndex: 0, endColumnIndex: 1 },
+      cell: { userEnteredFormat: { textFormat: { italic: true }, verticalAlignment: "BOTTOM" } },
+      fields: "userEnteredFormat(textFormat,verticalAlignment)" } },
+    { repeatCell: { range: { sheetId, startRowIndex: 1, startColumnIndex: 1 },
+      cell: { userEnteredFormat: { wrapStrategy: "WRAP", verticalAlignment: "TOP" } },
+      fields: "userEnteredFormat(wrapStrategy,verticalAlignment)" } },
+    { updateDimensionProperties: { range: { sheetId, dimension: "COLUMNS", startIndex: 0, endIndex: 1 }, properties: { pixelSize: 90 }, fields: "pixelSize" } },
+    { updateDimensionProperties: { range: { sheetId, dimension: "COLUMNS", startIndex: 1, endIndex: 2 }, properties: { pixelSize: 640 }, fields: "pixelSize" } },
+    { updateSheetProperties: { properties: { sheetId, gridProperties: { frozenRowCount: 1 } }, fields: "gridProperties.frozenRowCount" } },
+  ];
+  for (const r of ranges) {
+    requests.push({ repeatCell: {
+      range: { sheetId, startRowIndex: r.start, endRowIndex: r.end, startColumnIndex: 1, endColumnIndex: Math.max(2, colCount || 2) },
+      cell: { userEnteredFormat: { textFormat: { bold: true } } },
+      fields: "userEnteredFormat.textFormat.bold" } });
+  }
+  const res = await fetch("https://sheets.googleapis.com/v4/spreadsheets/" + spreadsheetId + ":batchUpdate", {
+    method: "POST",
+    headers: { Authorization: "Bearer " + token, "Content-Type": "application/json" },
+    body: JSON.stringify({ requests }),
+  });
+  return res.ok ? { ok: true } : { ok: false, reason: await apiReason(res) };
+}
+// Short, human reason from a Google API error body.
+async function apiReason(res) {
+  try {
+    const j = await res.json();
+    const m = (j && j.error && j.error.message) || "";
+    if (/has not been used in project|is disabled/i.test(m)) return "the Google Sheets API is not enabled for this Google Cloud project";
+    return m || ("HTTP " + res.status);
+  } catch (e) { return "HTTP " + res.status; }
+}
+
 // Let anyone with the link view the file (only ever applied to files we create).
 export async function shareAnyoneWithLink(token, fileId) {
   const res = await fetch("https://www.googleapis.com/drive/v3/files/" + encodeURIComponent(fileId) + "/permissions", {

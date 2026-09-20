@@ -360,17 +360,15 @@ export async function getTasksDueToday(token, teamId, userId, now = Date.now()) 
 // explicitly. `userId`, when given, drops subtasks assigned SOLELY to other
 // people (unassigned subtasks are kept) so someone else's work can't inflate the
 // viewer's day. Returns the raw task objects (time_estimate/time_spent/dates).
-export async function getSubtasksOfParent(token, teamId, parentId, userId) {
-  // The team /task endpoint ignores a "parent" filter (it returned hundreds of
-  // unrelated tasks), so ask for the parent task itself WITH its subtasks - the
-  // documented way, one request per parent.
+// One request: the task itself (so we learn ITS parent) plus its subtasks.
+export async function getTaskTree(token, parentId, userId) {
   const uid = userId != null ? String(userId) : null;
   let j;
   try {
     j = await cuFetch(token, "/task/" + encodeURIComponent(String(parentId)), [["include_subtasks", "true"]]);
   } catch (e) {
     if (e && e.status === 429) throw e; // let callers back off
-    return [];
+    return { parent: null, subtasks: [] };
   }
   const subs = Array.isArray(j && j.subtasks) ? j.subtasks : [];
   const out = [];
@@ -383,7 +381,30 @@ export async function getSubtasksOfParent(token, teamId, parentId, userId) {
     }
     out.push(t);
   }
-  return out;
+  const plain = (t) => ({
+    id: t && t.id,
+    name: (t && t.name) || "",
+    description: String((t && (t.description || t.text_content)) || "").trim(),
+    status: (t && t.status && t.status.status) || "",
+    done: isTaskDone(t),
+    dueDateMs: t && t.due_date ? Number(t.due_date) : null,
+    estimateMs: Number(t && t.time_estimate) || 0,
+    spentMs: Number(t && t.time_spent) || 0,
+    url: taskUrlFor(t && t.id),
+  });
+  return {
+    parent: j && j.parent != null ? String(j.parent) : null,
+    self: plain(j),
+    subtasks: out,
+    subtaskRows: out.map(plain),
+  };
+}
+
+export async function getSubtasksOfParent(token, teamId, parentId, userId) {
+  // The team /task endpoint ignores a "parent" filter (it returned hundreds of
+  // unrelated tasks), so ask for the parent task itself WITH its subtasks - the
+  // documented way, one request per parent.
+  return (await getTaskTree(token, parentId, userId)).subtasks;
 }
 
 // ---------- auto-detected "Extra(s) Task(s)" ----------

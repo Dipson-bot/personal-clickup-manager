@@ -4,6 +4,7 @@
 - **Export the tasks you're looking at.** An "⤓ Export" button next to Filter (popup, side panel, options and Explore tasks) writes whatever the list currently shows, with your filters applied: **CSV**, **Excel**, **Google Sheets** or **Google Docs**. The sheet uses the team layout: column A "main" / "sub task", column B the task, main rows bold. Optional "include subtasks" and "include details" (client, due, estimate, tracked, status, link).
 - **Edit a due date from the list**, the same way estimates work: click the date chip, pick a date, Enter. Rows with no due date show "+ due"; clearing the box removes the date.
 - **Explore tasks: Client filter**, alongside department and teammate, with totals that follow the choice.
+- **Export layout is now fixed and complete:** main / sub task · Task · Task info · Status · Week. Task info, status and due date are read from ClickUp itself at export time, subtasks sit under their real parent, and Google Sheets exports are formatted (black header, bold main rows, italic labels, wrapped task column, frozen header).
 - Export refuses to write an empty file: if the view has no tasks it says so, with the view name, instead of producing a header-only sheet.
 - Google exports can be shared straight away: "anyone with the link can view" is ticked by default (untick it to keep the file private).
 - The Agent Router schedule notification now shows your local time next to Beijing time (e.g. "10:00 & 19:00 Beijing = 7:45 AM & 4:45 PM Kathmandu").
