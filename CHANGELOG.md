@@ -1,5 +1,8 @@
 # Changelog
 
+## v3.8.2
+- **Fixed: "Due tomorrow" left out the recurring Extra Task** (and anything else that starts tomorrow but is due later). Those tasks are due another day, so the due-date rule skipped them, even though their estimate is divided per day and tomorrow owns a share. That share is now included, as it already was for today.
+
 ## v3.8.1
 - **Fixed: changes made in ClickUp took up to an hour to show in "Due tomorrow", "This week" and "Due next week".** Those views were behind a 60-minute cache that the automatic 5-minute sync never refreshed. The cache is now 15 minutes, and opening the popup, the side panel or the options page rebuilds them immediately.
 
