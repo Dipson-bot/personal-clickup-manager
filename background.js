@@ -9,7 +9,6 @@ import {
   getFileToken,
   createGoogleFile,
   shareAnyoneWithLink,
-  formatExportedSheet,
   getValidToken,
   signOut as driveSignOut,
   isSignedIn,
@@ -4222,16 +4221,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
           const r = await createGoogleFile(tok, { name: msg.name || "tasks", html: msg.html || "", csv: msg.csv || "", kind: msg.kind === "docs" ? "docs" : "sheets" });
           // Google files are private by default; share on request so the link works for the team.
           const shared = msg.share === false ? false : await shareAnyoneWithLink(tok, r.id).catch(() => false);
-          // Match the team's sheet: black header, bold "main" rows, italic labels,
-          // wrapped task column. CSV can't carry formatting, so it's applied after.
-          let formatted = false;
-          let formatReason = "";
-          if (msg.kind !== "docs" && Array.isArray(msg.mainRows)) {
-            const f = await formatExportedSheet(tok, r.id, msg.mainRows, Number(msg.colCount) || 2).catch((e) => ({ ok: false, reason: String(e && e.message ? e.message : e) }));
-            formatted = !!(f && f.ok);
-            if (!formatted) formatReason = (f && f.reason) || "";
-          }
-          sendResponse({ ok: true, url: r.url, shared, formatted, formatReason });
+          sendResponse({ ok: true, url: r.url, shared });
         } catch (e) {
           sendResponse({ ok: false, error: String(e && e.message ? e.message : e) });
         }
