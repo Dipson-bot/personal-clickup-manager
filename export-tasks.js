@@ -257,25 +257,15 @@
         else if (kind === "xls") { download(file + ".xls", "application/vnd.ms-excel", toHtml(m, title)); note("Saved " + file + ".xls (opens in Excel)"); }
         else {
           note("Creating in Google Drive…");
-          // Row 0 is the header, so data rows start at 1.
-          const mainRows = [];
-          m.forEach((r, i) => { if (i && r[0] === "main") mainRows.push(i); });
           const res = await chrome.runtime.sendMessage({
             type: "EXPORT_TO_GOOGLE", kind, name: file, share: share.checked,
-            mainRows, colCount: m[0].length,
             html: toDocHtml(rows, title), // Docs: headings + bullets
             csv: toCsv(m), // Sheets: Drive only converts csv/xls into a spreadsheet
           });
           if (!res || !res.ok) throw new Error((res && (res.error || res.reason)) || "Google export failed");
-          if (res.formatted === false && res.formatReason) {
-            msg.className = "xp-msg err";
-            msg.textContent = /Sheets API/i.test(res.formatReason)
-              ? "Sheet created, but it is unformatted: enable the Google Sheets API for your Google Cloud project (console.cloud.google.com > APIs & Services > Library > Google Sheets API > Enable), then export again."
-              : "Sheet created, but formatting failed: " + res.formatReason;
-            console.warn("[export] formatting failed:", res.formatReason);
-          } else note("Opening…");
+          note("Opening…");
           chrome.tabs.create({ url: res.url }).catch(() => {});
-          if (!(res.formatted === false && res.formatReason)) setTimeout(close, 700);
+          setTimeout(close, 700);
         }
       } catch (e) {
         msg.className = "xp-msg err";

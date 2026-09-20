@@ -6,7 +6,7 @@
 - **Explore tasks: Client filter**, alongside department and teammate, with totals that follow the choice.
 - Subtasks now carry their Task info too (ClickUp does not send descriptions with a subtask list, so each is fetched), a rate-limited task is retried once, and the export says if any task could not be read.
 - Google Docs export reads as a document: title, a heading per task with status and week, its info as paragraphs, subtasks as bullets, with spacing between tasks.
-- **Export layout is now fixed and complete:** main / sub task · Task · Task info · Status · Week. Task info, status and due date are read from ClickUp itself at export time, subtasks sit under their real parent, and Google Sheets exports are formatted (black header, bold main rows, italic labels, wrapped task column, frozen header).
+- **Export layout is now fixed and complete:** main / sub task · Task · Task info · Status · Week. Task info, status and due date are read from ClickUp itself at export time, subtasks sit under their real parent,. Google Sheets exports are plain (Google converts CSV without carrying formatting); the Excel export keeps its styled header and bold main rows.
 - Export refuses to write an empty file: if the view has no tasks it says so, with the view name, instead of producing a header-only sheet.
 - Google exports can be shared straight away: "anyone with the link can view" is ticked by default (untick it to keep the file private).
 - The Agent Router schedule notification now shows your local time next to Beijing time (e.g. "10:00 & 19:00 Beijing = 7:45 AM & 4:45 PM Kathmandu").
