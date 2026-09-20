@@ -1746,6 +1746,7 @@ async function refreshClickupImpl({ includeTasks = false, viaAlarm = false, forc
           extendedMode,
           taskCache,
         });
+      applyWeeklySubEstimateRule(weekly, settings.clickupSubEstimates || "both");
         weekly.at = Date.now();
       }
       // Remember which slice the user last picked so the popup can settle its toggle.
@@ -2385,6 +2386,19 @@ function applySubEstimateRule(bundle, mode) {
   }
   if (removed) bundle.estimateMs = Math.max(0, (Number(bundle.estimateMs) || 0) - removed);
   return bundle;
+}
+
+// The Weekly totals card keeps its own per-day bundles, so the parent/subtask
+// estimate rule is applied to each day and the week aggregates rebuilt from
+// the days that survive.
+function applyWeeklySubEstimateRule(weekly, mode) {
+  if (!weekly || mode === "both" || !Array.isArray(weekly.perDay)) return weekly;
+  for (const day of weekly.perDay) applySubEstimateRule(day, mode);
+  const sum = (days) => days.reduce((n, d) => n + (Number(d.estimateMs) || 0), 0);
+  const todayFloor = new Date().setHours(0, 0, 0, 0);
+  if (weekly.today) weekly.today.estimateMs = sum(weekly.perDay.filter((d) => Number(d.ts) <= todayFloor));
+  if (weekly.friday) weekly.friday.estimateMs = sum(weekly.perDay);
+  return weekly;
 }
 
 // ---------- badge ----------
@@ -4636,6 +4650,8 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
             estimateMs: tasks.reduce((n, t) => n + t.estimateMs, 0), spentMs: tasks.reduce((n, t) => n + t.spentMs, 0) };
           const settings = await getSettings();
           await annotateClients(cfg.token, data, settings.cuClientLevel || "auto");
+          // Overdue rows come from their own query, so apply the rule here as well.
+          applySubEstimateRule(data, settings.clickupSubEstimates || "both");
           overdueCache = { at: Date.now(), data };
           sendResponse({ ok: true, data });
         } catch (e) {
