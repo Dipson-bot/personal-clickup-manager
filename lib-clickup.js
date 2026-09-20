@@ -452,15 +452,54 @@ export async function getSubtasksOfParent(token, teamId, parentId, userId) {
 // (email/handle) is known, a match that includes it wins.
 export const EXTRA_TASK_NAME_RE = /extra\s*\(?\s*s?\s*\)?\s*-?\s*tasks?/i;
 
+// Pick WHICH occurrence of the recurring Extra Task applies to the day being
+// asked about. A recurring task exists as one occurrence at a time and ClickUp
+// rolls it forward, so several copies are visible at once - last week's finished
+// one and this week's live one. Taking whichever turned up first is how a
+// COMPLETED occurrence from the previous week ended up shown against tomorrow.
+// Order of preference: the name hint (so a shared list gives you YOUR row), then
+// an occurrence whose span actually covers the target range, then one that is not
+// finished, then the nearest - counting a past occurrence as twice as far away so
+// an upcoming one wins when nothing covers the day (a weekend, or ClickUp has not
+// created the next occurrence yet).
+function chooseExtraOccurrence(found, hint, target) {
+  if (!found.length) return null;
+  let pool = found;
+  if (hint && pool.some((m) => m.hasHint)) pool = pool.filter((m) => m.hasHint);
+  if (!target) return pool.find((m) => !m.done) || pool[0];
+  const covers = (m) => {
+    const s = m.startDateMs || m.dueDateMs;
+    const e = m.dueDateMs || m.startDateMs;
+    if (!s || !e) return false;
+    const sDay = new Date(s).setHours(0, 0, 0, 0);
+    const eDay = new Date(e).setHours(23, 59, 59, 999);
+    return sDay <= target.to && eDay >= target.from; // the two spans overlap
+  };
+  const rank = (m) => (covers(m) ? 0 : 2) + (m.done ? 1 : 0);
+  const dist = (m) => {
+    const d = m.dueDateMs || m.startDateMs || 0;
+    const gap = Math.abs(d - target.from);
+    return d >= target.from ? gap : gap * 2 + 1;
+  };
+  return pool.slice().sort((a, b) => rank(a) - rank(b) || dist(a) - dist(b))[0];
+}
+
+// `fromTs`/`toTs` are the range the caller is asking about (today, tomorrow, a
+// week). The due-date query is widened around it because the occurrence that
+// COVERS that range is usually due at the end of its own week, outside it.
 export async function findExtraTaskByName({ token, teamId, userId, usernameHint = "", fromTs, toTs }) {
   const hint = String(usernameHint || "").toLowerCase();
-  // Try the due-date window first (proven: the This Week filter finds it there),
-  // then fall back to an unfiltered paginated scan of the user's tasks.
-  const windows = fromTs && toTs ? [{ fromTs: Number(fromTs), toTs: Number(toTs) }, null] : [null];
+  const from = Number(fromTs) || 0;
+  const to = Number(toTs) || 0;
+  const target = from && to ? { from, to } : null;
+  const MS = 86400000;
+  const windows = target
+    ? [{ fromTs: from - 10 * MS, toTs: to + 10 * MS }, null]
+    : [null];
+  const found = [];
+  const seen = new Set();
   for (const win of windows) {
-    const open = [];
-    const closed = [];
-    outer: for (let page = 0; page < MAX_PAGES; page++) {
+    for (let page = 0; page < MAX_PAGES; page++) {
       const params = [
         ["assignees[]", String(userId)],
         ["include_closed", "true"],
@@ -478,29 +517,27 @@ export async function findExtraTaskByName({ token, teamId, userId, usernameHint 
         if (!EXTRA_TASK_NAME_RE.test(name)) continue;
         const status = (t.status && t.status.status) || "";
         if (/(cancelled|canceled)/i.test(status)) continue;
-        const hit = {
+        if (t.id == null || seen.has(t.id)) continue;
+        seen.add(t.id);
+        found.push({
           id: t.id,
           name,
           url: taskUrlFor(t.id),
           status,
           estimateMs: Number(t.time_estimate) || 0,
+          startDateMs: Number(t.start_date) || 0,
+          dueDateMs: Number(t.due_date) || 0,
+          done: isTaskDone(t),
           hasHint: !!(hint && name.toLowerCase().includes(hint)),
-        };
-        (/(closed|done|completed)/i.test(status) ? closed : open).push(hit);
-        if (hint && open.some((m) => m.hasHint)) break outer;
-        if (!hint && (open.length || closed.length)) break outer;
+        });
       }
       if (tasks.length < 100 || j.last_page === true) break;
     }
-    let found = null;
-    if (hint && (open.length || closed.length)) {
-      found = (open.find((m) => m.hasHint) || closed.find((m) => m.hasHint) || open[0] || closed[0]);
-    } else if (open.length || closed.length) {
-      found = (open[0] || closed[0]);
-    }
-    if (found) return found;
+    // Every candidate in the window is collected before choosing - breaking out
+    // at the first match is exactly what picked the wrong occurrence before.
+    if (found.length) break;
   }
-  return null;
+  return chooseExtraOccurrence(found, hint, target);
 }
 
 // ---------- deadline task (weekly task divided across weekdays) ----------
@@ -1193,6 +1230,11 @@ export async function fetchExtendedTaskEstimate({ token, teamId, taskUrl, todayB
 function extraTaskWeekdayShare(task, dayTs) {
   if (!task || !EXTRA_TASK_NAME_RE.test(task.name || "")) return 0;
   if (!isWeekday(dayTs)) return 0;
+  // Never lend future hours to a FINISHED occurrence - that is exactly what made
+  // last week's completed task show 1h 24m against tomorrow. Now that discovery
+  // picks the occurrence covering the day, this net is only for the gap before
+  // ClickUp creates the next one, and showing nothing there is the honest answer.
+  if (task.done) return 0;
   const total = Number(task.estimateMs) || 0;
   return total > 0 ? Math.round(total / WEEKDAY_COUNT) : 0;
 }

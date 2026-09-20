@@ -1106,26 +1106,37 @@ async function clickupPublic() {
 // user). This is what lets a department/Jack-scoped filter list Jack's own extra
 // task instead of the viewer's. Cached per user for an hour. `hint` (name/email)
 // sharpens which match is preferred when someone has several Extra-named tasks.
-async function discoverExtraTaskFor(cfg, userId, hint) {
-  const key = String(userId);
+// Which week's occurrence to look for depends on the day being asked about, so
+// the cache is keyed per user PER WEEK. One entry for everything is what made
+// "Due tomorrow" reuse the current week's answer when tomorrow is next week.
+function extraRangeKey(userId, fromTs) {
+  const d = new Date(fromTs);
+  d.setHours(0, 0, 0, 0);
+  d.setDate(d.getDate() - ((d.getDay() + 6) % 7)); // that week's Monday
+  return String(userId) + ":" + d.getTime();
+}
+
+// Detect the "Extra(s) Task(s)" occupying `range` for a SPECIFIC member (not just
+// the signed-in user). This is what lets a department/Jack-scoped filter list
+// Jack's own extra task instead of the viewer's. `hint` (name/email) sharpens
+// which match is preferred when someone has several Extra-named tasks, and the
+// range decides WHICH occurrence of the recurring task applies - see
+// chooseExtraOccurrence in lib-clickup.js. Cached per user per week for an hour.
+async function discoverExtraTaskFor(cfg, userId, hint, range) {
+  const from = (range && Number(range.fromTs)) || Date.now();
+  const to = (range && Number(range.toTs)) || from;
+  const key = extraRangeKey(userId, from);
   const hit = extraTaskCache.get(key);
   if (hit && Date.now() - hit.at < EXTRA_TASK_CACHE_MS) return hit.value;
   let value = null;
   try {
-    const nowDate = new Date();
-    const monday = new Date(nowDate);
-    monday.setHours(0, 0, 0, 0);
-    monday.setDate(nowDate.getDate() - ((nowDate.getDay() + 6) % 7));
-    const friEnd = new Date(monday);
-    friEnd.setDate(monday.getDate() + 4);
-    friEnd.setHours(23, 59, 59, 999);
     value = await findExtraTaskByName({
       token: cfg.token,
       teamId: cfg.teamId,
       userId: userId != null ? userId : cfg.userId,
-      usernameHint: hint || (key === String(cfg.userId) ? (cfg.username || cfg.email || "") : ""),
-      fromTs: monday.getTime(),
-      toTs: friEnd.getTime(),
+      usernameHint: hint || (String(userId) === String(cfg.userId) ? (cfg.username || cfg.email || "") : ""),
+      fromTs: from,
+      toTs: to,
     });
   } catch (e) {
     value = null;
@@ -1134,8 +1145,12 @@ async function discoverExtraTaskFor(cfg, userId, hint) {
   return value;
 }
 
+// The signed-in user's Extra Task for TODAY (the "Start Extra Task" button).
 async function discoverExtraTask(cfg) {
-  return discoverExtraTaskFor(cfg, cfg.userId, cfg.username || cfg.email || "");
+  const from = new Date(); from.setHours(0, 0, 0, 0);
+  const to = new Date(from); to.setHours(23, 59, 59, 999);
+  return discoverExtraTaskFor(cfg, cfg.userId, cfg.username || cfg.email || "",
+    { fromTs: from.getTime(), toTs: to.getTime() });
 }
 
 // The effective configured-task URL list = the URLs the user entered PLUS the
@@ -1175,7 +1190,7 @@ async function computeFilterData(cfg, settings, assigneeIds, fromTs, toTs) {
   // Each in-scope user's own Extra Task (cached per user ~1h).
   const extraUrls = [];
   for (const u of scopeIds) {
-    const ex = await discoverExtraTaskFor(cfg, u, memberHint.get(u) || "");
+    const ex = await discoverExtraTaskFor(cfg, u, memberHint.get(u) || "", { fromTs, toTs });
     if (ex && ex.url) extraUrls.push(ex.url);
   }
   const deadlineTaskUrls = [];
