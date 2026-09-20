@@ -1891,7 +1891,6 @@ function renderClickupSettings(cu) {
   $("cuIdleRepeat").value = cu.idleRepeatMin != null ? String(cu.idleRepeatMin) : "60";
   if ($("cuSyncMin")) $("cuSyncMin").value = String(cu.syncMin || 5);
   if ($("cuWeekMode")) $("cuWeekMode").value = cu.weekMode || "sun-sat";
-  if ($("cuSubEstimates")) $("cuSubEstimates").value = cu.subEstimates || "both";
   $("cuAwayNotify").checked = cu.awayNotify !== false;
   $("cuAwayMin").value = cu.awayMin != null ? String(cu.awayMin) : "15";
   $("cuWrapUp").checked = cu.wrapUp !== false;
@@ -2757,8 +2756,7 @@ function resolveCuFilterView(st, f) {
     const tasks = pick("tasks");
     const deadlineTasks = pick("deadlineTasks");
     const trackedTasks = pick("trackedTasks");
-    // estimateCounted:false = the parent/subtask rule left this row out.
-    const sum = (arr, key) => arr.reduce((n, t) => n + (key === "estimateMs" && t && t.estimateCounted === false ? 0 : (Number(t && t[key]) || 0)), 0);
+    const sum = (arr, key) => arr.reduce((n, t) => n + (Number(t && t[key]) || 0), 0);
     return {
       estimateMs: sum(tasks, "estimateMs") + sum(deadlineTasks, "dayEstimateMs"),
       spentMs: sum(tasks, "spentMs") + sum(deadlineTasks, "spentMs") + sum(trackedTasks, "spentMs"),
@@ -3112,7 +3110,7 @@ function renderClickupPreview(st) {
     viewTracked = viewTracked.filter(keepClient);
     // "similarly its time": recompute the headline est/tracked from just the
     // selected clients (same reduce the popup's per-client subtotals use).
-    estMs = viewTasks.reduce((a, t) => a + (t.estimateCounted === false ? 0 : Number(t.estimateMs) || 0), 0)
+    estMs = viewTasks.reduce((a, t) => a + (Number(t.estimateMs) || 0), 0)
       + viewDeadline.reduce((a, d) => a + (Number(d.dayEstimateMs) || 0), 0);
     spentTot = viewTasks.concat(viewDeadline, viewTracked).reduce((a, t) => a + (Number(t.spentMs) || 0), 0);
     met = targetMs > 0 && estMs >= targetMs;
@@ -3560,7 +3558,6 @@ $("cuSave").onclick = async () => {
         clickupIdleRepeatMin: idleRepeat,
         clickupSyncMin: Number($("cuSyncMin").value) || 5,
         clickupWeekMode: ($("cuWeekMode") && $("cuWeekMode").value) || "sun-sat",
-        clickupSubEstimates: ($("cuSubEstimates") && $("cuSubEstimates").value) || "both",
         clickupAwayNotify: $("cuAwayNotify").checked,
         clickupAwayMin: awayMin,
         clickupWrapUp: $("cuWrapUp").checked,

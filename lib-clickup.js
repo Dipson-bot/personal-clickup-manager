@@ -1339,7 +1339,7 @@ export async function fetchWeeklySummary({ token, teamId, userId, taskUrls = [],
       const est = Number(t.time_estimate) || 0;
       const sp = dayTime.get(t.id) || 0;
       dayEst += est;
-      dayRows.push({ id: t.id, name: t.name || "(untitled task)", url: taskUrlFor(t.id), estimateMs: est, totalEstimateMs: est, dueDateMs: Number(t.due_date) || null, spentMs: sp, done: isTaskDone(t), status: (t.status && t.status.status) || "", priority: cuPriorityName(t), type: "due", parentId: t.parent != null ? String(t.parent) : null, container: taskContainer(t) });
+      dayRows.push({ id: t.id, name: t.name || "(untitled task)", url: taskUrlFor(t.id), estimateMs: est, totalEstimateMs: est, dueDateMs: Number(t.due_date) || null, spentMs: sp, done: isTaskDone(t), status: (t.status && t.status.status) || "", priority: cuPriorityName(t), type: "due", container: taskContainer(t) });
     }
     // Configured tasks active on this day (skip the extra and anything already
     // counted in the due list). The auto-detected "Extra(s) Task(s)" is matched
@@ -1478,7 +1478,7 @@ export async function fetchWeeklySummary({ token, teamId, userId, taskUrls = [],
 // estimates, the filtered-task endpoint returns the task's ROLLED-UP estimate
 // (all assignees), not just this user's slice. For solo-assigned tasks (the
 // common case for "due today, assigned to me") this is exact.
-export async function fetchTodayEstimate({ token, teamId, userId, targetHours = 7, deadlineTaskUrls = [], now = Date.now(), extendedMode = "days", taskCache, subEstimates = "both" }) {
+export async function fetchTodayEstimate({ token, teamId, userId, targetHours = 7, deadlineTaskUrls = [], now = Date.now(), extendedMode = "days", taskCache }) {
   const rawTasks = await getTasksDueToday(token, teamId, userId, now);
   // Fetch today's tracked time per task ONCE (time entries API), so both the
   // regular tasks and the deadline tasks report time tracked today - not the
@@ -1597,10 +1597,8 @@ export async function fetchTodayEstimate({ token, teamId, userId, targetHours = 
         sEst = Number(s.time_estimate) || 0;
       }
       const sSpent = todayByTask.size ? (todayByTask.get(s.id) || 0) : (Number(s.time_spent) || 0);
-      // "parent": the parent's own estimate is the agreed total, so its subtasks'
-      // estimates are shown but not added again (they would double the day).
-      if (subEstimates !== "parent") estimateMs += sEst;
-      spentMs += sSpent; // tracked time is per time entry, so it never doubles
+      estimateMs += sEst;
+      spentMs += sSpent;
       subRows.push({
         id: s.id,
         name: s.name || "(untitled subtask)",
@@ -1620,16 +1618,6 @@ export async function fetchTodayEstimate({ token, teamId, userId, targetHours = 
       });
     }
     if (subRows.length) {
-      // "subtasks": when the breakdown carries estimates, they replace the
-      // parent's number instead of adding to it.
-      const kidEst = subRows.reduce((a, r) => a + (Number(r.estimateMs) || 0), 0);
-      const parentRow = tasks.find((t) => String(t.id) === String(parentId));
-      if (subEstimates === "subtasks" && kidEst > 0 && parentRow && Number(parentRow.estimateMs) > 0) {
-        estimateMs -= Number(parentRow.estimateMs) || 0;
-        parentRow.estimateCounted = false;
-      } else if (subEstimates === "parent" && kidEst > 0) {
-        for (const r of subRows) r.estimateCounted = false;
-      }
       // Insert right after the parent so the list reads parent -> its subtasks.
       // findIndex re-locates the parent as earlier inserts shift the array; we
       // only iterate the ORIGINAL parents, so we never recurse into sub-subtasks.
@@ -1903,9 +1891,6 @@ export async function fetchDateRangeEstimate({ token, teamId, userId, fromTs, to
       extended: !!scaled,
       divisor,
       totalDays,
-      // ClickUp returns a subtask as an ordinary task when it carries its own
-      // due date, so remember the link - the estimate rule needs it.
-      parentId: t.parent != null ? String(t.parent) : null,
       container: taskContainer(t),
       url: taskUrlFor(t.id),
     });
