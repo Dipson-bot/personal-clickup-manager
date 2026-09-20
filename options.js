@@ -4819,13 +4819,48 @@ function admFolderHandle() {
     };
   });
 }
+// Remember this extension's folder (same place the one-click updater keeps it),
+// so "Set version & reload" can rewrite manifest.json.
+function admSaveFolder(handle) {
+  return new Promise((resolve) => {
+    let req;
+    try { req = indexedDB.open("pcm-updater", 1); } catch (e) { return resolve(false); }
+    req.onupgradeneeded = () => { try { req.result.createObjectStore("kv"); } catch (e) {} };
+    req.onerror = () => resolve(false);
+    req.onsuccess = () => {
+      try {
+        const tx = req.result.transaction("kv", "readwrite").objectStore("kv").put(handle, "extDir");
+        tx.onsuccess = () => resolve(true);
+        tx.onerror = () => resolve(false);
+      } catch (e) { resolve(false); }
+    };
+  });
+}
+async function admPickFolder() {
+  try {
+    const dir = await window.showDirectoryPicker({ mode: "readwrite", id: "pcm-ext-folder" });
+    // Make sure it really is this extension's folder before trusting it.
+    let ok = false;
+    try { await dir.getFileHandle("manifest.json"); ok = true; } catch (e) {}
+    if (!ok) { admSay("That folder has no manifest.json - pick the folder this extension was unzipped into.", "err"); return false; }
+    await admSaveFolder(dir);
+    admSay("Folder remembered: " + dir.name, "ok");
+    return true;
+  } catch (e) {
+    if (e && e.name === "AbortError") admSay("No folder chosen.", "err");
+    else admSay("Couldn't use that folder: " + (e && e.message ? e.message : e), "err");
+    return false;
+  }
+}
 async function admSetVersion() {
   const want = String($("admVersion").value || "").replace(/^v/, "").trim();
   if (!/^\d+\.\d+(\.\d+)?$/.test(want)) { admSay("Version must look like 3.7.0", "err"); return; }
-  const dir = await admFolderHandle();
+  let dir = await admFolderHandle();
   if (!dir) {
-    admSay("This extension's folder isn't remembered yet. Open General > One-click updates… , choose the folder, then try again.", "err");
-    return;
+    admSay("This extension's folder isn't remembered yet - choose it now (the folder you unzipped this extension into).", "err");
+    if (!(await admPickFolder())) return;
+    dir = await admFolderHandle();
+    if (!dir) return;
   }
   try {
     if ((await dir.queryPermission({ mode: "readwrite" })) !== "granted" &&
@@ -4882,6 +4917,7 @@ async function admRefresh() {
 }
 
 if ($("admSetVersion")) $("admSetVersion").onclick = () => { admClear(); admSetVersion(); };
+if ($("admPickFolder")) $("admPickFolder").onclick = () => { admClear(); admPickFolder(); };
 if ($("admBuild")) $("admBuild").onclick = async () => {
   admClear();
   admBusy(true);
