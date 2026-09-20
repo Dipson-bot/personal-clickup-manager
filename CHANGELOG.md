@@ -1,5 +1,8 @@
 # Changelog
 
+## v3.8.1
+- **Fixed: changes made in ClickUp took up to an hour to show in "Due tomorrow", "This week" and "Due next week".** Those views were behind a 60-minute cache that the automatic 5-minute sync never refreshed. The cache is now 15 minutes, and opening the popup, the side panel or the options page rebuilds them immediately.
+
 ## v3.8.0
 - **New filter: "Group subtasks under their parent"** - each parent is followed by its own subtasks, indented, in ClickUp's order (S1, S2, S3). It rearranges only the tasks already listed; a subtask whose parent is not in view stays where it is. Off by default.
 - **Your own default filters:** "Save as my default" remembers the ticked filters and the One at a time / Multiple mode, and "Use my default" brings them back in one click. A new install (or another computer, via Drive) starts from that default.

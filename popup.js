@@ -2848,7 +2848,7 @@ send({ type: "PROBE_AVAILABILITY" }).catch(() => {});
 // tracked time on date-less tasks won't show in the per-day "Tracked · no dates"
 // lists until it recomputes. Nudge a background recompute on open - the storage
 // listener above repaints when it lands, so this never blocks first render.
-send({ type: "CLICKUP_REFRESH", forceWeekly: true }).catch(() => {});
+send({ type: "CLICKUP_REFRESH", forceWeekly: true, forceWeeks: true }).catch(() => {});
 
 // ---------- "Update available" banner ----------
 (async function showUpdateBanner() {
