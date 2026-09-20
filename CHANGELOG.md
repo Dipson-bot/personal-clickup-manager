@@ -1,5 +1,8 @@
 # Changelog
 
+## v3.7.1
+- Fixed: clicking **Admin** in the sidebar went to the Dashboard instead of opening the Admin panel.
+
 ## v3.7.0
 - **Admin tools** (Options > General > Features > "Show Admin tools", off by default): publish a new version straight from the extension. It packages the files it is running, then either uploads the release with your GitHub token or opens GitHub's new-release page with the tag, title and notes filled in. "Set version & reload" writes the new version into manifest.json, and "Mark as important" makes everyone's update reminder come back every 4 hours instead of daily.
 - **Markdown export** next to CSV, Excel, Sheets and Docs: saves a .md file and copies it to the clipboard. Available from the popup, the side panel, the options ClickUp card and Explore tasks.
