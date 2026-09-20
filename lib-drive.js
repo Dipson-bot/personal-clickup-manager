@@ -95,26 +95,37 @@ export async function formatExportedSheet(token, spreadsheetId, mainRows, colCou
     if (last && last.end === r) last.end = r + 1;
     else ranges.push({ start: r, end: r + 1 });
   }
+  const BLUE = { red: 0.29, green: 0.53, blue: 0.91 }; // #4a86e8, as in the team's sheet
+  const font = (extra) => Object.assign({ fontFamily: "Arial", fontSize: 10 }, extra || {});
   const requests = [
+    // Header row: blue, white, bold, centred vertically.
     { repeatCell: { range: { sheetId, startRowIndex: 0, endRowIndex: 1 },
-      cell: { userEnteredFormat: { backgroundColor: { red: 0, green: 0, blue: 0 },
-        textFormat: { bold: true, foregroundColor: { red: 1, green: 1, blue: 1 } } } },
-      fields: "userEnteredFormat(backgroundColor,textFormat)" } },
+      cell: { userEnteredFormat: { backgroundColor: BLUE, verticalAlignment: "MIDDLE",
+        textFormat: font({ bold: true, foregroundColor: { red: 1, green: 1, blue: 1 } }) } },
+      fields: "userEnteredFormat(backgroundColor,verticalAlignment,textFormat)" } },
+    // Body: Arial 10, wrapped, top aligned.
+    { repeatCell: { range: { sheetId, startRowIndex: 1 },
+      cell: { userEnteredFormat: { wrapStrategy: "WRAP", verticalAlignment: "TOP", textFormat: font() } },
+      fields: "userEnteredFormat(wrapStrategy,verticalAlignment,textFormat)" } },
+    // Column A: the main / sub task label, italic and bottom aligned.
     { repeatCell: { range: { sheetId, startRowIndex: 1, startColumnIndex: 0, endColumnIndex: 1 },
-      cell: { userEnteredFormat: { textFormat: { italic: true }, verticalAlignment: "BOTTOM" } },
-      fields: "userEnteredFormat(textFormat,verticalAlignment)" } },
-    { repeatCell: { range: { sheetId, startRowIndex: 1, startColumnIndex: 1 },
-      cell: { userEnteredFormat: { wrapStrategy: "WRAP", verticalAlignment: "TOP" } },
-      fields: "userEnteredFormat(wrapStrategy,verticalAlignment)" } },
-    { updateDimensionProperties: { range: { sheetId, dimension: "COLUMNS", startIndex: 0, endIndex: 1 }, properties: { pixelSize: 90 }, fields: "pixelSize" } },
-    { updateDimensionProperties: { range: { sheetId, dimension: "COLUMNS", startIndex: 1, endIndex: 2 }, properties: { pixelSize: 640 }, fields: "pixelSize" } },
+      cell: { userEnteredFormat: { verticalAlignment: "BOTTOM", textFormat: font({ italic: true }) } },
+      fields: "userEnteredFormat(verticalAlignment,textFormat)" } },
+    // Column B (task name): bottom aligned, like the team's sheet.
+    { repeatCell: { range: { sheetId, startRowIndex: 1, startColumnIndex: 1, endColumnIndex: 2 },
+      cell: { userEnteredFormat: { verticalAlignment: "BOTTOM" } },
+      fields: "userEnteredFormat.verticalAlignment" } },
     { updateSheetProperties: { properties: { sheetId, gridProperties: { frozenRowCount: 1 } }, fields: "gridProperties.frozenRowCount" } },
   ];
+  // Column widths: label, task, task info, status, week.
+  [70, 210, 620, 110, 130].slice(0, Math.max(2, colCount || 2)).forEach((px, i) => {
+    requests.push({ updateDimensionProperties: { range: { sheetId, dimension: "COLUMNS", startIndex: i, endIndex: i + 1 }, properties: { pixelSize: px }, fields: "pixelSize" } });
+  });
   for (const r of ranges) {
     requests.push({ repeatCell: {
-      range: { sheetId, startRowIndex: r.start, endRowIndex: r.end, startColumnIndex: 1, endColumnIndex: Math.max(2, colCount || 2) },
-      cell: { userEnteredFormat: { textFormat: { bold: true } } },
-      fields: "userEnteredFormat.textFormat.bold" } });
+      range: { sheetId, startRowIndex: r.start, endRowIndex: r.end, startColumnIndex: 1, endColumnIndex: 2 },
+      cell: { userEnteredFormat: { textFormat: { fontFamily: "Arial", fontSize: 10, bold: true } } },
+      fields: "userEnteredFormat.textFormat" } });
   }
   const res = await fetch("https://sheets.googleapis.com/v4/spreadsheets/" + spreadsheetId + ":batchUpdate", {
     method: "POST",
