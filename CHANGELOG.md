@@ -1,5 +1,9 @@
 # Changelog
 
+## v3.6.2
+- **You decide what a week is** (Options > ClickUp setup > Tracking settings > "A week runs"): Sunday to Saturday (default), Monday to Sunday, Monday to Friday or Sunday to Thursday. It drives "Due this week", "Due next week", Explore's week view and the Week column in exports.
+- **Week views now show their dates**, e.g. "this week - Sep 20 to Sep 26", so there is no guessing which days are included.
+
 ## v3.6.1
 - **Fixed: "Due tomorrow" always showed nothing.** It searched the today list, which by definition holds no tasks due tomorrow; it now reads this week and next week (so it also works on a Saturday). On the options page the same filter was additionally forgotten on reload, missing from the filter count and skipped by Clear all, and the toolbar badge ignored it. All fixed.
 

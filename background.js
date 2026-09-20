@@ -266,6 +266,8 @@ const DEFAULT_SETTINGS = {
   // Background ClickUp sync interval (minutes). One refresh is ~10-40 requests and
   // ClickUp allows ~100/min per token, so 2 is the floor; reminders ride on it.
   clickupSyncMin: 5,
+  // Which days a "week" covers for the Due this week / next week views.
+  clickupWeekMode: "sun-sat", // sun-sat | mon-sun | mon-fri | sun-thu
   // ---- Away protection ----
   // Coming back after this long idle/locked while a timer kept running asks
   // "Remove away time / Keep it". Ignoring the question keeps the time.
@@ -1056,6 +1058,7 @@ async function clickupPublic() {
     wrapUp: settings.clickupWrapUp !== false,
     wrapUpTime: settings.clickupWrapUpTime || "16:45",
     syncMin: syncMinutes(settings),
+    weekMode: settings.clickupWeekMode || "sun-sat",
     workdayEndHour: Number(settings.clickupWorkdayEndHour) || 0,
     extendedMode: settings.clickupExtendedMode === "excl0" ? "excl0" : "days",
     weeklyTo: settings.clickupWeeklyTo === "friday" ? "friday" : "today",
@@ -1736,13 +1739,13 @@ async function refreshClickupImpl({ includeTasks = false, viaAlarm = false, forc
     let thisWorkweek = null;
     let nextWeek = null;
     try {
-      const nowD = new Date();
-      const sun = new Date(nowD);
-      sun.setHours(0, 0, 0, 0);
-      sun.setDate(nowD.getDate() - nowD.getDay()); // this week's Sunday (getDay 0=Sun)
-      const sat = new Date(sun); sat.setDate(sun.getDate() + 6); sat.setHours(23, 59, 59, 999);
-      const nSun = new Date(sun); nSun.setDate(sun.getDate() + 7);
-      const nSat = new Date(nSun); nSat.setDate(nSun.getDate() + 6); nSat.setHours(23, 59, 59, 999);
+      const weekMode = settings.clickupWeekMode || "sun-sat";
+      const thisB = cuWeekBounds(weekMode, 0);
+      const nextB = cuWeekBounds(weekMode, 1);
+      const sun = new Date(thisB.fromTs);
+      const sat = new Date(thisB.toTs);
+      const nSun = new Date(nextB.fromTs);
+      const nSat = new Date(nextB.toTs);
       const WEEK_TTL = 60 * 60000;
       const buildWeek = async (prev, fromTs, toTs) => {
         const rangeChanged = !prev || prev.fromTs !== fromTs || prev.toTs !== toTs;
@@ -2264,6 +2267,27 @@ function shiftDueToDay(oldDueMs, dayMs) {
   if (oldDueMs) { const o = new Date(oldDueMs); d.setHours(o.getHours(), o.getMinutes(), o.getSeconds(), o.getMilliseconds()); }
   else d.setHours(12, 0, 0, 0);
   return d.getTime();
+}
+
+// ---------- what counts as a "week" ----------
+// Teams disagree: some run Sunday to Saturday, some Monday to Sunday, some only
+// count working days. One setting (clickupWeekMode) drives every week view, so
+// "Due this week" always means the same thing across the extension.
+const CU_WEEK_MODES = {
+  "sun-sat": { start: 0, days: 7, label: "Sun-Sat" },
+  "mon-sun": { start: 1, days: 7, label: "Mon-Sun" },
+  "mon-fri": { start: 1, days: 5, label: "Mon-Fri" },
+  "sun-thu": { start: 0, days: 5, label: "Sun-Thu" },
+};
+function cuWeekBounds(mode, offsetWeeks, now) {
+  const m = CU_WEEK_MODES[mode] || CU_WEEK_MODES["sun-sat"];
+  const d = new Date(now == null ? Date.now() : now);
+  d.setHours(0, 0, 0, 0);
+  d.setDate(d.getDate() - ((d.getDay() - m.start + 7) % 7) + (offsetWeeks || 0) * 7);
+  const end = new Date(d);
+  end.setDate(d.getDate() + m.days - 1);
+  end.setHours(23, 59, 59, 999);
+  return { fromTs: d.getTime(), toTs: end.getTime(), label: m.label, days: m.days };
 }
 
 // ---------- badge ----------
@@ -4086,6 +4110,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
           if (Number.isFinite(n) && n >= 5 && n <= 480) patch.clickupIdleRepeatMin = Math.floor(n);
         }
         if (p.clickupSyncMin !== undefined && SYNC_CHOICES.includes(Number(p.clickupSyncMin))) patch.clickupSyncMin = Number(p.clickupSyncMin);
+        if (p.clickupWeekMode !== undefined && CU_WEEK_MODES[p.clickupWeekMode]) patch.clickupWeekMode = p.clickupWeekMode;
         if (p.clickupAwayNotify !== undefined) patch.clickupAwayNotify = !!p.clickupAwayNotify;
         if (p.clickupAwayMin !== undefined) {
           const n = Number(p.clickupAwayMin);
@@ -4121,6 +4146,12 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         // estimate itself, so refetch from the API. The weeklyTo toggle is cheap:
         // it just re-renders from the cached Mon→today / Mon→Friday aggregates
         // (fetchWeeklySummary already computed both), so no network here.
+        if (patch.clickupWeekMode !== undefined) {
+          // The week bundles are cached per range, so rebuild them right away.
+          await refreshClickup({ includeTasks: false, forceWeeks: true });
+          sendResponse({ ok: true, settings: next });
+          break;
+        }
         if (patch.clickupDeadlineTaskUrls !== undefined || patch.clickupExtendedMode !== undefined) {
           await refreshClickup({ includeTasks: false });
           sendResponse({ ok: true, settings: next });

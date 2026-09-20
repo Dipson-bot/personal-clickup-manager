@@ -1885,6 +1885,7 @@ function renderClickupSettings(cu) {
   $("cuIdleEnd").value = cu.idleEndHour != null ? String(cu.idleEndHour) : "17";
   $("cuIdleRepeat").value = cu.idleRepeatMin != null ? String(cu.idleRepeatMin) : "60";
   if ($("cuSyncMin")) $("cuSyncMin").value = String(cu.syncMin || 5);
+  if ($("cuWeekMode")) $("cuWeekMode").value = cu.weekMode || "sun-sat";
   $("cuAwayNotify").checked = cu.awayNotify !== false;
   $("cuAwayMin").value = cu.awayMin != null ? String(cu.awayMin) : "15";
   $("cuWrapUp").checked = cu.wrapUp !== false;
@@ -2076,18 +2077,29 @@ async function renderOptionsFilter() {
   const now = new Date();
   let fromTs, toTs, label;
   if (type === "week") {
-    const mon = mondayOfOpt(now);
+    // Follows the "A week runs" setting (Options > ClickUp setup > Tracking settings).
+    const modes = { "sun-sat": [0, 7], "mon-sun": [1, 7], "mon-fri": [1, 5], "sun-thu": [0, 5] };
+    const mode = (optClickup && optClickup.weekMode) || "sun-sat";
+    const conf = modes[mode] || modes["sun-sat"];
+    const startDay = conf[0];
+    const days = conf[1];
+    const start = new Date(now);
+    start.setHours(0, 0, 0, 0);
+    start.setDate(start.getDate() - ((start.getDay() - startDay + 7) % 7));
     if ($("optFltWeekMode").value === "day") {
       const dow = Number($("optFltWeekDay").value || "1");
-      const day = new Date(mon);
-      day.setDate(mon.getDate() + (dow - 1));
+      const day = new Date(start);
+      day.setDate(start.getDate() + ((dow - startDay + 7) % 7));
       fromTs = dayStartOpt(day);
       toTs = dayEndOpt(day);
       label = weekdayNameOpt(dow) + " · " + day.toLocaleDateString(undefined, { month: "short", day: "numeric" });
     } else {
-      fromTs = dayStartOpt(mon);
-      toTs = dayEndOpt(new Date(mon.getFullYear(), mon.getMonth(), mon.getDate() + 4));
-      label = "This week (Mon-Fri)";
+      const end = new Date(start);
+      end.setDate(start.getDate() + days - 1);
+      fromTs = dayStartOpt(start);
+      toTs = dayEndOpt(end);
+      const f = (d) => d.toLocaleDateString(undefined, { month: "short", day: "numeric" });
+      label = "This week · " + f(start) + " – " + f(end);
     }
     const showSub = $("optFltWeekMode").value === "day";
     $("optFltWeekDayWrap").style.display = showSub ? "" : "none";
@@ -2690,6 +2702,13 @@ function flattenWeekTasks(perDay, maxTs) {
 // Resolve the active date scope -> { estimateMs, spentMs, tasks, deadlineTasks,
 // trackedTasks, scope }. Widest checked wins; graceful fallback to the extended
 // view when a chosen weekly slice isn't in state yet.
+function cuWeekRangeLabel(base, b) {
+  const from = Number(b && b.fromTs) || 0;
+  const to = Number(b && b.toTs) || 0;
+  if (!from || !to) return base;
+  const f = (t) => new Date(t).toLocaleDateString(undefined, { month: "short", day: "numeric" });
+  return base + " · " + f(from) + " – " + f(to);
+}
 function resolveCuFilterView(st, f) {
   st = st || {};
   // Deadline crossed looks at ALL dates, so it takes over the date scope.
@@ -2698,11 +2717,11 @@ function resolveCuFilterView(st, f) {
   const wk = st.weekly || null;
   if (f.dueNextWeek && st.nextWeek) {
     const nw = st.nextWeek;
-    return { estimateMs: nw.estimateMs, spentMs: nw.spentMs, tasks: Array.isArray(nw.tasks) ? nw.tasks : [], deadlineTasks: Array.isArray(nw.deadlineTasks) ? nw.deadlineTasks : [], trackedTasks: Array.isArray(nw.trackedTasks) ? nw.trackedTasks : [], scope: "nextweek" };
+    return { estimateMs: nw.estimateMs, spentMs: nw.spentMs, tasks: Array.isArray(nw.tasks) ? nw.tasks : [], deadlineTasks: Array.isArray(nw.deadlineTasks) ? nw.deadlineTasks : [], trackedTasks: Array.isArray(nw.trackedTasks) ? nw.trackedTasks : [], scope: "nextweek", label: cuWeekRangeLabel("due next week", nw) };
   }
   if (f.dueWeek && st.thisWeek) {
     const tw = st.thisWeek;
-    return { estimateMs: tw.estimateMs, spentMs: tw.spentMs, tasks: Array.isArray(tw.tasks) ? tw.tasks : [], deadlineTasks: Array.isArray(tw.deadlineTasks) ? tw.deadlineTasks : [], trackedTasks: Array.isArray(tw.trackedTasks) ? tw.trackedTasks : [], scope: "week" };
+    return { estimateMs: tw.estimateMs, spentMs: tw.spentMs, tasks: Array.isArray(tw.tasks) ? tw.tasks : [], deadlineTasks: Array.isArray(tw.deadlineTasks) ? tw.deadlineTasks : [], trackedTasks: Array.isArray(tw.trackedTasks) ? tw.trackedTasks : [], scope: "week", label: cuWeekRangeLabel("this week", tw) };
   }
   if (f.dueTomorrow) {
     // Tomorrow's tasks live in the WEEK bundles - today's bundle only ever holds
@@ -3533,6 +3552,7 @@ $("cuSave").onclick = async () => {
         clickupIdleEndHour: idleEnd,
         clickupIdleRepeatMin: idleRepeat,
         clickupSyncMin: Number($("cuSyncMin").value) || 5,
+        clickupWeekMode: ($("cuWeekMode") && $("cuWeekMode").value) || "sun-sat",
         clickupAwayNotify: $("cuAwayNotify").checked,
         clickupAwayMin: awayMin,
         clickupWrapUp: $("cuWrapUp").checked,

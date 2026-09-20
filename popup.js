@@ -1582,6 +1582,13 @@ function flattenWeekTasks(perDay, maxTs) {
 // Resolve the active date scope -> { estimateMs, spentMs, tasks, deadlineTasks,
 // trackedTasks, scope }. Widest checked wins; graceful fallback to the extended
 // view when a chosen weekly slice isn't in state yet.
+function cuWeekRangeLabel(base, b) {
+  const from = Number(b && b.fromTs) || 0;
+  const to = Number(b && b.toTs) || 0;
+  if (!from || !to) return base;
+  const f = (t) => new Date(t).toLocaleDateString(undefined, { month: "short", day: "numeric" });
+  return base + " · " + f(from) + " – " + f(to);
+}
 function resolveCuFilterView(st, f) {
   st = st || {};
   // Deadline crossed looks at ALL dates, so it takes over the date scope.
@@ -1590,11 +1597,11 @@ function resolveCuFilterView(st, f) {
   const wk = st.weekly || null;
   if (f.dueNextWeek && st.nextWeek) {
     const nw = st.nextWeek;
-    return { estimateMs: nw.estimateMs, spentMs: nw.spentMs, tasks: Array.isArray(nw.tasks) ? nw.tasks : [], deadlineTasks: Array.isArray(nw.deadlineTasks) ? nw.deadlineTasks : [], trackedTasks: Array.isArray(nw.trackedTasks) ? nw.trackedTasks : [], scope: "nextweek" };
+    return { estimateMs: nw.estimateMs, spentMs: nw.spentMs, tasks: Array.isArray(nw.tasks) ? nw.tasks : [], deadlineTasks: Array.isArray(nw.deadlineTasks) ? nw.deadlineTasks : [], trackedTasks: Array.isArray(nw.trackedTasks) ? nw.trackedTasks : [], scope: "nextweek", label: cuWeekRangeLabel("due next week", nw) };
   }
   if (f.dueWeek && st.thisWeek) {
     const tw = st.thisWeek;
-    return { estimateMs: tw.estimateMs, spentMs: tw.spentMs, tasks: Array.isArray(tw.tasks) ? tw.tasks : [], deadlineTasks: Array.isArray(tw.deadlineTasks) ? tw.deadlineTasks : [], trackedTasks: Array.isArray(tw.trackedTasks) ? tw.trackedTasks : [], scope: "week" };
+    return { estimateMs: tw.estimateMs, spentMs: tw.spentMs, tasks: Array.isArray(tw.tasks) ? tw.tasks : [], deadlineTasks: Array.isArray(tw.deadlineTasks) ? tw.deadlineTasks : [], trackedTasks: Array.isArray(tw.trackedTasks) ? tw.trackedTasks : [], scope: "week", label: cuWeekRangeLabel("this week", tw) };
   }
   if (f.dueTomorrow) {
     // Tomorrow's tasks live in the WEEK bundles - today's bundle only ever holds
