@@ -4896,9 +4896,12 @@ if ($("admGithub")) $("admGithub").onclick = async () => {
   admClear();
   admBusy(true);
   try {
+    const version = String($("admVersion").value || "").replace(/^v/, "").trim();
+    const running = chrome.runtime.getManifest().version;
+    if (version && version !== running) {
+      throw new Error("This extension is running v" + running + ", so that is what gets packaged. Press \"Set version & reload\" to make it v" + version + " first.");
+    }
     const z = await admBuildZip();
-    const version = String($("admVersion").value || z.version).replace(/^v/, "").trim();
-    if (version !== z.version) admSay("Note: the package says v" + z.version + ". Use \"Set version & reload\" first if that's wrong.", "err");
     admDownload(z.blob, "personal-clickup-manager-v" + z.version + ".zip");
     const st = await send({ type: "ADMIN_STATE" }).catch(() => null);
     const repo = (st && st.repo) || "";
