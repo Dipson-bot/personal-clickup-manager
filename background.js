@@ -4210,15 +4210,17 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         // it just re-renders from the cached Mon→today / Mon→Friday aggregates
         // (fetchWeeklySummary already computed both), so no network here.
         if (patch.clickupSubEstimates !== undefined) {
+          // Answer first: a full refresh takes longer than the page waits, and
+          // the setting is already saved. New totals arrive via clickupState.
           clearFilterCache();
-          await refreshClickup({ includeTasks: true });
           sendResponse({ ok: true, settings: next });
+          refreshClickup({ includeTasks: true }).catch(() => {});
           break;
         }
         if (patch.clickupWeekMode !== undefined) {
-          // The week bundles are cached per range, so rebuild them right away.
-          await refreshClickup({ includeTasks: false, forceWeeks: true });
+          // Same here: the week bundles rebuild in the background.
           sendResponse({ ok: true, settings: next });
+          refreshClickup({ includeTasks: false, forceWeeks: true }).catch(() => {});
           break;
         }
         if (patch.clickupDeadlineTaskUrls !== undefined || patch.clickupExtendedMode !== undefined) {
