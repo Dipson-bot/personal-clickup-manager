@@ -3444,7 +3444,7 @@ $("cuSaveToken").onclick = async () => {
     // in the connection section that collapses right after connecting.
     if (res.teamId) {
       renderCuPreviewLoading("Loading your ClickUp tracking… this can take a few seconds on first connect.");
-      await send({ type: "CLICKUP_REFRESH", includeTasks: true, forceWeekly: true }, 25000).catch(() => {});
+      await send({ type: "CLICKUP_REFRESH", includeTasks: true, forceWeekly: true, forceWeeks: true }, 25000).catch(() => {});
       await load();
     }
   } catch (e) {

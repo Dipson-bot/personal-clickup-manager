@@ -1771,7 +1771,10 @@ async function refreshClickupImpl({ includeTasks = false, viaAlarm = false, forc
       const sat = new Date(thisB.toTs);
       const nSun = new Date(nextB.fromTs);
       const nSat = new Date(nextB.toTs);
-      const WEEK_TTL = 60 * 60000;
+      // Due tomorrow / this week / next week read these bundles, so an estimate or
+      // due date changed in ClickUp must not sit behind a long cache. 15 min in
+      // the background; opening the popup or the options page rebuilds them now.
+      const WEEK_TTL = 15 * 60000;
       const buildWeek = async (prev, fromTs, toTs) => {
         const rangeChanged = !prev || prev.fromTs !== fromTs || prev.toTs !== toTs;
         if (!forceWeeks && !rangeChanged && prev.at && Date.now() - prev.at < WEEK_TTL) return prev; // fresh - no API calls
