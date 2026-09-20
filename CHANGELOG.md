@@ -1,5 +1,11 @@
 # Changelog
 
+## v3.7.3
+- First release published from the extension itself, using the new Admin panel.
+- Admin: **Choose folder…** right in the panel, so setting the version no longer sends you to another page.
+- Admin: refuses to package a version that does not match the one running, instead of warning and carrying on.
+- Admin: the version box now shows the installed version, since that is what gets published.
+
 ## v3.7.2
 - The admin GitHub token is now part of the Google Drive backup, so a reinstall or a second computer restores it instead of asking for it again. It travels inside the same encrypted file as your other logins, and there is a switch in Admin > GitHub access to keep it on this computer only.
 
