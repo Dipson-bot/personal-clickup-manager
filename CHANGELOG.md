@@ -1,5 +1,10 @@
 # Changelog
 
+## v3.8.5
+- **Fixed: the wrong copy of the recurring Extra Task could be shown.** A recurring task exists as one occurrence at a time and ClickUp rolls it forward, so several copies are visible at once. The extension searched a fixed current-week window and took whichever copy it saw first, which is how an occurrence from the previous week, already marked complete, ended up listed against tomorrow with the right hours but the wrong link. It now looks at every copy around the day in question and picks the one whose own dates actually cover that day, preferring one that is not finished.
+- **Fixed: a task that has already been completed can no longer carry hours for a future day.** When no copy covers the day yet, the weekly share is still filled in from the most recent unfinished copy, and swaps to the real one as soon as ClickUp creates it.
+- **Fixed: v3.8.4 could fail to start on some installs** ("Service worker registration failed"). A stray fragment was left in one of the files.
+
 ## v3.8.4
 - **Fixed: the recurring Extra Task's daily share really does show everywhere now.** v3.8.2 and v3.8.3 fixed the plumbing around it but not the cause: the share was read out of the dates of the one occurrence ClickUp had created, so any weekday outside those dates came back as zero. Because a recurring task rolls forward one occurrence at a time, that hid the task from "Due tomorrow" whenever tomorrow fell in the next week, and from the week and range views with it. A recurring Extra Task is a weekly allowance, so every weekday now gets its share. A one-off task you configure by URL still counts only inside its own start-to-due dates.
 - **Fixed: ClickUp reminders fired at night and at weekends.** "Under your daily estimate", halfway, almost there, target reached and the end-of-day warning had no day or hour check at all, so one could arrive at 10:30pm on a Sunday. They now follow the same Office hours as the "are you working?" reminder: Monday to Friday, between the start and end hours in Tracking settings (8am to 5pm by default).
