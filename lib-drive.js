@@ -76,6 +76,16 @@ export async function getFileToken(interactive = true) {
 }
 // Upload an HTML table and let Drive convert it into a Google Sheet / Doc,
 // which keeps the bold "main" rows and the header row.
+// Let anyone with the link view the file (only ever applied to files we create).
+export async function shareAnyoneWithLink(token, fileId) {
+  const res = await fetch("https://www.googleapis.com/drive/v3/files/" + encodeURIComponent(fileId) + "/permissions", {
+    method: "POST",
+    headers: { Authorization: "Bearer " + token, "Content-Type": "application/json" },
+    body: JSON.stringify({ role: "reader", type: "anyone" }),
+  });
+  return res.ok;
+}
+
 export async function createGoogleFile(token, { name, html, csv, kind }) {
   // Drive imports HTML as a DOC only; Sheets accepts csv/tsv/xls(x)/ods. Sending
   // HTML with a spreadsheet target produced an empty Google Doc, so each target

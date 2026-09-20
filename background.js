@@ -8,6 +8,7 @@ import { encryptJSON, decryptJSON, encryptWithPassphrase, decryptWithPassphrase,
 import {
   getFileToken,
   createGoogleFile,
+  shareAnyoneWithLink,
   getValidToken,
   signOut as driveSignOut,
   isSignedIn,
@@ -3007,6 +3008,21 @@ let arScheduleSyncInFlight = null;
 // batch alarms and notify. An announcement is applied ONCE (tracked by
 // arScheduleSeen), so a manual edit in Options isn't overwritten every poll -
 // only a genuinely NEW announcement replaces the times again.
+// "10:00" Beijing -> the same moment in this computer's local time, for notices.
+function beijingToLocalLabel(hhmm) {
+  const m = /^(\d{1,2}):(\d{2})$/.exec(String(hhmm || "").trim());
+  if (!m) return "";
+  // Beijing is UTC+8: build that instant today, then render it locally.
+  const now = new Date();
+  const utcMs = Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate(), Number(m[1]) - 8, Number(m[2]));
+  return new Date(utcMs).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+}
+function beijingTimesLabel(times) {
+  const local = (times || []).map(beijingToLocalLabel).filter(Boolean);
+  const zone = (Intl.DateTimeFormat().resolvedOptions().timeZone || "").split("/").pop().replace(/_/g, " ");
+  return (times || []).join(" & ") + " Beijing" + (local.length ? " = " + local.join(" & ") + (zone ? " " + zone : " your time") : "");
+}
+
 function syncArScheduleFromPage(opts = {}) {
   if (arScheduleSyncInFlight) return arScheduleSyncInFlight;
   arScheduleSyncInFlight = (async () => {
@@ -3062,7 +3078,7 @@ function syncArScheduleFromPage(opts = {}) {
     await notify(
       "ar-schedule-changed",
       "Agent Router schedule updated",
-      "New batch times: " + times.join(" & ") + " Beijing (auto-synced)",
+      "New batch times: " + beijingTimesLabel(times) + " (auto-synced)",
       undefined,
       "https://agentrouter.org"
     );
@@ -4184,7 +4200,9 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
           const tok = await getFileToken(true);
           if (!tok) { sendResponse({ ok: false, reason: "Google didn't grant permission to create the file." }); break; }
           const r = await createGoogleFile(tok, { name: msg.name || "tasks", html: msg.html || "", csv: msg.csv || "", kind: msg.kind === "docs" ? "docs" : "sheets" });
-          sendResponse({ ok: true, url: r.url });
+          // Google files are private by default; share on request so the link works for the team.
+          const shared = msg.share === false ? false : await shareAnyoneWithLink(tok, r.id).catch(() => false);
+          sendResponse({ ok: true, url: r.url, shared });
         } catch (e) {
           sendResponse({ ok: false, error: String(e && e.message ? e.message : e) });
         }
