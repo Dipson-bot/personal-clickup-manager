@@ -1,7 +1,7 @@
 # Changelog
 
 ## Unreleased
-- **Markdown export** next to CSV, Excel, Sheets and Docs: saves a .md file and copies it to the clipboard, ready to paste into an AI chat ("here is the task, how would you do it?"). Available from the popup, the side panel, the options ClickUp card and Explore tasks.
+- **Markdown export** next to CSV, Excel, Sheets and Docs: saves a .md file and copies it to the clipboard. Available from the popup, the side panel, the options ClickUp card and Explore tasks.
 
 ## v3.6.2
 - **You decide what a week is** (Options > ClickUp setup > Tracking settings > "A week runs"): Sunday to Saturday (default), Monday to Sunday, Monday to Friday or Sunday to Thursday. It drives "Due this week", "Due next week", Explore's week view and the Week column in exports.
