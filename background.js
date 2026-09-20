@@ -1796,7 +1796,10 @@ async function refreshClickupImpl({ includeTasks = false, viaAlarm = false, forc
           return d >= fromTs && d <= toTs;
         });
         const tasks = prune(w.tasks);
-        const deadlineTasks = prune(w.deadlineTasks);
+        // Configured tasks (the recurring Extra Task) carry a per-day share of
+        // their estimate, so they belong to every day they run - pruning them by
+        // due date made them vanish from every view except Today.
+        const deadlineTasks = Array.isArray(w.deadlineTasks) ? w.deadlineTasks : [];
         const sumEst = (arr, k) => arr.reduce((n, t) => n + (Number(t && t[k]) || 0), 0);
         return {
           estimateMs: sumEst(tasks, "estimateMs") + sumEst(deadlineTasks, "dayEstimateMs"),

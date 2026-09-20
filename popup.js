@@ -1626,51 +1626,9 @@ function resolveCuFilterView(st, f) {
     const tw = st.thisWeek;
     return { estimateMs: tw.estimateMs, spentMs: tw.spentMs, tasks: Array.isArray(tw.tasks) ? tw.tasks : [], deadlineTasks: Array.isArray(tw.deadlineTasks) ? tw.deadlineTasks : [], trackedTasks: Array.isArray(tw.trackedTasks) ? tw.trackedTasks : [], scope: "week", label: cuWeekRangeLabel("this week", tw) };
   }
-  if (f.dueTomorrow) {
-    // Tomorrow's tasks live in the WEEK bundles - today's bundle only ever holds
-    // tasks due today, so filtering that one always came back empty. Pull from
-    // this week AND next week (tomorrow crosses the week boundary on Saturday),
-    // then keep the rows whose due date falls on tomorrow.
-    const tomorrowStart = new Date(); tomorrowStart.setDate(tomorrowStart.getDate() + 1); tomorrowStart.setHours(0, 0, 0, 0);
-    const tomorrowEnd = new Date(tomorrowStart); tomorrowEnd.setHours(23, 59, 59, 999);
-    const tStart = tomorrowStart.getTime();
-    const tEnd = tomorrowEnd.getTime();
-    const inRange = (t) => { const d = Number(t && t.dueDateMs) || 0; return d >= tStart && d <= tEnd; };
-    const pick = (key) => {
-      const out = [];
-      const seen = new Set();
-      for (const b of [st.thisWeek, st.nextWeek, st.todayFilter, st]) {
-        if (!b || !Array.isArray(b[key])) continue;
-        for (const t of b[key]) {
-          if (!inRange(t)) continue;
-          const id = String((t && (t.id != null ? t.id : t.taskId)) || "");
-          if (!id || seen.has(id)) continue;
-          seen.add(id);
-          out.push(t);
-        }
-      }
-      return out;
-    };
-    // A task that only SPANS tomorrow (the recurring Extra Task, or anything
-    // with a start today and a due date later) is due another day, so the rule
-    // above skips it - but its estimate is divided per day and tomorrow owns a
-    // share. The weekly per-day breakdown already carries that share.
-    const spansTomorrow = () => {
-      const perDay = (st.weekly && Array.isArray(st.weekly.perDay)) ? st.weekly.perDay : [];
-      const day = perDay.find((d) => Number(d && d.ts) === tStart);
-      if (!day || !Array.isArray(day.tasks)) return [];
-      return day.tasks.filter((t) => t && (t.type === "cfg" || t.type === "extra"));
-    };
-    const tasks = pick("tasks").concat(spansTomorrow().filter((x) => !pick("tasks").some((t) => String(t.id) === String(x.id))));
-    const deadlineTasks = pick("deadlineTasks");
-    const trackedTasks = pick("trackedTasks");
-    const sum = (arr, key) => arr.reduce((n, t) => n + (Number(t && t[key]) || 0), 0);
-    return {
-      estimateMs: sum(tasks, "estimateMs") + sum(deadlineTasks, "dayEstimateMs"),
-      spentMs: sum(tasks, "spentMs") + sum(deadlineTasks, "spentMs") + sum(trackedTasks, "spentMs"),
-      tasks, deadlineTasks, trackedTasks, scope: "tomorrow"
-    };
-  }
+  // Tomorrow is its own one-day query (see cuTomorrowView) so multi-day tasks
+  // contribute tomorrow's share, the same way the Today card works.
+  if (f.dueTomorrow) return cuTomorrowView();
   if (f.dueToday) {
     return { estimateMs: st.estimateMs, spentMs: st.spentMs, tasks: Array.isArray(st.tasks) ? st.tasks : [], deadlineTasks: Array.isArray(st.deadlineTasks) ? st.deadlineTasks : [], trackedTasks: Array.isArray(st.trackedTasks) ? st.trackedTasks : [], scope: "today" };
   }
@@ -1753,6 +1711,60 @@ function cuCustomLabel(r) {
 let cuCustomCache = { key: "", status: "", data: null, at: 0 }; // status: loading | ready | error
 function cuOverdueInvalidate() { if (cuOverdueCache.status !== "loading") cuOverdueCache.at = 0; }
 function cuCustomOnReady() { renderClickup(); renderCuFilterMenu(); }
+// "Due tomorrow" asks ClickUp for that single day, exactly like the Today card
+// does for today. That way a task that merely RUNS THROUGH tomorrow (the
+// recurring Extra Task, or anything starting tomorrow and due later) brings
+// tomorrow's share of its estimate with it.
+let cuTomorrowCache = { key: "", status: "", data: null, at: 0 };
+function cuTomorrowRange() {
+  const s = new Date();
+  s.setDate(s.getDate() + 1);
+  s.setHours(0, 0, 0, 0);
+  const e = new Date(s);
+  e.setHours(23, 59, 59, 999);
+  return { fromTs: s.getTime(), toTs: e.getTime() };
+}
+function cuTomorrowInvalidate() { if (cuTomorrowCache.status !== "loading") cuTomorrowCache.at = 0; }
+async function cuFetchTomorrow(r, key) {
+  const keep = cuTomorrowCache.key === key ? cuTomorrowCache.data : null;
+  cuTomorrowCache = { key, status: "loading", data: keep, at: cuTomorrowCache.at };
+  let res = null;
+  for (let i = 0; i < 20; i++) {
+    try { res = await send({ type: "CLICKUP_FILTER", fromTs: r.fromTs, toTs: r.toTs, assigneeIds: [] }, 20000); } catch (e) { res = null; }
+    if (cuTomorrowCache.key !== key) return;
+    if (!res || !res.ok || res.data) break;
+    await new Promise((z) => setTimeout(z, 2000));
+  }
+  if (cuTomorrowCache.key !== key) return;
+  if (!res || !res.ok || !res.data) {
+    cuTomorrowCache = { key, status: "error", data: keep, at: Date.now() };
+    cuCustomOnReady();
+    return;
+  }
+  const d = res.data;
+  const inDay = (t) => { const x = Number(t && t.dueDateMs) || 0; return x >= r.fromTs && x <= r.toTs; };
+  const tasks = (Array.isArray(d.tasks) ? d.tasks : []).filter(inDay);
+  // Configured tasks are already this day's share - never filter them by due date.
+  const deadlineTasks = Array.isArray(d.deadlineTasks) ? d.deadlineTasks : [];
+  const sum = (a, k) => a.reduce((n, t) => n + (Number(t && t[k]) || 0), 0);
+  cuTomorrowCache = { key, status: "ready", at: Date.now(), data: {
+    estimateMs: sum(tasks, "estimateMs") + sum(deadlineTasks, "dayEstimateMs"),
+    spentMs: sum(tasks, "spentMs") + sum(deadlineTasks, "spentMs"),
+    tasks, deadlineTasks, trackedTasks: [],
+  } };
+  cuCustomOnReady();
+}
+function cuTomorrowView() {
+  const r = cuTomorrowRange();
+  const key = r.fromTs + "-" + r.toTs;
+  const c = cuTomorrowCache;
+  const stale = c.key === key && c.status === "ready" && Date.now() - c.at > 5 * 60000;
+  if (c.key !== key || stale) cuFetchTomorrow(r, key);
+  if (c.key === key && c.data) return { ...c.data, scope: "tomorrow" };
+  return { estimateMs: 0, spentMs: 0, tasks: [], deadlineTasks: [], trackedTasks: [], scope: "tomorrow",
+    label: "due tomorrow" + (c.status === "error" ? " (couldn't load)" : " (loading…)"), loading: c.status !== "error" };
+}
+
 function cuCustomView(f) {
   const r = cuCustomRange(f);
   if (!r) return null;
@@ -1786,7 +1798,8 @@ async function cuFetchCustom(r, key) {
   // Strictly due-bounded: a task counts only when its DUE date is in the range.
   const inRange = (t) => { const x = Number(t && t.dueDateMs) || 0; return x >= r.fromTs && x <= r.toTs; };
   const tasks = (Array.isArray(d.tasks) ? d.tasks : []).filter(inRange);
-  const deadlineTasks = (Array.isArray(d.deadlineTasks) ? d.deadlineTasks : []).filter(inRange);
+  // Configured tasks already hold this range's share - don't due-filter them.
+  const deadlineTasks = Array.isArray(d.deadlineTasks) ? d.deadlineTasks : [];
   const sum = (a, k) => a.reduce((n, t) => n + (Number(t && t[k]) || 0), 0);
   cuCustomCache = { key, status: "ready", at: Date.now(), data: {
     estimateMs: sum(tasks, "estimateMs") + sum(deadlineTasks, "dayEstimateMs"),
@@ -2811,7 +2824,7 @@ chrome.storage.onChanged.addListener((changes, area) => {
     cuOverdueCache = { status: "", data: null, at: 0 };
     load();
   }
-  if (changes.clickupState) { cuOverdueInvalidate(); load(); }
+  if (changes.clickupState) { cuOverdueInvalidate(); cuTomorrowInvalidate(); load(); }
   // Filter changed on the options page -> mirror it here and repaint. Guarded so
   // a change this popup itself made (identical values) doesn't double-render.
   if (changes.cuFilterMode) {
