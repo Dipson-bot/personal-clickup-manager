@@ -3877,6 +3877,30 @@ function cuTrimToSingle() {
     if (Array.isArray(cuFilter[key]) && cuFilter[key].length > 1) cuFilter[key] = cuFilter[key].slice(0, 1);
   }
 }
+
+// "Clear all filters": one click instead of unticking each box. Leaves the view
+// on its default (no date box ticked = the extended "active today" list).
+function cuClearAllFilters() {
+  for (const k of CU_FILTER_KEYS) cuFilter[k] = false;
+  cuFilter.statuses = [];
+  cuFilter.priorities = [];
+  cuFilter.clients = [];
+  cuFilter.customFrom = "";
+  cuFilter.customTo = "";
+  chrome.storage.local.set({ cuFilter }).catch(() => {});
+  optRenderCuFilterMenu();
+  optCuFilterBtnLabel();
+  optRepaintCuPreview();
+}
+function cuPaintClearBtn(menu) {
+  const b = menu && menu.querySelector("[data-fclear]");
+  if (!b) return;
+  const on = CU_FILTER_KEYS.some((k) => cuFilter[k]) ||
+    (cuFilter.statuses && cuFilter.statuses.length) ||
+    (cuFilter.priorities && cuFilter.priorities.length) ||
+    (cuFilter.clients && cuFilter.clients.length);
+  b.disabled = !on;
+}
 function cuPaintModeToggle(menu) {
   if (!menu) return;
   menu.querySelectorAll("[data-fmode]").forEach((b) => b.classList.toggle("on", (b.dataset.fmode === "single") === cuFilterSingle));
@@ -3884,6 +3908,7 @@ function cuPaintModeToggle(menu) {
 function optRenderCuFilterMenu() {
   const menu = $("optCuFilterMenu");
   if (!menu) return;
+  cuPaintClearBtn(menu);
   menu.querySelectorAll("input[data-cf]").forEach((el) => { el.checked = !!cuFilter[el.getAttribute("data-cf")]; });
   const st = (optClickup && optClickup.state) || {};
   menu.querySelectorAll("[data-cf-dates]").forEach((row) => {
@@ -3945,6 +3970,9 @@ function optRepaintCuPreview() {
     cuFilterSingle = gm && gm.cuFilterMode === "single";
   } catch (e) {}
   cuPaintModeToggle(menu);
+  cuPaintClearBtn(menu);
+  const clearBtn = menu.querySelector("[data-fclear]");
+  if (clearBtn) clearBtn.onclick = (e) => { e.stopPropagation(); cuClearAllFilters(); cuPaintClearBtn(menu); };
   menu.querySelectorAll("[data-fmode]").forEach((b) => {
     b.onclick = (e) => {
       e.stopPropagation();
@@ -4362,6 +4390,15 @@ if ($("versionsBtn")) $("versionsBtn").onclick = () => {
 // Explore tasks: its own export (rows as filtered there, including the client).
 if (window.pcmExport) window.pcmExport.attach($("optFltExportBtn"), () => optFltExport);
 if ($("optFltClient")) $("optFltClient").addEventListener("change", () => renderOptionsFilter());
+// Explore tasks: clear its tick boxes, client and department in one go.
+if ($("optFltClearBtn")) $("optFltClearBtn").onclick = () => {
+  for (const id of ["optFltOnlyMissing", "optFltMissingStart", "optFltMissingDue", "optFltIncomplete", "optFltOverdue", "optFltSpan"]) {
+    if ($(id)) $(id).checked = false;
+  }
+  for (const id of ["optFltClient", "optFltDept", "optFltDeptUser"]) if ($(id)) $(id).value = "";
+  if ($("optFltDeptUserWrap")) $("optFltDeptUserWrap").style.display = "none";
+  renderOptionsFilter();
+};
 
 // Export button on the ClickUp card (exports exactly what the card shows).
 if (window.pcmExport) window.pcmExport.attach($("optCuExportBtn"), () => cuExportDataOpt);

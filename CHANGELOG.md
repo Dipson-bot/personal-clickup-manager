@@ -1,6 +1,7 @@
 # Changelog
 
 ## v3.6.0
+- **Clear all filters** in one click: in the Filter menu (popup, side panel, options) and a Clear filters button in Explore tasks.
 - **Export the tasks you're looking at.** An "⤓ Export" button next to Filter (popup, side panel, options and Explore tasks) writes whatever the list currently shows, with your filters applied: **CSV**, **Excel**, **Google Sheets** or **Google Docs**. The sheet uses the team layout: column A "main" / "sub task", column B the task, main rows bold. Optional "include subtasks" and "include details" (client, due, estimate, tracked, status, link).
 - **Edit a due date from the list**, the same way estimates work: click the date chip, pick a date, Enter. Rows with no due date show "+ due"; clearing the box removes the date.
 - **Explore tasks: Client filter**, alongside department and teammate, with totals that follow the choice.

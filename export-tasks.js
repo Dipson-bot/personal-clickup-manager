@@ -30,13 +30,6 @@
 
   const esc = (s) => String(s == null ? "" : s).replace(/[&<>]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" }[c]));
   const csvCell = (s) => '"' + String(s == null ? "" : s).replace(/"/g, '""') + '"';
-  function fmtMs(ms) {
-    const m = Math.round(Math.max(0, Number(ms) || 0) / 60000);
-    if (!m) return "";
-    const h = Math.floor(m / 60);
-    return h ? h + "h" + (m % 60 ? " " + (m % 60) + "m" : "") : m + "m";
-  }
-  const fmtDate = (ms) => (ms ? new Date(ms).toLocaleDateString([], { year: "numeric", month: "short", day: "numeric" }) : "");
 
   // ClickUp descriptions here carry a planning wrapper: quoted blocks
   // (Pre Description: "…"), empty fields (Pre File: "") and labelled lines

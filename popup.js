@@ -2509,6 +2509,30 @@ function cuTrimToSingle() {
     if (Array.isArray(cuFilter[key]) && cuFilter[key].length > 1) cuFilter[key] = cuFilter[key].slice(0, 1);
   }
 }
+
+// "Clear all filters": one click instead of unticking each box. Leaves the view
+// on its default (no date box ticked = the extended "active today" list).
+function cuClearAllFilters() {
+  for (const k of CU_FILTER_KEYS) cuFilter[k] = false;
+  cuFilter.statuses = [];
+  cuFilter.priorities = [];
+  cuFilter.clients = [];
+  cuFilter.customFrom = "";
+  cuFilter.customTo = "";
+  chrome.storage.local.set({ cuFilter }).catch(() => {});
+  renderCuFilterMenu();
+  cuFilterBtnLabel();
+  renderClickup();
+}
+function cuPaintClearBtn(menu) {
+  const b = menu && menu.querySelector("[data-fclear]");
+  if (!b) return;
+  const on = CU_FILTER_KEYS.some((k) => cuFilter[k]) ||
+    (cuFilter.statuses && cuFilter.statuses.length) ||
+    (cuFilter.priorities && cuFilter.priorities.length) ||
+    (cuFilter.clients && cuFilter.clients.length);
+  b.disabled = !on;
+}
 function cuPaintModeToggle(menu) {
   if (!menu) return;
   menu.querySelectorAll("[data-fmode]").forEach((b) => b.classList.toggle("on", (b.dataset.fmode === "single") === cuFilterSingle));
@@ -2547,6 +2571,7 @@ function cuBuildFacetList(box, attr, values, checked, labelFn) {
 function renderCuFilterMenu() {
   const menu = $("cuFilterMenu");
   if (!menu) return;
+  cuPaintClearBtn(menu);
   menu.querySelectorAll("input[data-cf]").forEach((el) => { el.checked = !!cuFilter[el.getAttribute("data-cf")]; });
   const st = (state.clickup && state.clickup.state) || {};
   menu.querySelectorAll("[data-cf-dates]").forEach((row) => {
@@ -2605,6 +2630,9 @@ function openCuFilterMenu(open) {
     cuFilterSingle = gm && gm.cuFilterMode === "single";
   } catch (e) {}
   cuPaintModeToggle(menu);
+  cuPaintClearBtn(menu);
+  const clearBtn = menu.querySelector("[data-fclear]");
+  if (clearBtn) clearBtn.onclick = (e) => { e.stopPropagation(); cuClearAllFilters(); cuPaintClearBtn(menu); };
   menu.querySelectorAll("[data-fmode]").forEach((b) => {
     b.onclick = (e) => {
       e.stopPropagation();
