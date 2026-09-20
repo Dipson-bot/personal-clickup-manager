@@ -4904,11 +4904,9 @@ async function admRefresh() {
   const version = (st && st.version) || chrome.runtime.getManifest().version;
   if ($("admCurrent")) $("admCurrent").textContent = "v" + version;
   if ($("admRepo") && st && st.repo) $("admRepo").textContent = st.repo;
-  if ($("admVersion") && !$("admVersion").value) {
-    const p = version.split(".").map(Number);
-    p[p.length - 1] = (p[p.length - 1] || 0) + 1; // suggest the next patch version
-    $("admVersion").value = p.join(".");
-  }
+  // Default to the version that is actually running: that is what Upload
+  // publishes. Type a higher number and press "Set version & reload" to move up.
+  if ($("admVersion") && !$("admVersion").value) $("admVersion").value = version;
   if ($("admSyncToken") && st) $("admSyncToken").checked = st.syncToken !== false;
   if ($("admTokenState")) {
     $("admTokenState").textContent = st && st.hasToken ? "- saved (" + st.tokenHint + ")" : "- not saved yet";
