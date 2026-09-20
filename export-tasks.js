@@ -1,6 +1,6 @@
 // Shared task export, used by the popup, the side panel and the options page.
 // Exports exactly the rows a page hands over (so it follows whatever filters are
-// on screen) as CSV, Excel, Google Sheets or Google Docs.
+// on screen) as CSV, Excel, Markdown, Google Sheets or Google Docs.
 //
 // Fixed layout, matching the team sheet: main / sub task | Task | Task info |
 // Status | Week. "Task info" is the ClickUp description with its planning
@@ -148,11 +148,35 @@
     return parts.join("");
   }
 
+  // Markdown: plain text that reads well on its own and pastes straight into an
+  // AI chat ("here are my tasks, how would you do this one?").
+  function toMarkdown(rows, title) {
+    const out = ["# " + title, ""];
+    const meta = (t) => [t.status || (t.done ? "complete" : ""), weekLabel(t.dueDateMs)].filter(Boolean).join(" · ");
+    const count = rows.length;
+    out.push("_" + count + " task" + (count === 1 ? "" : "s") + " · exported " + new Date().toLocaleDateString([], { year: "numeric", month: "long", day: "numeric" }) + "_", "");
+    for (const t of rows) {
+      const info = cleanInfo(t.info);
+      const m = meta(t);
+      if (!t.isSubtask) {
+        out.push("## " + (t.name || "(task)"));
+        if (m) out.push("*" + m + "*");
+        if (info) { out.push(""); for (const line of info.split("\n")) out.push(line); }
+        out.push("");
+      } else {
+        out.push("- **" + (t.name || "(subtask)") + "**" + (m ? " (" + m + ")" : ""));
+        if (info) for (const line of info.split("\n")) out.push("  " + line);
+      }
+    }
+    return out.join("\n").replace(/\n{3,}/g, "\n\n").trim() + "\n";
+  }
+
   function download(name, mime, text) {
     const url = URL.createObjectURL(new Blob([text], { type: mime }));
     const a = document.createElement("a");
     a.href = url;
     a.download = name;
+    a.onclick = (e) => e.stopPropagation(); // keep the export menu (and its message) open
     document.body.appendChild(a);
     a.click();
     a.remove();
@@ -258,6 +282,12 @@
         const file = safeName(title) + "_" + new Date().toISOString().slice(0, 10);
         if (kind === "csv") { download(file + ".csv", "text/csv;charset=utf-8", "﻿" + toCsv(m)); note("Saved " + file + ".csv"); }
         else if (kind === "xls") { download(file + ".xls", "application/vnd.ms-excel", toHtml(m, title)); note("Saved " + file + ".xls (opens in Excel)"); }
+        else if (kind === "md") {
+          const text = toMarkdown(rows, title);
+          download(file + ".md", "text/markdown;charset=utf-8", text);
+          try { navigator.clipboard.writeText(text).then(() => note("Saved " + file + ".md and copied to the clipboard")).catch(() => note("Saved " + file + ".md")); }
+          catch (e) { note("Saved " + file + ".md"); }
+        }
         else {
           note("Creating in Google Drive…");
           const res = await chrome.runtime.sendMessage({
@@ -277,7 +307,7 @@
       buttons.forEach((b) => (b.disabled = false));
       if (item) item.blur();
     };
-    for (const [kind, label] of [["csv", "📄 CSV file"], ["xls", "📊 Excel file (.xls)"], ["sheets", "🟩 Google Sheets"], ["docs", "📝 Google Docs"]]) {
+    for (const [kind, label] of [["csv", "📄 CSV file"], ["xls", "📊 Excel file (.xls)"], ["md", "🤖 Markdown (.md) - paste into an AI"], ["sheets", "🟩 Google Sheets"], ["docs", "📝 Google Docs"]]) {
       const b = document.createElement("button");
       b.type = "button";
       b.className = "xp-item";
