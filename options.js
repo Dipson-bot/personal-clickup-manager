@@ -4117,6 +4117,13 @@ chrome.storage.onChanged.addListener((changes, area) => {
   // refresh the account list so an open options page reflects the change without
   // a manual reload. acctCount only fires when the count actually changes, so this
   // reload is rare (real add/delete/sign-out), not part of the periodic churn.
+  // A settings change can alter how totals are counted (see the parent/subtask
+  // estimate rule), so drop the views this page caches itself and refetch.
+  if (changes.settings) {
+    cuCustomCache = { key: "", status: "", data: null, at: 0 };
+    cuOverdueCache = { status: "", data: null, at: 0 };
+    if (optClickup && optClickup.state) renderClickupPreview(optClickup.state);
+  }
   if (changes.acctCount) {
     applyAcctCardDefaults((changes.acctCount.newValue || 0) > 0);
     scheduleOptionsReload();
