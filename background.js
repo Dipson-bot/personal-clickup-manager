@@ -1209,6 +1209,9 @@ async function computeFilterData(cfg, settings, assigneeIds, fromTs, toTs) {
   });
   // Stamp each row with its client name (used by the client tag + client filter).
   await annotateClients(cfg.token, data, settings.cuClientLevel || "auto");
+  // Today, this week, next week, a custom range and Explore all come through
+  // here, so the estimate rule is applied once, in one place.
+  applySubEstimateRule(data, settings.clickupSubEstimates || "both");
   return data;
 }
 
@@ -2346,6 +2349,42 @@ async function ghPutFile(head, path, change, message) {
     throw new Error(path + ": " + why);
   }
   return true;
+}
+
+// A parent and its subtasks can both carry an estimate, and both rows can turn
+// up in the same view (a subtask with its own due date arrives as a normal
+// task). clickupSubEstimates decides whose number counts: "both" adds them up,
+// "parent" ignores the children's, "subtasks" lets the children replace the
+// parent's. Rows left out are marked estimateCounted:false so the pages can
+// skip them in their own sums too.
+function applySubEstimateRule(bundle, mode) {
+  if (!bundle || mode === "both" || !Array.isArray(bundle.tasks)) return bundle;
+  const rows = bundle.tasks;
+  const byId = new Map(rows.map((t) => [String(t.id), t]));
+  const kids = new Map();
+  for (const t of rows) {
+    const p = t && t.parentId != null ? String(t.parentId) : null;
+    if (!p || !byId.has(p)) continue;
+    if (!kids.has(p)) kids.set(p, []);
+    kids.get(p).push(t);
+  }
+  let removed = 0;
+  for (const [parentId, children] of kids) {
+    const parent = byId.get(parentId);
+    const kidEst = children.reduce((a, t) => a + (Number(t.estimateMs) || 0), 0);
+    if (mode === "parent") {
+      for (const t of children) {
+        if (!(Number(t.estimateMs) > 0)) continue;
+        removed += Number(t.estimateMs) || 0;
+        t.estimateCounted = false;
+      }
+    } else if (mode === "subtasks" && kidEst > 0 && Number(parent.estimateMs) > 0) {
+      removed += Number(parent.estimateMs) || 0;
+      parent.estimateCounted = false;
+    }
+  }
+  if (removed) bundle.estimateMs = Math.max(0, (Number(bundle.estimateMs) || 0) - removed);
+  return bundle;
 }
 
 // ---------- badge ----------
