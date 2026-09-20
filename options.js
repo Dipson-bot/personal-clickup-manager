@@ -3955,6 +3955,36 @@ function cuClearAllFilters() {
   optCuFilterBtnLabel();
   optRepaintCuPreview();
 }
+// Your own starting point: "Save as my default" remembers the ticked filters
+// and the selection mode; a fresh install (or "Use my default") applies them.
+const CU_FILTER_EXTRAS = ["statuses", "priorities", "clients", "customFrom", "customTo"];
+function cuSnapshotFilter() {
+  const out = { mode: cuFilterSingle ? "single" : "multi" };
+  for (const k of CU_FILTER_KEYS) out[k] = !!cuFilter[k];
+  for (const k of CU_FILTER_EXTRAS) out[k] = Array.isArray(cuFilter[k]) ? cuFilter[k].slice() : (cuFilter[k] || "");
+  return out;
+}
+function cuApplyFilterSnapshot(snap) {
+  if (!snap || typeof snap !== "object") return false;
+  for (const k of CU_FILTER_KEYS) cuFilter[k] = !!snap[k];
+  for (const k of CU_FILTER_EXTRAS) cuFilter[k] = Array.isArray(snap[k]) ? snap[k].slice() : (snap[k] || "");
+  cuFilterSingle = snap.mode === "single";
+  chrome.storage.local.set({ cuFilter, cuFilterMode: snap.mode === "single" ? "single" : "multi" }).catch(() => {});
+  optRenderCuFilterMenu();
+  optCuFilterBtnLabel();
+  optRepaintCuPreview();
+  return true;
+}
+async function cuUseDefaultFilter() {
+  try {
+    const { cuFilterDefault } = await chrome.storage.local.get("cuFilterDefault");
+    return cuApplyFilterSnapshot(cuFilterDefault);
+  } catch (e) { return false; }
+}
+function cuSaveDefaultFilter() {
+  chrome.storage.local.set({ cuFilterDefault: cuSnapshotFilter() }).catch(() => {});
+}
+
 function cuPaintClearBtn(menu) {
   const b = menu && menu.querySelector("[data-fclear]");
   if (!b) return;
@@ -4010,7 +4040,9 @@ function optRepaintCuPreview() {
   const menu = $("optCuFilterMenu");
   if (!btn || !menu) return;
   try {
-    const got = await chrome.storage.local.get(["cuFilter", "cuDueTodayOnly"]);
+    const got = await chrome.storage.local.get(["cuFilter", "cuDueTodayOnly", "cuFilterDefault"]);
+    // Nothing saved yet on this machine: start from the user's own default.
+    if (!got.cuFilter && got.cuFilterDefault) cuApplyFilterSnapshot(got.cuFilterDefault);
     if (got.cuFilter && typeof got.cuFilter === "object") {
       for (const k of CU_FILTER_KEYS) cuFilter[k] = !!got.cuFilter[k];
       if (got.cuFilter.dueWorkweek) { cuFilter.dueWeek = true; chrome.storage.local.set({ cuFilter }).catch(() => {}); } // "Due Mon-Fri" was removed
@@ -4036,6 +4068,21 @@ function optRepaintCuPreview() {
   cuPaintClearBtn(menu);
   const clearBtn = menu.querySelector("[data-fclear]");
   if (clearBtn) clearBtn.onclick = (e) => { e.stopPropagation(); cuClearAllFilters(); cuPaintClearBtn(menu); };
+  const saveDefBtn = menu.querySelector("[data-fsavedef]");
+  if (saveDefBtn) saveDefBtn.onclick = (e) => {
+    e.stopPropagation();
+    cuSaveDefaultFilter();
+    saveDefBtn.textContent = "Saved as default \u2713";
+    setTimeout(() => { saveDefBtn.textContent = "Save as my default"; }, 1600);
+  };
+  const useDefBtn = menu.querySelector("[data-fusedef]");
+  if (useDefBtn) useDefBtn.onclick = async (e) => {
+    e.stopPropagation();
+    const ok = await cuUseDefaultFilter();
+    useDefBtn.textContent = ok ? "Default applied \u2713" : "No default saved yet";
+    setTimeout(() => { useDefBtn.textContent = "Use my default"; }, 1600);
+    cuPaintClearBtn(menu);
+  };
   menu.querySelectorAll("[data-fmode]").forEach((b) => {
     b.onclick = (e) => {
       e.stopPropagation();

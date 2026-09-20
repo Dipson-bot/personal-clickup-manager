@@ -390,6 +390,10 @@
 
   .cu-filter-clear { margin: 0 4px 6px; }
   .cu-filter-clear button { width: 100%; border: 1px solid var(--border); border-radius: 7px; background: transparent; color: var(--muted); font-size: 11px; font-weight: 600; padding: 5px 6px; cursor: pointer; }
+  .cu-filter-defaults { display: flex; flex-wrap: wrap; gap: 4px; }
+  .cu-filter-defaults button { flex: 1 1 46%; width: auto; }
+  .cu-filter-defaults button[data-fclear] { flex-basis: 100%; }
+  .cu-filter-defaults button[data-fsavedef]:hover, .cu-filter-defaults button[data-fusedef]:hover { color: var(--indigo); border-color: var(--indigo); background: var(--bg2); }
   .cu-filter-clear button:hover { color: var(--red); border-color: var(--red); background: var(--bg2); }
   .cu-filter-clear button:disabled { opacity: .45; cursor: default; color: var(--muted); border-color: var(--border); background: transparent; }
 </style>
@@ -417,7 +421,10 @@
           <button type="button" class="cu-filter-btn" id="cuExportBtn" title="Export the tasks shown here (CSV, Excel, Google Sheets/Docs)">&#10515; Export</button>
           <button type="button" class="cu-filter-btn" id="cuFilterBtn" aria-expanded="false" aria-haspopup="true" title="Filter today's estimate &amp; task list">&#9662; Filter</button>
           <div class="cu-filter-menu" id="cuFilterMenu" hidden role="menu">
-            <div class="cu-filter-clear"><button type="button" data-fclear title="Untick every filter at once">Clear all filters</button></div>
+            <div class="cu-filter-clear cu-filter-defaults"><button type="button" data-fclear title="Untick every filter at once">Clear all filters</button>
+              <button type="button" data-fsavedef title="Remember these filters (and the One at a time / Multiple mode) as your starting point">Save as my default</button>
+              <button type="button" data-fusedef title="Go back to the filters you saved as your default">Use my default</button>
+            </div>
             <div class="cu-filter-mode" role="group" aria-label="Selection mode" title="One at a time: ticking a box replaces the other tick in the same group. Multiple: combine freely.">
               <button type="button" data-fmode="single">One at a time</button>
               <button type="button" data-fmode="multi">Multiple</button>
