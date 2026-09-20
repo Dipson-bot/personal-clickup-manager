@@ -1891,6 +1891,7 @@ function renderClickupSettings(cu) {
   $("cuIdleRepeat").value = cu.idleRepeatMin != null ? String(cu.idleRepeatMin) : "60";
   if ($("cuSyncMin")) $("cuSyncMin").value = String(cu.syncMin || 5);
   if ($("cuWeekMode")) $("cuWeekMode").value = cu.weekMode || "sun-sat";
+  if ($("cuSubEstimates")) $("cuSubEstimates").value = cu.subEstimates || "both";
   $("cuAwayNotify").checked = cu.awayNotify !== false;
   $("cuAwayMin").value = cu.awayMin != null ? String(cu.awayMin) : "15";
   $("cuWrapUp").checked = cu.wrapUp !== false;
@@ -3558,6 +3559,7 @@ $("cuSave").onclick = async () => {
         clickupIdleRepeatMin: idleRepeat,
         clickupSyncMin: Number($("cuSyncMin").value) || 5,
         clickupWeekMode: ($("cuWeekMode") && $("cuWeekMode").value) || "sun-sat",
+        clickupSubEstimates: ($("cuSubEstimates") && $("cuSubEstimates").value) || "both",
         clickupAwayNotify: $("cuAwayNotify").checked,
         clickupAwayMin: awayMin,
         clickupWrapUp: $("cuWrapUp").checked,
