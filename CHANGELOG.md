@@ -1,6 +1,7 @@
 # Changelog
 
 ## v3.6.0
+- **Fixed: "Due tomorrow" always showed nothing.** It searched the today list, which by definition holds no tasks due tomorrow; it now reads this week and next week (so it also works on a Saturday). On the options page the same filter was additionally forgotten on reload, missing from the filter count and skipped by Clear all, and the toolbar badge ignored it. All fixed.
 - **Clear all filters** in one click: in the Filter menu (popup, side panel, options) and a Clear filters button in Explore tasks.
 - **Export the tasks you're looking at.** An "⤓ Export" button next to Filter (popup, side panel, options and Explore tasks) writes whatever the list currently shows, with your filters applied: **CSV**, **Excel**, **Google Sheets** or **Google Docs**. The sheet uses the team layout: column A "main" / "sub task", column B the task, main rows bold. Optional "include subtasks" and "include details" (client, due, estimate, tracked, status, link).
 - **Edit a due date from the list**, the same way estimates work: click the date chip, pick a date, Enter. Rows with no due date show "+ due"; clearing the box removes the date.
