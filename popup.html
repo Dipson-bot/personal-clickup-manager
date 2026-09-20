@@ -381,6 +381,12 @@
   .cu-now-note { flex: 1; min-width: 0; font: inherit; font-size: 12px; padding: 4px 8px; border: 1px solid var(--border); border-radius: 7px; background: var(--card); color: var(--text); }
   .cu-now-note:focus { outline: none; border-color: var(--green); }
   .cu-now-saved { flex: none; font-size: 11px; color: var(--muted); }
+
+  /* Editable due chip: "+ due" placeholder and the inline date input */
+  .cu-due.nodue { color: var(--muted); border-style: dashed; opacity: .75; }
+  .cu-due.nodue:hover { opacity: 1; color: var(--text); }
+  .cu-due.syncing { opacity: .7; }
+  .due-input { font: inherit; font-size: 10.5px; padding: 0 2px; border: 1px solid var(--indigo); border-radius: 5px; background: var(--card); color: var(--text); width: 108px; }
 </style>
 </head>
 <body>
@@ -403,6 +409,7 @@
         <span>Today · Estimate &amp; Tracked</span>
         <span class="spacer"></span>
         <div class="cu-filter">
+          <button type="button" class="cu-filter-btn" id="cuExportBtn" title="Export the tasks shown here (CSV, Excel, Google Sheets/Docs)">&#10515; Export</button>
           <button type="button" class="cu-filter-btn" id="cuFilterBtn" aria-expanded="false" aria-haspopup="true" title="Filter today's estimate &amp; task list">&#9662; Filter</button>
           <div class="cu-filter-menu" id="cuFilterMenu" hidden role="menu">
             <div class="cu-filter-mode" role="group" aria-label="Selection mode" title="One at a time: ticking a box replaces the other tick in the same group. Multiple: combine freely.">
@@ -626,6 +633,7 @@
   </div>
 
   <script src="notify-menu.js"></script>
+  <script src="export-tasks.js"></script>
   <script src="popup.js"></script>
 </body>
 </html>

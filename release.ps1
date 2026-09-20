@@ -16,11 +16,11 @@ if (git status --porcelain) { throw "Uncommitted changes - commit (and push) fir
 if (git tag --list $tag) { throw "Tag $tag already exists - bump the version in manifest.json." }
 
 # Syntax check every script that ships.
-$js = @("background.js", "popup.js", "options.js", "offscreen.js", "update.js", "wrapup.js", "notify-menu.js", "lib-unzip.js", "lib-automation.js", "lib-availability.js", "lib-clickup.js", "lib-crypto.js", "lib-drive.js")
+$js = @("background.js", "popup.js", "options.js", "offscreen.js", "update.js", "wrapup.js", "notify-menu.js", "export-tasks.js", "lib-unzip.js", "lib-automation.js", "lib-availability.js", "lib-clickup.js", "lib-crypto.js", "lib-drive.js")
 foreach ($f in $js) { node --check $f; if ($LASTEXITCODE -ne 0) { throw "Syntax error in $f" } }
 
 # Package only what the extension needs.
-$files = @("manifest.json", "background.js", "popup.html", "popup.js", "options.html", "options.js", "offscreen.html", "offscreen.js", "update.html", "update.js", "wrapup.html", "wrapup.js", "notify-menu.js", "lib-unzip.js",
+$files = @("manifest.json", "background.js", "popup.html", "popup.js", "options.html", "options.js", "offscreen.html", "offscreen.js", "update.html", "update.js", "wrapup.html", "wrapup.js", "notify-menu.js", "export-tasks.js", "lib-unzip.js",
   "lib-automation.js", "lib-availability.js", "lib-clickup.js", "lib-crypto.js", "lib-drive.js", "icons", "sounds", "README.md", "CHANGELOG.md")
 New-Item -ItemType Directory -Force dist | Out-Null
 $zip = "dist/personal-clickup-manager-$tag.zip"

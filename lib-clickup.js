@@ -725,8 +725,9 @@ export async function updateTimeEntry(token, teamId, entryId, body) {
 
 // Change a task's due date. hasTime null = leave ClickUp's date-only/timed flag alone.
 export async function setTaskDueDate(token, taskId, dueMs, hasTime) {
-  const body = { due_date: Number(dueMs) };
-  if (hasTime != null) body.due_date_time = !!hasTime;
+  // dueMs null/0 clears the due date.
+  const body = { due_date: dueMs ? Number(dueMs) : null };
+  if (dueMs && hasTime != null) body.due_date_time = !!hasTime;
   return cuPut(token, "/task/" + encodeURIComponent(taskId), body);
 }
 
