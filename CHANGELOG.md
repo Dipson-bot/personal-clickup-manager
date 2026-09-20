@@ -1,5 +1,8 @@
 # Changelog
 
+## v3.8.3
+- **Fixed properly: the recurring Extra Task (and any multi-day task) was missing from every view except Today.** Those tasks carry a share of their estimate on each day they run, but "Due tomorrow", "Due this week", "Due next week" and custom ranges filtered strictly by due date and dropped them. "Due tomorrow" is now its own one-day query, so it shows the same share Today does, and the week and range views keep them as well.
+
 ## v3.8.2
 - **Fixed: "Due tomorrow" left out the recurring Extra Task** (and anything else that starts tomorrow but is due later). Those tasks are due another day, so the due-date rule skipped them, even though their estimate is divided per day and tomorrow owns a share. That share is now included, as it already was for today.
 
