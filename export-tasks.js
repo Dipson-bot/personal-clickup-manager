@@ -151,7 +151,8 @@
   // Markdown: plain text that reads well on its own and travels anywhere.
   function toMarkdown(rows, title) {
     const out = ["# " + title, ""];
-    const meta = (t) => [t.status || (t.done ? "complete" : ""), weekLabel(t.dueDateMs)].filter(Boolean).join(" · ");
+    const meta = (t) => [t.client || "", t.status || (t.done ? "complete" : ""), weekLabel(t.dueDateMs)].filter(Boolean).join(" · ");
+    const link = (t) => (t.url ? " [(open in ClickUp)](" + t.url + ")" : "");
     const count = rows.length;
     out.push("_" + count + " task" + (count === 1 ? "" : "s") + " · exported " + new Date().toLocaleDateString([], { year: "numeric", month: "long", day: "numeric" }) + "_", "");
     for (const t of rows) {
@@ -159,11 +160,11 @@
       const m = meta(t);
       if (!t.isSubtask) {
         out.push("## " + (t.name || "(task)"));
-        if (m) out.push("*" + m + "*");
+        if (m || t.url) out.push("*" + m + "*" + link(t));
         if (info) { out.push(""); for (const line of info.split("\n")) out.push(line); }
         out.push("");
       } else {
-        out.push("- **" + (t.name || "(subtask)") + "**" + (m ? " (" + m + ")" : ""));
+        out.push("- **" + (t.name || "(subtask)") + "**" + (m ? " (" + m + ")" : "") + link(t));
         if (info) for (const line of info.split("\n")) out.push("  " + line);
       }
     }

@@ -1,7 +1,10 @@
 # Changelog
 
+## Unreleased
+- Markdown export now includes each task's client and a link to it in ClickUp.
+
 ## v3.7.4
-Publishing now updates the repository too
+- Publishing now updates the repository too
 
 ## v3.7.3
 - First release published from the extension itself, using the new Admin panel.
