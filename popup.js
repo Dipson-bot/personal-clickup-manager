@@ -544,7 +544,10 @@ function cuPrioRank(t) {
 }
 function cuPrioCmp(a, b) {
   return cuPrioRank(a) - cuPrioRank(b) ||
-    (Number(b.estimateMs != null ? b.estimateMs : b.dayEstimateMs) || 0) - (Number(a.estimateMs != null ? a.estimateMs : a.dayEstimateMs) || 0);
+    (Number(b.estimateMs != null ? b.estimateMs : b.dayEstimateMs) || 0) - (Number(a.estimateMs != null ? a.estimateMs : a.dayEstimateMs) || 0) ||
+    // Same priority and same estimate: fall back to the name, read the way a
+    // person would (ACT-025.S1 before ACT-025.S3), instead of ClickUp's order.
+    String(a.name || "").localeCompare(String(b.name || ""), undefined, { numeric: true, sensitivity: "base" });
 }
 function sortByPriority(rows) {
   const list = Array.isArray(rows) ? rows : [];
@@ -564,7 +567,9 @@ function sortByPriority(rows) {
   for (const p of top) {
     out.push(p);
     const s = subs.get(idOf(p));
-    if (s) out.push(...s.slice().sort(cuPrioCmp));
+    // Grouped view: keep ClickUp's own order (S1, S2, S3…) rather than
+    // re-sorting the breakdown by priority.
+    if (s) out.push(...(cuFilter.groupSubtasks ? s : s.slice().sort(cuPrioCmp)));
   }
   return out;
 }
@@ -883,7 +888,21 @@ function appendFilterTaskRows(container, tasks, deadlineTasks, trackedTasks = []
   }
 }
 
+// "Group subtasks under their parent": arrange the rows ALREADY in view so a
+// parent is followed by its own subtasks, indented. Nothing extra is fetched,
+// and a subtask whose parent is not in this view simply stays where it was.
+function cuGroupSubtaskRows(rows) {
+  if (!cuFilter.groupSubtasks) return rows;
+  const list = Array.isArray(rows) ? rows : [];
+  const present = new Set(list.map((t) => String(t && (t.id != null ? t.id : t.taskId))));
+  return list.map((t) => {
+    const p = t && t.parentId != null ? String(t.parentId) : null;
+    return p && present.has(p) ? { ...t, isSubtask: true } : t;
+  });
+}
+
 function renderClickupTasks(tasks, deadlineTasks, trackedTasks, scope) {
+  tasks = cuGroupSubtaskRows(tasks);
   cuExportRows(tasks, deadlineTasks, trackedTasks, scope);
   const listEl = $("cuTaskList");
   if (!listEl) return;
@@ -1122,6 +1141,7 @@ async function discoverClientSites() {
 // client name + its own est/tracked subtotal. Row format matches the flat list;
 // the per-row client pill is suppressed (hideClient) since the header names it.
 function renderClickupTasksByClient(tasks, deadlineTasks, trackedTasks, scope, selected) {
+  tasks = cuGroupSubtaskRows(tasks);
   cuExportRows(tasks, deadlineTasks, trackedTasks, scope);
   const listEl = $("cuTaskList");
   if (!listEl) return;
@@ -1553,7 +1573,7 @@ function renderWeekDetail(w, agg) {
 // the badge.
 // "Due today" is ticked by default (a saved choice always wins).
 let cuFilter = { dueToday: true, dueTomorrow: false, dueWeek: false, dueNextWeek: false, dueCustom: false, missingDue: false, customFrom: "", customTo: "", missingEst: false, hasTracked: false, deadlineCrossed: false, waitingOthers: false, statuses: [], priorities: [], clients: [] };
-const CU_FILTER_KEYS = ["dueToday", "dueTomorrow", "dueWeek", "dueNextWeek", "dueCustom", "missingEst", "missingDue", "hasTracked", "deadlineCrossed", "waitingOthers"];
+const CU_FILTER_KEYS = ["dueToday", "dueTomorrow", "dueWeek", "dueNextWeek", "dueCustom", "missingEst", "missingDue", "hasTracked", "deadlineCrossed", "waitingOthers", "groupSubtasks"];
 const CU_PRIORITY_ORDER = ["urgent", "high", "normal", "low", "none"];
 
 function cuTodayEndMs() { const d = new Date(); d.setHours(23, 59, 59, 999); return d.getTime(); }
