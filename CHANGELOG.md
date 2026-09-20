@@ -1,12 +1,12 @@
 # Changelog
 
+## v3.8.0
+- **New filter: "Group subtasks under their parent"** - each parent is followed by its own subtasks, indented, in ClickUp's order (S1, S2, S3). It rearranges only the tasks already listed; a subtask whose parent is not in view stays where it is. Off by default.
+- **Your own default filters:** "Save as my default" remembers the ticked filters and the One at a time / Multiple mode, and "Use my default" brings them back in one click. A new install (or another computer, via Drive) starts from that default.
+- Tasks with the same priority AND the same estimate now sort by name, so ACT-025.S1 comes before ACT-025.S3 instead of following ClickUp's arbitrary order.
+
 ## v3.7.5
 Markdown export now shows a suggested working order, ClickUp dependencies (waiting for / blocks), who is holding a task up, priority and estimate, and warns when two tasks share a name.
-
-## Unreleased
-- **New filter: "Group subtasks under their parent"** - each parent task is followed by its own subtasks, indented, in ClickUp's own order (S1, S2, S3). It only rearranges the tasks already listed; a subtask whose parent is not in view stays where it is.
-- Tasks with the same priority AND the same estimate now sort by name, so ACT-025.S1 comes before ACT-025.S3 instead of following ClickUp's arbitrary order.
-- Markdown export now spells out how to work through the list: a numbered "Suggested order" (unblocked first, then priority, then due date), each task's client, priority, status, due date, week and estimate, ClickUp dependencies as "Waiting for" / "Blocks", the "Held up by <teammate>" hold-ups, subtasks nested under their parent, a warning when two tasks share a name, and a short legend so an assistant reads it the same way you would.
 
 ## v3.7.4
 - Publishing now updates the repository too

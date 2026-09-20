@@ -870,7 +870,7 @@ async function pushAllToDrive(tok, accounts) {
 // Each key carries its own "last changed" stamp (extrasStamps) so the newest copy
 // wins per key: a fresh install adopts the Drive copy, while a newer local edit is
 // never overwritten by an older remote one.
-const EXTRA_KEYS = ["siteMonitorConfig", "theme", "cuFilter", "cuFilterMode", "customSounds"];
+const EXTRA_KEYS = ["siteMonitorConfig", "theme", "cuFilter", "cuFilterMode", "cuFilterDefault", "customSounds"];
 const EXTRAS_MAX_SOUNDS = 1500000; // skip very large custom-sound files in the Drive copy
 async function collectExtras() {
   const got = await chrome.storage.local.get([...EXTRA_KEYS, "extrasStamps"]);
