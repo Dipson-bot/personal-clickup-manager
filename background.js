@@ -2428,7 +2428,7 @@ function cuScopeEstimateMs(st, f) {
         for (const t of (Array.isArray(b[key]) ? b[key] : [])) {
           const d = Number(t && t.dueDateMs) || 0;
           const id = String((t && (t.id != null ? t.id : t.taskId)) || "");
-          if (d < from || d > to || !id || seen.has(id)) continue;
+          if (d < from || d > to || !id || seen.has(id) || t.estimateCounted === false) continue;
           seen.add(id);
           ms += Number(t[field]) || 0;
         }
@@ -4267,7 +4267,8 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
           // the setting is already saved. New totals arrive via clickupState.
           clearFilterCache();
           sendResponse({ ok: true, settings: next });
-          refreshClickup({ includeTasks: true }).catch(() => {});
+          overdueCache = null;
+          refreshClickup({ includeTasks: true, forceWeeks: true }).catch(() => {});
           break;
         }
         if (patch.clickupWeekMode !== undefined) {
