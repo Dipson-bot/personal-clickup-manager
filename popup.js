@@ -1628,7 +1628,7 @@ function resolveCuFilterView(st, f) {
   }
   // Tomorrow is its own one-day query (see cuTomorrowView) so multi-day tasks
   // contribute tomorrow's share, the same way the Today card works.
-  if (f.dueTomorrow) return cuTomorrowView();
+  if (f.dueTomorrow) return cuTomorrowView(st);
   if (f.dueToday) {
     return { estimateMs: st.estimateMs, spentMs: st.spentMs, tasks: Array.isArray(st.tasks) ? st.tasks : [], deadlineTasks: Array.isArray(st.deadlineTasks) ? st.deadlineTasks : [], trackedTasks: Array.isArray(st.trackedTasks) ? st.trackedTasks : [], scope: "today" };
   }
@@ -1754,7 +1754,22 @@ async function cuFetchTomorrow(r, key) {
   } };
   cuCustomOnReady();
 }
-function cuTomorrowView() {
+function cuTomorrowView(st) {
+  // The background keeps tomorrow's bundle in state (refreshClickupImpl ->
+  // buildDay), so the card paints from it instantly. Asking ClickUp on every
+  // popup open is what made this flash "0m · loading…" for a couple of seconds.
+  {
+    const r0 = cuTomorrowRange();
+    const b = st && st.tomorrow;
+    if (b && Number(b.fromTs) === r0.fromTs && Number(b.toTs) === r0.toTs) {
+      return { estimateMs: Number(b.estimateMs) || 0, spentMs: Number(b.spentMs) || 0,
+        tasks: Array.isArray(b.tasks) ? b.tasks : [],
+        deadlineTasks: Array.isArray(b.deadlineTasks) ? b.deadlineTasks : [],
+        trackedTasks: Array.isArray(b.trackedTasks) ? b.trackedTasks : [], scope: "tomorrow" };
+    }
+  }
+  // No bundle yet (first refresh after an update, or midnight rolled over
+  // between refreshes): ask for that single day directly, just this once.
   const r = cuTomorrowRange();
   const key = r.fromTs + "-" + r.toTs;
   const c = cuTomorrowCache;
@@ -1828,6 +1843,8 @@ function cuAvailableFacets(st) {
   scan(tf.tasks); scan(tf.deadlineTasks); scan(tf.trackedTasks);
   const wk = st.weekly || {};
   for (const d of (Array.isArray(wk.perDay) ? wk.perDay : [])) { scan(d.tasks); scan(d.trackedTasks); }
+  const tm = st.tomorrow || {};
+  scan(tm.tasks); scan(tm.deadlineTasks); scan(tm.trackedTasks);
   const nw = st.nextWeek || {};
   scan(nw.tasks); scan(nw.deadlineTasks); scan(nw.trackedTasks);
   const tw = st.thisWeek || {};
