@@ -651,6 +651,9 @@ function cuExportRows(tasks, deadlineTasks, trackedTasks, scope) {
       name: t.name || "(untitled task)",
       isSubtask: !!t.isSubtask,
       client: t.client || "",
+      priority: t.priority || "",
+      // The on-screen "Waiting: Name" chip, so an export can explain the hold-up.
+      waitingOn: (() => { const w = cuWaitFor(t); const b = (w && w.blockers) || []; return b.length ? { who: [...new Set(b.map((x) => x.who).filter(Boolean))].join(", "), overdue: b.some((x) => x.overdue), what: b[0] && b[0].name } : null; })(),
       dueDateMs: Number(t.dueDateMs) || null,
       estimateMs: Number(t.totalEstimateMs || t.estimateMs || t.dayEstimateMs) || 0,
       spentMs: Number(t.spentMs) || 0,

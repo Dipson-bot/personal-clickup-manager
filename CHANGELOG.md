@@ -1,7 +1,7 @@
 # Changelog
 
 ## Unreleased
-- Markdown export now includes each task's client and a link to it in ClickUp.
+- Markdown export now spells out how to work through the list: a numbered "Suggested order" (unblocked first, then priority, then due date), each task's client, priority, status, due date, week and estimate, ClickUp dependencies as "Waiting for" / "Blocks", the "Held up by <teammate>" hold-ups, subtasks nested under their parent, a warning when two tasks share a name, and a short legend so an assistant reads it the same way you would.
 
 ## v3.7.4
 - Publishing now updates the repository too
