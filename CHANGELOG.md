@@ -1,5 +1,11 @@
 # Changelog
 
+## v3.8.4
+- **Fixed: the recurring Extra Task's daily share really does show everywhere now.** v3.8.2 and v3.8.3 fixed the plumbing around it but not the cause: the share was read out of the dates of the one occurrence ClickUp had created, so any weekday outside those dates came back as zero. Because a recurring task rolls forward one occurrence at a time, that hid the task from "Due tomorrow" whenever tomorrow fell in the next week, and from the week and range views with it. A recurring Extra Task is a weekly allowance, so every weekday now gets its share. A one-off task you configure by URL still counts only inside its own start-to-due dates.
+- **Fixed: ClickUp reminders fired at night and at weekends.** "Under your daily estimate", halfway, almost there, target reached and the end-of-day warning had no day or hour check at all, so one could arrive at 10:30pm on a Sunday. They now follow the same Office hours as the "are you working?" reminder: Monday to Friday, between the start and end hours in Tracking settings (8am to 5pm by default).
+- **Fixed: the "Due tomorrow" card blanked to 0m for a couple of seconds every time you opened the popup,** and the toolbar badge disagreed with it. Tomorrow's numbers were fetched by the popup itself, so they started empty on every open, and the badge, which cannot see that, was reading a different figure. They are now worked out once in the background and shared, so the card appears straight away and the badge always matches.
+- **Fixed: "ClickUp rate limit hit" after opening the popup a few times.** Each open rebuilt the weekly, this-week, next-week and tomorrow figures from scratch. Opening still picks up anything you just changed in ClickUp, but at most once a minute.
+
 ## v3.8.3
 - **Fixed properly: the recurring Extra Task (and any multi-day task) was missing from every view except Today.** Those tasks carry a share of their estimate on each day they run, but "Due tomorrow", "Due this week", "Due next week" and custom ranges filtered strictly by due date and dropped them. "Due tomorrow" is now its own one-day query, so it shows the same share Today does, and the week and range views keep them as well.
 

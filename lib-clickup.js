@@ -1181,6 +1181,22 @@ export async function fetchExtendedTaskEstimate({ token, teamId, taskUrl, todayB
   }
 }
 
+// The recurring "Extra(s) Task(s)" is a WEEKLY ALLOWANCE, not a one-off job: the
+// same bucket of hours comes back every week, so every weekday owns
+// estimate / 5 - including weekdays OUTSIDE the dates of the occurrence we
+// happened to find. ClickUp rolls a recurring task forward one occurrence at a
+// time, so while you are looking at next Monday the only copy that exists is
+// still dated to this week, and reading the share straight out of its own span
+// returned 0 (the "Extra Tasks" row missing from Due tomorrow / next week).
+// Deliberately limited to the Extra Task by name: a one-off task you configured
+// by URL must stay inside its own start-to-due span.
+function extraTaskWeekdayShare(task, dayTs) {
+  if (!task || !EXTRA_TASK_NAME_RE.test(task.name || "")) return 0;
+  if (!isWeekday(dayTs)) return 0;
+  const total = Number(task.estimateMs) || 0;
+  return total > 0 ? Math.round(total / WEEKDAY_COUNT) : 0;
+}
+
 // Given an array of taskUrl strings (which may be a mix plain deadline/weekly
 // tasks AND extended multi-day tasks), fetch each and compute the per-day
 // estimate for `now`, respecting the configured `mode`.
@@ -1214,6 +1230,12 @@ export async function fetchConfiguredTasks({ token, teamId, taskUrls = [], today
     const est = scaled
       ? await fetchExtendedTaskEstimate({ token, teamId, taskUrl: url, todayByTask, now, mode: extendedMode, taskCache, userScope })
       : await fetchDeadlineTaskEstimate({ token, teamId, taskUrl: url, todayByTask, now, taskCache });
+    // A weekday outside this occurrence's own span still owns the Extra Task's
+    // share (see extraTaskWeekdayShare); a one-off configured task gets nothing.
+    if (est && !est.error && !(Number(est.dayEstimateMs) > 0)) {
+      const share = extraTaskWeekdayShare(task, now);
+      if (share > 0) { est.dayEstimateMs = share; est.isWeekday = true; }
+    }
     out.push(est);
   }
   return out;
@@ -1294,7 +1316,8 @@ export async function fetchWeeklySummary({ token, teamId, userId, taskUrls = [],
         });
         for (const ts of weekdays) {
           const share = split.byDay.get(ts);
-          if (share != null) byDay.set(ts, share);
+          const eff = share != null ? share : extraTaskWeekdayShare(task, ts);
+          if (eff) byDay.set(ts, eff);
         }
       } else {
         // Daily/recurring task → its weekly estimate spread over the weekdays.
@@ -1410,7 +1433,12 @@ export async function fetchWeeklySummary({ token, teamId, userId, taskUrls = [],
           excludedDays: excluded,
           singleDay: !!tStart !== !!tDue,
         });
-        for (const p of perDay) if (split.byDay.has(p.ts)) extraByDay.set(p.ts, split.byDay.get(p.ts));
+        // Weekdays outside this occurrence's own span still get the recurring
+        // Extra Task's share - same rule as extraTaskWeekdayShare everywhere else.
+        for (const p of perDay) {
+          const share = split.byDay.has(p.ts) ? split.byDay.get(p.ts) : extraTaskWeekdayShare(extraTask, p.ts);
+          if (share) extraByDay.set(p.ts, share);
+        }
       } else {
         const share = Math.round(((extraTask.estimateMs || 0) * 100) / weekdayCount) / 100;
         for (const p of perDay) extraByDay.set(p.ts, share);
@@ -1928,7 +1956,9 @@ export async function fetchDateRangeEstimate({ token, teamId, userId, fromTs, to
           const r = scaled
             ? await fetchExtendedTaskEstimate({ token, teamId, taskUrl: url, todayByTask: null, byDayTracked: rangeByDay, now: ts, mode: extendedMode, taskCache })
             : await fetchDeadlineTaskEstimate({ token, teamId, taskUrl: url, todayByTask: null, now: ts, taskCache });
-          if (r && !r.error) dayEst += r.dayEstimateMs || 0;
+          let add = (r && !r.error) ? (r.dayEstimateMs || 0) : 0;
+          if (!add) add = extraTaskWeekdayShare(task, ts);
+          dayEst += add;
         }
       }
       if (dayEst > 0) {

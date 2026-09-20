@@ -1680,6 +1680,15 @@ async function refreshClickup(opts = {}) {
   return clickupRefreshInFlight;
 }
 
+// Opening the popup or the options page asks for a forced rebuild of the weekly
+// summary and the week/day bundles, so an estimate just changed in ClickUp shows
+// up straight away instead of sitting behind a 15-30 minute cache. Forced must
+// still mean "at most once a minute" though: each bundle is a full paginated
+// ClickUp fan-out, and reopening the popup a few times in a row was burning
+// through the rate limit ("ClickUp rate limit hit - try again in a minute").
+const FORCE_REBUILD_MIN_MS = 60000;
+function forceFloor(forced, ttl) { return forced ? FORCE_REBUILD_MIN_MS : ttl; }
+
 // forceWeeks: also bypass the due-this/next-week bundles' 60-min TTL. Only set by
 // an estimate edit or an explicit Refresh click - never by popup-open/alarms.
 async function refreshClickupImpl({ includeTasks = false, viaAlarm = false, forceWeekly = false, forceWeeks = false } = {}) {
@@ -1724,7 +1733,7 @@ async function refreshClickupImpl({ includeTasks = false, viaAlarm = false, forc
       const WEEKLY_TTL = 30 * 60000;
       const weekChanged = !prevWeekly ||
         prevWeekly.fromTs !== mondayTs || prevWeekly.toTs !== friEndTs;
-      if (!forceWeekly && !weekChanged && prevWeekly.at && Date.now() - prevWeekly.at < WEEKLY_TTL) {
+      if (!weekChanged && prevWeekly.at && Date.now() - prevWeekly.at < forceFloor(forceWeekly, WEEKLY_TTL)) {
         weekly = prevWeekly; // still fresh - reuse without extra API calls
       } else {
         weekly = await fetchWeeklySummary({
@@ -1763,6 +1772,7 @@ async function refreshClickupImpl({ includeTasks = false, viaAlarm = false, forc
     let thisWeek = null;
     let thisWorkweek = null;
     let nextWeek = null;
+    let tomorrow = null;
     try {
       const weekMode = settings.clickupWeekMode || "sun-sat";
       const thisB = cuWeekBounds(weekMode, 0);
@@ -1777,7 +1787,7 @@ async function refreshClickupImpl({ includeTasks = false, viaAlarm = false, forc
       const WEEK_TTL = 15 * 60000;
       const buildWeek = async (prev, fromTs, toTs) => {
         const rangeChanged = !prev || prev.fromTs !== fromTs || prev.toTs !== toTs;
-        if (!forceWeeks && !rangeChanged && prev.at && Date.now() - prev.at < WEEK_TTL) return prev; // fresh - no API calls
+        if (!rangeChanged && prev && prev.at && Date.now() - prev.at < forceFloor(forceWeeks, WEEK_TTL)) return prev; // fresh - no API calls
         const w = await computeFilterData(cfg, settings, [], fromTs, toTs);
         // "Due this week" / "Due next week" / "Due Mon-Fri" are STRICTLY
         // due-bounded scopes: a task belongs to a week bundle only when its DUE
@@ -1817,6 +1827,37 @@ async function refreshClickupImpl({ includeTasks = false, viaAlarm = false, forc
       };
       thisWeek = await buildWeek((prevSt && prevSt.thisWeek) || null, sun.getTime(), sat.getTime());
       nextWeek = await buildWeek((prevSt && prevSt.nextWeek) || null, nSun.getTime(), nSat.getTime());
+      // "Due tomorrow" is its own ONE-DAY bundle, built here rather than by each
+      // page. A page-level cache starts empty on every popup open, so the card
+      // flashed "0m · loading…" for a couple of seconds and paid for a fresh
+      // ClickUp fan-out every single open (popup and options each paying
+      // separately, which is what started hitting the rate limit). Building it
+      // once here means the popup paints instantly from state and the badge -
+      // which cannot run page code - reads the very same number.
+      const buildDay = async (prev, fromTs, toTs) => {
+        const rangeChanged = !prev || prev.fromTs !== fromTs || prev.toTs !== toTs;
+        if (!rangeChanged && prev && prev.at && Date.now() - prev.at < forceFloor(forceWeeks, WEEK_TTL)) return prev;
+        const d = await computeFilterData(cfg, settings, [], fromTs, toTs);
+        // Seed the shared filter cache so a page asking for this exact range
+        // (Explore, an export) gets it for free instead of refetching.
+        cacheFilterResult(filterKey([], fromTs, toTs), d);
+        const inDay = (t) => { const x = Number(t && t.dueDateMs) || 0; return x >= fromTs && x <= toTs; };
+        const tasks = (Array.isArray(d.tasks) ? d.tasks : []).filter(inDay);
+        // Configured tasks already hold THIS day's share - never due-filter them.
+        const deadlineTasks = Array.isArray(d.deadlineTasks) ? d.deadlineTasks : [];
+        const sum = (a, k) => a.reduce((n, t) => n + (Number(t && t[k]) || 0), 0);
+        return {
+          estimateMs: sum(tasks, "estimateMs") + sum(deadlineTasks, "dayEstimateMs"),
+          spentMs: sum(tasks, "spentMs") + sum(deadlineTasks, "spentMs"),
+          fromTs, toTs, tasks, deadlineTasks, trackedTasks: [],
+          taskCount: tasks.length + deadlineTasks.length,
+          noEstimateCount: tasks.filter((t) => !Number(t.estimateMs)).length,
+          at: Date.now(),
+        };
+      };
+      const tomStart = new Date(); tomStart.setDate(tomStart.getDate() + 1); tomStart.setHours(0, 0, 0, 0);
+      const tomEnd = new Date(tomStart); tomEnd.setHours(23, 59, 59, 999);
+      tomorrow = await buildDay((prevSt && prevSt.tomorrow) || null, tomStart.getTime(), tomEnd.getTime());
       // "Due Mon-Fri" = the current week's workday slice. Subset of thisWeek
       // (Sun→Sat): filter its rows by dueDateMs in [Mon 00:00, Fri 23:59] purely
       // in-memory, so it never triggers another ClickUp fetch and rides thisWeek's
@@ -1874,6 +1915,7 @@ async function refreshClickupImpl({ includeTasks = false, viaAlarm = false, forc
       thisWeek, // this Sun→Sat "due this week" bundle (own ~60-min TTL)
       thisWorkweek, // this Mon→Fri "due Mon-Fri" bundle (in-memory subset of thisWeek)
       nextWeek, // next Sun→Sat "due next week" bundle (own ~60-min TTL)
+      tomorrow, // tomorrow's one-day bundle (see buildDay) - popup AND badge read this
       extraTask: extraTask || null, // auto-detected "Extra(s) Task(s)"
       running: running || null, // live timer (taskId/taskName/startMs) or null
       at: data.at,
@@ -1909,6 +1951,25 @@ async function refreshClickupImpl({ includeTasks = false, viaAlarm = false, forc
   }
 }
 
+// Every ClickUp reminder is about the WORKING day, so none of them may fire at
+// night or at the weekend: Mon-Fri only, inside the configured office hours
+// (Tracking settings -> Office hours start/end, default 8am-5pm). Shared by the
+// daily-estimate nudges and the "are you working?" idle reminder so there is one
+// rule, not two. A misconfigured window (start >= end) silences them entirely.
+function officeHourBounds(settings) {
+  const s = Number(settings && settings.clickupIdleStartHour);
+  const e = Number(settings && settings.clickupIdleEndHour);
+  return { startHour: Number.isFinite(s) ? s : 8, endHour: Number.isFinite(e) ? e : 17 };
+}
+function insideOfficeHours(settings, when = new Date()) {
+  const weekday = when.getDay() !== 0 && when.getDay() !== 6;
+  if (!weekday) return false;
+  const { startHour, endHour } = officeHourBounds(settings);
+  if (!(startHour < endHour)) return false;
+  const hour = when.getHours();
+  return hour >= startHour && hour < endHour;
+}
+
 // Progressive desktop nudges, at most once each per calendar day:
 //   • "halfway" - the moment the summed estimate crosses 50% of the goal.
 //   • "almost there" - the moment it crosses ~86% of the goal (e.g. 6h of 7h).
@@ -1921,6 +1982,8 @@ async function maybeNotifyClickup(state, { viaAlarm }) {
   const settings = await getSettings();
   if (settings.clickupNotify === false) return;
   if (!state || !(Number(state.targetMs) > 0)) return;
+  // Office hours only - these were firing at 10:30pm on a Sunday before.
+  if (!insideOfficeHours(settings)) return;
   const { clickupNotified } = await chrome.storage.local.get("clickupNotified");
   const seen = clickupNotified && typeof clickupNotified === "object" ? clickupNotified : {};
   const today = todayString();
@@ -1991,7 +2054,10 @@ async function maybeNotifyClickup(state, { viaAlarm }) {
 
   if (!viaAlarm) return; // don't nudge on manual refresh
   const hour = new Date().getHours();
-  const nudgeHour = Number(settings.clickupNudgeHour);
+  // Clamped to the last office hour: a nudge set for 8pm would otherwise be
+  // silenced outright by the office-hours gate at the top of this function.
+  const lastOfficeHour = officeHourBounds(settings).endHour - 1;
+  const nudgeHour = Math.min(Number(settings.clickupNudgeHour), lastOfficeHour);
   if (Number.isFinite(nudgeHour) && hour >= nudgeHour && seen.nudge !== today) {
     const shortMs = Math.max(0, tgtMs - estMs);
     // Still under the day's target late in the day - the urgent alarm is right.
@@ -2001,7 +2067,7 @@ async function maybeNotifyClickup(state, { viaAlarm }) {
     await chrome.storage.local.set({ clickupNotified: { ...seen, nudge: today } });
   }
   // End-of-day warning - fires once after workdayEndHour if still under target.
-  const endHour = Number(settings.clickupWorkdayEndHour);
+  const endHour = Math.min(Number(settings.clickupWorkdayEndHour), lastOfficeHour);
   if (Number.isFinite(endHour) && hour >= endHour && seen.endOfDay !== today) {
     const shortMs = Math.max(0, tgtMs - estMs);
     await notify("clickup-endofday-" + Date.now(), "ClickUp - workday winding down 🕔",
@@ -2089,15 +2155,8 @@ async function maybeNotifyNotTracking(cfg, { viaAlarm = false } = {}) {
   const settings = await getSettings();
   if (settings.clickupIdleNotify === false) return;
 
-  const now = new Date();
-  const dow = now.getDay(); // 0=Sun..6=Sat
-  if (dow === 0 || dow === 6) return; // office hours are Mon-Fri only
-
-  const startHour = Number.isFinite(Number(settings.clickupIdleStartHour)) ? Number(settings.clickupIdleStartHour) : 8;
-  const endHour = Number.isFinite(Number(settings.clickupIdleEndHour)) ? Number(settings.clickupIdleEndHour) : 17;
-  const hour = now.getHours();
-  // Inside office hours [start, end). If misconfigured (start >= end), skip.
-  if (!(startHour < endHour && hour >= startHour && hour < endHour)) return;
+  // Mon-Fri inside office hours - the same rule the estimate nudges use.
+  if (!insideOfficeHours(settings)) return;
   // Stay quiet while the user is away from the computer (idle 5+ min or locked).
   try { if ((await chrome.idle.queryState(300)) !== "active") return; } catch (e) {}
 
@@ -2363,25 +2422,15 @@ function cuScopeEstimateMs(st, f) {
   if (f.dueWeek && st.thisWeek) return Number(st.thisWeek.estimateMs) || 0;
   if (f.dueWorkweek && st.thisWeek) return Number(st.thisWeek.estimateMs) || 0; // legacy "Due Mon-Fri" -> this week
   if (f.dueTomorrow) {
-    // Same rows the popup shows for tomorrow (they live in the week bundles).
+    // The one-day bundle the popup shows, so the badge can never disagree with
+    // the page. Scraping tomorrow's rows out of the week bundles (the old way)
+    // missed the recurring Extra Task: it carries a per-day share, not a due
+    // date on tomorrow, so the badge read 6h while the card read 8h 12m.
     const start = new Date(); start.setDate(start.getDate() + 1); start.setHours(0, 0, 0, 0);
     const from = start.getTime();
-    const to = from + 86399999;
-    const seen = new Set();
-    let ms = 0;
-    for (const b of [st.thisWeek, st.nextWeek]) {
-      if (!b) continue;
-      for (const [key, field] of [["tasks", "estimateMs"], ["deadlineTasks", "dayEstimateMs"]]) {
-        for (const t of (Array.isArray(b[key]) ? b[key] : [])) {
-          const d = Number(t && t.dueDateMs) || 0;
-          const id = String((t && (t.id != null ? t.id : t.taskId)) || "");
-          if (d < from || d > to || !id || seen.has(id)) continue;
-          seen.add(id);
-          ms += Number(t[field]) || 0;
-        }
-      }
-    }
-    return ms;
+    const b = st.tomorrow;
+    if (b && Number(b.fromTs) === from) return Number(b.estimateMs) || 0;
+    return 0; // no bundle yet - better blank than a number the page contradicts
   }
   if (f.dueToday) return Number(st.estimateMs) || 0;
   const tf = st.todayFilter || st;
