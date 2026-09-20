@@ -1,5 +1,8 @@
 # Changelog
 
+## v3.7.4
+Publishing now updates the repository too
+
 ## v3.7.3
 - First release published from the extension itself, using the new Admin panel.
 - Admin: **Choose folder…** right in the panel, so setting the version no longer sends you to another page.
