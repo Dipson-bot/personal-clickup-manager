@@ -2728,6 +2728,13 @@ chrome.storage.onChanged.addListener((changes, area) => {
   if (changes.status) load();
   if (changes.balances) load();
   if (changes.availability) load();
+  // A settings change can alter how totals are counted (see the parent/subtask
+  // estimate rule), so drop the views this page caches itself and refetch.
+  if (changes.settings) {
+    cuCustomCache = { key: "", status: "", data: null, at: 0 };
+    cuOverdueCache = { status: "", data: null, at: 0 };
+    load();
+  }
   if (changes.clickupState) { cuOverdueInvalidate(); load(); }
   // Filter changed on the options page -> mirror it here and repaint. Guarded so
   // a change this popup itself made (identical values) doesn't double-render.
