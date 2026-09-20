@@ -1,5 +1,8 @@
 # Changelog
 
+## v3.7.2
+- The admin GitHub token is now part of the Google Drive backup, so a reinstall or a second computer restores it instead of asking for it again. It travels inside the same encrypted file as your other logins, and there is a switch in Admin > GitHub access to keep it on this computer only.
+
 ## v3.7.1
 - Fixed: clicking **Admin** in the sidebar went to the Dashboard instead of opening the Admin panel.
 
