@@ -112,7 +112,12 @@
 
     const data = getData() || { rows: [], title: "tasks" };
     menu.innerHTML = '<h4>Export</h4><div class="xp-sub"></div>';
-    menu.querySelector(".xp-sub").textContent = data.rows.length + " task" + (data.rows.length === 1 ? "" : "s") + " · " + (data.title || "current view");
+    const sub = menu.querySelector(".xp-sub");
+    sub.textContent = data.rows.length + " task" + (data.rows.length === 1 ? "" : "s") + " · " + (data.title || "current view");
+    if (!data.rows.length) {
+      sub.style.color = "var(--red)";
+      sub.textContent += " - nothing to export. Close this, change the filter (the list above is what gets exported), then try again.";
+    }
 
     const mkOpt = (label, checked) => {
       const l = document.createElement("label");
@@ -126,6 +131,7 @@
     };
     const subs = mkOpt("Include subtasks", true);
     const det = mkOpt("Include details (client, due, estimate)", false);
+    const share = mkOpt("Google: anyone with the link can view", true);
     menu.appendChild(Object.assign(document.createElement("div"), { className: "xp-sep" }));
     const msg = document.createElement("div");
     msg.className = "xp-msg";
@@ -137,6 +143,7 @@
       const note = (t) => { msg.textContent = t; };
       try {
         const d = getData() || { rows: [], title: "tasks" };
+        if (!d.rows.length) throw new Error("This view has no tasks (" + (d.title || "current view") + "), so there is nothing to export.");
         let rows = d.rows.slice();
         if (subs.checked) rows = await withSubtasks(rows, note);
         const m = toMatrix(rows, det.checked);
@@ -147,7 +154,7 @@
         else {
           note("Creating in Google Drive…");
           const res = await chrome.runtime.sendMessage({
-            type: "EXPORT_TO_GOOGLE", kind, name: file,
+            type: "EXPORT_TO_GOOGLE", kind, name: file, share: share.checked,
             html: toHtml(m, title), // Docs keeps the bold "main" rows
             csv: toCsv(m), // Sheets: Drive only converts csv/xls into a spreadsheet
           });
