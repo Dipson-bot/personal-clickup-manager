@@ -1369,6 +1369,10 @@
       <textarea id="admNotes" rows="7" style="font-family:ui-monospace,monospace;font-size:12.5px;"></textarea>
 
       <div class="checkbox" style="margin-top:10px;">
+        <input type="checkbox" id="admCommit" checked />
+        <label for="admCommit" style="margin:0;font-weight:400;">Also update the repository <span class="hint">- commits the new version number and these notes to manifest.json and CHANGELOG.md, so the code on GitHub matches the release</span></label>
+      </div>
+      <div class="checkbox" style="margin-top:10px;">
         <input type="checkbox" id="admCritical" />
         <label for="admCritical" style="margin:0;font-weight:400;">Mark as important <span class="hint">- everyone's update notification stays on screen until they act on it</span></label>
       </div>

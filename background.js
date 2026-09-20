@@ -2315,6 +2315,33 @@ function cuWeekBounds(mode, offsetWeeks, now) {
   return { fromTs: d.getTime(), toTs: end.getTime(), label: m.label, days: m.days };
 }
 
+// Update one file in the repo: read it, let `change` rewrite the text (null =
+// nothing to do), then commit it back. Used when publishing, so the repository
+// carries the same version and notes as the release.
+async function ghPutFile(head, path, change, message) {
+  const url = "https://api.github.com/repos/" + UPDATE_REPO + "/contents/" + path;
+  const res = await fetch(url, { headers: head, cache: "no-store" });
+  if (!res.ok) throw new Error(path + ": GitHub said HTTP " + res.status);
+  const j = await res.json();
+  const text = new TextDecoder().decode(Uint8Array.from(atob(String(j.content || "").replace(/\n/g, "")), (c) => c.charCodeAt(0)));
+  const next = change(text);
+  if (next == null) return false; // already up to date
+  const bytes = new TextEncoder().encode(next);
+  let bin = "";
+  for (const b of bytes) bin += String.fromCharCode(b);
+  const put = await fetch(url, {
+    method: "PUT",
+    headers: { ...head, "Content-Type": "application/json" },
+    body: JSON.stringify({ message, content: btoa(bin), sha: j.sha }),
+  });
+  if (!put.ok) {
+    let why = "HTTP " + put.status;
+    try { const e = await put.json(); if (e && e.message) why = e.message; } catch (e2) {}
+    throw new Error(path + ": " + why);
+  }
+  return true;
+}
+
 // ---------- badge ----------
 // Resolve the badge's estimate to the SAME widest-checked date scope the popup/
 // options headline uses. Date scopes are nested (today ⊂ this-week ⊂ Friday), so
@@ -4357,6 +4384,28 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
           const head = { Authorization: "Bearer " + token, Accept: "application/vnd.github+json" };
           const exists = await fetch("https://api.github.com/repos/" + UPDATE_REPO + "/releases/tags/" + tag, { headers: head });
           if (exists.ok) { sendResponse({ ok: false, error: tag + " is already published. Use a higher version number." }); break; }
+          // Keep the repository in step: bump manifest.json and add this version's
+          // CHANGELOG section, so the source matches what was just released.
+          let repoUpdated = false;
+          let repoError = "";
+          if (msg.commit !== false) {
+            try {
+              await ghPutFile(head, "manifest.json", (text) => {
+                const next = text.replace(/("version"\s*:\s*")[^"]+(")/, "$1" + version + "$2");
+                return next === text ? null : next;
+              }, "v" + version);
+              await ghPutFile(head, "CHANGELOG.md", (text) => {
+                if (new RegExp("^##\\s+v?" + version.replace(/\./g, "\\.") + "(\\s|$)", "m").test(text)) return null; // already there
+                const section = "## v" + version + "\n" + String(msg.notes || "").trim() + "\n\n";
+                return text.startsWith("# Changelog")
+                  ? text.replace("# Changelog\n\n", "# Changelog\n\n" + section)
+                  : section + text;
+              }, "Changelog for v" + version);
+              repoUpdated = true;
+            } catch (e) {
+              repoError = String(e && e.message ? e.message : e);
+            }
+          }
           const body = String(msg.notes || "").trim() || ("Version " + version);
           const create = await fetch("https://api.github.com/repos/" + UPDATE_REPO + "/releases", {
             method: "POST",
@@ -4388,7 +4437,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
           // instantly via "Check for updates").
           await chrome.storage.local.remove("updateInfo");
           checkForUpdate(true, false).catch(() => {});
-          sendResponse({ ok: true, url: rel.html_url, tag });
+          sendResponse({ ok: true, url: rel.html_url, tag, repoUpdated, repoError });
         } catch (e) {
           sendResponse({ ok: false, error: String(e && e.message ? e.message : e) });
         }

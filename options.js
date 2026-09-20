@@ -4964,10 +4964,13 @@ if ($("admPublish")) $("admPublish").onclick = async () => {
       version,
       notes: $("admNotes").value || "",
       critical: !!($("admCritical") && $("admCritical").checked),
+      commit: !($("admCommit") && !$("admCommit").checked),
       zipB64: await admB64(z.blob),
     }, 120000);
     if (!res || !res.ok) throw new Error((res && res.error) || "Publish failed.");
     admSay("Published " + res.tag + " ✓ - everyone gets the update prompt within ~12 hours (or straight away via Check for updates).", "ok");
+    if (res.repoUpdated) admSay("Repository updated: manifest.json and CHANGELOG.md now say " + res.tag + ".", "ok");
+    else if (res.repoError) admSay("The release is live, but the repository wasn't updated: " + res.repoError, "err");
     const a = document.createElement("a");
     a.href = res.url;
     a.target = "_blank";
