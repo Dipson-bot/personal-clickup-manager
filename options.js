@@ -4185,6 +4185,7 @@ async function saveSiteMonitorConfig() {
     $("siteMonitorUrls").value = smFormatLines(sites);
     $("siteMonitorSaved").style.display = "inline";
     setTimeout(() => { $("siteMonitorSaved").style.display = "none"; }, 2000);
+    renderSiteBackup();
     if (bad.length) smHint(bad.length + " line(s) skipped - not a web address: " + bad.slice(0, 3).join(", ") + (bad.length > 3 ? "…" : ""), true);
     else if (!enabled && sites.length) smHint("Saved " + sites.length + " site(s). Tick \"Enable site monitoring\" and save again to start checking them.");
     else smHint("");
@@ -4353,6 +4354,10 @@ function escapeHtml(s) {
   return String(s || "").replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 }
 
+if ($("versionsBtn")) $("versionsBtn").onclick = () => {
+  chrome.tabs.create({ url: chrome.runtime.getURL("update.html#versions") }).catch(() => {});
+};
+
 // Header: open the side panel / the wrap-up page from the options page too.
 // Explore tasks: its own export (rows as filtered there, including the client).
 if (window.pcmExport) window.pcmExport.attach($("optFltExportBtn"), () => optFltExport);
@@ -4378,6 +4383,24 @@ if (smEnabled) smEnabled.addEventListener("change", () => {
   $("siteMonitorBody").style.opacity = smEnabled.checked ? "1" : "0.5";
 });
 if (smSave) smSave.addEventListener("click", saveSiteMonitorConfig);
+// Backup line: shows when this list last went to Google Drive.
+function renderSiteBackup() {
+  const el = $("siteMonitorBackup");
+  if (!el) return;
+  chrome.storage.local.get(["extrasStamps", "driveLastSync"]).then(({ extrasStamps, driveLastSync }) => {
+    const at = Number(extrasStamps && extrasStamps.siteMonitorConfig) || 0;
+    if (!at) { el.textContent = "Not backed up to Drive yet - save the list while Drive sync is on."; return; }
+    const synced = Number(driveLastSync) || 0;
+    el.textContent = synced >= at
+      ? "Saved to Google Drive ✓ · " + new Date(synced).toLocaleString()
+      : "Saved here at " + new Date(at).toLocaleTimeString() + " · sending to Drive…";
+  }).catch(() => {});
+}
+renderSiteBackup();
+chrome.storage.onChanged.addListener((ch, area) => {
+  if (area === "local" && (ch.extrasStamps || ch.driveLastSync)) renderSiteBackup();
+});
+
 const smDiscover = $("siteMonitorDiscover");
 if (smDiscover) smDiscover.addEventListener("click", () => {
   if (smDiscover.disabled) return;

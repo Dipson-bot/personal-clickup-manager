@@ -4,6 +4,9 @@
 - **Export the tasks you're looking at.** An "⤓ Export" button next to Filter (popup, side panel, options and Explore tasks) writes whatever the list currently shows, with your filters applied: **CSV**, **Excel**, **Google Sheets** or **Google Docs**. The sheet uses the team layout: column A "main" / "sub task", column B the task, main rows bold. Optional "include subtasks" and "include details" (client, due, estimate, tracked, status, link).
 - **Edit a due date from the list**, the same way estimates work: click the date chip, pick a date, Enter. Rows with no due date show "+ due"; clearing the box removes the date.
 - **Explore tasks: Client filter**, alongside department and teammate, with totals that follow the choice.
+- Google Sheets export now really is a Sheet: Drive can only turn HTML into a Doc, so Sheets exports upload CSV instead (Docs keeps the formatting). The export also fails loudly instead of leaving an empty file.
+- Drive sync remembers which Google account you connected and renews quietly for that account, instead of asking you to sign in again when several accounts are signed in.
+- The site list shows when it was last saved to Google Drive.
 - **Roll back to an older version.** The updater page lists every published version with its date, and installs the one you pick. Your settings are kept.
 
 ## v3.5.1

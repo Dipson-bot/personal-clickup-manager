@@ -4183,7 +4183,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         try {
           const tok = await getFileToken(true);
           if (!tok) { sendResponse({ ok: false, reason: "Google didn't grant permission to create the file." }); break; }
-          const r = await createGoogleFile(tok, { name: msg.name || "tasks", html: msg.html || "", kind: msg.kind === "docs" ? "docs" : "sheets" });
+          const r = await createGoogleFile(tok, { name: msg.name || "tasks", html: msg.html || "", csv: msg.csv || "", kind: msg.kind === "docs" ? "docs" : "sheets" });
           sendResponse({ ok: true, url: r.url });
         } catch (e) {
           sendResponse({ ok: false, error: String(e && e.message ? e.message : e) });

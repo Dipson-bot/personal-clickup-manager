@@ -236,7 +236,9 @@ async function loadVersions() {
   let r = null;
   try { r = await chrome.runtime.sendMessage({ type: "LIST_RELEASES" }); } catch (e) {}
   if (!r || !r.ok || !Array.isArray(r.releases) || !r.releases.length) {
-    $("versBox").hidden = true;
+    sel.innerHTML = "<option>Couldn't load the version list</option>";
+    sel.disabled = true;
+    $("versBtn").disabled = true;
     return;
   }
   releases = r.releases;
@@ -279,4 +281,10 @@ try {
   chrome.storage.local.get("theme").then(({ theme }) => { if (theme) document.documentElement.dataset.theme = theme; });
 } catch (e) {}
 render();
-loadVersions();
+loadVersions().then(() => {
+  // Opened from Options > "Other versions…": jump straight to the list.
+  if (location.hash === "#versions") {
+    $("versBox").scrollIntoView({ block: "center" });
+    $("versSel").focus();
+  }
+});
