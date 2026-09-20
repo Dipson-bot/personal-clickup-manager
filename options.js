@@ -4511,7 +4511,7 @@ setInterval(() => { if (!document.hidden) syncClickupRunning(); }, 60000);
 // ---------- Sidebar navigation (tabbed layout) ----------
 // One section visible at a time; the choice is remembered (per browser) and can
 // be deep-linked with #dashboard / #clickup / #agent / #sites / #general.
-const OPT_TABS = ["dashboard", "clickup", "agent", "sites", "general"];
+const OPT_TABS = ["dashboard", "clickup", "agent", "sites", "admin", "general"];
 function showOptTab(name) {
   if (!OPT_TABS.includes(name)) name = "dashboard";
   document.querySelectorAll("#sideNav [data-tab]").forEach((b) => b.classList.toggle("on", b.dataset.tab === name));
