@@ -360,6 +360,23 @@ export async function getTasksDueToday(token, teamId, userId, now = Date.now()) 
 // explicitly. `userId`, when given, drops subtasks assigned SOLELY to other
 // people (unassigned subtasks are kept) so someone else's work can't inflate the
 // viewer's day. Returns the raw task objects (time_estimate/time_spent/dates).
+// A single task's export fields (ClickUp's subtask lists carry no description,
+// so each subtask has to be asked for separately).
+export async function getTaskDetail(token, taskId) {
+  const t = await cuFetch(token, "/task/" + encodeURIComponent(String(taskId)));
+  return {
+    id: t && t.id,
+    name: (t && t.name) || "",
+    description: String((t && (t.description || t.text_content)) || "").trim(),
+    status: (t && t.status && t.status.status) || "",
+    done: isTaskDone(t),
+    dueDateMs: t && t.due_date ? Number(t.due_date) : null,
+    estimateMs: Number(t && t.time_estimate) || 0,
+    spentMs: Number(t && t.time_spent) || 0,
+    url: taskUrlFor(t && t.id),
+  };
+}
+
 // One request: the task itself (so we learn ITS parent) plus its subtasks.
 export async function getTaskTree(token, parentId, userId) {
   const uid = userId != null ? String(userId) : null;

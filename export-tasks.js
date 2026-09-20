@@ -129,13 +129,14 @@
       const meta = [t.status || (t.done ? "complete" : ""), weekLabel(t.dueDateMs)].filter(Boolean).join(" · ");
       if (!t.isSubtask) {
         closeList();
+        if (parts.length > 3) parts.push("<p>&nbsp;</p>"); // space between tasks
         parts.push("<h2>" + esc(t.name || "(task)") + "</h2>");
-        if (meta) parts.push("<p><b>" + esc(meta) + "</b></p>");
-        for (const line of infoHtml(t)) parts.push("<p>" + line + "</p>");
+        if (meta) parts.push('<p style="color:#666666">' + esc(meta) + "</p>");
+        for (const line of infoHtml(t)) parts.push('<p style="margin-bottom:6pt">' + line + "</p>");
       } else {
         if (!openList) { parts.push("<ul>"); openList = true; }
         const info = infoHtml(t).join(" ");
-        parts.push("<li><b>" + esc(t.name || "(subtask)") + "</b>" + (meta ? " <i>(" + esc(meta) + ")</i>" : "") +
+        parts.push('<li style="margin-bottom:6pt"><b>' + esc(t.name || "(subtask)") + "</b>" + (meta ? ' <span style="color:#666666">(' + esc(meta) + ")</span>" : "") +
           (info ? "<br>" + info : "") + "</li>");
       }
     }
@@ -163,7 +164,8 @@
     if (!ids.length) return rows;
     note("Reading " + ids.length + " task" + (ids.length === 1 ? "" : "s") + " from ClickUp…");
     let res = null;
-    try { res = await chrome.runtime.sendMessage({ type: "CLICKUP_EXPORT_SUBTASKS", taskIds: ids }); } catch (e) { res = null; }
+    try { res = await chrome.runtime.sendMessage({ type: "CLICKUP_EXPORT_SUBTASKS", taskIds: ids, includeSubtasks: !!includeSubtasks }); } catch (e) { res = null; }
+    if (res && res.missed) note(res.missed + " task" + (res.missed === 1 ? "" : "s") + " couldn't be read (ClickUp rate limit) - their info may be blank.");
     const subsOf = (includeSubtasks && res && res.ok && res.subtasks) || {};
     const parentOf = (res && res.ok && res.parents) || {};
     const detailOf = (res && res.ok && res.details) || {};
@@ -192,7 +194,8 @@
       // Subtasks that weren't in the view get added under their parent too.
       for (const s of subsOf[String(t.id)] || []) {
         if (listed.has(String(s.id)) || byId.has(String(s.id))) continue;
-        out.push({ ...s, info: s.description || "", isSubtask: true, client: t.client });
+        const d = detailOf[String(s.id)] || null; // subtasks need their own fetch for the description
+        out.push({ ...s, ...(d || {}), info: (d && d.description) || s.description || "", isSubtask: true, client: t.client });
       }
     }
     return out;
@@ -264,7 +267,13 @@
             csv: toCsv(m), // Sheets: Drive only converts csv/xls into a spreadsheet
           });
           if (!res || !res.ok) throw new Error((res && (res.error || res.reason)) || "Google export failed");
-          note(res.formatted === false && res.formatReason ? "Created (plain): " + res.formatReason : "Opening…");
+          if (res.formatted === false && res.formatReason) {
+            msg.className = "xp-msg err";
+            msg.textContent = /Sheets API/i.test(res.formatReason)
+              ? "Sheet created, but it is unformatted: enable the Google Sheets API for your Google Cloud project (console.cloud.google.com > APIs & Services > Library > Google Sheets API > Enable), then export again."
+              : "Sheet created, but formatting failed: " + res.formatReason;
+            console.warn("[export] formatting failed:", res.formatReason);
+          } else note("Opening…");
           chrome.tabs.create({ url: res.url }).catch(() => {});
           if (!(res.formatted === false && res.formatReason)) setTimeout(close, 700);
         }
