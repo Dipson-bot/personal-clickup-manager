@@ -68,17 +68,27 @@
     return out.slice(0, 1500);
   }
 
-  // The Mon-Sun week a due date falls in, e.g. "Sep 22 - Sep 28".
+  // The week a due date falls in, following the "A week runs" setting
+  // (Sunday to Saturday by default), e.g. "Sep 20 - Sep 26".
+  const WEEK_MODES = { "sun-sat": [0, 7], "mon-sun": [1, 7], "mon-fri": [1, 5], "sun-thu": [0, 5] };
+  let weekMode = "sun-sat";
+  try {
+    chrome.storage.local.get("settings").then((got) => {
+      const m = got && got.settings && got.settings.clickupWeekMode;
+      if (WEEK_MODES[m]) weekMode = m;
+    }).catch(() => {});
+  } catch (e) {}
   function weekLabel(ms) {
     if (!ms) return "";
+    const conf = WEEK_MODES[weekMode] || WEEK_MODES["sun-sat"];
     const d = new Date(ms);
     d.setHours(0, 0, 0, 0);
-    const mon = new Date(d);
-    mon.setDate(d.getDate() - ((d.getDay() + 6) % 7));
-    const sun = new Date(mon);
-    sun.setDate(mon.getDate() + 6);
+    const start = new Date(d);
+    start.setDate(d.getDate() - ((d.getDay() - conf[0] + 7) % 7));
+    const end = new Date(start);
+    end.setDate(start.getDate() + conf[1] - 1);
     const f = (x) => x.toLocaleDateString([], { month: "short", day: "numeric" });
-    return f(mon) + " - " + f(sun);
+    return f(start) + " - " + f(end);
   }
   // Fixed layout, as the team's sheet uses it.
   // rows: [{ name, isSubtask, info, status, done, dueDateMs }]

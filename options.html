@@ -1028,6 +1028,18 @@
 
       <div class="row" style="margin-top:12px;max-width:520px;">
         <div>
+          <label>A week runs <span class="hint">- used by "Due this week" and "Due next week", by Explore's week view and by the Week column in exports</span></label>
+          <select id="cuWeekMode">
+            <option value="sun-sat">Sunday to Saturday</option>
+            <option value="mon-sun">Monday to Sunday</option>
+            <option value="mon-fri">Monday to Friday</option>
+            <option value="sun-thu">Sunday to Thursday</option>
+          </select>
+        </div>
+      </div>
+
+      <div class="row" style="margin-top:12px;max-width:520px;">
+        <div>
           <label>Sync with ClickUp every <span class="hint">- reminders are checked on each sync. ClickUp allows about 100 requests a minute and one sync uses roughly 10-40, so 2 minutes is the safe minimum</span></label>
           <select id="cuSyncMin">
             <option value="2">2 minutes</option>
