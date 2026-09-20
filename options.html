@@ -577,6 +577,14 @@
 
   /* Agent Router hidden */
   body.no-ar [data-tab="agent"], body.no-ar .panel[data-panel="agent"] { display: none !important; }
+  body.no-admin [data-tab="admin"], body.no-admin .panel[data-panel="admin"] { display: none !important; }
+  .adm-log { margin-top: 12px; font-size: 12.5px; line-height: 1.6; }
+  .adm-log div { padding: 2px 0; }
+  .adm-log .ok { color: var(--green); }
+  .adm-log .err { color: var(--red); }
+  .adm-steps { counter-reset: s; margin: 0 0 14px; padding: 0; list-style: none; }
+  .adm-steps li { position: relative; padding: 0 0 0 26px; margin-bottom: 6px; font-size: 12.5px; color: var(--muted); line-height: 1.5; }
+  .adm-steps li::before { counter-increment: s; content: counter(s); position: absolute; left: 0; top: 1px; width: 18px; height: 18px; border-radius: 50%; background: var(--bg2); color: var(--text); font-size: 11px; font-weight: 700; display: flex; align-items: center; justify-content: center; }
 
   /* "Tracking now": task line + note box for the running time entry */
   .cu-now { flex-direction: column; align-items: stretch; gap: 6px; }
@@ -630,6 +638,7 @@
     <button type="button" data-tab="clickup"><svg class="nv-i" viewBox="0 0 24 24" aria-hidden="true"><path d="M9 11l3 3l8-8"/><path d="M20 12v6a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h9"/></svg><span>ClickUp setup</span></button>
     <button type="button" data-tab="agent"><svg class="nv-i" viewBox="0 0 24 24" aria-hidden="true"><circle cx="8" cy="15" r="4"/><path d="M10.85 12.15L19 4"/><path d="M18 5l2 2"/><path d="M15 8l2 2"/></svg><span>Agent Router</span></button>
     <button type="button" data-tab="sites"><svg class="nv-i" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M3.6 9h16.8M3.6 15h16.8"/><path d="M11.5 3a17 17 0 0 0 0 18M12.5 3a17 17 0 0 1 0 18"/></svg><span>Site monitor</span></button>
+    <button type="button" data-tab="admin"><svg class="nv-i" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3l8 3v6c0 4.5-3.2 7.9-8 9-4.8-1.1-8-4.5-8-9V6z"/><path d="M9 12l2 2 4-4"/></svg><span>Admin</span></button>
     <button type="button" data-tab="general"><svg class="nv-i" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg><span>General</span></button>
   </nav>
 
@@ -1331,6 +1340,68 @@
   </section>
 
   <!-- ===================== General ===================== -->
+  <!-- ===================== Admin ===================== -->
+  <section class="panel" data-panel="admin">
+    <div class="card">
+      <h2>Publish a new version</h2>
+      <p class="hint" style="margin-bottom:14px;line-height:1.55;">
+        Packages the extension exactly as it runs on this computer and publishes it as a GitHub release.
+        Everyone else's extension offers them the update automatically (within about 12 hours, or straight away if they press <i>Check for updates</i>).
+      </p>
+      <ol class="adm-steps">
+        <li>Change the version below and press <b>Set version &amp; reload</b> (it writes manifest.json in this extension's folder and restarts it).</li>
+        <li>Write what changed in <b>Release notes</b>.</li>
+        <li>Press <b>Upload this new version</b>. No GitHub token yet? Use <b>Open GitHub page instead</b>.</li>
+      </ol>
+
+      <div class="row" style="max-width:520px;">
+        <div>
+          <label>Version to publish <span class="hint">- installed: <b id="admCurrent">-</b></span></label>
+          <input type="text" id="admVersion" placeholder="3.7.0" />
+        </div>
+        <div style="align-self:end;">
+          <button type="button" id="admSetVersion" title="Writes this version into manifest.json in the extension's folder, then reloads the extension">Set version &amp; reload</button>
+        </div>
+      </div>
+
+      <label style="margin-top:12px;">Release notes <span class="hint">- shown on GitHub and in the "What's new" link. Prefilled from CHANGELOG.md.</span></label>
+      <textarea id="admNotes" rows="7" style="font-family:ui-monospace,monospace;font-size:12.5px;"></textarea>
+
+      <div class="checkbox" style="margin-top:10px;">
+        <input type="checkbox" id="admCritical" />
+        <label for="admCritical" style="margin:0;font-weight:400;">Mark as important <span class="hint">- everyone's update notification stays on screen until they act on it</span></label>
+      </div>
+
+      <div class="btns" style="margin-top:12px;">
+        <button class="primary" id="admPublish">Upload this new version</button>
+        <button type="button" id="admGithub" title="Builds the package, saves it, and opens GitHub's new-release page with everything filled in">Open GitHub page instead</button>
+        <button type="button" id="admBuild" title="Just build the package and save it, without publishing">Build package only</button>
+      </div>
+      <div class="adm-log" id="admLog"></div>
+    </div>
+
+    <div class="card">
+      <h2>GitHub access</h2>
+      <p class="hint" style="margin-bottom:12px;line-height:1.55;">
+        Needed only for <b>Upload this new version</b>. Create a fine-grained token at
+        <a href="https://github.com/settings/personal-access-tokens/new" target="_blank" rel="noopener">github.com/settings/personal-access-tokens</a>
+        with access to <b id="admRepo">this repository</b> and permission <b>Contents: read and write</b>.
+        The token is encrypted and kept on this computer only - it is never part of a release, so nobody else gets it.
+      </p>
+      <div class="row" style="max-width:520px;">
+        <div>
+          <label>GitHub token <span class="hint" id="admTokenState"></span></label>
+          <input type="password" id="admToken" placeholder="github_pat_…" autocomplete="off" />
+        </div>
+      </div>
+      <div class="btns" style="margin-top:10px;">
+        <button class="primary" id="admSaveToken">Save token</button>
+        <button type="button" id="admForgetToken">Forget token</button>
+        <span class="saved" id="admTokenMsg" style="display:none;"></span>
+      </div>
+    </div>
+  </section>
+
   <section class="panel" data-panel="general">
   <div class="two-col">
   <div class="col">
@@ -1354,6 +1425,10 @@
   <div class="card" id="featuresCard">
     <h2>Features</h2>
     <div class="checkbox" style="margin-top:0;">
+      <input type="checkbox" id="showAdmin" />
+      <label for="showAdmin" style="margin:0;font-weight:400;">Show <b>Admin tools</b> (publish new versions) <span class="hint">- for whoever maintains this extension. Off for everyone else; it only hides the section, so anyone can turn it on, but publishing still needs your GitHub token.</span></label>
+    </div>
+    <div class="checkbox">
       <input type="checkbox" id="showAgentRouter" />
       <label for="showAgentRouter" style="margin:0;font-weight:400;">Show <b>Agent Router</b> (optional daily-login helper) <span class="hint">- adds its section to the sidebar and the Accounts card to the popup. Turning it off only hides it.</span></label>
     </div>
@@ -1489,6 +1564,7 @@
 </div><!-- /.wrap -->
 <script src="notify-menu.js"></script>
 <script src="export-tasks.js"></script>
+<script src="lib-zip.js"></script>
 <script src="options.js"></script>
 </body>
 </html>
