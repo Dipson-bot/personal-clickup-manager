@@ -4396,7 +4396,8 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
               }, "v" + version);
               await ghPutFile(head, "CHANGELOG.md", (text) => {
                 if (new RegExp("^##\\s+v?" + version.replace(/\./g, "\\.") + "(\\s|$)", "m").test(text)) return null; // already there
-                const section = "## v" + version + "\n" + String(msg.notes || "").trim() + "\n\n";
+                const notes = String(msg.notes || "").trim() || ("- Version " + version);
+                const section = "## v" + version + "\n" + notes + "\n\n";
                 return text.startsWith("# Changelog")
                   ? text.replace("# Changelog\n\n", "# Changelog\n\n" + section)
                   : section + text;
