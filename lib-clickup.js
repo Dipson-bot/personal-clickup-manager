@@ -1339,7 +1339,7 @@ export async function fetchWeeklySummary({ token, teamId, userId, taskUrls = [],
       const est = Number(t.time_estimate) || 0;
       const sp = dayTime.get(t.id) || 0;
       dayEst += est;
-      dayRows.push({ id: t.id, name: t.name || "(untitled task)", url: taskUrlFor(t.id), estimateMs: est, totalEstimateMs: est, dueDateMs: Number(t.due_date) || null, spentMs: sp, done: isTaskDone(t), status: (t.status && t.status.status) || "", priority: cuPriorityName(t), type: "due", container: taskContainer(t) });
+      dayRows.push({ id: t.id, name: t.name || "(untitled task)", url: taskUrlFor(t.id), estimateMs: est, totalEstimateMs: est, dueDateMs: Number(t.due_date) || null, spentMs: sp, done: isTaskDone(t), status: (t.status && t.status.status) || "", priority: cuPriorityName(t), type: "due", parentId: t.parent != null ? String(t.parent) : null, isSubtask: t.parent != null, container: taskContainer(t) });
     }
     // Configured tasks active on this day (skip the extra and anything already
     // counted in the due list). The auto-detected "Extra(s) Task(s)" is matched
