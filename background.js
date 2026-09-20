@@ -9,6 +9,7 @@ import {
   getFileToken,
   createGoogleFile,
   shareAnyoneWithLink,
+  formatExportedSheet,
   getValidToken,
   signOut as driveSignOut,
   isSignedIn,
@@ -18,7 +19,7 @@ import {
   pullAccountsFromDrive,
 } from "./lib-drive.js";
 import { runAllAccounts, runAccountLogin, URLS, GITHUB_KEEP_COOKIES } from "./lib-automation.js";
-import { verifyToken, getTeams, fetchTodayEstimate, fetchWeeklySummary, fetchDateRangeEstimate, createTaskCache, fetchTeamMembers, fmtDuration, findExtraTaskByName, parseTaskIdFromUrl, getCurrentTimeEntry, getRunningTaskProgress, startTimer, stopTimer, getTaskById, setTaskStatus, taskUrlFor, clientLabelFromContainer, resolveSpaceNamesFor, taskContainer, cuPriorityName, isTaskDone, getSubtasksOfParent, updateTimeEntry, setTaskDueDate } from "./lib-clickup.js";
+import { verifyToken, getTeams, fetchTodayEstimate, fetchWeeklySummary, fetchDateRangeEstimate, createTaskCache, fetchTeamMembers, fmtDuration, findExtraTaskByName, parseTaskIdFromUrl, getCurrentTimeEntry, getRunningTaskProgress, startTimer, stopTimer, getTaskById, setTaskStatus, taskUrlFor, clientLabelFromContainer, resolveSpaceNamesFor, taskContainer, cuPriorityName, isTaskDone, getSubtasksOfParent, getTaskTree, updateTimeEntry, setTaskDueDate } from "./lib-clickup.js";
 import { resolveRelayKey, pickProbeModel, probeRelay } from "./lib-availability.js";
 
 const CHECK_ALARM = "dailyLoginCheck";
@@ -4172,25 +4173,20 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         if (!cfg || !cfg.token || !cfg.teamId) { sendResponse({ ok: false, reason: "not-configured" }); break; }
         const ids = Array.isArray(msg.taskIds) ? msg.taskIds.slice(0, 150) : [];
         const subtasks = {};
+        const parents = {}; // taskId -> its own parent id (so the export nests correctly)
+        const details = {}; // taskId -> name/description/status/due, straight from ClickUp
         for (const id of ids) {
           try {
-            const subs = await getSubtasksOfParent(cfg.token, cfg.teamId, String(id), null);
-            subtasks[String(id)] = subs.map((t) => ({
-              id: t.id,
-              name: t.name || "",
-              done: isTaskDone(t),
-              status: (t.status && t.status.status) || "",
-              dueDateMs: t.due_date ? Number(t.due_date) : null,
-              estimateMs: Number(t.time_estimate) || 0,
-              spentMs: Number(t.time_spent) || 0,
-              url: taskUrlFor(t.id),
-            }));
+            const tree = await getTaskTree(cfg.token, String(id), null);
+            parents[String(id)] = tree.parent;
+            details[String(id)] = tree.self;
+            subtasks[String(id)] = tree.subtaskRows;
           } catch (e) {
             subtasks[String(id)] = [];
             if (e && e.status === 429) break; // rate limited - return what we have
           }
         }
-        sendResponse({ ok: true, subtasks });
+        sendResponse({ ok: true, subtasks, parents, details });
         break;
       }
       case "EXPORT_TO_GOOGLE": {
@@ -4202,7 +4198,16 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
           const r = await createGoogleFile(tok, { name: msg.name || "tasks", html: msg.html || "", csv: msg.csv || "", kind: msg.kind === "docs" ? "docs" : "sheets" });
           // Google files are private by default; share on request so the link works for the team.
           const shared = msg.share === false ? false : await shareAnyoneWithLink(tok, r.id).catch(() => false);
-          sendResponse({ ok: true, url: r.url, shared });
+          // Match the team's sheet: black header, bold "main" rows, italic labels,
+          // wrapped task column. CSV can't carry formatting, so it's applied after.
+          let formatted = false;
+          let formatReason = "";
+          if (msg.kind !== "docs" && Array.isArray(msg.mainRows)) {
+            const f = await formatExportedSheet(tok, r.id, msg.mainRows, Number(msg.colCount) || 2).catch((e) => ({ ok: false, reason: String(e && e.message ? e.message : e) }));
+            formatted = !!(f && f.ok);
+            if (!formatted) formatReason = (f && f.reason) || "";
+          }
+          sendResponse({ ok: true, url: r.url, shared, formatted, formatReason });
         } catch (e) {
           sendResponse({ ok: false, error: String(e && e.message ? e.message : e) });
         }

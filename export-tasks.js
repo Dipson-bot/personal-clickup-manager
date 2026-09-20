@@ -37,15 +37,30 @@
   }
   const fmtDate = (ms) => (ms ? new Date(ms).toLocaleDateString([], { year: "numeric", month: "short", day: "numeric" }) : "");
 
-  // rows: [{ name, isSubtask, client, dueDateMs, estimateMs, spentMs, status, done, url }]
-  function toMatrix(rows, details) {
-    const head = details ? ["", "Task", "Client", "Due", "Estimate", "Tracked", "Status", "Link"] : ["", "Task"];
-    const out = [head];
+  // The Mon-Sun week a due date falls in, e.g. "Sep 22 - Sep 28".
+  function weekLabel(ms) {
+    if (!ms) return "";
+    const d = new Date(ms);
+    d.setHours(0, 0, 0, 0);
+    const mon = new Date(d);
+    mon.setDate(d.getDate() - ((d.getDay() + 6) % 7));
+    const sun = new Date(mon);
+    sun.setDate(mon.getDate() + 6);
+    const f = (x) => x.toLocaleDateString([], { month: "short", day: "numeric" });
+    return f(mon) + " - " + f(sun);
+  }
+  // Fixed layout, as the team's sheet uses it.
+  // rows: [{ name, isSubtask, info, status, done, dueDateMs }]
+  function toMatrix(rows) {
+    const out = [["", "Task", "Task info", "Status", "Week"]];
     for (const t of rows) {
-      const base = [t.isSubtask ? "sub task" : "main", t.name || ""];
-      out.push(details
-        ? base.concat([t.client || "", fmtDate(t.dueDateMs), fmtMs(t.estimateMs), fmtMs(t.spentMs), t.status || (t.done ? "complete" : ""), t.url || ""])
-        : base);
+      out.push([
+        t.isSubtask ? "sub task" : "main",
+        t.name || "",
+        String(t.info || "").replace(/\s*\n\s*\n+/g, "\n").trim(),
+        t.status || (t.done ? "complete" : ""),
+        weekLabel(t.dueDateMs),
+      ]);
     }
     return out;
   }
@@ -76,21 +91,43 @@
   }
   const safeName = (s) => String(s || "tasks").toLowerCase().replace(/[^a-z0-9]+/g, "_").replace(/^_|_$/g, "").slice(0, 60) || "tasks";
 
-  // Pull each parent's subtasks from ClickUp (one request per task, so only when asked).
-  async function withSubtasks(rows, note) {
-    const parents = rows.filter((t) => t && t.id != null && !t.isSubtask).map((t) => String(t.id));
-    if (!parents.length) return rows;
-    note("Fetching subtasks for " + parents.length + " task" + (parents.length === 1 ? "" : "s") + "…");
+  // Ask ClickUp for each task's subtasks AND its own parent, then lay the rows out
+  // the way the team's sheet does: every main task followed by its subtasks.
+  async function withSubtasks(rows, note, includeSubtasks) {
+    const ids = rows.filter((t) => t && t.id != null).map((t) => String(t.id));
+    if (!ids.length) return rows;
+    note("Reading " + ids.length + " task" + (ids.length === 1 ? "" : "s") + " from ClickUp…");
     let res = null;
-    try { res = await chrome.runtime.sendMessage({ type: "CLICKUP_EXPORT_SUBTASKS", taskIds: parents }); } catch (e) { res = null; }
-    const map = (res && res.ok && res.subtasks) || {};
-    const out = [];
+    try { res = await chrome.runtime.sendMessage({ type: "CLICKUP_EXPORT_SUBTASKS", taskIds: ids }); } catch (e) { res = null; }
+    const subsOf = (includeSubtasks && res && res.ok && res.subtasks) || {};
+    const parentOf = (res && res.ok && res.parents) || {};
+    const detailOf = (res && res.ok && res.details) || {};
+    // Task info / status / due come from ClickUp itself, not the cached row.
+    rows = rows.map((t) => {
+      const d = detailOf[String(t.id)];
+      return d ? { ...t, info: d.description, status: d.status || t.status, dueDateMs: d.dueDateMs != null ? d.dueDateMs : t.dueDateMs, done: d.done } : t;
+    });
+    const byId = new Map(rows.map((t) => [String(t.id), t]));
+    const kids = new Map(); // parent id -> child rows, in the order they appear
+    const top = [];
     for (const t of rows) {
+      const p = parentOf[String(t.id)] || (t.parentId != null ? String(t.parentId) : null);
+      if (p && byId.has(p)) {
+        if (!kids.has(p)) kids.set(p, []);
+        kids.get(p).push({ ...t, isSubtask: true });
+      } else {
+        top.push({ ...t, isSubtask: false });
+      }
+    }
+    const out = [];
+    for (const t of top) {
       out.push(t);
-      if (t.isSubtask) continue;
-      for (const s of map[String(t.id)] || []) {
-        if (rows.some((r) => String(r.id) === String(s.id))) continue; // already listed
-        out.push({ ...s, isSubtask: true, client: t.client });
+      const listed = new Set((kids.get(String(t.id)) || []).map((k) => String(k.id)));
+      for (const k of kids.get(String(t.id)) || []) out.push(k);
+      // Subtasks that weren't in the view get added under their parent too.
+      for (const s of subsOf[String(t.id)] || []) {
+        if (listed.has(String(s.id)) || byId.has(String(s.id))) continue;
+        out.push({ ...s, info: s.description || "", isSubtask: true, client: t.client });
       }
     }
     return out;
@@ -130,7 +167,6 @@
       return c;
     };
     const subs = mkOpt("Include subtasks", true);
-    const det = mkOpt("Include details (client, due, estimate)", false);
     const share = mkOpt("Google: anyone with the link can view", true);
     menu.appendChild(Object.assign(document.createElement("div"), { className: "xp-sep" }));
     const msg = document.createElement("div");
@@ -145,23 +181,27 @@
         const d = getData() || { rows: [], title: "tasks" };
         if (!d.rows.length) throw new Error("This view has no tasks (" + (d.title || "current view") + "), so there is nothing to export.");
         let rows = d.rows.slice();
-        if (subs.checked) rows = await withSubtasks(rows, note);
-        const m = toMatrix(rows, det.checked);
+        rows = await withSubtasks(rows, note, subs.checked);
+        const m = toMatrix(rows);
         const title = d.title || "tasks";
         const file = safeName(title) + "_" + new Date().toISOString().slice(0, 10);
         if (kind === "csv") { download(file + ".csv", "text/csv;charset=utf-8", "﻿" + toCsv(m)); note("Saved " + file + ".csv"); }
         else if (kind === "xls") { download(file + ".xls", "application/vnd.ms-excel", toHtml(m, title)); note("Saved " + file + ".xls (opens in Excel)"); }
         else {
           note("Creating in Google Drive…");
+          // Row 0 is the header, so data rows start at 1.
+          const mainRows = [];
+          m.forEach((r, i) => { if (i && r[0] === "main") mainRows.push(i); });
           const res = await chrome.runtime.sendMessage({
             type: "EXPORT_TO_GOOGLE", kind, name: file, share: share.checked,
+            mainRows, colCount: m[0].length,
             html: toHtml(m, title), // Docs keeps the bold "main" rows
             csv: toCsv(m), // Sheets: Drive only converts csv/xls into a spreadsheet
           });
           if (!res || !res.ok) throw new Error((res && (res.error || res.reason)) || "Google export failed");
-          note("Opening…");
+          note(res.formatted === false && res.formatReason ? "Created (plain): " + res.formatReason : "Opening…");
           chrome.tabs.create({ url: res.url }).catch(() => {});
-          setTimeout(close, 700);
+          if (!(res.formatted === false && res.formatReason)) setTimeout(close, 700);
         }
       } catch (e) {
         msg.className = "xp-msg err";
