@@ -684,6 +684,36 @@ export function taskContainer(t) {
   };
 }
 
+// Every client name in the workspace, for the Explore Client dropdown. The client
+// is the List name (see clientLabelFromContainer), so this walks Spaces -> Folders
+// (ClickUp returns each folder WITH its lists) + folderless Lists: 1 + 2 x spaces
+// requests. Returns null for level "field": a custom field's values can't be
+// listed this way, so the caller keeps using the names found in its results.
+export async function listWorkspaceClients(token, teamId, level = "auto") {
+  if (level === "field") return null;
+  const sj = await cuFetch(token, "/team/" + encodeURIComponent(teamId) + "/space", [["archived", "false"]]);
+  const spaces = Array.isArray(sj && sj.spaces) ? sj.spaces : [];
+  const names = new Set();
+  const add = (ctr) => {
+    const n = String(clientLabelFromContainer(ctr, level, null) || "").trim();
+    if (n) names.add(n);
+  };
+  for (const s of spaces) {
+    const spaceName = String((s && s.name) || "");
+    if (level === "space") { if (spaceName) names.add(spaceName.trim()); continue; }
+    const fj = await cuFetch(token, "/space/" + encodeURIComponent(s.id) + "/folder", [["archived", "false"]]);
+    for (const fo of Array.isArray(fj && fj.folders) ? fj.folders : []) {
+      const lists = Array.isArray(fo && fo.lists) ? fo.lists : [];
+      if (level === "folder") { add({ folderName: fo.name, listName: "" }); continue; }
+      for (const l of lists) add({ listName: l && l.name, folderName: fo.name });
+    }
+    if (level === "folder") continue; // folderless lists have no folder name
+    const lj = await cuFetch(token, "/space/" + encodeURIComponent(s.id) + "/list", [["archived", "false"]]);
+    for (const l of Array.isArray(lj && lj.lists) ? lj.lists : []) add({ listName: l && l.name });
+  }
+  return [...names].sort((x, y) => x.localeCompare(y));
+}
+
 // Resolve a display client name from a captured container + chosen level.
 // `spaceNames` is a Map(spaceId → name) the caller pre-populates (see
 // getSpaceName); an unresolved space id is simply skipped in the fallback chain.

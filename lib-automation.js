@@ -99,16 +99,26 @@ async function getTab(tabId) {
   }
 }
 
+// Every page action is time-limited. chrome.scripting.executeScript waits for the
+// injected function to finish, and an async one that awaits a request which never
+// answers would otherwise hold the whole login forever.
+const INJECT_TIMEOUT_MS = 20000;
 async function inject(tabId, func, args = []) {
+  let timer = null;
+  const timeout = new Promise((resolve) => {
+    timer = setTimeout(() => resolve({ ok: false, error: "the page didn't respond in time" }), INJECT_TIMEOUT_MS);
+  });
   try {
-    const [res] = await chrome.scripting.executeScript({
-      target: { tabId },
-      func,
-      args,
-    });
-    return res ? res.result : null;
+    const run = chrome.scripting.executeScript({ target: { tabId }, func, args })
+      .then(([res] = []) => (res ? res.result : null))
+      // a late failure after the timeout already answered must not surface as an
+      // "Uncaught (in promise)" error on chrome://extensions
+      .catch((e) => ({ ok: false, error: String(e && e.message ? e.message : e) }));
+    return await Promise.race([run, timeout]);
   } catch (e) {
     return { ok: false, error: String(e && e.message ? e.message : e) };
+  } finally {
+    clearTimeout(timer);
   }
 }
 
@@ -127,7 +137,7 @@ async function injectUntil(tabId, func, args = [], ok = (r) => r && r.ok, tries 
 
 // Wait until predicate(url, tab) is true for `tabId`, else timeout. Uses both
 // onUpdated events and polling (SPA route changes don't always fire onUpdated).
-function waitForTab(tabId, predicate, timeoutMs = STEP_TIMEOUT_MS) {
+function waitForTabImpl(tabId, predicate, timeoutMs = STEP_TIMEOUT_MS, isStopped = null) {
   return new Promise((resolve) => {
     let done = false;
     const finish = (val) => {
@@ -141,6 +151,7 @@ function waitForTab(tabId, predicate, timeoutMs = STEP_TIMEOUT_MS) {
     const check = async () => {
       const tab = await getTab(tabId);
       if (!tab) return finish({ ok: false, reason: "tab-closed" });
+      if (isStopped && (await isStopped())) return finish({ ok: false, reason: "cancelled" });
       if (tab.url && predicate(tab.url, tab)) finish({ ok: true, tab });
     };
     const onUpd = (id) => {
@@ -156,7 +167,7 @@ function waitForTab(tabId, predicate, timeoutMs = STEP_TIMEOUT_MS) {
 // After clicking the Agent Router GitHub button, the auth flow may continue in
 // the same tab OR (rarely) a popup/new tab. Resolve to whichever tab is now on
 // a github/agentrouter auth URL.
-function waitForAuthProgress(tabId, sinceTs, timeoutMs = STEP_TIMEOUT_MS) {
+function waitForAuthProgressImpl(tabId, sinceTs, timeoutMs = STEP_TIMEOUT_MS, isStopped = null) {
   const isAuthUrl = (url) =>
     /github\.com\/(login|session|sessions)/.test(url) ||
     /agentrouter\.org\/(oauth|$|\/$)/.test(url) ||
@@ -183,6 +194,9 @@ function waitForAuthProgress(tabId, sinceTs, timeoutMs = STEP_TIMEOUT_MS) {
     chrome.tabs.onCreated.addListener(onCre);
     const poll = setInterval(async () => {
       const t = await getTab(tabId);
+      // A closed tab or a Stop ends the wait now, not after the full timeout.
+      if (!t) return finish({ ok: false, reason: "tab-closed" });
+      if (isStopped && (await isStopped())) return finish({ ok: false, reason: "cancelled" });
       consider(t);
     }, 700);
     const timer = setTimeout(() => finish({ ok: false, reason: "timeout" }), timeoutMs);
@@ -631,7 +645,9 @@ async function inj_fetchAgentRouterBalance() {
     }
   } catch (e) {}
   try {
-    const res = await fetch("/api/user/self", { credentials: "include", headers });
+    const c = new AbortController();
+    const to = setTimeout(() => c.abort(), 10000); // never hang the run on a slow API
+    const res = await fetch("/api/user/self", { credentials: "include", headers, signal: c.signal }).finally(() => clearTimeout(to));
     if (!res || !res.ok) return { ok: false, status: res ? res.status : 0 };
     const j = await res.json();
     const d = j && j.data ? j.data : j;
@@ -690,12 +706,12 @@ function inj_getGithubClientId() {
       }
     },
     // Check all global variables for a string that looks like a GitHub OAuth client_id
-    // (Iv1. + 40 hex chars is the standard format)
+    // (Iv1. + hex is the legacy format; Agent Router's is now the newer Ov23... one)
     () => {
       for (const key of Object.keys(window)) {
         try {
           const val = window[key];
-          if (typeof val === "string" && /^Iv1\.[a-f0-9]{20,40}$/i.test(val)) return val;
+          if (typeof val === "string" && /^(Iv1\.[a-f0-9]{20,40}|Ov23[A-Za-z0-9]{16})$/.test(val)) return val;
         } catch (e) {}
       }
     },
@@ -720,6 +736,12 @@ function inj_getGithubClientId() {
 // authorize URL, then navigate the current tab to it - bypassing the window.open
 // popup blocker. Returns { ok, url } or { ok: false, reason }.
 async function inj_getAndNavigateToGithubOAuth() {
+  // A request that never answers must not freeze the whole login (10s limit).
+  const fetchT = (url, init) => {
+    const c = new AbortController();
+    const t = setTimeout(() => c.abort(), 10000);
+    return fetch(url, { ...init, signal: c.signal }).finally(() => clearTimeout(t));
+  };
   // Resolve the GitHub OAuth client_id from Agent Router's own status API - the
   // authoritative source, and it still works right after we purge localStorage
   // for a clean login (page-scraped config would be gone). This function is
@@ -727,7 +749,7 @@ async function inj_getAndNavigateToGithubOAuth() {
   // other inj_* helpers - those don't exist in the page's context).
   let clientId = "";
   try {
-    const sres = await fetch("/api/status", { credentials: "include" });
+    const sres = await fetchT("/api/status", { credentials: "include" });
     if (sres.ok) {
       const sj = await sres.json();
       const sd = sj && sj.data ? sj.data : sj;
@@ -754,7 +776,7 @@ async function inj_getAndNavigateToGithubOAuth() {
   // session cookie set here is the one validated when GitHub calls back.
   let state = "";
   try {
-    const resp = await fetch("/api/oauth/state?mode=login", { credentials: "include" });
+    const resp = await fetchT("/api/oauth/state?mode=login", { credentials: "include" });
     if (resp.ok) {
       const data = await resp.json();
       if (data && data.data) state = data.data;
@@ -795,8 +817,42 @@ async function clearCookiesForDomains(domains, keepByDomain = {}) {
   }
 }
 
-// ---------- main per-account routine ----------
+// Every login run ALWAYS answers. It races the real flow against Stop (checked
+// every half second) and the per-account cap. Before this, a single step that
+// stalled (a request to Agent Router that never returned) left the run waiting
+// forever: Stop only raised a flag the flow never reached, isRunning stayed true
+// in the background, and the Run buttons stayed greyed out even after the tab
+// was closed. When the race is lost, `stopped` stays true so the abandoned flow
+// gives up at its very next check instead of carrying on in the background.
 export async function runAccountLogin(account, opts = {}) {
+  const scale = Math.max(1, Number(opts.timeoutScale) || 1);
+  const capMs = Math.round(PER_ACCOUNT_CAP_MS * scale);
+  let stopped = false;
+  const isStopped = async () => stopped || !!(opts.isCancelled && (await opts.isCancelled()));
+  let poll = null;
+  let cap = null;
+  const guard = new Promise((resolve) => {
+    poll = setInterval(async () => {
+      if (await isStopped()) resolve({ result: "needs-attention", note: "Stopped by user." });
+    }, 500);
+    cap = setTimeout(() => resolve({ result: "needs-attention", note: "Timed out - finish in the open tab." }), capMs + 30000);
+  });
+  try {
+    const run = runAccountLoginInner(account, opts, isStopped)
+      .catch((e) => ({ result: "failed", note: String(e && e.message ? e.message : e) }));
+    return await Promise.race([run, guard]);
+  } finally {
+    stopped = true;
+    clearInterval(poll);
+    clearTimeout(cap);
+  }
+}
+
+// ---------- main per-account routine ----------
+async function runAccountLoginInner(account, opts, isStopped) {
+  const waitForTab = (id, pred, ms) => waitForTabImpl(id, pred, ms, isStopped);
+  const waitForAuthProgress = (id, since, ms) => waitForAuthProgressImpl(id, since, ms, isStopped);
+  const stopped = () => ({ result: "needs-attention", note: "Stopped by user." });
   const targetUrl = opts.targetUrl || URLS.agentRouterLogin;
   const runStart = Date.now();
   let note = "";
@@ -828,6 +884,7 @@ export async function runAccountLogin(account, opts = {}) {
   // Buffer so the logout (cookie removal) fully settles before the new login -
   // prevents a too-fast logout/login race, especially on slow connections.
   await sleep(T(900));
+  if (await isStopped()) return stopped();
 
   // Open (or reuse) a tab on the Agent Router login page.
   let tab;
@@ -841,6 +898,7 @@ export async function runAccountLogin(account, opts = {}) {
 
   // Wait for the login SPA to be ready.
   await waitForTab(tabId, (u) => classifyUrl(u) === "ar-login" || classifyUrl(u) === "ar-app", T(25000));
+  if (await isStopped()) return { ...stopped(), tabId };
 
   // CRITICAL for account switching: clearing cookies (above) ends the session
   // server-side, but new-api ALSO caches the signed-in user in localStorage, and
@@ -852,8 +910,13 @@ export async function runAccountLogin(account, opts = {}) {
   await inject(tabId, () => {
     try { localStorage.clear(); sessionStorage.clear(); } catch (e) {}
   });
-  await chrome.tabs.update(tabId, { url: targetUrl });
+  // The tab may already be gone (closed by hand) - that ends the run cleanly
+  // instead of throwing out of the flow.
+  try { await chrome.tabs.update(tabId, { url: targetUrl }); } catch (e) {
+    return { result: "failed", note: "Tab was closed during login." };
+  }
   await waitForTab(tabId, (u) => classifyUrl(u) === "ar-login" || classifyUrl(u) === "ar-app", T(25000));
+  if (await isStopped()) return { ...stopped(), tabId };
 
   // If STILL logged in after that purge (a valid session cookie somehow
   // survived), we're already done - capture identity + balance and return.
@@ -886,8 +949,14 @@ export async function runAccountLogin(account, opts = {}) {
   let clicked = null;
   let usedDirectNav = false;
   for (let i = 0; i < 8; i++) {
+    if (await isStopped()) return { ...stopped(), tabId };
+    if (!(await getTab(tabId))) return { result: "failed", note: "Tab was closed during login." };
     // Try direct navigation to GitHub OAuth URL (bypasses popup blocker)
     const directNav = await inject(tabId, inj_getAndNavigateToGithubOAuth);
+    // The page did not answer at all (not "button missing" - frozen or stalled):
+    // say so now rather than retrying a dead page for minutes.
+    if (directNav && directNav.error === "the page didn't respond in time")
+      return { result: "needs-attention", note: "Agent Router's page stopped responding - reload it and try again.", tabId };
     if (directNav && directNav.ok) {
       clicked = { ok: true, via: "direct-nav", navigated: true };
       usedDirectNav = true;
@@ -928,7 +997,7 @@ export async function runAccountLogin(account, opts = {}) {
   for (let step = 0; step < MAX_STEPS; step++) {
     // Respect an external "stop" signal (Debug → Stop). Bails out of the loop so
     // a run never keeps going after the user asks it to stop.
-    if (opts.isCancelled && (await opts.isCancelled()))
+    if (await isStopped())
       return { result: "needs-attention", note: "Stopped by user.", tabId };
     if (Date.now() - runStart > capMs)
       return { result: "needs-attention", note: "Timed out - finish in the open tab.", tabId };
@@ -1262,6 +1331,8 @@ export async function runAllAccounts(accounts, opts = {}, onProgress = () => {})
   startKeepAlive();
   try {
     for (const acc of accounts) {
+      // Stop means stop the whole run, not just the account in progress.
+      if (opts.isCancelled && (await opts.isCancelled())) break;
       // Selection (mode/enabled gating) is the background's job now - this
       // runner logs in every account it is handed.
       onProgress({ accountId: acc.id, phase: "start" });
@@ -1288,6 +1359,7 @@ export async function runAllAccounts(accounts, opts = {}, onProgress = () => {})
         } catch (e) {}
       }
       // Small human-ish gap between accounts, stretched on slow connections.
+      if (opts.isCancelled && (await opts.isCancelled())) break;
       await sleep(rand(Math.round(1500 * scale), Math.round(3500 * scale)));
     }
   } finally {
