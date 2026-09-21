@@ -429,6 +429,7 @@ function appendTaskControls(row, t) {
   if (cf) {
     const warn = document.createElement("div");
     warn.className = "cu-rowmsg cu-rowconfirm";
+    row.classList.add("has-msg");
     const txt = document.createElement("span");
     // Name is a clickable link so the user can open the blocking task in ClickUp.
     if (cf.activeTaskName) {
@@ -469,11 +470,43 @@ function appendTaskControls(row, t) {
     warn.appendChild(btns);
     row.appendChild(warn);
   } else if (cuRowMsg[tid]) {
-    const msg = document.createElement("div");
-    msg.className = "cu-rowmsg";
-    msg.textContent = cuRowMsg[tid];
-    row.appendChild(msg);
+    row.classList.add("has-msg");
+    row.appendChild(cuRowNotice(cuRowMsg[tid], () => { delete cuRowMsg[tid]; render(); }));
   }
+}
+
+// One tidy line under a task row: the message, an optional "Open in ClickUp"
+// link and a x to dismiss. The row gets `has-msg` so it wraps and the notice
+// sits on its own line instead of squeezing the task name to "ACT-...".
+function cuRowNotice(m, onDismiss) {
+  const box = document.createElement("div");
+  box.className = "cu-rowmsg";
+  const txt = document.createElement("span");
+  txt.className = "cu-rowmsg-txt";
+  txt.textContent = typeof m === "string" ? m : ((m && m.text) || "");
+  box.appendChild(txt);
+  if (m && m.url) {
+    const a = document.createElement("a");
+    a.href = m.url;
+    a.target = "_blank";
+    a.rel = "noopener";
+    a.textContent = "Open in ClickUp";
+    box.appendChild(a);
+  }
+  const x = document.createElement("button");
+  x.type = "button";
+  x.className = "cu-rowmsg-x";
+  x.title = "Dismiss";
+  x.textContent = "×";
+  x.onclick = (e) => { e.stopPropagation(); onDismiss(); };
+  box.appendChild(x);
+  return box;
+}
+// The multi-assignee refusal, worded as what to do rather than a rule recital.
+function cuMultiAssigneeMsg(tid, assignees) {
+  const names = Array.isArray(assignees) ? assignees.map((a) => a && (a.username || a.id)).filter(Boolean) : [];
+  const who = names.length ? names.length + " assignees (" + names.join(", ") + ")" : "more than one assignee";
+  return { text: "Can't start here: " + who + ". Start it in ClickUp.", url: "https://app.clickup.com/t/" + encodeURIComponent(tid) };
 }
 
 // Fire a per-task Start/Stop/Complete action, then repaint. Modeled on
@@ -503,11 +536,7 @@ async function sendTaskAction(taskId, action, force) {
         return;
       }
       if (res && res.reason === "multi-assignee") {
-        const names = Array.isArray(res.assignees) && res.assignees.length
-          ? res.assignees.map(a => a.username || a.id).filter(Boolean).join(", ")
-          : null;
-        cuRowMsg[tid] = "Can't start — assigned to multiple users" + (names ? " (" + names + ")" : "") + ". Only single-assignee tasks can be started via the extension.";
-        showPopupToast("Multi-assignee task: only tasks assigned to a single person can be started here.", "warn");
+        cuRowMsg[tid] = cuMultiAssigneeMsg(tid, res && res.assignees);
       } else {
         const reason = res && res.reason;
         const map = { "not-configured": "connect ClickUp first", "incomplete-setup": "pick a workspace first", "no-task": "task id missing" };

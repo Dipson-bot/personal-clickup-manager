@@ -1687,6 +1687,7 @@ function appendTaskControlsOpt(row, t) {
   if (cf) {
     const warn = document.createElement("div");
     warn.className = "cu-rowmsg cu-rowconfirm";
+    row.classList.add("has-msg");
     const txt = document.createElement("span");
     // Name is a clickable link so the user can open the blocking task in ClickUp.
     if (cf.activeTaskName) {
@@ -1727,11 +1728,43 @@ function appendTaskControlsOpt(row, t) {
     warn.appendChild(btns);
     row.appendChild(warn);
   } else if (cuRowMsgOpt[tid]) {
-    const msg = document.createElement("div");
-    msg.className = "cu-rowmsg";
-    msg.textContent = cuRowMsgOpt[tid];
-    row.appendChild(msg);
+    row.classList.add("has-msg");
+    row.appendChild(cuRowNotice(cuRowMsgOpt[tid], () => { delete cuRowMsgOpt[tid]; repaintCuTaskRows(); }));
   }
+}
+
+// One tidy line under a task row: the message, an optional "Open in ClickUp"
+// link and a x to dismiss. The row gets `has-msg` so it wraps and the notice
+// sits on its own line instead of squeezing the task name to "ACT-...".
+function cuRowNotice(m, onDismiss) {
+  const box = document.createElement("div");
+  box.className = "cu-rowmsg";
+  const txt = document.createElement("span");
+  txt.className = "cu-rowmsg-txt";
+  txt.textContent = typeof m === "string" ? m : ((m && m.text) || "");
+  box.appendChild(txt);
+  if (m && m.url) {
+    const a = document.createElement("a");
+    a.href = m.url;
+    a.target = "_blank";
+    a.rel = "noopener";
+    a.textContent = "Open in ClickUp";
+    box.appendChild(a);
+  }
+  const x = document.createElement("button");
+  x.type = "button";
+  x.className = "cu-rowmsg-x";
+  x.title = "Dismiss";
+  x.textContent = "×";
+  x.onclick = (e) => { e.stopPropagation(); onDismiss(); };
+  box.appendChild(x);
+  return box;
+}
+// The multi-assignee refusal, worded as what to do rather than a rule recital.
+function cuMultiAssigneeMsg(tid, assignees) {
+  const names = Array.isArray(assignees) ? assignees.map((a) => a && (a.username || a.id)).filter(Boolean) : [];
+  const who = names.length ? names.length + " assignees (" + names.join(", ") + ")" : "more than one assignee";
+  return { text: "Can't start here: " + who + ". Start it in ClickUp.", url: "https://app.clickup.com/t/" + encodeURIComponent(tid) };
 }
 
 // Fire a per-task Start/Stop/Complete action from the options page, then repaint.
@@ -1760,10 +1793,7 @@ async function sendTaskActionOpt(taskId, action, force) {
         return;
       }
       if (res && res.reason === "multi-assignee") {
-        const names = Array.isArray(res.assignees) && res.assignees.length
-          ? res.assignees.map(a => a.username || a.id).filter(Boolean).join(", ")
-          : null;
-        cuRowMsgOpt[tid] = "Can't start — assigned to multiple users" + (names ? " (" + names + ")" : "") + ". Only single-assignee tasks can be started via the extension.";
+        cuRowMsgOpt[tid] = cuMultiAssigneeMsg(tid, res && res.assignees);
       } else {
         const reason = res && res.reason;
         const map = { "not-configured": "connect ClickUp first", "incomplete-setup": "pick a workspace first", "no-task": "task id missing" };
@@ -2075,6 +2105,130 @@ function renderOptionsWeekly(cu) {
 let optFltSeq = 0; // bumped per renderOptionsFilter() so a superseded load never overwrites a newer one
 // Rows currently shown in Explore tasks, for its Export button.
 let optFltExport = { rows: [], title: "tasks" };
+// ---- Explore "Pick people…": any mix of people, across departments ----
+// Ticks only change the selection; the ClickUp query runs when you press
+// "Show tasks". Every different set of people is a fresh query, so querying on
+// each tick would walk straight back into the rate limit.
+let optFltPeople = [];
+try {
+  chrome.storage.local.get("optFltPeople").then((g) => {
+    if (Array.isArray(g.optFltPeople)) { optFltPeople = g.optFltPeople.map(String); updatePeopleBtn(); }
+  }).catch(() => {});
+} catch (e) {}
+function savePeople() { chrome.storage.local.set({ optFltPeople }).catch(() => {}); }
+function peopleNameOf(id) {
+  const m = (optDeptMembers || []).find((x) => String(x.id) === String(id));
+  if (m) return m.name;
+  for (const d of optDeptList || []) {
+    const u = (d.users || []).find((x) => String(x.id) === String(id));
+    if (u) return u.name;
+  }
+  return "User " + id;
+}
+function peopleLabel() {
+  const names = optFltPeople.map((id) => String(peopleNameOf(id)).split(" ")[0]);
+  return names.length <= 3 ? names.join(", ") : names.length + " people";
+}
+function updatePeopleBtn() {
+  const b = $("optFltPeopleBtn");
+  if (!b) return;
+  b.innerHTML = (optFltPeople.length ? escapeHtml(peopleLabel()) : "Choose people") + " &#9662;";
+}
+function closePeopleMenu() {
+  const m = $("optFltPeopleMenu");
+  if (!m || m.hidden) return;
+  m.hidden = true;
+  const b = $("optFltPeopleBtn");
+  if (b) b.setAttribute("aria-expanded", "false");
+}
+function openPeopleMenu() {
+  const m = $("optFltPeopleMenu");
+  if (!m) return;
+  renderPeopleMenu();
+  m.hidden = false;
+  const b = $("optFltPeopleBtn");
+  if (b) b.setAttribute("aria-expanded", "true");
+}
+function renderPeopleMenu() {
+  const m = $("optFltPeopleMenu");
+  if (!m) return;
+  const picked = new Set(optFltPeople);
+  const draft = new Set(picked);
+  const groups = [];
+  const inDept = new Set();
+  for (const d of optDeptList || []) {
+    const users = (d.users || []).filter((u) => u && u.id != null);
+    if (!users.length) continue;
+    users.forEach((u) => inDept.add(String(u.id)));
+    groups.push({ name: d.name, users });
+  }
+  const rest = (optDeptMembers || []).filter((u) => u && u.id != null && !inDept.has(String(u.id)));
+  if (rest.length) groups.push({ name: groups.length ? "Not in a department" : "Everyone", users: rest });
+  m.innerHTML = "";
+  if (!groups.length) {
+    m.innerHTML = '<div class="grp">No people loaded yet</div><div style="font-size:12px;padding:4px">Open <b>General \u2192 Department Creator</b> and press <b>Refresh user list</b>.</div>';
+    return;
+  }
+  const count = document.createElement("span");
+  count.className = "n";
+  const paintCount = () => { count.textContent = draft.size + (draft.size === 1 ? " person" : " people"); };
+  for (const g of groups) {
+    const h = document.createElement("div");
+    h.className = "grp";
+    h.textContent = g.name;
+    m.appendChild(h);
+    for (const u of g.users) {
+      const id = String(u.id);
+      const lab = document.createElement("label");
+      const cb = document.createElement("input");
+      cb.type = "checkbox";
+      cb.checked = draft.has(id);
+      cb.dataset.pid = id;
+      // The same person can sit in two departments: keep every copy in step.
+      cb.onchange = () => {
+        if (cb.checked) draft.add(id); else draft.delete(id);
+        m.querySelectorAll('input[data-pid="' + CSS.escape(id) + '"]').forEach((x) => { x.checked = cb.checked; });
+        paintCount();
+      };
+      lab.appendChild(cb);
+      lab.appendChild(document.createTextNode(u.name || ("User " + id)));
+      m.appendChild(lab);
+    }
+  }
+  const foot = document.createElement("div");
+  foot.className = "foot";
+  const clear = document.createElement("button");
+  clear.type = "button";
+  clear.textContent = "Clear";
+  clear.onclick = (e) => {
+    e.stopPropagation();
+    draft.clear();
+    m.querySelectorAll("input[data-pid]").forEach((x) => { x.checked = false; });
+    paintCount();
+  };
+  const show = document.createElement("button");
+  show.type = "button";
+  show.className = "primary";
+  show.textContent = "Show tasks";
+  show.onclick = (e) => {
+    e.stopPropagation();
+    optFltPeople = [...draft];
+    savePeople();
+    updatePeopleBtn();
+    closePeopleMenu();
+    renderOptionsFilter();
+  };
+  paintCount();
+  foot.appendChild(count);
+  const btns = document.createElement("span");
+  btns.style.display = "inline-flex";
+  btns.style.gap = "6px";
+  btns.appendChild(clear);
+  btns.appendChild(show);
+  foot.appendChild(btns);
+  m.appendChild(foot);
+}
+
 async function renderOptionsFilter() {
   if (cuEstEditingOpt) { cuRenderPendingOpt = true; return; }
   const box = $("optFltResult");
@@ -2136,6 +2290,15 @@ async function renderOptionsFilter() {
     let assigneeIds = [];
     const deptId = $("optFltDept") ? $("optFltDept").value : "";
     const selUser = $("optFltDeptUser") ? $("optFltDeptUser").value : "";
+    if (deptId === "__pick__") {
+      // Hand-picked people, from any departments ("Pick people…").
+      assigneeIds = optFltPeople.slice();
+      if (!assigneeIds.length) {
+        box.innerHTML = '<div class="flt-tot">Pick at least one person, then press <b>Show tasks</b>.</div>';
+        return;
+      }
+      scopeTag = " · " + peopleLabel();
+    } else
     if (deptId === "__all__") {
       assigneeIds = (optDeptMembers || []).map((m) => m.id).filter(Boolean);
       scopeTag = " · All users";
@@ -2234,7 +2397,9 @@ async function renderOptionsFilter() {
     let clientPick = "";
     if (clientSel) {
       clientPick = clientSel.value;
-      const names = [...new Set([].concat(shownTasks, shownDeadline, shownTracked)
+      // Every client in the date range and department - taken BEFORE the checkboxes,
+      // so ticking "Deadline crossed" narrows the rows, not the list of clients.
+      const names = [...new Set([].concat(tasks, deadline, Array.isArray(d.trackedTasks) ? d.trackedTasks : [])
         .map((t) => String((t && t.client) || "").trim()).filter(Boolean))].sort((a, b) => a.localeCompare(b));
       if (clientPick && !names.includes(clientPick)) clientPick = "";
       clientSel.innerHTML = '<option value="">All clients</option>' +
@@ -2379,6 +2544,16 @@ function initOptionsFilterControls() {
   if (deptSel) deptSel.onchange = () => { syncDeptUserSelect(); renderOptionsFilter(); };
   const deptUserSel = $("optFltDeptUser");
   if (deptUserSel) deptUserSel.onchange = renderOptionsFilter;
+  const peopleBtn = $("optFltPeopleBtn");
+  if (peopleBtn) peopleBtn.onclick = (e) => {
+    e.stopPropagation();
+    const m = $("optFltPeopleMenu");
+    if (m && !m.hidden) closePeopleMenu(); else openPeopleMenu();
+  };
+  document.addEventListener("click", (e) => {
+    const wrap = $("optFltPeopleWrap");
+    if (wrap && !wrap.contains(e.target)) closePeopleMenu();
+  });
   show();
 
   // The older Weekly Totals select should stay in sync with the toggle buttons.
@@ -2421,7 +2596,9 @@ async function loadDeptData(force, triesLeft) {
   if (res && res.ok) {
     optDeptMembers = res.members || [];
     optDeptList = res.departments || [];
-    if (!optDeptMembers.length && res.note) console.warn("Department Creator:", res.note);
+    // An empty roster is reported in the Department Creator itself when you ask for
+    // the user list (deptMsg below). Logging it here too made Chrome list it as an
+    // extension error on every options-page load, which looked like a breakage.
   } else {
     optDeptMembers = [];
     optDeptList = [];
@@ -2455,7 +2632,7 @@ function renderDeptSelects() {
   const fsel = $("optFltDept");
   if (fsel) {
     const prev = fsel.value;
-    fsel.innerHTML = '<option value="">My tasks (default)</option><option value="__all__">All users (workspace)</option>';
+    fsel.innerHTML = '<option value="">My tasks (default)</option><option value="__all__">All users (workspace)</option><option value="__pick__">Pick people…</option>';
     for (const d of optDeptList) {
       const o = document.createElement("option");
       o.value = d.id;
@@ -2474,6 +2651,10 @@ function syncDeptUserSelect() {
   const uWrap = $("optFltDeptUserWrap");
   if (!fsel || !usel || !uWrap) return;
   const deptId = fsel.value;
+  const pWrap = $("optFltPeopleWrap");
+  if (pWrap) pWrap.style.display = deptId === "__pick__" ? "" : "none";
+  if (deptId !== "__pick__") closePeopleMenu();
+  updatePeopleBtn();
   const dept = optDeptList.find((d) => String(d.id) === String(deptId));
   const users = dept && Array.isArray(dept.users) ? dept.users : [];
   if (!dept || !users.length) {
@@ -4554,6 +4735,10 @@ if ($("optFltClearBtn")) $("optFltClearBtn").onclick = () => {
   }
   for (const id of ["optFltClient", "optFltDept", "optFltDeptUser"]) if ($(id)) $(id).value = "";
   if ($("optFltDeptUserWrap")) $("optFltDeptUserWrap").style.display = "none";
+  optFltPeople = [];
+  savePeople();
+  if ($("optFltPeopleWrap")) $("optFltPeopleWrap").style.display = "none";
+  closePeopleMenu();
   renderOptionsFilter();
 };
 

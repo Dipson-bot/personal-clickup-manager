@@ -212,6 +212,12 @@
   /* Inline per-row message (e.g. the multi-assignee refusal). Spans the row width
      below the controls so a long reason wraps instead of widening the popup. */
   .cu-rowmsg { flex-basis: 100%; font-size: 10px; color: var(--amber); line-height: 1.3; margin: 1px 0 2px; }
+  .cu-task.has-msg { flex-wrap: wrap; }
+  .cu-rowmsg:not(.cu-rowconfirm) { display: flex; align-items: center; gap: 8px; padding: 3px 6px; border-radius: 6px; background: color-mix(in srgb, var(--amber) 10%, transparent); }
+  .cu-rowmsg-txt { flex: 1; min-width: 0; }
+  .cu-rowmsg a { color: var(--amber); text-decoration: underline; font-weight: 600; white-space: nowrap; }
+  .cu-rowmsg-x { background: none; border: 0; color: var(--muted); cursor: pointer; font-size: 10px; line-height: 1; padding: 0 2px; width: auto; }
+  .cu-rowmsg-x:hover { color: var(--text); }
   .popup-toast {
     position: fixed; bottom: 12px; left: 12px; right: 12px;
     background: #1f2937; color: #fff; font-size: 11px; line-height: 1.4;
@@ -360,6 +366,11 @@
   @keyframes cu-now-pulse { 50% { opacity: .35; } }
   .cu-now-lab { color: var(--green); font-weight: 700; flex: none; }
   .cu-now-name { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text); text-decoration: none; font-weight: 600; }
+  /* The popup sizes itself to its content (body: fit-content), so a long running
+     task name kept on one line widened the whole popup past Chrome's 800px cap and
+     added a sideways scrollbar. width:0 means the name takes the space that is left
+     and ends in an ellipsis instead of deciding how wide the popup is. */
+  .cu-now-name { width: 0; }
   .cu-now-name:hover { text-decoration: underline; }
   .cu-now-time { flex: none; font-variant-numeric: tabular-nums; color: var(--green); font-weight: 700; }
   .cu-now-stop { flex: none; font-size: 11px; font-weight: 700; padding: 3px 9px; border-radius: 6px; border: 0; background: var(--red); color: #fff; cursor: pointer; }

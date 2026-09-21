@@ -31,6 +31,22 @@ const ROSTER_SCAN_PAGES = 20;
 // Number of weekdays to divide a weekly deadline task's estimate across.
 const WEEKDAY_COUNT = 5;
 
+// Request meter: when ClickUp answers 429, say how many requests went out in the
+// last minute and to which endpoints, so a rate-limit report comes with numbers.
+// Visible in the service-worker console (chrome://extensions -> service worker).
+const reqLog = []; // [at, endpoint]
+function meterRequest(path) {
+  const now = Date.now();
+  reqLog.push([now, String(path).replace(/\/[0-9a-z]{6,}(?=\/|$)/gi, "/:id")]);
+  while (reqLog.length && now - reqLog[0][0] > 60000) reqLog.shift();
+}
+function reportRateLimit() {
+  const by = {};
+  for (const [, p] of reqLog) by[p] = (by[p] || 0) + 1;
+  const top = Object.entries(by).sort((a, b) => b[1] - a[1]).slice(0, 6).map(([p, n]) => n + " x " + p).join(", ");
+  console.warn("[ClickUp] 429 after " + reqLog.length + " requests in the last minute: " + top);
+}
+
 // ---------- low-level fetch ----------
 // Build a typed 429 error, reading ClickUp's Retry-After / X-RateLimit-Reset
 // headers so callers can back off for exactly the window the API asks for
@@ -62,6 +78,7 @@ function rateLimitError(res) {
 // Wraps one ClickUp GET. Throws a typed-ish Error with a `.status` so callers
 // can tell "bad token" (401) apart from "network died".
 async function cuFetch(token, path, params) {
+  meterRequest(path);
   const url = new URL(API + path);
   if (params) {
     for (const [k, v] of params) url.searchParams.append(k, v);
@@ -83,6 +100,7 @@ async function cuFetch(token, path, params) {
     throw err;
   }
   if (res.status === 429) {
+    reportRateLimit();
     throw rateLimitError(res);
   }
   if (!res.ok) {
@@ -98,6 +116,7 @@ async function cuFetch(token, path, params) {
 // but also surfaces ClickUp's own error text (e.g. "Time entry already running")
 // so the UI can show something actionable instead of a bare status code.
 async function cuPost(token, path, body) {
+  meterRequest(path);
   let res;
   try {
     res = await fetch(API + path, {
@@ -116,6 +135,7 @@ async function cuPost(token, path, body) {
     throw err;
   }
   if (res.status === 429) {
+    reportRateLimit();
     throw rateLimitError(res);
   }
   if (!res.ok) {
@@ -136,6 +156,7 @@ async function cuPost(token, path, body) {
 // change its status). ClickUp surfaces an invalid-status name as a 4xx with a
 // message body, which we bubble up verbatim so the UI can show it in the row hint.
 async function cuPut(token, path, body) {
+  meterRequest(path);
   let res;
   try {
     res = await fetch(API + path, {
@@ -154,6 +175,7 @@ async function cuPut(token, path, body) {
     throw err;
   }
   if (res.status === 429) {
+    reportRateLimit();
     throw rateLimitError(res);
   }
   if (!res.ok) {
@@ -382,15 +404,32 @@ export async function getTaskDetail(token, taskId) {
   };
 }
 
+// Due today looks up EVERY due-today task's subtasks, one request each, on every
+// refresh - 19 requests a time for a normal day, again on every popup open. A
+// short cache stops repeated opens and overlapping refreshes from re-paying that.
+// Anything changed FROM the extension clears it (background message router), so
+// your own edits still show at once; edits made in ClickUp show within 2 minutes.
+const TREE_TTL_MS = 2 * 60000;
+const treeCache = new Map(); // task id -> { at, j: raw ClickUp task incl. subtasks }
+export function clearTaskTreeCache() { treeCache.clear(); }
+
 // One request: the task itself (so we learn ITS parent) plus its subtasks.
 export async function getTaskTree(token, parentId, userId) {
   const uid = userId != null ? String(userId) : null;
+  const key = String(parentId);
+  const hit = treeCache.get(key);
   let j;
-  try {
-    j = await cuFetch(token, "/task/" + encodeURIComponent(String(parentId)), [["include_subtasks", "true"]]);
-  } catch (e) {
-    if (e && e.status === 429) throw e; // let callers back off
-    return { parent: null, subtasks: [] };
+  if (hit && Date.now() - hit.at < TREE_TTL_MS) {
+    j = hit.j;
+  } else {
+    try {
+      j = await cuFetch(token, "/task/" + encodeURIComponent(key), [["include_subtasks", "true"]]);
+    } catch (e) {
+      if (e && e.status === 429) throw e; // let callers back off
+      return { parent: null, subtasks: [] };
+    }
+    treeCache.set(key, { at: Date.now(), j });
+    if (treeCache.size > 400) treeCache.delete(treeCache.keys().next().value); // oldest first
   }
   const subs = Array.isArray(j && j.subtasks) ? j.subtasks : [];
   const out = [];
@@ -487,15 +526,19 @@ function chooseExtraOccurrence(found, hint, target) {
 // `fromTs`/`toTs` are the range the caller is asking about (today, tomorrow, a
 // week). The due-date query is widened around it because the occurrence that
 // COVERS that range is usually due at the end of its own week, outside it.
-export async function findExtraTaskByName({ token, teamId, userId, usernameHint = "", fromTs, toTs }) {
+// `fullScan: false` skips the last-resort scan of the person's ENTIRE task list
+// (up to MAX_PAGES requests). Used for teammates in a department view: a weekly
+// task that is not in a three-week window does not exist for them, and paying
+// 20 pages per teammate is what tipped department queries into the rate limit.
+export async function findExtraTaskByName({ token, teamId, userId, usernameHint = "", fromTs, toTs, fullScan = true }) {
   const hint = String(usernameHint || "").toLowerCase();
   const from = Number(fromTs) || 0;
   const to = Number(toTs) || 0;
   const target = from && to ? { from, to } : null;
   const MS = 86400000;
   const windows = target
-    ? [{ fromTs: from - 10 * MS, toTs: to + 10 * MS }, null]
-    : [null];
+    ? [{ fromTs: from - 10 * MS, toTs: to + 10 * MS }].concat(fullScan ? [null] : [])
+    : (fullScan ? [null] : []);
   const found = [];
   const seen = new Set();
   for (const win of windows) {
@@ -1618,6 +1661,10 @@ export async function fetchTodayEstimate({ token, teamId, userId, targetHours = 
       priority: cuPriorityName(t),
       done: isTaskDone(t),
       hasEstimate: est > 0,
+      // Who this task hangs off, for the "group subtasks" filter - every other
+      // view's rows carry it, and without it Due today could not group a
+      // subtask that is itself due today (it stayed flat).
+      parentId: t.parent != null ? String(t.parent) : null,
       container: taskContainer(t),
       url: taskUrlFor(t.id),
     });
