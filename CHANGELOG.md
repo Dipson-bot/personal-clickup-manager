@@ -1,5 +1,11 @@
 # Changelog
 
+## v3.9.0
+- **New: Daily Tasks Update on the wrap-up page** (replaces the old standup). It lists every task you closed today, in every project, grouped under "Project Name" with "Complete (N)", and puts the links from each task's description after it as "Click Here 1, Click Here 2". Copy keeps those links clickable when pasted into Slack; Refresh reads today's completed tasks again.
+- **New: exports include each task's links.** CSV and Google Sheets get Link 1, Link 2 ... columns (one clickable address per cell), Excel shows them as "Click Here" links, and Google Docs and Markdown get a Links line under each task.
+- **New: stretch the task list.** Drag the bottom-right corner of the task list in the popup, side panel, options page or Explore to make it taller or shorter; each remembers its height, and a double-click on that corner puts it back.
+- **Fixed: a link could appear twice, once broken.** Links written with underscores came through with backslashes in them from ClickUp; they are now cleaned up, so each link appears once and works.
+
 ## v3.8.10
 - fixed the uploading new version buffer timings to all users
 

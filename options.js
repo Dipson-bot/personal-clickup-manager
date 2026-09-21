@@ -1382,7 +1382,7 @@ function startEditDueOpt(chip, task) {
   const input = document.createElement("input");
   input.type = "date";
   input.className = "due-input";
-  input.title = "Enter = save, Esc = cancel. Empty = no due date.";
+  input.title = "Pick a date to save it, or type it and press Enter. Esc = cancel. Clear = no due date.";
   if (ms) {
     const d = new Date(ms);
     input.value = d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0") + "-" + String(d.getDate()).padStart(2, "0");
@@ -1390,6 +1390,10 @@ function startEditDueOpt(chip, task) {
   chip.textContent = "";
   chip.appendChild(input);
   input.focus();
+  // Open the calendar straight away - the click that started the edit counts
+  // as the user gesture showPicker() needs. (Before, you got a mm/dd/yyyy box
+  // to type into and had to find the tiny calendar icon yourself.)
+  try { input.showPicker(); } catch (e) {}
   let done = false;
   let saving = false;
   const finish = (text, cls, title) => {
@@ -1425,6 +1429,12 @@ function startEditDueOpt(chip, task) {
     }
   };
   input.addEventListener("blur", save);
+  // A date picked in the calendar (or its Clear button) saves at once. Typing
+  // also fires change after each part of the date, so a change that follows a
+  // keystroke waits for Enter / leaving the box instead of saving half-typed.
+  let lastKeyAt = 0;
+  input.addEventListener("keydown", () => { lastKeyAt = Date.now(); });
+  input.addEventListener("change", () => { if (Date.now() - lastKeyAt > 400) save(); });
   input.addEventListener("keydown", (e) => {
     if (e.key === "Enter") { e.preventDefault(); save(); }
     else if (e.key === "Escape") { e.preventDefault(); input.removeEventListener("blur", save); cancel(); }
@@ -1472,6 +1482,43 @@ function whoSlot(t) {
   for (const a of shown) circle(cuInitials(a.username), nameOf(a), cuAvatarColor(a.id || a.username));
   if (list.length > 2) circle("+" + (list.length - 1), list.slice(1).map(nameOf).join(", "), "", "more");
   return slot;
+}
+
+// Drag the bottom-right corner of a task list to make it taller or shorter,
+// like the box on the wrap-up page; the height is remembered per list and a
+// double-click on that corner puts it back to normal. The normal cap on the
+// list's height is lifted the moment a drag starts, so it can grow past it.
+function makeListResizable(el, key) {
+  if (!el || el._pcmResizable) return;
+  el._pcmResizable = true;
+  el.classList.add("cu-resizable");
+  const store = "pcm.listH." + key;
+  let saved = 0;
+  try { saved = Number(localStorage.getItem(store)) || 0; } catch (e) {}
+  if (saved > 40) { el.style.height = saved + "px"; el.style.maxHeight = "none"; }
+  const inCorner = (e) => { const r = el.getBoundingClientRect(); return e.clientX > r.right - 18 && e.clientY > r.bottom - 18; };
+  const save = () => {
+    if (!el.style.height || !el.isConnected || !el.offsetHeight) return; // only after the user dragged it
+    try { localStorage.setItem(store, String(el.offsetHeight)); } catch (e) {}
+  };
+  el.addEventListener("pointerdown", (e) => {
+    if (!inCorner(e)) return;
+    el.style.maxHeight = "none";
+    // Saved when the drag ends (the size watcher below is only a backup: it
+    // depends on the page repainting, which a hidden panel doesn't do).
+    window.addEventListener("pointerup", () => setTimeout(save, 0), { once: true });
+  });
+  el.addEventListener("dblclick", (e) => {
+    if (!inCorner(e)) return;
+    el.style.height = "";
+    el.style.maxHeight = "";
+    try { localStorage.removeItem(store); } catch (e2) {}
+  });
+  let t = null;
+  new ResizeObserver(() => {
+    clearTimeout(t);
+    t = setTimeout(save, 300);
+  }).observe(el);
 }
 
 function appendNameCellOpt(row, nm, t) {
@@ -2248,6 +2295,8 @@ function openPeopleMenu() {
   if (!m) return;
   renderPeopleMenu();
   m.hidden = false;
+  const s = m.querySelector(".psearch");
+  if (s) s.focus();
   const b = $("optFltPeopleBtn");
   if (b) b.setAttribute("aria-expanded", "true");
 }
@@ -2284,6 +2333,18 @@ function renderPeopleMenu() {
   andLab.appendChild(andCb);
   andLab.appendChild(document.createTextNode("Only tasks shared by everyone ticked"));
   m.appendChild(andLab);
+  // Search: narrows the list as you type (any part of the name); a department
+  // heading hides when none of its people match. Esc clears it.
+  const search = document.createElement("input");
+  search.type = "search";
+  search.className = "psearch";
+  search.placeholder = "Search people\u2026";
+  search.setAttribute("aria-label", "Search people");
+  m.appendChild(search);
+  const none = document.createElement("div");
+  none.className = "pnone";
+  none.textContent = "No one matches";
+  none.hidden = true;
   const count = document.createElement("span");
   count.className = "n";
   const paintCount = () => {
@@ -2304,6 +2365,7 @@ function renderPeopleMenu() {
     for (const u of g.users) {
       const id = String(u.id);
       const lab = document.createElement("label");
+      lab.dataset.pname = String(u.name || "").toLowerCase();
       const cb = document.createElement("input");
       cb.type = "checkbox";
       cb.checked = optFltPeople.includes(id);
@@ -2322,6 +2384,26 @@ function renderPeopleMenu() {
       m.appendChild(lab);
     }
   }
+  m.appendChild(none);
+  const applySearch = () => {
+    const q = search.value.trim().toLowerCase();
+    let heading = null, headingHasMatch = false, any = false;
+    const closeHeading = () => { if (heading) heading.hidden = !headingHasMatch; };
+    for (const el of m.children) {
+      if (el.classList.contains("grp")) { closeHeading(); heading = el; headingHasMatch = false; continue; }
+      if (el.dataset && el.dataset.pname != null) {
+        const hit = !q || el.dataset.pname.includes(q);
+        el.hidden = !hit;
+        if (hit) { headingHasMatch = true; any = true; }
+      }
+    }
+    closeHeading();
+    none.hidden = any;
+  };
+  search.addEventListener("input", applySearch);
+  search.addEventListener("keydown", (e) => {
+    if (e.key === "Escape" && search.value) { e.preventDefault(); e.stopPropagation(); search.value = ""; applySearch(); }
+  });
   const foot = document.createElement("div");
   foot.className = "foot";
   const clear = document.createElement("button");
@@ -2606,6 +2688,7 @@ async function renderOptionsFilter() {
       (active.length ? " <span class=\"hint\">(filter: " + filterTags + ")</span>" : "") + "</div>";
     const list = document.createElement("div");
     list.className = "cu-tasklist";
+    makeListResizable(list, "explore");
     for (const t of sortByPriority(shownTasks)) {
       const row = document.createElement("div");
       row.className = "cu-task";
@@ -3702,6 +3785,7 @@ function renderClickupPreview(st) {
       if (!grouped) lists.appendChild(listHead);
       const listEl = document.createElement("div");
       listEl.className = "cu-tasklist";
+      if (!grouped) makeListResizable(listEl, "dash");
       // Preserve parent -> subtask grouping: sort only the top-level rows by
       // estimate (desc), then emit each parent's subtasks (original order) right
       // under it. A plain sort would scatter subtasks away from their parent.
@@ -5452,6 +5536,7 @@ async function admNotesFromChangelog(version) {
 async function admRefresh() {
   let st = null;
   try { st = await send({ type: "ADMIN_STATE" }); } catch (e) {}
+  admPolLoad();
   const version = (st && st.version) || chrome.runtime.getManifest().version;
   if ($("admCurrent")) $("admCurrent").textContent = "v" + version;
   if ($("admRepo") && st && st.repo) $("admRepo").textContent = st.repo;
@@ -5519,7 +5604,11 @@ if ($("admPublish")) $("admPublish").onclick = async () => {
       zipB64: await admB64(z.blob),
     }, 120000);
     if (!res || !res.ok) throw new Error((res && res.error) || "Publish failed.");
-    admSay("Published " + res.tag + " ✓ - everyone gets the update prompt within ~12 hours (or straight away via Check for updates).", "ok");
+    admSay("Published " + res.tag + " ✓" + (res.notified === true
+      ? " - everyone with Chrome open gets the update prompt within about 1-2 minutes; the rest when Chrome next starts."
+      : res.notified === "held"
+        ? " - a \"Don't notify before\" time is set, so people are told from then (or press Notify everyone now below)."
+        : " - but telling everyone automatically didn't work this time: press Notify everyone now below."), "ok");
     if (res.repoUpdated) admSay("Repository updated: manifest.json and CHANGELOG.md now say " + res.tag + ".", "ok");
     else if (res.repoError) admSay("The release is live, but the repository wasn't updated: " + res.repoError, "err");
     const a = document.createElement("a");
@@ -5586,3 +5675,59 @@ if ($("showAgentRouter")) $("showAgentRouter").onchange = async () => {
   if (!on && document.querySelector('.panel.on[data-panel="agent"]') && typeof showOptTab === "function") showOptTab("dashboard");
   if (typeof refreshStatusStrip === "function") refreshStatusStrip(0);
 };
+
+// ---- Admin: update notifications (update-policy.json in the repo) ----
+function admPolFill(p) {
+  if (!p) return;
+  if ($("admPolRemind")) $("admPolRemind").value = p.remindEveryHours;
+  if ($("admPolImportant")) $("admPolImportant").checked = !!p.important;
+  if ($("admPolHold")) {
+    const d = p.holdUntil ? new Date(p.holdUntil) : null;
+    $("admPolHold").value = d ? new Date(d.getTime() - d.getTimezoneOffset() * 60000).toISOString().slice(0, 16) : "";
+  }
+  const st = $("admPolState");
+  if (st) {
+    const when = (t) => new Date(t).toLocaleString([], { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" });
+    const bits = [];
+    if (p.notifiedAllAt) bits.push("Last \"Notify everyone\": " + when(p.notifiedAllAt));
+    if (p.updatedAt) bits.push("Settings saved " + when(p.updatedAt));
+    bits.push("Everyone with Chrome open hears about it within about 1-2 minutes.");
+    st.textContent = bits.join(" \u00b7 ");
+  }
+}
+async function admPolLoad() {
+  try { const r = await send({ type: "ADMIN_POLICY_GET" }, 20000); if (r && r.ok) admPolFill(r.policy); } catch (e) {}
+}
+function admPolRead() {
+  const hold = $("admPolHold") && $("admPolHold").value ? new Date($("admPolHold").value).getTime() : 0;
+  return {
+    remindEveryHours: Number($("admPolRemind").value) || 24,
+    important: !!$("admPolImportant").checked,
+    holdUntil: hold > Date.now() ? hold : 0,
+  };
+}
+async function admPolSend(notifyNow) {
+  const msg = $("admPolMsg");
+  const btns = [$("admPolSave"), $("admPolNotify")];
+  btns.forEach((b) => b && (b.disabled = true));
+  if (msg) { msg.style.display = "inline"; msg.style.color = ""; msg.textContent = notifyNow ? "Notifying everyone\u2026" : "Saving\u2026"; }
+  try {
+    const r = await send({ type: "ADMIN_POLICY_SET", policy: admPolRead(), notifyNow }, 30000);
+    if (r && r.ok) {
+      admPolFill(r.policy);
+      if (msg) msg.textContent = notifyNow
+        ? "Sent \u2713 - everyone with Chrome open sees it within about 1-2 minutes"
+        : "Saved \u2713";
+    } else if (msg) {
+      msg.style.color = "var(--red)";
+      msg.textContent = "Couldn't save: " + ((r && r.error) || "unknown error");
+    }
+  } catch (e) {
+    if (msg) { msg.style.color = "var(--red)"; msg.textContent = "Couldn't save: " + (e && e.message ? e.message : e); }
+  } finally {
+    btns.forEach((b) => b && (b.disabled = false));
+  }
+}
+if ($("admPolSave")) $("admPolSave").onclick = () => admPolSend(false);
+if ($("admPolNotify")) $("admPolNotify").onclick = () => admPolSend(true);
+

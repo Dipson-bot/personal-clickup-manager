@@ -68,10 +68,10 @@
     </div>
 
     <div class="card">
-      <h2><span>Standup for Slack</span></h2>
+      <h2><span>Daily Tasks Update</span><span class="sp"></span><button id="refreshDone" title="Read today's completed tasks from ClickUp again">↻ Refresh</button></h2>
       <textarea id="standup" spellcheck="false"></textarea>
       <div class="actions">
-        <span class="hint" id="standupHint">Edit freely before copying.</span>
+        <span class="hint" id="standupHint">Tasks you completed today, by project. Edit freely - Copy keeps the links clickable in Slack.</span>
         <button id="rebuild" hidden>Rebuild</button>
         <button class="primary" id="copy">Copy</button>
       </div>

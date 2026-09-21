@@ -37,48 +37,69 @@ function openToday() {
     .filter((t) => !t.done && !isExtra(t) && t.dueDateMs && dayFloor(t.dueDateMs) === today)
     .sort((a, b) => rank(a) - rank(b));
 }
-function doneToday() {
-  const b = todayBundle();
-  return uniq([...(b.tasks || []), ...(b.deadlineTasks || []), ...(b.trackedTasks || [])])
-    .filter((t) => (Number(t.spentMs) || 0) > 0 || t.done)
-    .sort((a, b) => (Number(b.spentMs) || 0) - (Number(a.spentMs) || 0));
+// ---- Daily Tasks Update (replaces the old Done / Next / Blocked standup) ----
+// Every task closed today (ClickUp's own done date, any project, subtasks too),
+// grouped by project, each with the links from its description as Click Here 1,
+// Click Here 2 ... The box holds Slack-style <url|Click Here 1> links so it stays
+// editable; Copy turns them into real links (rich text) so Slack shows the words.
+let doneRows = null; // null = still loading
+let doneErr = "";
+async function loadDone(force) {
+  let r = null;
+  try { r = await chrome.runtime.sendMessage({ type: "CLICKUP_DONE_TODAY", force: !!force }); } catch (e) { r = null; }
+  if (r && r.ok) { doneRows = r.tasks || []; doneErr = ""; }
+  else { doneErr = (r && (r.error || r.reason)) || "couldn't reach the extension"; if (!doneRows) doneRows = []; }
+  render();
 }
-function nextUp() {
-  const nd = nextWorkday();
-  const pool = [];
-  for (const b of [st && st.thisWeek, st && st.nextWeek]) if (b) pool.push(...(b.tasks || []), ...(b.deadlineTasks || []));
-  const out = uniq(pool).filter((t) => !t.done && !isExtra(t) && t.dueDateMs && dayFloor(t.dueDateMs) === nd);
-  // Today's leftovers carry over too (moved or not).
-  return uniq([...out, ...openToday(), ...moved.values()]).sort((a, b) => rank(a) - rank(b));
+// "🔥 Acme Plumbing SEO" -> "Acme Plumbing", "NORTH STAR ROOFING SEO" -> "North Star Roofing".
+function projectName(client) {
+  let n = String(client || "").replace(/^[^\p{L}\p{N}]+/u, "").replace(/\s+seo\s*$/i, "").trim();
+  if (n && n === n.toUpperCase() && /[A-Z]{2}/.test(n)) n = n.toLowerCase().replace(/\b\p{L}/gu, (c) => c.toUpperCase());
+  return n || "Other";
 }
-function blocked() {
-  const names = new Map();
-  for (const b of [st, st && st.todayFilter, st && st.thisWeek, st && st.nextWeek]) {
-    if (b) for (const t of [...(b.tasks || []), ...(b.deadlineTasks || [])]) if (t && t.id != null) names.set(String(t.id), t.name);
-  }
-  const out = [];
-  for (const [id, w] of Object.entries((st && st.waiting) || {})) {
-    const nm = names.get(String(id));
-    if (!nm) continue;
-    const bl = (w && w.blockers) || [];
-    const who = [...new Set(bl.map((x) => x.who).filter(Boolean))].join(", ");
-    out.push(nm + ": waiting on " + (who || "a teammate") + (bl.some((x) => x.overdue) ? " (overdue)" : ""));
-  }
-  return out;
+const byName = (a, b) => String(a.name || "").localeCompare(String(b.name || ""), undefined, { numeric: true, sensitivity: "base" });
+function linkPart(links) {
+  const l = Array.isArray(links) ? links : [];
+  if (!l.length) return "";
+  return " : " + (l.length === 1 ? "<" + l[0] + "|Click Here>" : l.map((u, i) => "<" + u + "|Click Here " + (i + 1) + ">").join("  "));
 }
 function buildStandup() {
-  const L = ["*Standup · " + new Date().toLocaleDateString([], { weekday: "short", month: "short", day: "numeric" }) + "*", "", "*Done today*"];
-  const done = doneToday();
-  if (done.length) for (const t of done) L.push("• " + t.name + ((Number(t.spentMs) || 0) > 0 ? " (" + fmt(t.spentMs) + ")" : "") + (t.done ? " ✅" : ""));
-  else L.push("• Nothing tracked yet");
-  L.push("", "*Next*");
-  const next = nextUp();
-  if (next.length) for (const t of next) L.push("• " + t.name);
-  else L.push("• Nothing due " + dayWord(nextWorkday()));
-  const bl = blocked();
-  if (bl.length) { L.push("", "*Blocked*"); for (const x of bl) L.push("• " + x); }
+  const L = ["Daily Tasks Update", "Date: " + new Date().toLocaleDateString("en-GB", { day: "numeric", month: "long", year: "numeric" }), ""];
+  if (doneRows === null) { L.push("Loading the tasks you completed today…"); return L.join("\n"); }
+  const rows = doneRows.filter((t) => !isExtra(t));
+  if (!rows.length) {
+    L.push(doneErr ? "Couldn't load today's completed tasks: " + doneErr : "No tasks completed today yet.");
+    return L.join("\n");
+  }
+  const groups = new Map();
+  for (const t of rows) {
+    const p = projectName(t.client);
+    if (!groups.has(p)) groups.set(p, []);
+    groups.get(p).push(t);
+  }
+  const order = [...groups.entries()].sort((a, b) => b[1].length - a[1].length || a[0].localeCompare(b[0]));
+  order.forEach(([p, list], i) => {
+    if (i) L.push("");
+    L.push("Project Name: " + p, "  Complete (" + list.length + ")");
+    for (const t of list.slice().sort(byName)) L.push("    · " + t.name + linkPart(t.links));
+  });
   return L.join("\n");
 }
+// Rich-text copy: <url|label> becomes a real link, leading spaces survive.
+const escHtml = (s) => String(s).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+const LINK_RE = /<(https?:\/\/[^|>\s]+)\|([^>]+)>/g;
+function toRich(text) {
+  return text.split("\n").map((line) => {
+    let html = "", last = 0;
+    for (const m of line.matchAll(LINK_RE)) {
+      html += escHtml(line.slice(last, m.index)) + '<a href="' + escHtml(m[1]) + '">' + escHtml(m[2]) + "</a>";
+      last = m.index + m[0].length;
+    }
+    html += escHtml(line.slice(last));
+    return html.replace(/^ +/, (sp) => "&nbsp;".repeat(sp.length));
+  }).join("<br>");
+}
+const toPlain = (text) => text.replace(LINK_RE, "$2 ($1)");
 
 async function move(t, btn) {
   const day = nextWorkday();
@@ -167,15 +188,25 @@ $("standup").addEventListener("input", () => { standupEdited = true; $("rebuild"
 $("rebuild").onclick = () => { standupEdited = false; render(); };
 $("copy").onclick = async () => {
   const b = $("copy");
+  const text = $("standup").value;
   try {
-    await navigator.clipboard.writeText($("standup").value);
+    await navigator.clipboard.write([new ClipboardItem({
+      "text/html": new Blob([toRich(text)], { type: "text/html" }),
+      "text/plain": new Blob([toPlain(text)], { type: "text/plain" }),
+    })]);
     b.textContent = "Copied ✓";
   } catch (e) {
-    $("standup").select();
-    document.execCommand("copy");
-    b.textContent = "Copied ✓";
+    try { await navigator.clipboard.writeText(toPlain(text)); b.textContent = "Copied ✓"; }
+    catch (e2) { $("standup").select(); document.execCommand("copy"); b.textContent = "Copied ✓"; }
   }
   setTimeout(() => { b.textContent = "Copy"; }, 1600);
+};
+$("refreshDone").onclick = async () => {
+  const b = $("refreshDone");
+  b.disabled = true;
+  standupEdited = false;
+  await loadDone(true);
+  b.disabled = false;
 };
 
 // Reminder controls (same settings as Options > ClickUp setup > Tracking settings).
@@ -207,6 +238,7 @@ initReminder();
     st = clickupState && typeof clickupState === "object" && !clickupState.error ? clickupState : null;
   } catch (e) {}
   render();
+  loadDone(false);
   chrome.storage.onChanged.addListener((ch, area) => {
     if (area !== "local") return;
     if (ch.clickupState && ch.clickupState.newValue) { st = ch.clickupState.newValue; render(); }

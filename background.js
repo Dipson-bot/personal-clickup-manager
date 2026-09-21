@@ -18,7 +18,7 @@ import {
   pullAccountsFromDrive,
 } from "./lib-drive.js";
 import { runAllAccounts, runAccountLogin, URLS, GITHUB_KEEP_COOKIES } from "./lib-automation.js";
-import { verifyToken, getTeams, fetchTodayEstimate, fetchWeeklySummary, fetchDateRangeEstimate, createTaskCache, fetchTeamMembers, fmtDuration, findExtraTaskByName, parseTaskIdFromUrl, getCurrentTimeEntry, getRunningTaskProgress, startTimer, stopTimer, getTaskById, setTaskStatus, taskUrlFor, clientLabelFromContainer, resolveSpaceNamesFor, taskContainer, cuPriorityName, isTaskDone, getSubtasksOfParent, getTaskTree, getTaskDetail, updateTimeEntry, setTaskDueDate, clearTaskTreeCache, listWorkspaceClients, cuRowAssignees } from "./lib-clickup.js";
+import { verifyToken, getTeams, fetchTodayEstimate, fetchWeeklySummary, fetchDateRangeEstimate, createTaskCache, fetchTeamMembers, fmtDuration, findExtraTaskByName, parseTaskIdFromUrl, getCurrentTimeEntry, getRunningTaskProgress, startTimer, stopTimer, getTaskById, setTaskStatus, taskUrlFor, clientLabelFromContainer, resolveSpaceNamesFor, taskContainer, cuPriorityName, isTaskDone, getSubtasksOfParent, getTaskTree, getTaskDetail, updateTimeEntry, setTaskDueDate, clearTaskTreeCache, listWorkspaceClients, cuRowAssignees, fetchDoneBetween } from "./lib-clickup.js";
 import { resolveRelayKey, pickProbeModel, probeRelay } from "./lib-availability.js";
 
 const CHECK_ALARM = "dailyLoginCheck";
@@ -184,6 +184,7 @@ async function persistFilterCache() {
 // "Deadline crossed" source: every task assigned to me that is past its due
 // date and not complete, across ALL dates (see CLICKUP_OVERDUE). 5-min cache.
 let overdueCache = null;
+let doneTodayCache = null; // wrap-up's "closed today" list, kept one minute
 function clearFilterCache() {
   filterCache.clear();
   overdueCache = null;
@@ -2433,6 +2434,34 @@ function cuWeekBounds(mode, offsetWeeks, now) {
   return { fromTs: d.getTime(), toTs: end.getTime(), label: m.label, days: m.days };
 }
 
+// Read / write a JSON file in the repo (update-policy.json). A missing file
+// reads as { data: null } and is created on the first write.
+async function ghGetJsonFile(head, path) {
+  const res = await fetch("https://api.github.com/repos/" + UPDATE_REPO + "/contents/" + path, { headers: head, cache: "no-store" });
+  if (res.status === 404) return { data: null, sha: null };
+  if (!res.ok) throw new Error(path + ": GitHub said HTTP " + res.status);
+  const j = await res.json();
+  const text = new TextDecoder().decode(Uint8Array.from(atob(String(j.content || "").replace(/\n/g, "")), (c) => c.charCodeAt(0)));
+  let data = null;
+  try { data = JSON.parse(text); } catch (e) {}
+  return { data, sha: j.sha || null };
+}
+async function ghPutJsonFile(head, path, obj, sha, message) {
+  const bytes = new TextEncoder().encode(JSON.stringify(obj, null, 2) + "\n");
+  let bin = "";
+  for (const b of bytes) bin += String.fromCharCode(b);
+  const body = { message, content: btoa(bin) };
+  if (sha) body.sha = sha;
+  const put = await fetch("https://api.github.com/repos/" + UPDATE_REPO + "/contents/" + path, {
+    method: "PUT", headers: { ...head, "Content-Type": "application/json" }, body: JSON.stringify(body),
+  });
+  if (!put.ok) {
+    let why = "HTTP " + put.status;
+    try { const e = await put.json(); if (e && e.message) why = e.message; } catch (e2) {}
+    throw new Error(path + ": " + why);
+  }
+}
+
 // Update one file in the repo: read it, let `change` rewrite the text (null =
 // nothing to do), then commit it back. Used when publishing, so the repository
 // carries the same version and notes as the release.
@@ -2962,7 +2991,76 @@ async function autoSyncIfSignedIn(opts) {
 // "Update available" link) and shows ONE notification per new version.
 // UPDATE_REPO is "<github-user>/<repo>" - set when the repository is created.
 const UPDATE_REPO = "Dipson-bot/personal-clickup-manager";
-const UPDATE_CHECK_MS = 12 * 3600 * 1000;
+// How often every installed copy looks for a new version, how often it reminds,
+// whether the latest release is important, a hold time and a "notify everyone
+// now" nonce all come from update-policy.json in the repo, which the Admin panel
+// edits. It is read from raw.githubusercontent.com (a plain file, not the rate-
+// limited GitHub API), so checking every 15-30 minutes costs nothing. Missing or
+// unreadable = these defaults.
+const UPDATE_POLICY_PATH = "update-policy.json";
+const UPDATE_POLICY_URL = "https://raw.githubusercontent.com/" + UPDATE_REPO + "/main/" + UPDATE_POLICY_PATH;
+const UPDATE_ALARM = "updateCheck";
+const UPDATE_POLICY_DEFAULTS = { checkEveryMinutes: 30, remindEveryHours: 24, important: false, holdUntil: 0, notifyNonce: "" };
+function normalizeUpdatePolicy(p) {
+  const o = p && typeof p === "object" ? p : {};
+  const num = (v, d, lo, hi) => { const n = Number(v); return Number.isFinite(n) ? Math.min(hi, Math.max(lo, Math.round(n))) : d; };
+  return {
+    checkEveryMinutes: num(o.checkEveryMinutes, 30, 15, 720),
+    remindEveryHours: num(o.remindEveryHours, 24, 1, 168),
+    important: !!o.important,
+    holdUntil: Number(o.holdUntil) > 0 ? Number(o.holdUntil) : 0,
+    notifyNonce: typeof o.notifyNonce === "string" ? o.notifyNonce.slice(0, 40) : "",
+    notifiedAllAt: Number(o.notifiedAllAt) || 0,
+    updatedAt: Number(o.updatedAt) || 0,
+    // The newest release, written by Admin publish / Notify, so a notification
+    // needs nothing but this file. Only this repository's own releases count.
+    latest: /^\d+(\.\d+){1,3}$/.test(String(o.latest || "")) ? String(o.latest) : "",
+    zip: String(o.zip || "").startsWith("https://github.com/" + UPDATE_REPO + "/releases/download/") ? String(o.zip) : "",
+    url: String(o.url || "").startsWith("https://github.com/" + UPDATE_REPO + "/releases") ? String(o.url) : "",
+  };
+}
+// Where the settings file is read from. jsDelivr (a free public mirror of GitHub
+// files, no request limits) is checked every minute; the Admin panel refreshes
+// its copy the moment settings change. GitHub's own file is read every 10
+// minutes as well (and whenever jsDelivr fails) and the newer of the two wins,
+// so a missed refresh can never leave anyone behind for jsDelivr's 12-hour cache.
+const UPDATE_POLICY_CDN = "https://cdn.jsdelivr.net/gh/" + UPDATE_REPO + "@main/" + UPDATE_POLICY_PATH;
+const UPDATE_POLICY_PURGE = "https://purge.jsdelivr.net/gh/" + UPDATE_REPO + "@main/" + UPDATE_POLICY_PATH;
+const UPDATE_RAW_EVERY_MS = 10 * 60000;
+async function readPolicyFrom(url) {
+  try {
+    const res = await fetch(url + (url.includes("?") ? "&" : "?") + "t=" + Date.now(), { cache: "no-store" });
+    return res.ok ? normalizeUpdatePolicy(await res.json()) : null;
+  } catch (e) { return null; }
+}
+async function fetchUpdatePolicy() {
+  const { updatePolicy: stored } = await chrome.storage.local.get("updatePolicy");
+  const cdn = await readPolicyFrom(UPDATE_POLICY_CDN);
+  const rawDue = !cdn || !stored || Date.now() - (stored.rawAt || 0) >= UPDATE_RAW_EVERY_MS;
+  const raw = rawDue ? await readPolicyFrom(UPDATE_POLICY_URL) : null;
+  const known = stored && stored.policy ? normalizeUpdatePolicy(stored.policy) : null;
+  // Newest wins (by the Admin's save time), and never go back to an older copy.
+  const best = [cdn, raw, known].filter(Boolean).sort((x, y) => (y.updatedAt || 0) - (x.updatedAt || 0))[0];
+  const policy = best || normalizeUpdatePolicy(UPDATE_POLICY_DEFAULTS);
+  await chrome.storage.local.set({ updatePolicy: { at: Date.now(), rawAt: rawDue ? Date.now() : (stored && stored.rawAt) || 0, policy } });
+  return policy;
+}
+// Every copy looks for news once a minute (a ~200-byte file). The login alarm
+// still calls the check every 30 minutes too; nothing doubles up.
+async function scheduleUpdateAlarm() {
+  try {
+    const a = await chrome.alarms.get(UPDATE_ALARM);
+    if (!a || a.periodInMinutes !== 1) await chrome.alarms.create(UPDATE_ALARM, { delayInMinutes: 1, periodInMinutes: 1 });
+  } catch (e) {}
+}
+// Refresh jsDelivr's copy after the Admin panel changes the file - now, and once
+// more a little later in case GitHub hadn't finished publishing the commit.
+async function purgePolicyCdn() {
+  const hit = () => fetch(UPDATE_POLICY_PURGE, { cache: "no-store" }).catch(() => {});
+  await hit();
+  setTimeout(hit, 20000);
+}
+
 function cmpVersion(a, b) {
   const pa = String(a || "").replace(/^v/i, "").split(".").map((x) => parseInt(x, 10) || 0);
   const pb = String(b || "").replace(/^v/i, "").split(".").map((x) => parseInt(x, 10) || 0);
@@ -2974,51 +3072,95 @@ function cmpVersion(a, b) {
 }
 // force: fetch now (ignore the 12h throttle). forceNotify: show the
 // notification even if already shown (only for the user's own "Check for updates").
+// GitHub's release API allows 60 requests an hour per internet connection, shared
+// by everyone in the same office - so it is asked only when there is a reason:
+// a Check-for-updates press, a new "Notify everyone", this copy just updated, or
+// every 6 hours. A failure backs off 5 minutes instead of retrying every minute.
+// Everything else (reminders, holds, important) is decided from what is stored.
+const RELEASE_CHECK_MS = 6 * 3600 * 1000;
+const RELEASE_RETRY_MS = 5 * 60000;
 async function checkForUpdate(force, forceNotify = false) {
   if (!/^[\w.-]+\/[\w.-]+$/.test(UPDATE_REPO) || UPDATE_REPO === "OWNER/REPO") return { ok: false, reason: "not-configured" };
   const current = chrome.runtime.getManifest().version;
   const { updateInfo: prev } = await chrome.storage.local.get("updateInfo");
-  if (!force && prev && prev.current === current && Date.now() - (prev.checkedAt || 0) < UPDATE_CHECK_MS) return { ok: true, ...prev };
-  try {
-    const res = await fetch("https://api.github.com/repos/" + UPDATE_REPO + "/releases/latest", {
-      headers: { Accept: "application/vnd.github+json" }, cache: "no-store",
-    });
-    if (!res.ok) throw new Error("GitHub HTTP " + res.status);
-    const j = await res.json();
-    const latest = String(j.tag_name || "").replace(/^v/i, "");
-    const zip = (Array.isArray(j.assets) ? j.assets : []).find((a) => /\.zip$/i.test(a.name || ""));
-    const info = {
-      checkedAt: Date.now(), current, latest,
-      newer: !!latest && cmpVersion(latest, current) > 0,
-      // The publisher can mark a release important ("[critical]" in its notes):
-      // the reminder then comes back every 4 hours instead of daily.
-      critical: /[critical]/i.test(String(j.body || "")),
-      url: j.html_url || "https://github.com/" + UPDATE_REPO + "/releases/latest",
-      zip: zip ? zip.browser_download_url : "",
-      notifiedFor: prev && prev.notifiedFor,
-      notifiedAt: prev && prev.notifiedAt,
-    };
-    // Notify when a version is new to us, again every 24h until its zip is
-    // downloaded (a dismissed or "What's new"-clicked toast is not lost), and
-    // whenever the user presses "Check for updates" themselves.
-    const { updateDownload: dl } = await chrome.storage.local.get("updateDownload");
-    const downloaded = dl && dl.version === latest;
-    const gap = (info.critical ? 4 : 24) * 3600 * 1000;
-    const due = info.notifiedFor !== latest || Date.now() - (info.notifiedAt || 0) >= gap;
-    if (info.newer && (forceNotify || (due && !downloaded))) {
-      info.notifiedFor = latest;
-      info.notifiedAt = Date.now();
-      await chrome.storage.local.set({ updateInfo: info });
-      await showUpdateNotification(info);
+  const policy = await fetchUpdatePolicy();
+  scheduleUpdateAlarm();
+  // "Notify everyone now": a nonce this copy hasn't acted on yet skips the
+  // reminder gap and any hold.
+  const nonceNew = !!policy.notifyNonce && policy.notifyNonce !== (prev && prev.nonceSeen);
+  const now = Date.now();
+  const backingOff = prev && prev.releaseFailAt && now - prev.releaseFailAt < RELEASE_RETRY_MS;
+  // Only a Check-for-updates press ignores the 5-minute back-off: retrying every
+  // minute while GitHub refuses would just keep the whole office locked out.
+  // With the newest release in the settings file, first runs and "Notify
+  // everyone" don't need the API at all; it stays as a 6-hourly safety net for
+  // releases published outside the Admin panel.
+  const polRelease = !!(policy.latest && policy.zip);
+  const needRelease = force || (!backingOff && (((!prev || !prev.latest) && !polRelease) ||
+    (prev && prev.current !== current) || (nonceNew && !polRelease) ||
+    // 6-hourly safety net. A first run that the file can already answer starts
+    // that clock instead of spending a request (see releaseCheckedAt below).
+    (prev ? now - (prev.releaseCheckedAt || 0) >= RELEASE_CHECK_MS : !polRelease)));
+  let apiError = "";
+  let info;
+  if (needRelease) {
+    try {
+      const res = await fetch("https://api.github.com/repos/" + UPDATE_REPO + "/releases/latest", {
+        headers: { Accept: "application/vnd.github+json" }, cache: "no-store",
+      });
+      if (!res.ok) throw new Error("GitHub HTTP " + res.status);
+      const j = await res.json();
+      const latest = String(j.tag_name || "").replace(/^v/i, "");
+      const zip = (Array.isArray(j.assets) ? j.assets : []).find((x) => /\.zip$/i.test(x.name || ""));
+      info = {
+        checkedAt: now, releaseCheckedAt: now, releaseFailAt: 0, current, latest,
+        // "[critical]" in the release notes marks it important. (The old
+        // /[critical]/ was a character class - any c, r, i, t, a or l - so EVERY
+        // release counted as important and reminded every 4 hours.)
+        notesCritical: /\[critical\]/i.test(String(j.body || "")),
+        url: j.html_url || "https://github.com/" + UPDATE_REPO + "/releases/latest",
+        zip: zip ? zip.browser_download_url : "",
+        nonceSeen: prev && prev.nonceSeen,
+        notifiedFor: prev && prev.notifiedFor,
+        notifiedAt: prev && prev.notifiedAt,
+      };
+    } catch (e) {
+      // Not fatal: the settings file may still know the newest release.
+      apiError = String(e && e.message ? e.message : e);
+      info = { ...(prev || {}), current, checkedAt: now, releaseFailAt: now };
     }
-    await chrome.storage.local.set({ updateInfo: info });
-    return { ok: true, ...info };
-  } catch (e) {
-    const info = { ...(prev || {}), current, checkedAt: Date.now(), error: String(e && e.message ? e.message : e) };
-    if (info.latest) info.newer = cmpVersion(info.latest, current) > 0;
-    await chrome.storage.local.set({ updateInfo: info });
-    return { ok: false, reason: info.error };
+  } else {
+    info = { ...prev, current, checkedAt: now };
   }
+  // Whichever knows the newer release wins: the file or the API.
+  if (polRelease && (!info.latest || cmpVersion(policy.latest, info.latest) > 0)) {
+    info.latest = policy.latest;
+    info.zip = policy.zip;
+    info.url = policy.url || "https://github.com/" + UPDATE_REPO + "/releases/latest";
+    info.notesCritical = false; // importance comes from the file's own switch
+    if (!info.releaseCheckedAt) info.releaseCheckedAt = now; // start the 6-hour safety-net clock
+  }
+  info.newer = !!info.latest && cmpVersion(info.latest, current) > 0;
+  info.critical = policy.important || !!info.notesCritical;
+  if (apiError) info.error = apiError; else delete info.error;
+  // Notify when a version is new to us, again at the Admin's reminder interval
+  // (important = at most every 4 hours) until its zip is downloaded, never
+  // before a hold time - unless the admin pressed Notify everyone now - and
+  // whenever the user presses "Check for updates" themselves.
+  const { updateDownload: dl } = await chrome.storage.local.get("updateDownload");
+  const downloaded = dl && dl.version === info.latest;
+  const gap = (info.critical ? Math.min(4, policy.remindEveryHours) : policy.remindEveryHours) * 3600 * 1000;
+  const held = now < policy.holdUntil;
+  const due = nonceNew || (!held && (info.notifiedFor !== info.latest || now - (info.notifiedAt || 0) >= gap));
+  info.nonceSeen = policy.notifyNonce || info.nonceSeen; // act on each nonce once
+  if (info.newer && (forceNotify || (due && !downloaded))) {
+    info.notifiedFor = info.latest;
+    info.notifiedAt = now;
+    await chrome.storage.local.set({ updateInfo: info });
+    await showUpdateNotification(info);
+  }
+  await chrome.storage.local.set({ updateInfo: info });
+  return apiError ? { ok: false, reason: apiError, ...info } : { ok: true, ...info };
 }
 
 // Update notification: stays until dismissed; buttons = download / what's new.
@@ -3399,11 +3541,13 @@ applyIdleInterval().catch(() => {});
 try { chrome.idle.onStateChanged.addListener((st) => { onIdleStateChanged(st).catch(() => {}); }); } catch (e) {}
 chrome.alarms.onAlarm.addListener(async (alarm) => {
   if (alarm.name === CHECK_ALARM) {
-    checkForUpdate().catch(() => {}); // self-throttled to ~12h
+    checkForUpdate().catch(() => {}); // cheap: the update alarm already runs every minute
     checkAndMaybeRun().catch(() => {});
     // No ClickUp refresh here: CLICKUP_ALARM already refreshes every 5 min, so
     // adding one on the 30-min check only guarantees an overlapping burst.
     autoSyncIfSignedIn();
+  } else if (alarm.name === UPDATE_ALARM) {
+    checkForUpdate().catch(() => {});
   } else if (alarm.name === CLICKUP_ALARM) {
     refreshClickup({ viaAlarm: true }).catch(() => {});
   } else if (alarm.name === BALANCE_ALARM) {
@@ -4549,11 +4693,89 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
             sendResponse({ ok: false, error: "Release created but the package upload failed (" + why + "). Attach it by hand: " + rel.html_url });
             break;
           }
-          // Everyone else picks it up on their next update check (within ~12h, or
-          // instantly via "Check for updates").
+          let assetUrl = "";
+          try { assetUrl = (await up.json()).browser_download_url || ""; } catch (e) {}
+          // Tell everyone now: stamp a new "Notify everyone" in the settings file so
+          // every copy shows the update within about a minute - unless the admin set
+          // a "Don't notify before" time, which is then respected.
+          let notified = false;
+          try {
+            const cur = await ghGetJsonFile(head, UPDATE_POLICY_PATH);
+            // Always record the new release in the file; notify now unless a
+            // "Don't notify before" time is set (then it's told at that time).
+            const pol = normalizeUpdatePolicy({ ...(cur.data || UPDATE_POLICY_DEFAULTS),
+              latest: version, zip: assetUrl, url: rel.html_url, important: !!msg.critical });
+            pol.updatedAt = Date.now();
+            if (pol.holdUntil > Date.now()) notified = "held";
+            else {
+              pol.notifyNonce = Date.now().toString(36);
+              pol.notifiedAllAt = Date.now();
+              notified = true;
+            }
+            await ghPutJsonFile(head, UPDATE_POLICY_PATH, pol, cur.sha, (notified === true ? "Notify everyone about " : "Record ") + tag);
+            await purgePolicyCdn();
+          } catch (e) { notified = false; }
           await chrome.storage.local.remove("updateInfo");
           checkForUpdate(true, false).catch(() => {});
-          sendResponse({ ok: true, url: rel.html_url, tag, repoUpdated, repoError });
+          sendResponse({ ok: true, url: rel.html_url, tag, repoUpdated, repoError, notified });
+        } catch (e) {
+          sendResponse({ ok: false, error: String(e && e.message ? e.message : e) });
+        }
+        break;
+      }
+      case "ADMIN_POLICY_GET": {
+        // Current update-notification settings, read straight from the repo when a
+        // token is saved (no CDN delay), else from the public file.
+        const { adminEnc } = await chrome.storage.local.get("adminEnc");
+        const saved = await decryptJSON(adminEnc, null);
+        try {
+          let raw = null;
+          if (saved && saved.token) {
+            const r = await ghGetJsonFile({ Authorization: "Bearer " + saved.token, Accept: "application/vnd.github+json" }, UPDATE_POLICY_PATH);
+            raw = r.data;
+          } else {
+            const res = await fetch(UPDATE_POLICY_URL + "?t=" + Date.now(), { cache: "no-store" });
+            if (res.ok) raw = await res.json();
+          }
+          sendResponse({ ok: true, policy: normalizeUpdatePolicy(raw || UPDATE_POLICY_DEFAULTS), exists: !!raw });
+        } catch (e) {
+          sendResponse({ ok: false, error: String(e && e.message ? e.message : e) });
+        }
+        break;
+      }
+      case "ADMIN_POLICY_SET": {
+        // Save the update-notification settings to update-policy.json in the repo;
+        // msg.notifyNow also stamps a new nonce so every copy shows the update
+        // prompt on its next check. Needs the admin GitHub token.
+        const { adminEnc } = await chrome.storage.local.get("adminEnc");
+        const saved = await decryptJSON(adminEnc, null);
+        if (!saved || !saved.token) { sendResponse({ ok: false, error: "Save a GitHub token first (GitHub access, below)." }); break; }
+        try {
+          const head = { Authorization: "Bearer " + saved.token, Accept: "application/vnd.github+json" };
+          const cur = await ghGetJsonFile(head, UPDATE_POLICY_PATH);
+          const next = normalizeUpdatePolicy({ ...(cur.data || UPDATE_POLICY_DEFAULTS), ...(msg.policy || {}) });
+          // Put the newest release in the file (asked with the admin's own token, so
+          // not from the office's shared anonymous allowance), so everyone's copy can
+          // act on it without asking GitHub's rate-limited API.
+          try {
+            const rr = await fetch("https://api.github.com/repos/" + UPDATE_REPO + "/releases/latest", { headers: head, cache: "no-store" });
+            if (rr.ok) {
+              const rj = await rr.json();
+              const za = (Array.isArray(rj.assets) ? rj.assets : []).find((x) => /\.zip$/i.test(x.name || ""));
+              const withRel = normalizeUpdatePolicy({ ...next, latest: String(rj.tag_name || "").replace(/^v/i, ""),
+                zip: za ? za.browser_download_url : "", url: rj.html_url || "" });
+              next.latest = withRel.latest; next.zip = withRel.zip; next.url = withRel.url;
+            }
+          } catch (e) {}
+          next.updatedAt = Date.now();
+          if (msg.notifyNow) { next.notifyNonce = Date.now().toString(36); next.notifiedAllAt = Date.now(); }
+          await ghPutJsonFile(head, UPDATE_POLICY_PATH, next, cur.sha,
+            msg.notifyNow ? "Notify everyone about the latest version" : "Update notification settings");
+          await purgePolicyCdn(); // everyone's once-a-minute check sees it now
+          // This copy follows the new settings straight away too.
+          await chrome.storage.local.set({ updatePolicy: { at: Date.now(), rawAt: Date.now(), policy: next } });
+          scheduleUpdateAlarm();
+          sendResponse({ ok: true, policy: next });
         } catch (e) {
           sendResponse({ ok: false, error: String(e && e.message ? e.message : e) });
         }
@@ -4673,6 +4895,41 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         } catch (e) {
           // Keep whatever we had (even if old) rather than an empty list.
           sendResponse({ ok: !!(cached && cached.names), names: (cached && cached.names) || [], error: String(e && e.message ? e.message : e) });
+        }
+        break;
+      }
+      case "CLICKUP_DONE_TODAY": {
+        // Wrap-up page's Daily Tasks Update: every task you closed today, in every
+        // project, with its client and the links in its description. Asked when the
+        // page opens / Refresh is pressed (kept a minute), never on a timer.
+        const cfg = await getClickupConfig();
+        if (!cfg || !cfg.token || !cfg.teamId || cfg.userId == null) { sendResponse({ ok: false, reason: "not-configured" }); break; }
+        const from = new Date().setHours(0, 0, 0, 0);
+        if (!msg.force && doneTodayCache && doneTodayCache.day === from && Date.now() - doneTodayCache.at < 60000) {
+          sendResponse({ ok: true, tasks: doneTodayCache.tasks }); break;
+        }
+        try {
+          const rows = await fetchDoneBetween(cfg.token, cfg.teamId, cfg.userId, from, Date.now());
+          // Some subtasks come back without their description: read those one by one
+          // (capped; one 429 waits and retries once) so their links aren't lost.
+          for (const r of rows.filter((x) => x.needDetail).slice(0, 60)) {
+            try {
+              let d;
+              try { d = await getTaskDetail(cfg.token, r.id); } catch (e) {
+                if (!e || e.status !== 429) throw e;
+                await new Promise((z) => setTimeout(z, Math.min(8000, Number(e.retryAfterMs) || 3000)));
+                d = await getTaskDetail(cfg.token, r.id);
+              }
+              r.links = d.links || [];
+            } catch (e) {}
+          }
+          const settings = await getSettings();
+          await annotateClients(cfg.token, { tasks: rows }, settings.cuClientLevel || "auto");
+          const tasks = rows.map((r) => ({ id: r.id, name: r.name, url: r.url, parentId: r.parentId, client: r.client || "", links: r.links || [], doneAt: r.doneAt }));
+          doneTodayCache = { day: from, at: Date.now(), tasks };
+          sendResponse({ ok: true, tasks });
+        } catch (e) {
+          sendResponse({ ok: false, error: String(e && e.message ? e.message : e) });
         }
         break;
       }
