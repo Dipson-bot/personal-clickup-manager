@@ -1439,6 +1439,41 @@ function makeDueEditableOpt(chip, t) {
   return chip;
 }
 
+// Who a task is assigned to: initials in coloured circles, full name on hover.
+// Two assignees overlap as two circles; three or more show the first plus a
+// "+N" circle whose hover lists the rest. Every row gets the same fixed-width
+// slot (0, 1 or many people) so the columns never shift. A person keeps the
+// same colour everywhere (hue from their ClickUp id).
+function cuInitials(name) {
+  const s = String(name || "").split("@")[0].replace(/[._-]+/g, " ").trim();
+  const w = s.split(/\s+/).filter(Boolean);
+  if (!w.length) return "?";
+  return (w.length > 1 ? w[0][0] + w[w.length - 1][0] : w[0].slice(0, 2)).toUpperCase();
+}
+function cuAvatarColor(key) {
+  let h = 0;
+  for (const ch of String(key || "")) h = (h * 31 + ch.charCodeAt(0)) >>> 0;
+  return "hsl(" + (h % 360) + ", 55%, 42%)";
+}
+function whoSlot(t) {
+  const slot = document.createElement("span");
+  slot.className = "cu-who";
+  const list = (Array.isArray(t && t.assignees) ? t.assignees : []).filter((a) => a && (a.username || a.id));
+  const circle = (text, title, bg, extra) => {
+    const c = document.createElement("span");
+    c.className = "av" + (extra ? " " + extra : "");
+    c.textContent = text;
+    c.title = title;
+    if (bg) c.style.background = bg;
+    slot.appendChild(c);
+  };
+  const nameOf = (a) => a.username || ("User " + a.id);
+  const shown = list.length > 2 ? list.slice(0, 1) : list;
+  for (const a of shown) circle(cuInitials(a.username), nameOf(a), cuAvatarColor(a.id || a.username));
+  if (list.length > 2) circle("+" + (list.length - 1), list.slice(1).map(nameOf).join(", "), "", "more");
+  return slot;
+}
+
 function appendNameCellOpt(row, nm, t) {
   row.appendChild(prioBadge(t));
   // Every task row passes through here, so it's also where the row learns its
@@ -1449,6 +1484,7 @@ function appendNameCellOpt(row, nm, t) {
   const wrap = document.createElement("span");
   wrap.className = "nmwrap";
   wrap.appendChild(nm);
+  wrap.appendChild(whoSlot(t));
   if (client) {
     const pill = document.createElement("span");
     pill.className = "cu-client";
@@ -1655,9 +1691,22 @@ async function toggleExtraTimer(action) {
 // task id.
 function appendTaskControlsOpt(row, t) {
   if (!t || !t.id) return;
-  if (t.done) return; // completed - no live controls
   const cu = optClickup || {};
   if (!cu.configured) return;
+  if (t.done) {
+    // Completed: no live controls, but keep the column. Without it this row
+    // had no buttons and its chips and times shifted right of every other row.
+    const ghost = document.createElement("span");
+    ghost.className = "cu-actions cu-actions-ghost";
+    ghost.setAttribute("aria-hidden", "true");
+    for (let i = 0; i < 2; i++) {
+      const g = document.createElement("span");
+      g.className = "cu-iconbtn";
+      ghost.appendChild(g);
+    }
+    row.appendChild(ghost);
+    return;
+  }
   const tid = String(t.id);
   const running = cu.state && cu.state.running ? cu.state.running : null;
   const isRunning = running && String(running.taskId) === tid;
@@ -1681,6 +1730,17 @@ function appendTaskControlsOpt(row, t) {
     start.textContent = busy ? "…" : "▶";
     start.disabled = busy;
     start.onclick = () => sendTaskActionOpt(tid, "start");
+    // More than one assignee: only single-assignee tasks can be started from the
+    // extension. The initials beside the name show who; the ▶ is dimmed and its
+    // hover / click explain instead of sending a start ClickUp would refuse.
+    const who = Array.isArray(t.assignees) ? t.assignees : [];
+    if (who.length > 1 && !busy) {
+      const names = who.map((a) => a && a.username).filter(Boolean);
+      start.className = "cu-iconbtn start multi";
+      start.setAttribute("aria-disabled", "true");
+      start.title = "Assigned to " + who.length + " people" + (names.length ? " (" + names.join(", ") + ")" : "") + " - start it in ClickUp";
+      start.onclick = (e) => { e.stopPropagation(); cuRowMsgOpt[tid] = cuMultiAssigneeMsg(tid, who); repaintCuTaskRows(); };
+    }
     actions.appendChild(start);
   }
 
@@ -2128,7 +2188,12 @@ try {
     if (Array.isArray(g.optFltPeople)) { optFltPeople = g.optFltPeople.map(String); updatePeopleBtn(); }
   }).catch(() => {});
 } catch (e) {}
-function savePeople() { chrome.storage.local.set({ optFltPeople }).catch(() => {}); }
+// "Same task" (AND): show only tasks assigned to EVERY ticked person. Off = the
+// default "either" (OR). ClickUp already returns all their tasks, so this only
+// narrows what is shown - no extra requests.
+let optFltPeopleAnd = false;
+try { chrome.storage.local.get("optFltPeopleAnd").then((g) => { optFltPeopleAnd = !!g.optFltPeopleAnd; updatePeopleBtn(); }).catch(() => {}); } catch (e) {}
+function savePeople() { chrome.storage.local.set({ optFltPeople, optFltPeopleAnd }).catch(() => {}); }
 function peopleNameOf(id) {
   const m = (optDeptMembers || []).find((x) => String(x.id) === String(id));
   if (m) return m.name;
@@ -2140,7 +2205,9 @@ function peopleNameOf(id) {
 }
 function peopleLabel() {
   const names = optFltPeople.map((id) => String(peopleNameOf(id)).split(" ")[0]);
-  return names.length <= 3 ? names.join(", ") : names.length + " people";
+  const and = optFltPeopleAnd && names.length > 1;
+  const who = names.length <= 3 ? names.join(and ? " & " : ", ") : names.length + " people";
+  return who + (and ? " \u00b7 same task" : "");
 }
 function updatePeopleBtn() {
   const b = $("optFltPeopleBtn");
@@ -2202,11 +2269,27 @@ function renderPeopleMenu() {
     m.innerHTML = '<div class="grp">No people loaded yet</div><div style="font-size:12px;padding:4px">Open <b>General \u2192 Department Creator</b> and press <b>Refresh user list</b>.</div>';
     return;
   }
+  const andLab = document.createElement("label");
+  andLab.className = "and";
+  andLab.title = "Off: tasks assigned to ANY ticked person. On: only tasks that EVERY ticked person is assigned to.";
+  const andCb = document.createElement("input");
+  andCb.type = "checkbox";
+  andCb.checked = optFltPeopleAnd;
+  andCb.onchange = () => {
+    optFltPeopleAnd = andCb.checked;
+    savePeople();
+    updatePeopleBtn();
+    renderOptionsFilter(); // same people, so the answer comes from the cache
+  };
+  andLab.appendChild(andCb);
+  andLab.appendChild(document.createTextNode("Only tasks shared by everyone ticked"));
+  m.appendChild(andLab);
   const count = document.createElement("span");
   count.className = "n";
   const paintCount = () => {
     const n = optFltPeople.length;
     count.textContent = n ? n + (n === 1 ? " person" : " people") + " \u00b7 tasks load as you tick" : "Tick anyone to see their tasks";
+    andLab.classList.toggle("off", n < 2); // needs two or more people to mean anything
   };
   const setPicked = (id, on) => {
     const has = optFltPeople.includes(id);
@@ -2415,7 +2498,23 @@ async function renderOptionsFilter() {
       return;
     }
     label = label + scopeTag;
-    const d = fltRes.data;
+    const d0 = fltRes.data;
+    // "Same task" (AND): keep only rows whose assignees include every ticked
+    // person, and recount the totals from what is left.
+    const sameTask = deptId === "__pick__" && optFltPeopleAnd && assigneeIds.length > 1;
+    const hasAll = (t) => {
+      const ids = new Set((Array.isArray(t && t.assignees) ? t.assignees : []).map((a) => String(a && a.id)));
+      return assigneeIds.every((id) => ids.has(String(id)));
+    };
+    const d = !sameTask ? d0 : (() => {
+      const tk = (d0.tasks || []).filter(hasAll);
+      const dl = (d0.deadlineTasks || []).filter(hasAll);
+      const tr = (Array.isArray(d0.trackedTasks) ? d0.trackedTasks : []).filter(hasAll);
+      const sum = (a, k) => a.reduce((n, t) => n + (Number(t && t[k]) || 0), 0);
+      return { ...d0, tasks: tk, deadlineTasks: dl, trackedTasks: tr,
+        estimateMs: sum(tk, "estimateMs") + sum(dl, "dayEstimateMs"),
+        spentMs: sum(tk, "spentMs") + sum(dl, "spentMs") + sum(tr, "spentMs") };
+    })();
     const est = Number(d.estimateMs) || 0;
     const spent = Number(d.spentMs) || 0;
     const tasks = d.tasks || [];
@@ -3536,154 +3635,201 @@ function renderClickupPreview(st) {
     }
   }
 
-  if (viewDeadline.length) {
-    const dHead = document.createElement("div");
-    dHead.className = "hint";
-    dHead.style.marginTop = "8px";
-    dHead.style.fontWeight = "700";
-    dHead.textContent = "Configured tasks (by URL)";
-    lists.appendChild(dHead);
-    const dList = document.createElement("div");
-    dList.className = "cu-tasklist";
-    dList.style.maxHeight = "120px";
-    for (const dt of sortByPriority(viewDeadline)) {
-      const row = document.createElement("div");
-      row.className = "cu-task";
-      const nm = document.createElement("a");
-      nm.className = "nm";
-      // An { error } row means THIS refresh couldn't load the task (usually one
-      // rate-limited request). Say so, instead of a nameless "(configured task)".
-      nm.textContent = dt.name || (dt.error ? "Couldn't load this task \u00b7 retries on the next sync" : "(configured task)");
-      nm.title = dt.error ? "ClickUp said: " + dt.error : (dt.lastKnownAt ? nm.textContent + " \u00b7 couldn't refresh, showing what loaded at " + new Date(dt.lastKnownAt).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" }) : nm.textContent);
-      const href = dt.url || dt.taskUrl;
-      if (href) { nm.href = href; nm.target = "_blank"; nm.rel = "noopener"; }
-      appendDoneTickOpt(nm, dt);
-      const spans = document.createElement("span");
-      spans.className = "estpairs";
-      const estTxtErr = dt.error ? "not loaded" : null;
-      const estTxt = dt.accumulated
-        ? (dt.dayEstimateMs ? "est " + fmtDurOpt(dt.dayEstimateMs) : "no estimate")
-        : (dt.isWeekday === false
-            ? "weekend 0"
-            : (dt.dayEstimateMs ? fmtDurOpt(dt.dayEstimateMs) + "/day" : "no estimate"));
-      const estSpan = document.createElement("span");
-      estSpan.className = "est" + (dt.dayEstimateMs ? "" : " zero");
-      estSpan.textContent = estTxtErr || estTxt;
-      spans.appendChild(estSpan);
-      if (Number(dt.spentMs) > 0) {
-        const trk = document.createElement("span");
-        trk.className = "trk";
-        trk.textContent = fmtDurOpt(dt.spentMs); markTrk(trk, dt);
-        spans.appendChild(trk);
+  // The list heading follows the filter; it used to say "Tasks today" whatever
+  // was chosen, which made a this-week list look like it ignored the filter.
+  const taskHead = (view.scope === "today" || view.scope === "extended" || !view.scope)
+    ? "Tasks today - each estimated / tracked"
+    : "Tasks " + (view.label || CU_SCOPE_LABEL[view.scope] || "in this view") + " - each estimated / tracked";
+  // One set of sections (configured / tasks / tracked). With clients ticked it
+  // runs once per client under that client's heading - the grouping the popup
+  // and side panel use - instead of one flat list sorted across every client.
+  const renderSections = (lists, viewDeadline, viewTasks, viewTracked, grouped) => {
+    const first = lists.children.length;
+    if (viewDeadline.length) {
+      const dHead = document.createElement("div");
+      dHead.className = "hint";
+      dHead.style.marginTop = "8px";
+      dHead.style.fontWeight = "700";
+      dHead.textContent = "Configured tasks (by URL)";
+      if (!grouped) lists.appendChild(dHead);
+      const dList = document.createElement("div");
+      dList.className = "cu-tasklist";
+      dList.style.maxHeight = "120px";
+      for (const dt of sortByPriority(viewDeadline)) {
+        const row = document.createElement("div");
+        row.className = "cu-task";
+        const nm = document.createElement("a");
+        nm.className = "nm";
+        // An { error } row means THIS refresh couldn't load the task (usually one
+        // rate-limited request). Say so, instead of a nameless "(configured task)".
+        nm.textContent = dt.name || (dt.error ? "Couldn't load this task \u00b7 retries on the next sync" : "(configured task)");
+        nm.title = dt.error ? "ClickUp said: " + dt.error : (dt.lastKnownAt ? nm.textContent + " \u00b7 couldn't refresh, showing what loaded at " + new Date(dt.lastKnownAt).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" }) : nm.textContent);
+        const href = dt.url || dt.taskUrl;
+        if (href) { nm.href = href; nm.target = "_blank"; nm.rel = "noopener"; }
+        appendDoneTickOpt(nm, dt);
+        const spans = document.createElement("span");
+        spans.className = "estpairs";
+        const estTxtErr = dt.error ? "not loaded" : null;
+        const estTxt = dt.accumulated
+          ? (dt.dayEstimateMs ? "est " + fmtDurOpt(dt.dayEstimateMs) : "no estimate")
+          : (dt.isWeekday === false
+              ? "weekend 0"
+              : (dt.dayEstimateMs ? fmtDurOpt(dt.dayEstimateMs) + "/day" : "no estimate"));
+        const estSpan = document.createElement("span");
+        estSpan.className = "est" + (dt.dayEstimateMs ? "" : " zero");
+        estSpan.textContent = estTxtErr || estTxt;
+        spans.appendChild(estSpan);
+        if (Number(dt.spentMs) > 0) {
+          const trk = document.createElement("span");
+          trk.className = "trk";
+          trk.textContent = fmtDurOpt(dt.spentMs); markTrk(trk, dt);
+          spans.appendChild(trk);
+        }
+        appendNameCellOpt(row, nm, dt);
+        row.appendChild(spans);
+        appendTaskControlsOpt(row, dt);
+        dList.appendChild(row);
       }
-      appendNameCellOpt(row, nm, dt);
-      row.appendChild(spans);
-      appendTaskControlsOpt(row, dt);
-      dList.appendChild(row);
+      lists.appendChild(dList);
     }
-    lists.appendChild(dList);
-  }
 
-  if (viewTasks.length) {
-    const listHead = document.createElement("div");
-    listHead.className = "hint";
-    listHead.style.marginTop = "8px";
-    listHead.style.fontWeight = "700";
-    listHead.textContent = "Tasks today - each estimated / tracked";
-    lists.appendChild(listHead);
-    const listEl = document.createElement("div");
-    listEl.className = "cu-tasklist";
-    // Preserve parent -> subtask grouping: sort only the top-level rows by
-    // estimate (desc), then emit each parent's subtasks (original order) right
-    // under it. A plain sort would scatter subtasks away from their parent.
-    const subsByParent = new Map();
-    const parentRows = [];
-    for (const t of viewTasks) {
-      if (t.isSubtask) {
-        const k = String(t.parentId);
-        if (!subsByParent.has(k)) subsByParent.set(k, []);
-        subsByParent.get(k).push(t);
-      } else {
-        parentRows.push(t);
+    if (viewTasks.length) {
+      const listHead = document.createElement("div");
+      listHead.className = "hint";
+      listHead.style.marginTop = "8px";
+      listHead.style.fontWeight = "700";
+      listHead.textContent = taskHead;
+      if (!grouped) lists.appendChild(listHead);
+      const listEl = document.createElement("div");
+      listEl.className = "cu-tasklist";
+      // Preserve parent -> subtask grouping: sort only the top-level rows by
+      // estimate (desc), then emit each parent's subtasks (original order) right
+      // under it. A plain sort would scatter subtasks away from their parent.
+      const subsByParent = new Map();
+      const parentRows = [];
+      for (const t of viewTasks) {
+        if (t.isSubtask) {
+          const k = String(t.parentId);
+          if (!subsByParent.has(k)) subsByParent.set(k, []);
+          subsByParent.get(k).push(t);
+        } else {
+          parentRows.push(t);
+        }
       }
-    }
-    parentRows.sort(cuPrioCmp); // priority first, then bigger estimate
-    const sorted = [];
-    const emittedSubs = new Set();
-    for (const p of parentRows) {
-      sorted.push(p);
-      const subs = subsByParent.get(String(p.id));
-      if (subs) for (const s of subs) { sorted.push(s); emittedSubs.add(s); }
-    }
-    // Orphaned subtasks (parent filtered out by a refine box) - append so none vanish.
-    for (const subs of subsByParent.values()) for (const s of subs) if (!emittedSubs.has(s)) sorted.push(s);
-    for (const t of sorted) {
-      const row = document.createElement("div");
-      row.className = "cu-task" + (t.isSubtask ? " cu-sub" : "");
-      const nm = document.createElement("a");
-      nm.className = "nm";
-      // Subtasks of a due-today parent render indented with a ↳ marker.
-      nm.textContent = (t.isSubtask ? "↳ " : "") + (t.name || "(untitled task)"); // user data -> textContent
-      nm.title = nm.textContent;
-      if (t.url) { nm.href = t.url; nm.target = "_blank"; nm.rel = "noopener"; }
-      appendDoneTickOpt(nm, t);
-      const spans = document.createElement("span");
-      spans.className = "estpairs";
-      const est = document.createElement("span");
-      est.className = "est" + (t.estimateMs ? "" : " zero");
-      est.textContent = t.estimateMs ? fmtDurOpt(t.estimateMs) : "no est";
-      spans.appendChild(est);
-      if (Number(t.spentMs) > 0) {
-        const trk = document.createElement("span");
-        trk.className = "trk";
-        trk.textContent = fmtDurOpt(t.spentMs); markTrk(trk, t);
-        spans.appendChild(trk);
+      parentRows.sort(cuPrioCmp); // priority first, then bigger estimate
+      const sorted = [];
+      const emittedSubs = new Set();
+      for (const p of parentRows) {
+        sorted.push(p);
+        const subs = subsByParent.get(String(p.id));
+        if (subs) for (const s of subs) { sorted.push(s); emittedSubs.add(s); }
       }
-      appendNameCellOpt(row, nm, t);
-      row.appendChild(spans);
-      appendTaskControlsOpt(row, t);
-      listEl.appendChild(row);
+      // Orphaned subtasks (parent filtered out by a refine box) - append so none vanish.
+      for (const subs of subsByParent.values()) for (const s of subs) if (!emittedSubs.has(s)) sorted.push(s);
+      for (const t of sorted) {
+        const row = document.createElement("div");
+        row.className = "cu-task" + (t.isSubtask ? " cu-sub" : "");
+        const nm = document.createElement("a");
+        nm.className = "nm";
+        // Subtasks of a due-today parent render indented with a ↳ marker.
+        nm.textContent = (t.isSubtask ? "↳ " : "") + (t.name || "(untitled task)"); // user data -> textContent
+        nm.title = nm.textContent;
+        if (t.url) { nm.href = t.url; nm.target = "_blank"; nm.rel = "noopener"; }
+        appendDoneTickOpt(nm, t);
+        const spans = document.createElement("span");
+        spans.className = "estpairs";
+        const est = document.createElement("span");
+        est.className = "est" + (t.estimateMs ? "" : " zero");
+        est.textContent = t.estimateMs ? fmtDurOpt(t.estimateMs) : "no est";
+        spans.appendChild(est);
+        if (Number(t.spentMs) > 0) {
+          const trk = document.createElement("span");
+          trk.className = "trk";
+          trk.textContent = fmtDurOpt(t.spentMs); markTrk(trk, t);
+          spans.appendChild(trk);
+        }
+        appendNameCellOpt(row, nm, t);
+        row.appendChild(spans);
+        appendTaskControlsOpt(row, t);
+        listEl.appendChild(row);
+      }
+      lists.appendChild(listEl);
     }
-    lists.appendChild(listEl);
-  }
 
-  if (viewTracked.length) {
-    const listHead = document.createElement("div");
-    listHead.className = "hint";
-    listHead.style.marginTop = "8px";
-    listHead.style.fontWeight = "700";
-    listHead.textContent = view.scope === "today" ? "Tracked · not due today" : "Tracked · no dates";
-    lists.appendChild(listHead);
-    const listEl = document.createElement("div");
-    listEl.className = "cu-tasklist";
-    listEl.style.maxHeight = "120px";
-    for (const t of sortByPriority(viewTracked)) {
-      const row = document.createElement("div");
-      row.className = "cu-task";
-      const nm = document.createElement("a");
-      nm.className = "nm";
-      nm.textContent = t.name || "(untitled task)";
-      nm.title = nm.textContent;
-      if (t.url) { nm.href = t.url; nm.target = "_blank"; nm.rel = "noopener"; }
-      appendDoneTickOpt(nm, t);
-      const spans = document.createElement("span");
-      spans.className = "estpairs";
-      const est = document.createElement("span");
-      est.className = "est zero";
-      est.textContent = "no est";
-      spans.appendChild(est);
-      if (Number(t.spentMs) > 0) {
-        const trk = document.createElement("span");
-        trk.className = "trk";
-        trk.textContent = fmtDurOpt(t.spentMs); markTrk(trk, t);
-        spans.appendChild(trk);
+    if (viewTracked.length) {
+      const listHead = document.createElement("div");
+      listHead.className = "hint";
+      listHead.style.marginTop = "8px";
+      listHead.style.fontWeight = "700";
+      listHead.textContent = view.scope === "today" ? "Tracked · not due today" : "Tracked · no dates";
+      lists.appendChild(listHead);
+      const listEl = document.createElement("div");
+      listEl.className = "cu-tasklist";
+      listEl.style.maxHeight = "120px";
+      for (const t of sortByPriority(viewTracked)) {
+        const row = document.createElement("div");
+        row.className = "cu-task";
+        const nm = document.createElement("a");
+        nm.className = "nm";
+        nm.textContent = t.name || "(untitled task)";
+        nm.title = nm.textContent;
+        if (t.url) { nm.href = t.url; nm.target = "_blank"; nm.rel = "noopener"; }
+        appendDoneTickOpt(nm, t);
+        const spans = document.createElement("span");
+        spans.className = "estpairs";
+        const est = document.createElement("span");
+        est.className = "est zero";
+        est.textContent = "no est";
+        spans.appendChild(est);
+        if (Number(t.spentMs) > 0) {
+          const trk = document.createElement("span");
+          trk.className = "trk";
+          trk.textContent = fmtDurOpt(t.spentMs); markTrk(trk, t);
+          spans.appendChild(trk);
+        }
+        appendNameCellOpt(row, nm, t);
+        row.appendChild(spans);
+        appendTaskControlsOpt(row, t);
+        listEl.appendChild(row);
       }
-      appendNameCellOpt(row, nm, t);
-      row.appendChild(spans);
-      appendTaskControlsOpt(row, t);
-      listEl.appendChild(row);
+      lists.appendChild(listEl);
     }
-    lists.appendChild(listEl);
+    if (grouped) {
+      // The heading already names the client: drop the per-row pill (from every
+      // row of the group, so the columns stay aligned) and keep the rows tight
+      // under their heading.
+      for (const el of [...lists.children].slice(first)) {
+        el.querySelectorAll(".cu-client").forEach((pill) => pill.remove());
+        if (el.classList.contains("cu-tasklist")) el.classList.add("cu-grouplist");
+      }
+    }
+  };
+  if (clientsSel.length) {
+    const clientOf = (t) => String((t && t.client) || "").trim();
+    for (const c of clientsSel.slice().sort((a, b) => a.localeCompare(b))) {
+      const d1 = viewDeadline.filter((t) => clientOf(t) === c);
+      const t1 = viewTasks.filter((t) => clientOf(t) === c);
+      const k1 = viewTracked.filter((t) => clientOf(t) === c);
+      if (!d1.length && !t1.length && !k1.length) continue;
+      const est = t1.reduce((a, t) => a + (Number(t.estimateMs) || 0), 0)
+        + d1.reduce((a, t) => a + (Number(t.dayEstimateMs) || 0), 0);
+      const trk = t1.concat(d1, k1).reduce((a, t) => a + (Number(t.spentMs) || 0), 0);
+      const head = document.createElement("div");
+      head.className = "cu-dhead cu-clienthead";
+      const nameSpan = document.createElement("span");
+      nameSpan.className = "cu-chname";
+      nameSpan.textContent = c;
+      nameSpan.title = c;
+      head.appendChild(nameSpan);
+      const subSpan = document.createElement("span");
+      subSpan.className = "cu-chsub";
+      subSpan.textContent = "est " + fmtDurOpt(est) + (trk > 0 ? " \u00b7 tracked " + fmtDurOpt(trk) : "");
+      head.appendChild(subSpan);
+      lists.appendChild(head);
+      renderSections(lists, d1, t1, k1, true);
+    }
+  } else {
+    renderSections(lists, viewDeadline, viewTasks, viewTracked, false);
   }
   if (lists !== box && !lists.children.length) {
     const e = document.createElement("div");
@@ -4187,6 +4333,28 @@ function cuToggleArrayVal(f, key, val, on) {
   if (on && i < 0) arr.push(val);
   else if (!on && i >= 0) arr.splice(i, 1);
 }
+// "All" at the top of the Client list: tick every client at once, or clear them
+// all. Shows a partial tick when only some are chosen. Hidden in "One at a time"
+// mode, where choosing every client would contradict the mode.
+function cuAddAllClientsBox(box, values, checked) {
+  if (!box || cuFilterSingle || values.length < 2) return;
+  const n = values.filter((v) => checked.includes(v)).length;
+  const label = document.createElement("label");
+  label.className = "cu-filter-all";
+  label.title = "Tick or untick every client";
+  const input = document.createElement("input");
+  input.type = "checkbox";
+  input.setAttribute("data-cf-client-all", "");
+  input.checked = n === values.length;
+  input.indeterminate = n > 0 && n < values.length;
+  const span = document.createElement("span");
+  span.textContent = "All";
+  label.appendChild(input);
+  label.appendChild(document.createTextNode(" "));
+  label.appendChild(span);
+  box.insertBefore(label, box.firstChild);
+}
+
 function cuBuildFacetList(box, attr, values, checked, labelFn) {
   if (!box) return;
   const lbl = labelFn || cuPrettyName;
@@ -4319,6 +4487,7 @@ function optRenderCuFilterMenu() {
   cuBuildFacetList($("optCuFilterStatusList"), "data-cf-status", statusVals, statuses);
   cuBuildFacetList($("optCuFilterPriorityList"), "data-cf-priority", priorityVals, priorities);
   cuBuildFacetList($("optCuFilterClientList"), "data-cf-client", clientVals, clients, (v) => v);
+  cuAddAllClientsBox($("optCuFilterClientList"), clientVals, clients);
   const sg = $("optCuFilterStatusGroup"); if (sg) sg.hidden = !statusVals.length;
   const pg = $("optCuFilterPriorityGroup"); if (pg) pg.hidden = !priorityVals.length;
   const cg = $("optCuFilterClientGroup"); if (cg) cg.hidden = !clientVals.length;
@@ -4420,6 +4589,9 @@ function optRepaintCuPreview() {
     if (el.hasAttribute("data-cf")) cuFilter[el.getAttribute("data-cf")] = el.checked;
     else if (el.hasAttribute("data-cf-status")) cuToggleArrayVal(cuFilter, "statuses", el.getAttribute("data-cf-status"), el.checked);
     else if (el.hasAttribute("data-cf-priority")) cuToggleArrayVal(cuFilter, "priorities", el.getAttribute("data-cf-priority"), el.checked);
+    else if (el.hasAttribute("data-cf-client-all")) cuFilter.clients = el.checked
+      ? [...menu.querySelectorAll("input[data-cf-client]")].map((x) => x.getAttribute("data-cf-client"))
+      : [];
     else if (el.hasAttribute("data-cf-client")) cuToggleArrayVal(cuFilter, "clients", el.getAttribute("data-cf-client"), el.checked);
     else return;
     chrome.storage.local.set({ cuFilter }).catch(() => {});

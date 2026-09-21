@@ -1,5 +1,14 @@
 # Changelog
 
+## v3.8.8
+- **New: see who each task is assigned to.** Every task shows its assignees as small initials in coloured circles next to the name; hover a circle for the full name. Two people show as two circles, three or more as one circle plus "+2" (hover lists the rest). Each person keeps the same colour everywhere, and the columns stay lined up.
+- **New: "Only tasks shared by everyone ticked" in Explore's Pick people.** By default you see tasks assigned to any of the people you tick; tick this to see only the tasks they are all assigned to together. Totals, export and the title follow.
+- **New: an "All" box under Client in the Filter menu** ticks or clears every client at once.
+- **Changed: tasks with more than one assignee show a dimmed Start button.** They can only be started in ClickUp; hovering or clicking the button says so instead of trying.
+- **Fixed: the options page Dashboard list didn't follow the filter.** With clients ticked it now groups tasks under each client like the popup does, and its heading names the chosen dates instead of always saying "Tasks today".
+- **Fixed: more space between clients** in the grouped list (popup, side panel and options), with a divider, so it's clear which tasks belong to which client.
+- **Fixed: finished tasks were out of line with the rest of the list.** They had no button column, so their client, due date and time shifted right; they now line up.
+
 ## v3.8.7
 - **Fixed: an Agent Router login could freeze, and Stop didn't stop it.** If a request to Agent Router stalled, the login waited forever: the page sat still, the extension kept saying it was running, Stop only changed its own label, and the Run buttons stayed greyed out even after the tab was closed. Every step now has a time limit, Stop ends a run within about a second, closing the tab ends it straight away, and Run all no longer moves on to the next account after Stop. If Agent Router's page stops responding, the run ends with a message saying so.
 - **Fixed: Pick people seemed to do nothing when you ticked someone.** Ticks only counted after pressing a "Show tasks" button, and clicking anywhere else threw them away. A tick now takes effect straight away, the tasks load a moment after you stop ticking (or as soon as you close the list), and "Show tasks" is now "Done".

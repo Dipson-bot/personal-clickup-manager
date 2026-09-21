@@ -1140,6 +1140,7 @@ export async function fetchDeadlineTaskEstimate({ token, teamId, taskUrl, todayB
       hasEstimate: task.hasEstimate,
       isWeekday: weekday,
       dayOfWeek: dayOfWeek(now),
+      assignees: task.assignees || [],
       url: task.url,
       status: task.status,
       priority: task.priority || "",
@@ -1280,6 +1281,7 @@ export async function fetchExtendedTaskEstimate({ token, teamId, taskUrl, todayB
       hasEstimate: task.hasEstimate,
       isWeekday: isWeekday(now),
       dayOfWeek: dayOfWeek(now),
+      assignees: task.assignees || [],
       url: task.url,
       status: task.status,
       priority: task.priority || "",
@@ -1477,7 +1479,7 @@ export async function fetchWeeklySummary({ token, teamId, userId, taskUrls = [],
       const est = Number(t.time_estimate) || 0;
       const sp = dayTime.get(t.id) || 0;
       dayEst += est;
-      dayRows.push({ id: t.id, name: t.name || "(untitled task)", url: taskUrlFor(t.id), estimateMs: est, totalEstimateMs: est, dueDateMs: Number(t.due_date) || null, spentMs: sp, done: isTaskDone(t), status: (t.status && t.status.status) || "", priority: cuPriorityName(t), type: "due", parentId: t.parent != null ? String(t.parent) : null, container: taskContainer(t) });
+      dayRows.push({ id: t.id, name: t.name || "(untitled task)", url: taskUrlFor(t.id), estimateMs: est, totalEstimateMs: est, dueDateMs: Number(t.due_date) || null, spentMs: sp, done: isTaskDone(t), status: (t.status && t.status.status) || "", priority: cuPriorityName(t), type: "due", parentId: t.parent != null ? String(t.parent) : null, assignees: cuRowAssignees(t), container: taskContainer(t) });
     }
     // Configured tasks active on this day (skip the extra and anything already
     // counted in the due list). The auto-detected "Extra(s) Task(s)" is matched
@@ -1515,7 +1517,7 @@ export async function fetchWeeklySummary({ token, teamId, userId, taskUrls = [],
       if (Number(tt.startDateMs) || 0) continue;
       if (Number(tt.dueDateMs) || 0) continue;
       if (EXTRA_TASK_NAME_RE.test(tt.name || "")) continue;
-      trackedTasks.push({ id: tid, name: tt.name || "(untitled task)", url: tt.url || taskUrlFor(tid), estimateMs: 0, spentMs: mv, done: isTaskDone(tt), status: tt.status || "", priority: tt.priority || "", startDateMs: null, dueDateMs: null, type: "tracked", container: tt.container });
+      trackedTasks.push({ id: tid, name: tt.name || "(untitled task)", url: tt.url || taskUrlFor(tid), estimateMs: 0, spentMs: mv, done: isTaskDone(tt), status: tt.status || "", priority: tt.priority || "", startDateMs: null, dueDateMs: null, type: "tracked", assignees: tt.assignees || [], container: tt.container });
     }
     perDay.push({ ts, estimateMs: dayEst, spentMs: daySpent, tasks: dayRows, trackedTasks });
   }
@@ -1621,6 +1623,17 @@ export async function fetchWeeklySummary({ token, teamId, userId, taskUrls = [],
 // estimates, the filtered-task endpoint returns the task's ROLLED-UP estimate
 // (all assignees), not just this user's slice. For solo-assigned tasks (the
 // common case for "due today, assigned to me") this is exact.
+// Who a task is assigned to, kept small ({ id, username }) on every task row so
+// the list can mark multi-person tasks (▶ becomes a greyed 👥 - only single-
+// assignee tasks can be started from the extension). Same data ClickUp already
+// sends with each task: no extra requests.
+export function cuRowAssignees(t) {
+  return (Array.isArray(t && t.assignees) ? t.assignees : []).map((a) => ({
+    id: a && a.id != null ? String(a.id) : "",
+    username: (a && (a.username || a.email)) || "",
+  }));
+}
+
 export async function fetchTodayEstimate({ token, teamId, userId, targetHours = 7, deadlineTaskUrls = [], now = Date.now(), extendedMode = "days", taskCache }) {
   const rawTasks = await getTasksDueToday(token, teamId, userId, now);
   // Fetch today's tracked time per task ONCE (time entries API), so both the
@@ -1695,6 +1708,7 @@ export async function fetchTodayEstimate({ token, teamId, userId, targetHours = 
       // view's rows carry it, and without it Due today could not group a
       // subtask that is itself due today (it stayed flat).
       parentId: t.parent != null ? String(t.parent) : null,
+      assignees: cuRowAssignees(t),
       container: taskContainer(t),
       url: taskUrlFor(t.id),
     });
@@ -1761,6 +1775,7 @@ export async function fetchTodayEstimate({ token, teamId, userId, targetHours = 
         url: taskUrlFor(s.id),
         isSubtask: true,
         parentId: parentId,
+        assignees: cuRowAssignees(s),
         dueDateMs: sDue || null,
       });
     }
@@ -1811,6 +1826,7 @@ export async function fetchTodayEstimate({ token, teamId, userId, targetHours = 
           startDateMs: dt.startDateMs,
           dueDateMs: dt.dueDateMs,
           fromDates: dt.startDateMs && dt.dueDateMs,
+          assignees: dt.assignees || [],
           container: dt.container,
         });
         deadlineEstimateMs += dt.dayEstimateMs;
@@ -1847,6 +1863,7 @@ export async function fetchTodayEstimate({ token, teamId, userId, targetHours = 
         done: isTaskDone(t),
         status: t.status || "",
         priority: t.priority || "",
+        assignees: t.assignees || [],
         hasEstimate: false,
         container: t.container,
         startDateMs: t.startDateMs || null,
@@ -2038,6 +2055,7 @@ export async function fetchDateRangeEstimate({ token, teamId, userId, fromTs, to
       // Who this task hangs off, for the "group subtasks" filter. Indentation
       // only happens when that filter is on, never from this field alone.
       parentId: t.parent != null ? String(t.parent) : null,
+      assignees: cuRowAssignees(t),
       extended: !!scaled,
       divisor,
       totalDays,
@@ -2101,6 +2119,7 @@ export async function fetchDateRangeEstimate({ token, teamId, userId, fromTs, to
           done: isTaskDone(task),
           startDateMs: task.startDateMs,
           dueDateMs: task.dueDateMs,
+          assignees: task.assignees || [],
           container: task.container,
         });
       }
@@ -2130,6 +2149,7 @@ export async function fetchDateRangeEstimate({ token, teamId, userId, fromTs, to
       done: isTaskDone(t),
       status: t.status || "",
       priority: t.priority || "",
+      assignees: t.assignees || [],
       container: t.container,
       startDateMs: t.startDateMs || null,
       dueDateMs: t.dueDateMs || null,
