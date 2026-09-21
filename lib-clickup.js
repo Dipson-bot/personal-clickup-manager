@@ -384,8 +384,60 @@ export async function getTasksDueToday(token, teamId, userId, now = Date.now()) 
 // viewer's day. Returns the raw task objects (time_estimate/time_spent/dates).
 // A single task's export fields (ClickUp's subtask lists carry no description,
 // so each subtask has to be asked for separately).
+// Proof links (screenshots, files, pages) written in a task's description, in
+// order, without duplicates. Reads ClickUp's MARKDOWN description where there is
+// one: the plain-text version drops the address behind a linked word. Anything
+// that isn't a real web address ("https:///locations/", half a sentence glued to
+// "https://") is skipped, and trailing punctuation / markdown is trimmed off.
+export function extractTaskLinks(text) {
+  const out = [];
+  const seen = new Set();
+  for (const m of String(text || "").matchAll(/https?:\/\/[^\s<>()\[\]"'`|]+/gi)) {
+    // ClickUp's markdown escapes characters inside plain links (my\_sheet for
+    // my_sheet) - undo that, or the link is broken AND looks different from the
+    // same link written normally, so it gets listed twice.
+    const u = m[0].replace(/\\([\\`*_{}\[\]()#+\-.!~|>])/g, "$1").replace(/[.,;:!?*_~\\]+$/, "");
+    let ok = false;
+    try { const p = new URL(u); ok = /^https?:$/.test(p.protocol) && /^[a-z0-9-]+(\.[a-z0-9-]+)*\.[a-z]{2,}$/i.test(p.hostname); } catch (e) {}
+    if (ok && !seen.has(u)) { seen.add(u); out.push(u); }
+  }
+  return out;
+}
+
+// Every task assigned to `userId` that was marked done/closed between fromTs and
+// toTs (ClickUp's own date_done), in every project, subtasks included - for the
+// wrap-up page's Daily Tasks Update. Rows that come back without a description
+// (ClickUp leaves it off some subtasks) are flagged so the caller can fetch it.
+export async function fetchDoneBetween(token, teamId, userId, fromTs, toTs) {
+  const out = [];
+  const seen = new Set();
+  for (let page = 0; page < MAX_PAGES; page++) {
+    const j = await cuFetch(token, "/team/" + teamId + "/task", [
+      ["assignees[]", String(userId)], ["include_closed", "true"], ["subtasks", "true"],
+      ["include_markdown_description", "true"],
+      ["date_done_gt", String(fromTs - 1)], ["date_done_lt", String(toTs + 1)], ["page", String(page)],
+    ]);
+    const tasks = Array.isArray(j && j.tasks) ? j.tasks : [];
+    for (const t of tasks) {
+      if (!t || t.id == null || seen.has(String(t.id)) || !isTaskDone(t)) continue;
+      seen.add(String(t.id));
+      const text = t.markdown_description || t.description || t.text_content || "";
+      out.push({
+        id: String(t.id), name: t.name || "(untitled task)", url: taskUrlFor(t.id),
+        parentId: t.parent != null ? String(t.parent) : null, container: taskContainer(t),
+        doneAt: Number(t.date_done || t.date_closed) || 0, links: extractTaskLinks(text),
+        // A description but no formatted (markdown) copy: read the task itself, or
+        // links behind linked words would be lost. No description = nothing to read.
+        needDetail: !t.markdown_description && !!String(t.description || t.text_content || "").trim() || (!t.markdown_description && !t.description && !t.text_content && t.parent != null),
+      });
+    }
+    if (tasks.length < 100 || (j && j.last_page === true)) break;
+  }
+  return out;
+}
+
 export async function getTaskDetail(token, taskId) {
-  const t = await cuFetch(token, "/task/" + encodeURIComponent(String(taskId)));
+  const t = await cuFetch(token, "/task/" + encodeURIComponent(String(taskId)), [["include_markdown_description", "true"]]);
   const rows = Array.isArray(t && t.dependencies) ? t.dependencies : [];
   const id = String((t && t.id) || "");
   return {
@@ -395,6 +447,7 @@ export async function getTaskDetail(token, taskId) {
     id: t && t.id,
     name: (t && t.name) || "",
     description: String((t && (t.description || t.text_content)) || "").trim(),
+    links: extractTaskLinks((t && (t.markdown_description || t.description || t.text_content)) || ""),
     status: (t && t.status && t.status.status) || "",
     done: isTaskDone(t),
     dueDateMs: t && t.due_date ? Number(t.due_date) : null,
@@ -423,7 +476,7 @@ export async function getTaskTree(token, parentId, userId) {
     j = hit.j;
   } else {
     try {
-      j = await cuFetch(token, "/task/" + encodeURIComponent(key), [["include_subtasks", "true"]]);
+      j = await cuFetch(token, "/task/" + encodeURIComponent(key), [["include_subtasks", "true"], ["include_markdown_description", "true"]]);
     } catch (e) {
       if (e && e.status === 429) throw e; // let callers back off
       return { parent: null, subtasks: [] };
@@ -458,6 +511,7 @@ export async function getTaskTree(token, parentId, userId) {
     id: t && t.id,
     name: (t && t.name) || "",
     description: String((t && (t.description || t.text_content)) || "").trim(),
+    links: extractTaskLinks((t && (t.markdown_description || t.description || t.text_content)) || ""),
     status: (t && t.status && t.status.status) || "",
     done: isTaskDone(t),
     dueDateMs: t && t.due_date ? Number(t.due_date) : null,

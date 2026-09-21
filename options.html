@@ -304,6 +304,8 @@
   .cu-who .av.more { background: var(--muted); }
   /* Finished task: same-width empty slot, so its row lines up with the rest. */
   .cu-actions-ghost { visibility: hidden; }
+  /* Task lists stretch from their bottom-right corner (makeListResizable). */
+  .cu-tasklist.cu-resizable { resize: vertical; min-height: 60px; }
   .cu-iconbtn.done { font-weight: 700;color: var(--green); border-color: var(--green); }
   .cu-iconbtn.done:hover:not(:disabled) { color: #fff; background: var(--green); }
   .cu-iconbtn:disabled { opacity: 0.55; cursor: not-allowed; }
@@ -410,6 +412,10 @@
   .flt-people-menu .foot .n { font-size: 11px; color: var(--muted); }
   .flt-people-menu label.and { font-weight: 600; border-bottom: 1px solid var(--border); border-radius: 6px 6px 0 0; margin-bottom: 4px; padding-bottom: 6px; white-space: normal; }
   .flt-people-menu label.and.off { opacity: .5; }
+  .flt-people-menu .psearch { width: 100%; box-sizing: border-box; margin: 2px 0 4px; padding: 5px 8px; font-size: 12.5px; border: 1px solid var(--border); border-radius: 7px; background: var(--bg); color: var(--text); }
+  .flt-people-menu .psearch:focus { outline: none; border-color: var(--indigo); }
+  .flt-people-menu label[hidden], .flt-people-menu .grp[hidden] { display: none; }
+  .flt-people-menu .pnone { font-size: 12px; color: var(--muted); padding: 6px 4px; }
   .flt-people-menu .foot button { width: auto; font-size: 12px; padding: 4px 10px; }
   .cu-filter-menu[hidden] { display: none; }
   .cu-filter-menu label { display: flex; align-items: center; gap: 8px; padding: 6px 8px; font-size: 12.5px; font-weight: 500; color: var(--text); cursor: pointer; border-radius: 7px; white-space: nowrap; }
@@ -1398,7 +1404,7 @@
       <h2>Publish a new version</h2>
       <p class="hint" style="margin-bottom:14px;line-height:1.55;">
         Packages the extension exactly as it runs on this computer and publishes it as a GitHub release.
-        Everyone else's extension offers them the update automatically (within about 12 hours, or straight away if they press <i>Check for updates</i>).
+        Everyone else's extension offers them the update automatically, on the schedule set in <b>Update notifications</b> below (or straight away if they press <i>Check for updates</i>).
       </p>
       <ol class="adm-steps">
         <li>Change the version below and press <b>Set version &amp; reload</b> (it writes manifest.json in this extension's folder and restarts it).</li>
@@ -1438,9 +1444,41 @@
     </div>
 
     <div class="card">
+      <h2>Update notifications</h2>
+      <p class="hint" style="margin-bottom:12px;line-height:1.55;">
+        Controls when <b>everyone's</b> extension tells them a new version is out. Saved to your repository
+        (<code>update-policy.json</code>), which every installed copy reads - so it works for all users, not just this computer.
+        Every copy checks once a minute, so <b>Notify everyone now</b> reaches everyone with Chrome open within about 1-2 minutes;
+        publishing from this panel does that for you automatically. Copies installed before this existed start following it once they update.
+      </p>
+      <div class="row" style="max-width:620px;">
+        <div>
+          <label>Remind again every <span class="hint">- hours, 1-168, until they update</span></label>
+          <input type="number" id="admPolRemind" min="1" max="168" step="1" placeholder="24" />
+        </div>
+      </div>
+      <div class="row" style="max-width:620px;margin-top:10px;">
+        <div>
+          <label>Don't notify before <span class="hint">- optional: publish now, announce later</span></label>
+          <input type="datetime-local" id="admPolHold" />
+        </div>
+      </div>
+      <div class="checkbox" style="margin-top:10px;">
+        <input type="checkbox" id="admPolImportant" />
+        <label for="admPolImportant" style="margin:0;font-weight:400;">The latest version is important <span class="hint">- the notice says "Please do this today" and reminds at least every 4 hours</span></label>
+      </div>
+      <div class="btns" style="margin-top:12px;">
+        <button class="primary" id="admPolNotify" title="Everyone with Chrome open sees the update notice within about 1-2 minutes; everyone else when Chrome next starts">Notify everyone now</button>
+        <button type="button" id="admPolSave">Save settings</button>
+        <span class="saved" id="admPolMsg" style="display:none;"></span>
+      </div>
+      <p class="hint" id="admPolState" style="margin-top:8px;"></p>
+    </div>
+
+    <div class="card">
       <h2>GitHub access</h2>
       <p class="hint" style="margin-bottom:12px;line-height:1.55;">
-        Needed only for <b>Upload this new version</b>. Create a fine-grained token at
+        Needed for <b>Upload this new version</b> and <b>Update notifications</b>. Create a fine-grained token at
         <a href="https://github.com/settings/personal-access-tokens/new" target="_blank" rel="noopener">github.com/settings/personal-access-tokens</a>
         with access to <b id="admRepo">this repository</b> and permission <b>Contents: read and write</b>.
         The token is encrypted and kept on this computer only - it is never part of a release, so nobody else gets it.

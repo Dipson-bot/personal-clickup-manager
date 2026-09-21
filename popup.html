@@ -216,6 +216,8 @@
   .cu-who .av.more { background: var(--muted); }
   /* Finished task: same-width empty slot, so its row lines up with the rest. */
   .cu-actions-ghost { visibility: hidden; }
+  /* Task lists stretch from their bottom-right corner (makeListResizable). */
+  .cu-tasklist.cu-resizable { resize: vertical; min-height: 60px; }
   .cu-iconbtn.done { font-weight: 700;color: var(--green); border-color: var(--green); }
   .cu-iconbtn.done:hover:not(:disabled) { color: #fff; background: var(--green); }
   .cu-iconbtn:disabled { opacity: 0.55; cursor: not-allowed; }

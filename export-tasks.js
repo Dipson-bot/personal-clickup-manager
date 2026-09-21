@@ -96,20 +96,34 @@
     return f(start) + " - " + f(end);
   }
   // Fixed layout, as the team's sheet uses it.
-  // rows: [{ name, isSubtask, info, status, done, dueDateMs }]
+  // rows: [{ name, isSubtask, info, status, done, dueDateMs, links }]
+  // Links from each task's description follow as Link 1, Link 2 ... - one address
+  // per cell, so every one is clickable in Sheets and Excel.
+  const MAX_LINK_COLS = 20;
+  const linksOf = (t) => (Array.isArray(t && t.links) ? t.links : []).slice(0, MAX_LINK_COLS);
   function toMatrix(rows) {
-    const out = [["", "Task", "Task info", "Status", "Week"]];
+    const n = rows.reduce((m, t) => Math.max(m, linksOf(t).length), 0);
+    const head = ["", "Task", "Task info", "Status", "Week"];
+    for (let i = 1; i <= n; i++) head.push("Link " + i);
+    const out = [head];
     for (const t of rows) {
-      out.push([
+      const l = linksOf(t);
+      const row = [
         t.isSubtask ? "sub task" : "main",
         t.name || "",
         cleanInfo(t.info),
         t.status || (t.done ? "complete" : ""),
         weekLabel(t.dueDateMs),
-      ]);
+      ];
+      for (let i = 0; i < n; i++) row.push(l[i] || "");
+      out.push(row);
     }
     return out;
   }
+  // "Click Here 1  Click Here 2" links, for the Docs / Excel / Markdown exports.
+  const linkLabel = (i, total) => "Click Here" + (total > 1 ? " " + (i + 1) : "");
+  const linksHtml = (t) => linksOf(t).map((u, i, a) => '<a href="' + esc(u) + '">' + linkLabel(i, a.length) + "</a>").join(" &nbsp;");
+  const linksMd = (t) => linksOf(t).map((u, i, a) => "[" + linkLabel(i, a.length) + "](" + u + ")").join("  ");
   const toCsv = (m) => m.map((r) => r.map(csvCell).join(",")).join("\r\n");
   // HTML table: Excel opens it, and Google Drive converts it keeping the bold.
   function toHtml(m, title) {
@@ -118,7 +132,9 @@
       const main = r[0] === "main";
       const a = '<td style="font-style:italic;vertical-align:bottom">' + esc(r[0]) + "</td>";
       const b = '<td style="vertical-align:bottom' + (main ? ";font-weight:bold" : "") + '">' + esc(r[1]).replace(/\n/g, "<br>") + "</td>";
-      const rest = r.slice(2).map((c) => '<td style="vertical-align:top">' + esc(c) + "</td>").join("");
+      const rest = r.slice(2).map((c, j) => (j + 2 >= 5 && /^https?:\/\//.test(c)
+        ? '<td style="vertical-align:top"><a href="' + esc(c) + '">Click Here ' + (j - 2) + "</a></td>"
+        : '<td style="vertical-align:top">' + esc(c) + "</td>")).join("");
       return "<tr>" + a + b + rest + "</tr>";
     }).join("");
     return '<html><head><meta charset="utf-8"><title>' + esc(title) + "</title></head><body>" +
@@ -141,11 +157,12 @@
         parts.push("<h2>" + esc(t.name || "(task)") + "</h2>");
         if (meta) parts.push('<p style="color:#666666">' + esc(meta) + "</p>");
         for (const line of infoHtml(t)) parts.push('<p style="margin-bottom:6pt">' + line + "</p>");
+        if (linksOf(t).length) parts.push('<p style="margin-bottom:6pt"><b>Links:</b> ' + linksHtml(t) + "</p>");
       } else {
         if (!openList) { parts.push("<ul>"); openList = true; }
         const info = infoHtml(t).join(" ");
         parts.push('<li style="margin-bottom:6pt"><b>' + esc(t.name || "(subtask)") + "</b>" + (meta ? ' <span style="color:#666666">(' + esc(meta) + ")</span>" : "") +
-          (info ? "<br>" + info : "") + "</li>");
+          (info ? "<br>" + info : "") + (linksOf(t).length ? "<br><b>Links:</b> " + linksHtml(t) : "") + "</li>");
       }
     }
     closeList();
@@ -224,6 +241,7 @@
         if (t.waitingOn) lines.push("  Held up by " + t.waitingOn.who + (t.waitingOn.overdue ? " (overdue)" : "") + (t.waitingOn.what ? ": " + t.waitingOn.what : ""));
         const info = cleanInfo(t.info);
         if (info) for (const l of info.split("\n")) lines.push("  " + l);
+        if (linksOf(t).length) lines.push("  Links: " + linksMd(t));
       } else {
         lines.push("## " + (t.name || "(task)"));
         lines.push("*" + facts.join(" · ") + "*" + link(t));
@@ -233,6 +251,7 @@
         if (t.waitingOn) lines.push("**Held up by " + t.waitingOn.who + (t.waitingOn.overdue ? " (overdue)" : "") + "**" + (t.waitingOn.what ? ": " + t.waitingOn.what : ""));
         const info = cleanInfo(t.info);
         if (info) { lines.push(""); for (const l of info.split("\n")) lines.push(l); }
+        if (linksOf(t).length) lines.push("", "**Links:** " + linksMd(t));
       }
       return lines;
     };
@@ -289,6 +308,7 @@
         dependsOn: d.dependsOn || t.dependsOn || [],
         blocks: d.blocks || t.blocks || [],
         estimateMs: Number(d.estimateMs) || Number(t.estimateMs) || 0,
+        links: Array.isArray(d.links) ? d.links : (t.links || []),
       };
     });
     const byId = new Map(rows.map((t) => [String(t.id), t]));

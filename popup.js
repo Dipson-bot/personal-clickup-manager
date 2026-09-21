@@ -736,7 +736,7 @@ function startEditDue(chip, task) {
   const input = document.createElement("input");
   input.type = "date";
   input.className = "due-input";
-  input.title = "Enter = save, Esc = cancel. Empty = no due date.";
+  input.title = "Pick a date to save it, or type it and press Enter. Esc = cancel. Clear = no due date.";
   if (ms) {
     const d = new Date(ms);
     input.value = d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0") + "-" + String(d.getDate()).padStart(2, "0");
@@ -744,6 +744,10 @@ function startEditDue(chip, task) {
   chip.textContent = "";
   chip.appendChild(input);
   input.focus();
+  // Open the calendar straight away - the click that started the edit counts
+  // as the user gesture showPicker() needs. (Before, you got a mm/dd/yyyy box
+  // to type into and had to find the tiny calendar icon yourself.)
+  try { input.showPicker(); } catch (e) {}
   let done = false;
   let saving = false;
   const finish = (text, cls, title) => {
@@ -779,6 +783,12 @@ function startEditDue(chip, task) {
     }
   };
   input.addEventListener("blur", save);
+  // A date picked in the calendar (or its Clear button) saves at once. Typing
+  // also fires change after each part of the date, so a change that follows a
+  // keystroke waits for Enter / leaving the box instead of saving half-typed.
+  let lastKeyAt = 0;
+  input.addEventListener("keydown", () => { lastKeyAt = Date.now(); });
+  input.addEventListener("change", () => { if (Date.now() - lastKeyAt > 400) save(); });
   input.addEventListener("keydown", (e) => {
     if (e.key === "Enter") { e.preventDefault(); save(); }
     else if (e.key === "Escape") { e.preventDefault(); input.removeEventListener("blur", save); cancel(); }
@@ -826,6 +836,43 @@ function whoSlot(t) {
   for (const a of shown) circle(cuInitials(a.username), nameOf(a), cuAvatarColor(a.id || a.username));
   if (list.length > 2) circle("+" + (list.length - 1), list.slice(1).map(nameOf).join(", "), "", "more");
   return slot;
+}
+
+// Drag the bottom-right corner of a task list to make it taller or shorter,
+// like the box on the wrap-up page; the height is remembered per list and a
+// double-click on that corner puts it back to normal. The normal cap on the
+// list's height is lifted the moment a drag starts, so it can grow past it.
+function makeListResizable(el, key) {
+  if (!el || el._pcmResizable) return;
+  el._pcmResizable = true;
+  el.classList.add("cu-resizable");
+  const store = "pcm.listH." + key;
+  let saved = 0;
+  try { saved = Number(localStorage.getItem(store)) || 0; } catch (e) {}
+  if (saved > 40) { el.style.height = saved + "px"; el.style.maxHeight = "none"; }
+  const inCorner = (e) => { const r = el.getBoundingClientRect(); return e.clientX > r.right - 18 && e.clientY > r.bottom - 18; };
+  const save = () => {
+    if (!el.style.height || !el.isConnected || !el.offsetHeight) return; // only after the user dragged it
+    try { localStorage.setItem(store, String(el.offsetHeight)); } catch (e) {}
+  };
+  el.addEventListener("pointerdown", (e) => {
+    if (!inCorner(e)) return;
+    el.style.maxHeight = "none";
+    // Saved when the drag ends (the size watcher below is only a backup: it
+    // depends on the page repainting, which a hidden panel doesn't do).
+    window.addEventListener("pointerup", () => setTimeout(save, 0), { once: true });
+  });
+  el.addEventListener("dblclick", (e) => {
+    if (!inCorner(e)) return;
+    el.style.height = "";
+    el.style.maxHeight = "";
+    try { localStorage.removeItem(store); } catch (e2) {}
+  });
+  let t = null;
+  new ResizeObserver(() => {
+    clearTimeout(t);
+    t = setTimeout(save, 300);
+  }).observe(el);
 }
 
 function appendNameCell(row, nm, t, opts) {
@@ -3036,3 +3083,6 @@ function arVisible(st) {
 function applyArVisibility(st) {
   document.body.classList.toggle("no-ar", !arVisible(st));
 }
+
+// The main task list (popup and side panel remember their own heights).
+makeListResizable(document.getElementById("cuTaskList"), IN_PANEL ? "panel" : "popup");
