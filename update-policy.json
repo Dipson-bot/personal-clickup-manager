@@ -3,10 +3,10 @@
   "remindEveryHours": 24,
   "important": false,
   "holdUntil": 0,
-  "notifyNonce": "mub4uh7g",
-  "notifiedAllAt": 1789988348572,
-  "updatedAt": 1789988348572,
-  "latest": "3.8.10",
-  "zip": "https://github.com/Dipson-bot/personal-clickup-manager/releases/download/v3.8.10/personal-clickup-manager-v3.8.10.zip",
-  "url": "https://github.com/Dipson-bot/personal-clickup-manager/releases/tag/v3.8.10"
+  "notifyNonce": "mub66bbe",
+  "notifiedAllAt": 1789990580426,
+  "updatedAt": 1789990580426,
+  "latest": "3.9.0",
+  "zip": "https://github.com/Dipson-bot/personal-clickup-manager/releases/download/v3.9.0/personal-clickup-manager-v3.9.0.zip",
+  "url": "https://github.com/Dipson-bot/personal-clickup-manager/releases/tag/v3.9.0"
 }
