@@ -18,7 +18,7 @@ import {
   pullAccountsFromDrive,
 } from "./lib-drive.js";
 import { runAllAccounts, runAccountLogin, URLS, GITHUB_KEEP_COOKIES } from "./lib-automation.js";
-import { verifyToken, getTeams, fetchTodayEstimate, fetchWeeklySummary, fetchDateRangeEstimate, createTaskCache, fetchTeamMembers, fmtDuration, findExtraTaskByName, parseTaskIdFromUrl, getCurrentTimeEntry, getRunningTaskProgress, startTimer, stopTimer, getTaskById, setTaskStatus, taskUrlFor, clientLabelFromContainer, resolveSpaceNamesFor, taskContainer, cuPriorityName, isTaskDone, getSubtasksOfParent, getTaskTree, getTaskDetail, updateTimeEntry, setTaskDueDate } from "./lib-clickup.js";
+import { verifyToken, getTeams, fetchTodayEstimate, fetchWeeklySummary, fetchDateRangeEstimate, createTaskCache, fetchTeamMembers, fmtDuration, findExtraTaskByName, parseTaskIdFromUrl, getCurrentTimeEntry, getRunningTaskProgress, startTimer, stopTimer, getTaskById, setTaskStatus, taskUrlFor, clientLabelFromContainer, resolveSpaceNamesFor, taskContainer, cuPriorityName, isTaskDone, getSubtasksOfParent, getTaskTree, getTaskDetail, updateTimeEntry, setTaskDueDate, clearTaskTreeCache } from "./lib-clickup.js";
 import { resolveRelayKey, pickProbeModel, probeRelay } from "./lib-availability.js";
 
 const CHECK_ALARM = "dailyLoginCheck";
@@ -1135,6 +1135,8 @@ async function discoverExtraTaskFor(cfg, userId, hint, range) {
       teamId: cfg.teamId,
       userId: userId != null ? userId : cfg.userId,
       usernameHint: hint || (String(userId) === String(cfg.userId) ? (cfg.username || cfg.email || "") : ""),
+      // Only YOUR Extra Task gets the whole-task-list fallback; see findExtraTaskByName.
+      fullScan: String(userId != null ? userId : cfg.userId) === String(cfg.userId),
       fromTs: from,
       toTs: to,
     });
@@ -3413,9 +3415,16 @@ chrome.notifications.onClicked.addListener((id) => {
 });
 
 // ---------- messaging ----------
+const TASK_MUTATIONS = new Set([
+  "CLICKUP_TASK_START", "CLICKUP_TASK_STOP", "CLICKUP_TASK_COMPLETE",
+  "SET_CLICKUP_ESTIMATE", "CLICKUP_SET_DUE", "CLICKUP_MOVE_DUE",
+]);
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   (async () => {
     try {
+      // Anything that changes a task from the extension must not be hidden by the
+      // 2-minute subtask cache (lib-clickup getTaskTree).
+      if (TASK_MUTATIONS.has(msg && msg.type)) clearTaskTreeCache();
       switch (msg.type) {
       case "GET_STATE": {
         const settings = await getSettings();

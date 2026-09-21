@@ -299,6 +299,12 @@
   .cu-iconbtn:disabled { opacity: 0.55; cursor: not-allowed; }
   /* Inline per-row message (e.g. the multi-assignee refusal) - spans the row below the controls. */
   .cu-rowmsg { flex-basis: 100%; font-size: 11px; color: var(--amber); line-height: 1.35; margin: 1px 0 2px; }
+  .cu-task.has-msg { flex-wrap: wrap; }
+  .cu-rowmsg:not(.cu-rowconfirm) { display: flex; align-items: center; gap: 8px; padding: 3px 6px; border-radius: 6px; background: color-mix(in srgb, var(--amber) 10%, transparent); }
+  .cu-rowmsg-txt { flex: 1; min-width: 0; }
+  .cu-rowmsg a { color: var(--amber); text-decoration: underline; font-weight: 600; white-space: nowrap; }
+  .cu-rowmsg-x { background: none; border: 0; color: var(--muted); cursor: pointer; font-size: 11px; line-height: 1; padding: 0 2px; width: auto; }
+  .cu-rowmsg-x:hover { color: var(--text); }
   .cu-rowconfirm { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
   .cu-confirm-btns { display: inline-flex; gap: 6px; }
   .cu-rowconfirm .cu-iconbtn { font-size: 11px; padding: 2px 10px; width: auto; }
@@ -381,6 +387,18 @@
   .cu-filter-btn:hover { color: var(--text); background: var(--bg2); }
   .cu-filter-btn.active { color: var(--indigo); border-color: var(--indigo); }
   .cu-filter-menu { position: absolute; top: calc(100% + 5px); right: 0; z-index: 40; min-width: 190px; max-width: 280px; max-height: 380px; overflow-y: auto; background: var(--card); color: var(--text); border: 1px solid var(--border); border-radius: 10px; box-shadow: 0 10px 26px rgba(0, 0, 0, 0.16); padding: 6px; text-transform: none; letter-spacing: 0; }
+  /* Explore "Pick people": tick anyone, grouped by department, then Show tasks. */
+  .flt-people { position: relative; }
+  .flt-people-btn { min-width: 150px; text-align: left; }
+  .flt-people-menu { position: absolute; top: calc(100% + 4px); left: 0; z-index: 60; min-width: 240px; max-width: 320px; max-height: 340px; overflow-y: auto; background: var(--card); color: var(--text); border: 1px solid var(--border); border-radius: 9px; box-shadow: 0 10px 24px rgba(0, 0, 0, 0.22); padding: 6px; }
+  .flt-people-menu[hidden] { display: none; }
+  .flt-people-menu .grp { font-size: 10.5px; font-weight: 700; letter-spacing: .04em; text-transform: uppercase; color: var(--muted); margin: 8px 4px 3px; }
+  .flt-people-menu .grp:first-child { margin-top: 2px; }
+  .flt-people-menu label { display: flex; align-items: center; gap: 8px; padding: 3px 4px; border-radius: 6px; font-size: 12.5px; font-weight: 400; cursor: pointer; margin: 0; }
+  .flt-people-menu label:hover { background: var(--bg2); }
+  .flt-people-menu .foot { position: sticky; bottom: -6px; display: flex; gap: 6px; justify-content: space-between; align-items: center; margin: 8px -6px -6px; padding: 7px 8px; background: var(--card); border-top: 1px solid var(--border); }
+  .flt-people-menu .foot .n { font-size: 11px; color: var(--muted); }
+  .flt-people-menu .foot button { width: auto; font-size: 12px; padding: 4px 10px; }
   .cu-filter-menu[hidden] { display: none; }
   .cu-filter-menu label { display: flex; align-items: center; gap: 8px; padding: 6px 8px; font-size: 12.5px; font-weight: 500; color: var(--text); cursor: pointer; border-radius: 7px; white-space: nowrap; }
   .cu-filter-menu label:hover { background: var(--bg2); }
@@ -849,6 +867,11 @@
           <select id="optFltDeptUser">
             <option value="">Full department</option>
           </select>
+        </div>
+        <div id="optFltPeopleWrap" class="flt-people" style="display:none;">
+          <label>People</label>
+          <button type="button" id="optFltPeopleBtn" class="flt-people-btn" aria-haspopup="true" aria-expanded="false">Choose people &#9662;</button>
+          <div id="optFltPeopleMenu" class="flt-people-menu" hidden></div>
         </div>
       </div>
       <div id="optFltResult" class="cu-fltr" style="display:none;"></div>

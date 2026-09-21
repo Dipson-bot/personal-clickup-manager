@@ -1,5 +1,14 @@
 # Changelog
 
+## v3.8.6
+- **New: pick any mix of people in Explore.** Choose "Pick people…" in the Department menu, tick people from any departments, then press Show tasks. Export takes exactly those people, and the title shows who is included.
+- **Fixed: hitting the ClickUp rate limit much less often.** The Due today list asked ClickUp about every task separately on each refresh; those answers are now remembered for two minutes, and anything you change from the extension still shows immediately. Department views no longer search each teammate's entire task list when they have no Extra Task. If the limit is ever hit, the service worker console now says how many requests were made and where.
+- **Fixed: Group subtasks did nothing under Due today.** It worked for every other date filter; now it works for all of them.
+- **Fixed: the Explore Client list only showed some clients.** It now lists every client in the date range and department, and the checkboxes narrow the tasks rather than the list.
+- **Fixed: the popup scrolled sideways while a task with a long name was being tracked.** The name now ends in "…" instead of widening the popup.
+- **Fixed: the "can't start, assigned to multiple users" message squashed the task row.** It now sits on its own line under the task, with an Open in ClickUp link and a button to dismiss it.
+- **Fixed: a harmless "Department Creator: No users found" warning showed up as an extension error.**
+
 ## v3.8.5
 - **Fixed: the wrong copy of the recurring Extra Task could be shown.** A recurring task exists as one occurrence at a time and ClickUp rolls it forward, so several copies are visible at once. The extension searched a fixed current-week window and took whichever copy it saw first, which is how an occurrence from the previous week, already marked complete, ended up listed against tomorrow with the right hours but the wrong link. It now looks at every copy around the day in question and picks the one whose own dates actually cover that day, preferring one that is not finished.
 - **Fixed: a task that has already been completed can no longer carry hours for a future day.** When no copy covers the day yet, the weekly share is still filled in from the most recent unfinished copy, and swaps to the real one as soon as ClickUp creates it.
