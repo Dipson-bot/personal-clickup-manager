@@ -384,9 +384,22 @@ function appendDoneTick(anchor, t) {
 // .running); a per-row busy guard + inline message mirror the Extra-Task button.
 function appendTaskControls(row, t) {
   if (!t || !t.id) return;
-  if (t.done) return; // completed - no live controls
   const cu = state.clickup || {};
   if (!cu.configured) return;
+  if (t.done) {
+    // Completed: no live controls, but keep the column. Without it this row
+    // had no buttons and its chips and times shifted right of every other row.
+    const ghost = document.createElement("span");
+    ghost.className = "cu-actions cu-actions-ghost";
+    ghost.setAttribute("aria-hidden", "true");
+    for (let i = 0; i < 2; i++) {
+      const g = document.createElement("span");
+      g.className = "cu-iconbtn";
+      ghost.appendChild(g);
+    }
+    row.appendChild(ghost);
+    return;
+  }
   const tid = String(t.id);
   const running = cu.state && cu.state.running ? cu.state.running : null;
   const isRunning = running && String(running.taskId) === tid;
@@ -410,6 +423,17 @@ function appendTaskControls(row, t) {
     start.textContent = busy ? "…" : "▶";
     start.disabled = busy;
     start.onclick = () => sendTaskAction(tid, "start");
+    // More than one assignee: only single-assignee tasks can be started from the
+    // extension. The initials beside the name show who; the ▶ is dimmed and its
+    // hover / click explain instead of sending a start ClickUp would refuse.
+    const who = Array.isArray(t.assignees) ? t.assignees : [];
+    if (who.length > 1 && !busy) {
+      const names = who.map((a) => a && a.username).filter(Boolean);
+      start.className = "cu-iconbtn start multi";
+      start.setAttribute("aria-disabled", "true");
+      start.title = "Assigned to " + who.length + " people" + (names.length ? " (" + names.join(", ") + ")" : "") + " - start it in ClickUp";
+      start.onclick = (e) => { e.stopPropagation(); cuRowMsg[tid] = cuMultiAssigneeMsg(tid, who); render(); };
+    }
     actions.appendChild(start);
   }
 
@@ -769,6 +793,41 @@ function makeDueEditable(chip, t) {
   return chip;
 }
 
+// Who a task is assigned to: initials in coloured circles, full name on hover.
+// Two assignees overlap as two circles; three or more show the first plus a
+// "+N" circle whose hover lists the rest. Every row gets the same fixed-width
+// slot (0, 1 or many people) so the columns never shift. A person keeps the
+// same colour everywhere (hue from their ClickUp id).
+function cuInitials(name) {
+  const s = String(name || "").split("@")[0].replace(/[._-]+/g, " ").trim();
+  const w = s.split(/\s+/).filter(Boolean);
+  if (!w.length) return "?";
+  return (w.length > 1 ? w[0][0] + w[w.length - 1][0] : w[0].slice(0, 2)).toUpperCase();
+}
+function cuAvatarColor(key) {
+  let h = 0;
+  for (const ch of String(key || "")) h = (h * 31 + ch.charCodeAt(0)) >>> 0;
+  return "hsl(" + (h % 360) + ", 55%, 42%)";
+}
+function whoSlot(t) {
+  const slot = document.createElement("span");
+  slot.className = "cu-who";
+  const list = (Array.isArray(t && t.assignees) ? t.assignees : []).filter((a) => a && (a.username || a.id));
+  const circle = (text, title, bg, extra) => {
+    const c = document.createElement("span");
+    c.className = "av" + (extra ? " " + extra : "");
+    c.textContent = text;
+    c.title = title;
+    if (bg) c.style.background = bg;
+    slot.appendChild(c);
+  };
+  const nameOf = (a) => a.username || ("User " + a.id);
+  const shown = list.length > 2 ? list.slice(0, 1) : list;
+  for (const a of shown) circle(cuInitials(a.username), nameOf(a), cuAvatarColor(a.id || a.username));
+  if (list.length > 2) circle("+" + (list.length - 1), list.slice(1).map(nameOf).join(", "), "", "more");
+  return slot;
+}
+
 function appendNameCell(row, nm, t, opts) {
   row.appendChild(prioBadge(t));
   // Every task row passes through here, so it's also where the row learns its
@@ -780,6 +839,7 @@ function appendNameCell(row, nm, t, opts) {
   const wrap = document.createElement("span");
   wrap.className = "nmwrap";
   wrap.appendChild(nm);
+  wrap.appendChild(whoSlot(t));
   if (client) {
     const pill = document.createElement("span");
     pill.className = "cu-client";
@@ -2693,6 +2753,28 @@ function cuToggleArrayVal(f, key, val, on) {
 // Build one dynamic facet section (Status / Priority / Client) into `box`.
 // labelFn maps a raw value to its display text (Status/Priority get title-case
 // via cuPrettyName; Client names keep their own casing, e.g. "AWAX").
+// "All" at the top of the Client list: tick every client at once, or clear them
+// all. Shows a partial tick when only some are chosen. Hidden in "One at a time"
+// mode, where choosing every client would contradict the mode.
+function cuAddAllClientsBox(box, values, checked) {
+  if (!box || cuFilterSingle || values.length < 2) return;
+  const n = values.filter((v) => checked.includes(v)).length;
+  const label = document.createElement("label");
+  label.className = "cu-filter-all";
+  label.title = "Tick or untick every client";
+  const input = document.createElement("input");
+  input.type = "checkbox";
+  input.setAttribute("data-cf-client-all", "");
+  input.checked = n === values.length;
+  input.indeterminate = n > 0 && n < values.length;
+  const span = document.createElement("span");
+  span.textContent = "All";
+  label.appendChild(input);
+  label.appendChild(document.createTextNode(" "));
+  label.appendChild(span);
+  box.insertBefore(label, box.firstChild);
+}
+
 function cuBuildFacetList(box, attr, values, checked, labelFn) {
   if (!box) return;
   const lbl = labelFn || cuPrettyName;
@@ -2738,6 +2820,7 @@ function renderCuFilterMenu() {
   cuBuildFacetList($("cuFilterStatusList"), "data-cf-status", statusVals, statuses);
   cuBuildFacetList($("cuFilterPriorityList"), "data-cf-priority", priorityVals, priorities);
   cuBuildFacetList($("cuFilterClientList"), "data-cf-client", clientVals, clients, (v) => v);
+  cuAddAllClientsBox($("cuFilterClientList"), clientVals, clients);
   const sg = $("cuFilterStatusGroup"); if (sg) sg.hidden = !statusVals.length;
   const pg = $("cuFilterPriorityGroup"); if (pg) pg.hidden = !priorityVals.length;
   const cg = $("cuFilterClientGroup"); if (cg) cg.hidden = !clientVals.length;
@@ -2836,6 +2919,9 @@ function openCuFilterMenu(open) {
     if (el.hasAttribute("data-cf")) cuFilter[el.getAttribute("data-cf")] = el.checked;
     else if (el.hasAttribute("data-cf-status")) cuToggleArrayVal(cuFilter, "statuses", el.getAttribute("data-cf-status"), el.checked);
     else if (el.hasAttribute("data-cf-priority")) cuToggleArrayVal(cuFilter, "priorities", el.getAttribute("data-cf-priority"), el.checked);
+    else if (el.hasAttribute("data-cf-client-all")) cuFilter.clients = el.checked
+      ? [...menu.querySelectorAll("input[data-cf-client]")].map((x) => x.getAttribute("data-cf-client"))
+      : [];
     else if (el.hasAttribute("data-cf-client")) cuToggleArrayVal(cuFilter, "clients", el.getAttribute("data-cf-client"), el.checked);
     else return;
     chrome.storage.local.set({ cuFilter }).catch(() => {});
