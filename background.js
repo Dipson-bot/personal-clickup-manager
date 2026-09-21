@@ -18,7 +18,7 @@ import {
   pullAccountsFromDrive,
 } from "./lib-drive.js";
 import { runAllAccounts, runAccountLogin, URLS, GITHUB_KEEP_COOKIES } from "./lib-automation.js";
-import { verifyToken, getTeams, fetchTodayEstimate, fetchWeeklySummary, fetchDateRangeEstimate, createTaskCache, fetchTeamMembers, fmtDuration, findExtraTaskByName, parseTaskIdFromUrl, getCurrentTimeEntry, getRunningTaskProgress, startTimer, stopTimer, getTaskById, setTaskStatus, taskUrlFor, clientLabelFromContainer, resolveSpaceNamesFor, taskContainer, cuPriorityName, isTaskDone, getSubtasksOfParent, getTaskTree, getTaskDetail, updateTimeEntry, setTaskDueDate, clearTaskTreeCache } from "./lib-clickup.js";
+import { verifyToken, getTeams, fetchTodayEstimate, fetchWeeklySummary, fetchDateRangeEstimate, createTaskCache, fetchTeamMembers, fmtDuration, findExtraTaskByName, parseTaskIdFromUrl, getCurrentTimeEntry, getRunningTaskProgress, startTimer, stopTimer, getTaskById, setTaskStatus, taskUrlFor, clientLabelFromContainer, resolveSpaceNamesFor, taskContainer, cuPriorityName, isTaskDone, getSubtasksOfParent, getTaskTree, getTaskDetail, updateTimeEntry, setTaskDueDate, clearTaskTreeCache, listWorkspaceClients } from "./lib-clickup.js";
 import { resolveRelayKey, pickProbeModel, probeRelay } from "./lib-availability.js";
 
 const CHECK_ALARM = "dailyLoginCheck";
@@ -1706,6 +1706,40 @@ async function refreshClickup(opts = {}) {
 const FORCE_REBUILD_MIN_MS = 60000;
 function forceFloor(forced, ttl) { return forced ? FORCE_REBUILD_MIN_MS : ttl; }
 
+// A configured task (the recurring Extra Task) that fails to load on THIS refresh
+// - usually one rate-limited request - came back as a bare { error } row: its
+// share dropped out of today's total (6h 48m instead of 8h 12m) and the card
+// showed a nameless "(configured task)". Today's share doesn't change minute to
+// minute, so if the same task loaded fine earlier TODAY, keep that row and its
+// estimate. Its tracked minutes, which this refresh listed under "Tracked · not
+// due today" because the row was missing, move back onto it. With no good row
+// from today, the error row stays and the card says why (options.js).
+function keepLastGoodConfigured(data, prev) {
+  if (!data || !Array.isArray(data.deadlineTasks)) return;
+  if (!prev || !prev.at || todayString(prev.at) !== todayString()) return;
+  const prevRows = Array.isArray(prev.deadlineTasks) ? prev.deadlineTasks : [];
+  const tracked = Array.isArray(data.trackedTasks) ? data.trackedTasks : [];
+  let changed = false;
+  data.deadlineTasks = data.deadlineTasks.map((row) => {
+    if (!row || !row.error) return row;
+    const id = parseTaskIdFromUrl(row.taskUrl || "");
+    const good = id && prevRows.find((p) => p && !p.error && String(p.id) === String(id));
+    if (!good) return row;
+    const ti = tracked.findIndex((t) => t && String(t.id) === String(id));
+    const spentMs = ti >= 0 ? (Number(tracked[ti].spentMs) || 0) : 0;
+    if (ti >= 0) tracked.splice(ti, 1); // its minutes are already in the tracked total
+    const est = Number(good.dayEstimateMs) || 0;
+    data.estimateMs = (Number(data.estimateMs) || 0) + est;
+    data.deadlineEstimateMs = (Number(data.deadlineEstimateMs) || 0) + est;
+    changed = true;
+    return { ...good, spentMs, lastKnownAt: prev.at, loadError: row.error };
+  });
+  if (changed) {
+    data.trackedTasks = tracked;
+    data.targetMet = Number(data.targetMs) > 0 && data.estimateMs >= Number(data.targetMs);
+  }
+}
+
 // forceWeeks: also bypass the due-this/next-week bundles' 60-min TTL. Only set by
 // an estimate edit or an explicit Refresh click - never by popup-open/alarms.
 async function refreshClickupImpl({ includeTasks = false, viaAlarm = false, forceWeekly = false, forceWeeks = false } = {}) {
@@ -1727,6 +1761,8 @@ async function refreshClickupImpl({ includeTasks = false, viaAlarm = false, forc
   const taskCache = createTaskCache();
   try {
     const data = await fetchTodayEstimate({ token: cfg.token, teamId: cfg.teamId, userId: cfg.userId, targetHours, deadlineTaskUrls, extendedMode, taskCache });
+    // One failed request must not knock the Extra Task out of today's total.
+    keepLastGoodConfigured(data, await getClickupState().catch(() => null));
 
     // Weekly accumulation (current week Mon→Fri). fetchWeeklySummary computes BOTH
     // the Mon→today and Mon→Friday aggregates in one pass, so the popup's
@@ -4617,6 +4653,27 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         })();
         filterBuilds.set(key, run);
         sendResponse({ ok: true, data: null, building: true });
+        break;
+      }
+      case "CLICKUP_CLIENT_NAMES": {
+        // Every client in the workspace for the Explore Client dropdown. Kept for a
+        // day: the list of clients rarely changes and building it costs requests.
+        const cfg = await getClickupConfig();
+        if (!cfg || !cfg.token || !cfg.teamId) { sendResponse({ ok: false, reason: "not-configured" }); break; }
+        const settings = await getSettings();
+        const level = settings.cuClientLevel || "auto";
+        const { cuClientNames: cached } = await chrome.storage.local.get("cuClientNames");
+        const fresh = cached && cached.teamId === String(cfg.teamId) && cached.level === level &&
+          Date.now() - (cached.at || 0) < 24 * 3600 * 1000;
+        if (fresh && !msg.force) { sendResponse({ ok: true, names: cached.names }); break; }
+        try {
+          const names = await listWorkspaceClients(cfg.token, cfg.teamId, level);
+          if (names) await chrome.storage.local.set({ cuClientNames: { at: Date.now(), teamId: String(cfg.teamId), level, names } });
+          sendResponse({ ok: true, names: names || [] });
+        } catch (e) {
+          // Keep whatever we had (even if old) rather than an empty list.
+          sendResponse({ ok: !!(cached && cached.names), names: (cached && cached.names) || [], error: String(e && e.message ? e.message : e) });
+        }
         break;
       }
       case "CLICKUP_OVERDUE": {

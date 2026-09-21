@@ -477,6 +477,18 @@ $("optRunAll").onclick = async () => {
   }
 };
 
+// After Stop, re-read the run state a few times until the background reports
+// it has finished, then repaint (Run buttons re-enable).
+async function pollUntilStopped() {
+  for (let i = 0; i < 12; i++) {
+    await new Promise((r) => setTimeout(r, 700));
+    let st = null;
+    try { st = await send({ type: "GET_STATE" }); } catch (e) {}
+    if (st && !st.running) break;
+  }
+  await load();
+}
+
 $("optStopAll").onclick = async () => {
   const stop = $("optStopAll");
   stop.disabled = true;
@@ -484,8 +496,9 @@ $("optStopAll").onclick = async () => {
   try {
     await send({ type: "RUN_CANCEL" });
   } catch (e) {}
-  // The loop bails within an iteration; refresh shortly to pick up running=false.
-  setTimeout(() => load(), 900);
+  // The background now always ends the run within about a second of Stop;
+  // keep checking until it confirms, so Run all comes back by itself.
+  pollUntilStopped();
 };
 
 $("saveBtn").onclick = async () => {
@@ -2106,9 +2119,9 @@ let optFltSeq = 0; // bumped per renderOptionsFilter() so a superseded load neve
 // Rows currently shown in Explore tasks, for its Export button.
 let optFltExport = { rows: [], title: "tasks" };
 // ---- Explore "Pick people…": any mix of people, across departments ----
-// Ticks only change the selection; the ClickUp query runs when you press
-// "Show tasks". Every different set of people is a fresh query, so querying on
-// each tick would walk straight back into the rate limit.
+// Every different set of people is a fresh ClickUp query, so ticks are batched:
+// the query runs once the ticking pauses or the menu closes (see
+// schedulePeopleApply below), never once per tick.
 let optFltPeople = [];
 try {
   chrome.storage.local.get("optFltPeople").then((g) => {
@@ -2134,12 +2147,34 @@ function updatePeopleBtn() {
   if (!b) return;
   b.innerHTML = (optFltPeople.length ? escapeHtml(peopleLabel()) : "Choose people") + " &#9662;";
 }
+// A tick changes the selection at once (button label, count, saved). The ClickUp
+// query runs a moment after the ticking stops, or as soon as the menu closes -
+// so ticking three people quickly is one query, and closing the menu by clicking
+// elsewhere never throws the ticks away (it used to: they only counted after a
+// "Show tasks" press nobody knew they needed).
+const PEOPLE_APPLY_DELAY_MS = 1200;
+let optFltPeopleTimer = null;
+let optFltPeopleQueried = null; // the selection the current results were built for
+function peopleSig() { return optFltPeople.slice().sort().join(","); }
+function applyPeopleIfChanged() {
+  clearTimeout(optFltPeopleTimer);
+  optFltPeopleTimer = null;
+  const dept = $("optFltDept");
+  if (!dept || dept.value !== "__pick__") return; // only while Pick people is chosen
+  if (peopleSig() === optFltPeopleQueried) return; // nothing new to show
+  renderOptionsFilter();
+}
+function schedulePeopleApply() {
+  clearTimeout(optFltPeopleTimer);
+  optFltPeopleTimer = setTimeout(applyPeopleIfChanged, PEOPLE_APPLY_DELAY_MS);
+}
 function closePeopleMenu() {
   const m = $("optFltPeopleMenu");
   if (!m || m.hidden) return;
   m.hidden = true;
   const b = $("optFltPeopleBtn");
   if (b) b.setAttribute("aria-expanded", "false");
+  applyPeopleIfChanged(); // closing = done choosing: load now, don't wait
 }
 function openPeopleMenu() {
   const m = $("optFltPeopleMenu");
@@ -2152,8 +2187,6 @@ function openPeopleMenu() {
 function renderPeopleMenu() {
   const m = $("optFltPeopleMenu");
   if (!m) return;
-  const picked = new Set(optFltPeople);
-  const draft = new Set(picked);
   const groups = [];
   const inDept = new Set();
   for (const d of optDeptList || []) {
@@ -2171,7 +2204,15 @@ function renderPeopleMenu() {
   }
   const count = document.createElement("span");
   count.className = "n";
-  const paintCount = () => { count.textContent = draft.size + (draft.size === 1 ? " person" : " people"); };
+  const paintCount = () => {
+    const n = optFltPeople.length;
+    count.textContent = n ? n + (n === 1 ? " person" : " people") + " \u00b7 tasks load as you tick" : "Tick anyone to see their tasks";
+  };
+  const setPicked = (id, on) => {
+    const has = optFltPeople.includes(id);
+    if (on && !has) optFltPeople.push(id);
+    if (!on && has) optFltPeople = optFltPeople.filter((x) => x !== id);
+  };
   for (const g of groups) {
     const h = document.createElement("div");
     h.className = "grp";
@@ -2182,13 +2223,16 @@ function renderPeopleMenu() {
       const lab = document.createElement("label");
       const cb = document.createElement("input");
       cb.type = "checkbox";
-      cb.checked = draft.has(id);
+      cb.checked = optFltPeople.includes(id);
       cb.dataset.pid = id;
-      // The same person can sit in two departments: keep every copy in step.
       cb.onchange = () => {
-        if (cb.checked) draft.add(id); else draft.delete(id);
+        setPicked(id, cb.checked);
+        // The same person can sit in two departments: keep every copy in step.
         m.querySelectorAll('input[data-pid="' + CSS.escape(id) + '"]').forEach((x) => { x.checked = cb.checked; });
+        savePeople();
+        updatePeopleBtn();
         paintCount();
+        schedulePeopleApply();
       };
       lab.appendChild(cb);
       lab.appendChild(document.createTextNode(u.name || ("User " + id)));
@@ -2202,31 +2246,60 @@ function renderPeopleMenu() {
   clear.textContent = "Clear";
   clear.onclick = (e) => {
     e.stopPropagation();
-    draft.clear();
+    optFltPeople = [];
     m.querySelectorAll("input[data-pid]").forEach((x) => { x.checked = false; });
-    paintCount();
-  };
-  const show = document.createElement("button");
-  show.type = "button";
-  show.className = "primary";
-  show.textContent = "Show tasks";
-  show.onclick = (e) => {
-    e.stopPropagation();
-    optFltPeople = [...draft];
     savePeople();
     updatePeopleBtn();
-    closePeopleMenu();
-    renderOptionsFilter();
+    paintCount();
+    schedulePeopleApply();
   };
+  const done = document.createElement("button");
+  done.type = "button";
+  done.className = "primary";
+  done.textContent = "Done";
+  done.onclick = (e) => { e.stopPropagation(); closePeopleMenu(); };
   paintCount();
   foot.appendChild(count);
   const btns = document.createElement("span");
   btns.style.display = "inline-flex";
   btns.style.gap = "6px";
   btns.appendChild(clear);
-  btns.appendChild(show);
+  btns.appendChild(done);
   foot.appendChild(btns);
   m.appendChild(foot);
+}
+
+// ---- Explore Client dropdown: every client, not just today's ----
+// It used to list only the clients in the current results, so a narrow view
+// (Today, just your own tasks) offered one or two clients. Now it is every client
+// in the workspace (background CLICKUP_CLIENT_NAMES, cached a day) plus any
+// extra name the current results carry. The chosen client is kept even when it
+// has nothing in the current range - the list below simply comes up empty.
+let optWorkspaceClients = [];
+let optFltResultClients = [];
+function fillClientSelect() {
+  const sel = $("optFltClient");
+  if (!sel) return "";
+  const pick = sel.value;
+  // One entry per client: names differing only by emoji, spacing or case are the
+  // same client (the key canonicalizeClientLabels uses). The spelling your tasks
+  // carry wins, because that is what the filter matches against.
+  const key = (n) => String(n).toLowerCase().replace(/[^a-z0-9]+/g, "") || String(n);
+  const byKey = new Map();
+  for (const n of [].concat(pick ? [pick] : [], optFltResultClients, optWorkspaceClients)) {
+    if (n && !byKey.has(key(n))) byKey.set(key(n), n);
+  }
+  const names = [...byKey.values()].sort((a, b) => a.localeCompare(b));
+  sel.innerHTML = '<option value="">All clients</option>' +
+    names.map((n) => '<option value="' + escapeHtml(n) + '"' + (n === pick ? " selected" : "") + ">" + escapeHtml(n) + "</option>").join("");
+  sel.value = pick;
+  return pick;
+}
+async function loadWorkspaceClients() {
+  try {
+    const res = await send({ type: "CLICKUP_CLIENT_NAMES" }, 30000);
+    if (res && Array.isArray(res.names)) { optWorkspaceClients = res.names; fillClientSelect(); }
+  } catch (e) {}
 }
 
 async function renderOptionsFilter() {
@@ -2293,8 +2366,9 @@ async function renderOptionsFilter() {
     if (deptId === "__pick__") {
       // Hand-picked people, from any departments ("Pick people…").
       assigneeIds = optFltPeople.slice();
+      optFltPeopleQueried = peopleSig();
       if (!assigneeIds.length) {
-        box.innerHTML = '<div class="flt-tot">Pick at least one person, then press <b>Show tasks</b>.</div>';
+        box.innerHTML = '<div class="flt-tot">Tick at least one person under <b>People</b> - their tasks load as you tick.</div>';
         return;
       }
       scopeTag = " · " + peopleLabel();
@@ -2397,14 +2471,11 @@ async function renderOptionsFilter() {
     let clientPick = "";
     if (clientSel) {
       clientPick = clientSel.value;
-      // Every client in the date range and department - taken BEFORE the checkboxes,
-      // so ticking "Deadline crossed" narrows the rows, not the list of clients.
-      const names = [...new Set([].concat(tasks, deadline, Array.isArray(d.trackedTasks) ? d.trackedTasks : [])
-        .map((t) => String((t && t.client) || "").trim()).filter(Boolean))].sort((a, b) => a.localeCompare(b));
-      if (clientPick && !names.includes(clientPick)) clientPick = "";
-      clientSel.innerHTML = '<option value="">All clients</option>' +
-        names.map((n) => '<option value="' + escapeHtml(n) + '"' + (n === clientPick ? " selected" : "") + ">" + escapeHtml(n) + "</option>").join("");
-      clientSel.value = clientPick;
+      // Clients in this result (taken BEFORE the checkboxes, so a checkbox narrows
+      // the rows, not the choices), merged with every client in the workspace.
+      optFltResultClients = [...new Set([].concat(tasks, deadline, Array.isArray(d.trackedTasks) ? d.trackedTasks : [])
+        .map((t) => String((t && t.client) || "").trim()).filter(Boolean))];
+      clientPick = fillClientSelect();
       if (clientPick) {
         const keep = (t) => String((t && t.client) || "").trim() === clientPick;
         shownTasks = shownTasks.filter(keep);
@@ -2544,6 +2615,7 @@ function initOptionsFilterControls() {
   if (deptSel) deptSel.onchange = () => { syncDeptUserSelect(); renderOptionsFilter(); };
   const deptUserSel = $("optFltDeptUser");
   if (deptUserSel) deptUserSel.onchange = renderOptionsFilter;
+  loadWorkspaceClients();
   const peopleBtn = $("optFltPeopleBtn");
   if (peopleBtn) peopleBtn.onclick = (e) => {
     e.stopPropagation();
@@ -3479,12 +3551,16 @@ function renderClickupPreview(st) {
       row.className = "cu-task";
       const nm = document.createElement("a");
       nm.className = "nm";
-      nm.textContent = dt.name || "(configured task)";
-      nm.title = nm.textContent;
-      if (dt.url) { nm.href = dt.url; nm.target = "_blank"; nm.rel = "noopener"; }
+      // An { error } row means THIS refresh couldn't load the task (usually one
+      // rate-limited request). Say so, instead of a nameless "(configured task)".
+      nm.textContent = dt.name || (dt.error ? "Couldn't load this task \u00b7 retries on the next sync" : "(configured task)");
+      nm.title = dt.error ? "ClickUp said: " + dt.error : (dt.lastKnownAt ? nm.textContent + " \u00b7 couldn't refresh, showing what loaded at " + new Date(dt.lastKnownAt).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" }) : nm.textContent);
+      const href = dt.url || dt.taskUrl;
+      if (href) { nm.href = href; nm.target = "_blank"; nm.rel = "noopener"; }
       appendDoneTickOpt(nm, dt);
       const spans = document.createElement("span");
       spans.className = "estpairs";
+      const estTxtErr = dt.error ? "not loaded" : null;
       const estTxt = dt.accumulated
         ? (dt.dayEstimateMs ? "est " + fmtDurOpt(dt.dayEstimateMs) : "no estimate")
         : (dt.isWeekday === false
@@ -3492,7 +3568,7 @@ function renderClickupPreview(st) {
             : (dt.dayEstimateMs ? fmtDurOpt(dt.dayEstimateMs) + "/day" : "no estimate"));
       const estSpan = document.createElement("span");
       estSpan.className = "est" + (dt.dayEstimateMs ? "" : " zero");
-      estSpan.textContent = estTxt;
+      estSpan.textContent = estTxtErr || estTxt;
       spans.appendChild(estSpan);
       if (Number(dt.spentMs) > 0) {
         const trk = document.createElement("span");
@@ -3969,6 +4045,7 @@ $("dbgStopBtn").onclick = async () => {
   try {
     const res = await send({ type: "RUN_CANCEL" });
     dbgAppend(res && res.ok ? "Stop requested - cancelling the running login…" : "Couldn't send stop: " + ((res && res.reason) || "unknown"), true);
+    pollUntilStopped();
   } catch (e) {
     dbgAppend("Couldn't send stop: " + (e && e.message ? e.message : e), false);
   }

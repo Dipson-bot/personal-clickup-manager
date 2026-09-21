@@ -1,5 +1,12 @@
 # Changelog
 
+## v3.8.7
+- **Fixed: an Agent Router login could freeze, and Stop didn't stop it.** If a request to Agent Router stalled, the login waited forever: the page sat still, the extension kept saying it was running, Stop only changed its own label, and the Run buttons stayed greyed out even after the tab was closed. Every step now has a time limit, Stop ends a run within about a second, closing the tab ends it straight away, and Run all no longer moves on to the next account after Stop. If Agent Router's page stops responding, the run ends with a message saying so.
+- **Fixed: Pick people seemed to do nothing when you ticked someone.** Ticks only counted after pressing a "Show tasks" button, and clicking anywhere else threw them away. A tick now takes effect straight away, the tasks load a moment after you stop ticking (or as soon as you close the list), and "Show tasks" is now "Done".
+- **Fixed: the Explore Client list only showed the clients in the current results.** It now lists every client in the workspace, refreshed once a day, with no duplicates for the same client spelled slightly differently.
+- **Fixed: the Extra Task could briefly drop out of today's total** (6h 48m instead of 8h 12m) when a single request to ClickUp failed. If it loaded fine earlier in the day, that result is kept; if not, the card now says it couldn't load the task instead of showing an unnamed row.
+- The popup header now reads "Personal ClickUp Manager".
+
 ## v3.8.6
 - **New: pick any mix of people in Explore.** Choose "Pick people…" in the Department menu, tick people from any departments, then press Show tasks. Export takes exactly those people, and the title shows who is included.
 - **Fixed: hitting the ClickUp rate limit much less often.** The Due today list asked ClickUp about every task separately on each refresh; those answers are now remembered for two minutes, and anything you change from the extension still shows immediately. Department views no longer search each teammate's entire task list when they have no Extra Task. If the limit is ever hit, the service worker console now says how many requests were made and where.
