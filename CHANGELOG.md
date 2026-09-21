@@ -1,5 +1,8 @@
 # Changelog
 
+## v3.8.10
+- fixed the uploading new version buffer timings to all users
+
 ## v3.8.9
 - Fixed search functionality and calendar on due dates
 
