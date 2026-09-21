@@ -1,5 +1,8 @@
 # Changelog
 
+## v3.8.9
+- Fixed search functionality and calendar on due dates
+
 ## v3.8.8
 - **New: see who each task is assigned to.** Every task shows its assignees as small initials in coloured circles next to the name; hover a circle for the full name. Two people show as two circles, three or more as one circle plus "+2" (hover lists the rest). Each person keeps the same colour everywhere, and the columns stay lined up.
 - **New: "Only tasks shared by everyone ticked" in Explore's Pick people.** By default you see tasks assigned to any of the people you tick; tick this to see only the tasks they are all assigned to together. Totals, export and the title follow.
