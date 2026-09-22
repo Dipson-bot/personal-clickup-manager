@@ -1,5 +1,11 @@
 # Changelog
 
+## v3.9.1
+- **Fixed: the Site monitor looked like it had stopped.** It was checking every 5 minutes all along, but only saved its result when a site changed between up and down, so a site that stayed up kept showing an old "last check" time. Every check is now saved, and a check can no longer be cut off halfway.
+- **Changed: a ClickUp rate limit no longer shows as a red error.** It now reads "ClickUp is busy. Showing totals from HH:MM, refreshing automatically." and the task list stays on screen. Real problems, like a bad token, still show in red.
+- **New: the version number** is shown next to the title in the popup and the options page.
+- Task times on each row are now in bold, so they are easier to scan.
+
 ## v3.9.0
 - **New: Daily Tasks Update on the wrap-up page** (replaces the old standup). It lists every task you closed today, in every project, grouped under "Project Name" with "Complete (N)", and puts the links from each task's description after it as "Click Here 1, Click Here 2". Copy keeps those links clickable when pasted into Slack; Refresh reads today's completed tasks again.
 - **New: exports include each task's links.** CSV and Google Sheets get Link 1, Link 2 ... columns (one clickable address per cell), Excel shows them as "Click Here" links, and Google Docs and Markdown get a Links line under each task.

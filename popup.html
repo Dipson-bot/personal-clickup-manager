@@ -55,6 +55,7 @@
   html.in-panel .card { min-width: 0; }
   @media (max-width: 440px) { html.in-panel .cu-task .cu-client { display: none; } }
   .header h1 { font-size: 14px; font-weight: 700; margin: 0; flex: 1 1 auto; min-width: 0; }
+  .ver-badge { font-size: 10px; font-weight: 600; color: var(--muted); margin-left: 6px; letter-spacing: .3px; white-space: nowrap; }
   .header-actions { display: flex; align-items: center; gap: 4px; margin-left: auto; flex-shrink: 0; }
   .gear { border: none; background: none; cursor: pointer; color: var(--muted); font-size: 12px; text-decoration: underline; padding: 2px; }
   .gear:hover { color: var(--text); }
@@ -370,6 +371,8 @@
   .cu-tasklist .cu-task .estpairs { min-width: 5.6em; justify-content: flex-end; gap: 3px; }
   .cu-tasklist .cu-task .est { min-width: 0; order: 3; }
   .cu-tasklist .cu-task .trk { min-width: 0; order: 1; font-size: inherit; }
+  /* Bold the per-row time values (tracked + estimate); "no est" stays normal. */
+  .cu-tasklist .cu-task .est:not(.zero), .cu-tasklist .cu-task .trk { font-weight: 700; }
   .cu-tasklist .cu-task .estpairs:has(.trk) .est::before { content: "/ "; color: var(--muted); }
   .cu-tasklist .cu-task .estpairs:not(:has(.trk)):has(.est:not(.zero))::before { content: "0m /"; color: var(--muted); opacity: .7; }
   .cu-task .trk.over { color: var(--red); }
@@ -428,7 +431,7 @@
 <body>
   <div class="header">
     <img src="icons/icon48.png" alt="" />
-    <h1>Personal ClickUp Manager</h1>
+    <h1>Personal ClickUp Manager<span class="ver-badge" id="verBadge"></span></h1>
     <div class="header-actions">
       <button class="themeBtn" id="panelBtn" title="Keep it open in the side panel">⇥</button>
       <button class="themeBtn" id="sideBtn" title="Show this panel on the left or right (opens Chrome's setting)" hidden>⇄</button>
