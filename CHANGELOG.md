@@ -1,5 +1,11 @@
 # Changelog
 
+## v3.9.4
+- Fixed: the end-of-day wrap-up now opens by itself at your wrap-up time (4:45 PM by default) instead of only showing a notification that was easy to miss. If the computer was asleep or Chrome was closed at that time, it opens as soon as Chrome is running again (up to 4 hours late). It still runs once per weekday and never twice.
+Fixed: the wrap-up reminder could be skipped for the day when the extension woke up just after the wrap-up time. It now always fires.
+Improved: updating in Brave. Instead of the error "showDirectoryPicker is not a function", the update page now explains that Brave has folder access turned off and gives an "Open Brave setting" button. Choose Enabled, click Relaunch, then Install.
+Improved: on computers where folder access is blocked (for example by a work or school IT policy), or in browsers without it, the update page now says so plainly and points to "Download the zip instead".
+
 ## v3.9.3
 - Fixed sync issues in options page estimate time
 
