@@ -1,5 +1,8 @@
 # Changelog
 
+## v3.9.3
+- Fixed sync issues in options page estimate time
+
 ## v3.9.2
 - Fixed tracking buttons i.e Stop and Complete button in all panels
 
