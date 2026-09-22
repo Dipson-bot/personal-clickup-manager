@@ -4,6 +4,9 @@
 
 const $ = (id) => document.getElementById(id);
 
+// Show the running version (from manifest.json) next to the header title.
+try { const _vb = $("verBadge"); if (_vb) _vb.textContent = "v" + chrome.runtime.getManifest().version; } catch (e) {}
+
 // Matches the auto-detected "Extra(s) Task(s)" name pattern (mirrors
 // lib-clickup.js EXTRA_TASK_NAME_RE) for de-duplicating weekly rows.
 const EXTRA_TASK_NAME_RE = /extra\s*\(?\s*s?\s*\)?\s*-?\s*tasks?/i;
@@ -3542,18 +3545,34 @@ function renderClickupPreview(st) {
   renderNowTracking();
 
   if (st.error) {
-    const e = document.createElement("div");
-    e.style.color = "var(--red)";
-    e.style.fontSize = "12.5px";
-    e.textContent = "Couldn't reach ClickUp: " + st.error;
-    box.appendChild(e);
-    // If we still have a cached total, fall through and show it below the error.
-    if (!(st.at && Number.isFinite(Number(st.estimateMs)))) return;
-    const note = document.createElement("div");
-    note.className = "hint";
-    note.style.margin = "4px 0 8px";
-    note.textContent = "Showing the last total from " + fmtClock(st.at) + ".";
-    box.appendChild(note);
+    // A 429 rate-limit is transient and self-heals on the next sync (rateLimitedUntil
+    // is set ONLY on a rate-limit, never on a real failure), so show a calm muted
+    // note and keep the cached total + task list. Genuine errors (bad token, network
+    // down) stay red.
+    const rateLimited = !!(st.rateLimitedUntil && st.errorAt && st.rateLimitedUntil >= st.errorAt);
+    if (rateLimited) {
+      const note = document.createElement("div");
+      note.className = "hint";
+      note.style.margin = "0 0 8px";
+      note.textContent = st.at
+        ? "ClickUp is busy. Showing totals from " + fmtClock(st.at) + ", refreshing automatically."
+        : "ClickUp is busy, refreshing automatically.";
+      box.appendChild(note);
+      // fall through: render the cached totals + task list below
+    } else {
+      const e = document.createElement("div");
+      e.style.color = "var(--red)";
+      e.style.fontSize = "12.5px";
+      e.textContent = "Couldn't reach ClickUp: " + st.error;
+      box.appendChild(e);
+      // If we still have a cached total, fall through and show it below the error.
+      if (!(st.at && Number.isFinite(Number(st.estimateMs)))) return;
+      const note = document.createElement("div");
+      note.className = "hint";
+      note.style.margin = "4px 0 8px";
+      note.textContent = "Showing the last total from " + fmtClock(st.at) + ".";
+      box.appendChild(note);
+    }
   }
 
   // The today card mirrors the popup's Filter dropdown. The headline estimate +

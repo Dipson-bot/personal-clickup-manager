@@ -68,7 +68,6 @@ async function checkSites() {
   if (!cfg || !cfg.enabled || !Array.isArray(cfg.sites) || cfg.sites.length === 0) return;
   const now = Date.now();
   const state = (await chrome.storage.local.get("siteMonitorState"))["siteMonitorState"] || {};
-  let changed = false;
   for (const site of cfg.sites) {
     if (!site || !site.url) continue;
     const key = site.url;
@@ -77,21 +76,15 @@ async function checkSites() {
     prev.lastCheck = now;
     if (result.ok) {
       prev.fails = 0;
-      if (prev.up === false) {
-        // Site came back up - don't notify (user only wants down alerts)
-        prev.up = true;
-        changed = true;
-      } else if (prev.up === null) {
-        prev.up = true;
-        changed = true;
-      }
+      // First successful check, or a recovery - mark up. No notify: the user only
+      // wants "down" alerts, not "back up" ones.
+      if (prev.up !== true) prev.up = true;
     } else {
       prev.fails = (prev.fails || 0) + 1;
       if (prev.fails >= SITE_MONITOR_FAILURES && prev.up !== false) {
         // Site went down - notify ONCE
         prev.up = false;
         prev.lastDownNotified = now;
-        changed = true;
         await notify(
           "site-down-" + key + "-" + now,
           "Site down: " + (site.name || site.url),
@@ -102,9 +95,10 @@ async function checkSites() {
     }
     state[key] = prev;
   }
-  if (changed) {
-    await chrome.storage.local.set({ siteMonitorState: state });
-  }
+  // Persist on EVERY run (not only when a status flips) so the "last check" time
+  // stays current. Previously a steadily-up site never re-saved its lastCheck, so
+  // the options page froze at the last status change and looked like it had stopped.
+  await chrome.storage.local.set({ siteMonitorState: state });
 }
 
 // ---------- existing alarm constants ----------
@@ -3555,7 +3549,9 @@ chrome.alarms.onAlarm.addListener(async (alarm) => {
   } else if (alarm.name === SYNC_ALARM) {
     autoSyncIfSignedIn();
   } else if (alarm.name === SITE_MONITOR_ALARM) {
-    checkSites().catch(() => {});
+    // Awaited so the worker stays alive through the fetches + the state write -
+    // fire-and-forget risks suspension before checkSites persists its results.
+    await checkSites().catch(() => {});
   } else if (alarm.name === WRAPUP_ALARM) {
     await onWrapUpAlarm().catch(() => {});
   } else if (alarm.name.startsWith(AR_ALARM_PREFIX)) {

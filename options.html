@@ -576,6 +576,8 @@
   .cu-tasklist .cu-task .estpairs { min-width: 7em; justify-content: flex-end; gap: 3px; }
   .cu-tasklist .cu-task .est { min-width: 0; order: 3; }
   .cu-tasklist .cu-task .trk { min-width: 0; order: 1; font-size: inherit; }
+  /* Bold the per-row time values (tracked + estimate); "no est" stays normal. */
+  .cu-tasklist .cu-task .est:not(.zero), .cu-tasklist .cu-task .trk { font-weight: 700; }
   .cu-tasklist .cu-task .estpairs:has(.trk) .est::before { content: "/ "; color: var(--muted); }
   .cu-tasklist .cu-task .estpairs:not(:has(.trk)):has(.est:not(.zero))::before { content: "0m /"; color: var(--muted); opacity: .7; }
   .cu-task .trk.over { color: var(--red); }
@@ -661,13 +663,14 @@
   .cu-filter-defaults button[data-fsavedef]:hover, .cu-filter-defaults button[data-fusedef]:hover { color: var(--indigo); border-color: var(--indigo); background: var(--bg2); }
   .cu-filter-clear button:hover { color: var(--red); border-color: var(--red); background: var(--bg2); }
   .cu-filter-clear button:disabled { opacity: .45; cursor: default; color: var(--muted); border-color: var(--border); background: transparent; }
+  .ver-badge { font-size: 12px; font-weight: 600; color: var(--muted); margin-left: 8px; letter-spacing: .3px; white-space: nowrap; vertical-align: middle; }
 </style>
 </head>
 <body class="tabbed">
 <div class="wrap">
   <div class="pagehead">
     <div>
-      <h1>ClickUp - Time Estimate &amp; Tracking</h1>
+      <h1>ClickUp - Time Estimate &amp; Tracking<span class="ver-badge" id="verBadge"></span></h1>
       <p class="sub">Track your daily ClickUp time estimate &mdash; and keep your Agent Router accounts logged in each day.</p>
     </div>
     <span class="hdr-tools">

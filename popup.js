@@ -6,6 +6,8 @@ const $ = (id) => document.getElementById(id);
 // Same page runs as the toolbar popup and in Chrome's side panel (?view=panel).
 const IN_PANEL = new URLSearchParams(location.search).get("view") === "panel";
 if (IN_PANEL) document.documentElement.classList.add("in-panel");
+// Show the running version (from manifest.json) next to the header title.
+try { const _vb = $("verBadge"); if (_vb) _vb.textContent = "v" + chrome.runtime.getManifest().version; } catch (e) {}
 // "12:10 PM · Sep 6" - used for the "Last synced" line and the transient
 // "Synced ✓" confirmation.
 function fmtSyncStamp(ts) {
@@ -2051,7 +2053,12 @@ function renderClickup() {
     sub.textContent = "Loading today's estimate…";
     return;
   }
-  if (st.error) {
+  // A 429 rate-limit is transient and self-heals on the next sync (rateLimitedUntil
+  // is set ONLY on a rate-limit, never on a real failure), so treat it as a calm
+  // "busy" note in muted text and keep the cached totals + task list on screen.
+  // Genuine errors (bad token, network down) stay red and hide the stale list.
+  const cuBusy = !!(st.error && st.rateLimitedUntil && st.errorAt && st.rateLimitedUntil >= st.errorAt);
+  if (st.error && !cuBusy) {
     sub.className = "cu-sub err";
     sub.textContent = "Couldn't refresh: " + st.error + (st.at ? " · last total from " + fmtClock(st.at) : "");
     return;
@@ -2121,6 +2128,7 @@ function renderClickup() {
     bits.push("filter: " + tags.join(" + "));
   }
   if (clientsSel.length) bits.push("client: " + clientsSel.join("/"));
+  if (cuBusy) bits.push("ClickUp busy, refreshing");
   if (st.at) bits.push("updated " + fmtClock(st.at));
   sub.textContent = bits.join(" · ");
 
