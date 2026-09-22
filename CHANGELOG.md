@@ -1,5 +1,8 @@
 # Changelog
 
+## v3.9.2
+- Fixed tracking buttons i.e Stop and Complete button in all panels
+
 ## v3.9.1
 - **Fixed: the Site monitor looked like it had stopped.** It was checking every 5 minutes all along, but only saved its result when a site changed between up and down, so a site that stayed up kept showing an old "last check" time. Every check is now saved, and a check can no longer be cut off halfway.
 - **Changed: a ClickUp rate limit no longer shows as a red error.** It now reads "ClickUp is busy. Showing totals from HH:MM, refreshing automatically." and the task list stays on screen. Real problems, like a bad token, still show in red.
