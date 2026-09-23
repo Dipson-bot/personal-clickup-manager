@@ -408,13 +408,31 @@
     const hasCode = (t) => CODE_RE.test(t.name || "");
     const containers = new Set();
     for (const k of kept) if (k.main && !hasCode(k.main) && hasCode(k.t)) containers.add(String(k.main.id));
+    // Audit titles (long enough to be specific), longest first, per client.
+    const titleIndex = new Map();
+    const codeByTitle = (client, name) => {
+      const k = clientKey(client);
+      const audit = audits.get(k);
+      if (!audit || !audit.items) return "";
+      if (!titleIndex.has(k)) {
+        titleIndex.set(k, Object.entries(audit.items)
+          .filter(([, i]) => i.title && i.title.length >= 18 && !/^page work/i.test(i.title))
+          .map(([c, i]) => [c, i.title.toLowerCase()])
+          .sort((a, b) => b[1].length - a[1].length));
+      }
+      const n = String(name || "").toLowerCase();
+      const hit = titleIndex.get(k).find(([, title]) => n.includes(title));
+      return hit ? hit[0] : "";
+    };
     const byClient = new Map();
     for (const { t, main: m } of kept) {
       if (!t.isSubtask && containers.has(String(t.id))) continue;
       const client = t.client || (m && m.client) || "Other";
       if (!byClient.has(client)) byClient.set(client, new Map());
       const groups = byClient.get(client);
-      const code = (String(t.name || "").match(CODE_RE) || [])[0];
+      // No code in the name ("Review Track quote submissions properly - ..."): if
+      // it names one of the audit's actions, it's a step of that action.
+      const code = (String(t.name || "").match(CODE_RE) || [])[0] || codeByTitle(client, t.name);
       const key = code ? "code:" + baseCode(code)
         : (t.isSubtask && m && !containers.has(String(m.id))) ? ((String(m.name || "").match(CODE_RE) || [])[0] ? "code:" + baseCode(m.name.match(CODE_RE)[0]) : "task:" + m.id)
         : "task:" + t.id;

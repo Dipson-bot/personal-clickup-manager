@@ -1,5 +1,10 @@
 # Changelog
 
+## v3.9.6
+- Fixed: Custom order dragging and the stretch bar didn't work when a client was ticked in the Filter (the list grouped by client). Tasks can now be dragged within their own client's group, and the options page shows the stretch bar for the grouped list too.
+- New: "Explain this task" now also works on computers that can't run Chrome's built-in AI. It uses Pollinations.ai, a free public AI with no key or sign-in, and asks once before sending the task text online.
+- Improved: in a client report, a task without a code that names one of the audit's actions (for example a "Review ..." task) is now counted as a step of that action instead of getting its own line.
+
 ## v3.9.5
 - Fixed: the Tasks card's Export could send the Explore tasks list instead (for example a "Due this week" export came out with Explore's "Today" tasks). Each section now exports its own list.
 - New: Client report. Turn on "Client report" in any Export menu (Tasks or Explore tasks) to get a version you can send to the client: internal work like the Extra Task and monthly container tasks is left out, task codes (ACT-054) become the plain-language titles and explanations from the client's audit file, subtasks roll up into one line per piece of work with progress (for example "2 of 4 steps done"), and each line shows the page, status (Completed, In progress, Planned) and date. Each report is for one client ("Report for" picks which), so other clients' work never goes into it; attach that client's audit once and it is remembered. Works for CSV, Excel, Markdown, Google Sheets and Google Docs, and follows the filters you applied.
