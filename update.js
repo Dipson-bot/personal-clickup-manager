@@ -25,14 +25,39 @@ function step(text) {
   $("log").hidden = false;
 }
 function busy(on) {
-  for (const id of ["installBtn", "pickBtn", "checkBtn"]) if ($(id)) $(id).disabled = on;
+  for (const id of ["installBtn", "allowBtn", "pickBtn", "checkBtn"]) if ($(id)) $(id).disabled = on;
 }
 
+// ---------- guide shown just before Chrome's own questions ----------
+// Most people click "Allow this time" (the first choice), Chrome forgets the
+// folder, and every update asks again. So before Chrome asks, show what it will
+// ask and which answer to click. Resolves true on Continue: that click is the
+// user gesture Chrome's picker / permission prompt needs.
+function showGuide(mode) {
+  const pick = mode === "pick";
+  $("gPick").hidden = !pick;
+  $("gEdit").hidden = !pick;
+  $("gLastNum").textContent = pick ? "3" : "1";
+  $("gCount").textContent = pick ? "3 things" : "one thing";
+  $("guide").hidden = false;
+  $("guide").scrollIntoView({ block: "nearest", behavior: "smooth" });
+  $("gGo").focus();
+  return new Promise((resolve) => {
+    const done = (ok) => { $("guide").hidden = true; $("gGo").onclick = $("gCancel").onclick = null; resolve(ok); };
+    $("gGo").onclick = () => done(true);
+    $("gCancel").onclick = () => done(false);
+  });
+}
+const cancelled = () => Object.assign(new Error("cancelled"), { name: "AbortError" });
+
 // ---------- folder handling ----------
-async function ensurePermission(handle) {
+async function ensurePermission(handle, guide) {
   const opts = { mode: "readwrite" };
   if ((await handle.queryPermission(opts)) === "granted") return true;
-  return (await handle.requestPermission(opts)) === "granted";
+  if (guide && !(await showGuide("allow"))) throw cancelled();
+  const ok = (await handle.requestPermission(opts)) === "granted";
+  if (ok) await chrome.storage.local.set({ updateFolderGrantedAt: Date.now() }).catch(() => {});
+  return ok;
 }
 
 // One-click updates need the File System Access API. Chrome, Edge, Opera,
@@ -54,6 +79,7 @@ function blockedByPolicyMessage() {
 
 async function pickFolder() {
   if (!canPickFolder) throw new Error(noPickerMessage());
+  if (!(await showGuide("pick"))) throw cancelled();
   let handle;
   try {
     handle = await window.showDirectoryPicker({ id: "pcm-extension-folder", mode: "readwrite", startIn: "downloads" });
@@ -62,6 +88,7 @@ async function pickFolder() {
     throw e;
   }
   if (!(await ensurePermission(handle))) throw new Error("Chrome didn't get permission to edit that folder.");
+  await chrome.storage.local.set({ updateFolderGrantedAt: Date.now() }).catch(() => {});
   if (!(await isRunningFolder(handle))) {
     throw new Error("That isn't the folder this extension runs from. In chrome://extensions open Details on this extension; the \"Source\" line shows the right folder.");
   }
@@ -70,10 +97,14 @@ async function pickFolder() {
 }
 
 // Remembered folder, re-verified. Returns null when it's missing or has moved.
+// If Chrome only forgot the permission, ask for it again (with the guide) rather
+// than making the user find the folder again.
 async function rememberedFolder() {
   const handle = await kvGet("extDir");
   if (!handle) return null;
-  if (!(await ensurePermission(handle))) return null;
+  if (!(await ensurePermission(handle, true))) {
+    throw new Error("Chrome didn't allow writing to the folder, so nothing was installed. Click Install again and choose “Allow on every visit”.");
+  }
   return (await isRunningFolder(handle)) ? handle : null;
 }
 
@@ -87,11 +118,18 @@ async function showFolderState() {
   const handle = await kvGet("extDir").catch(() => null);
   let allowed = false;
   try { allowed = !!handle && (await handle.queryPermission({ mode: "readwrite" })) === "granted"; } catch (e) {}
-  $("folderLine").textContent = !handle
-    ? "One-click and automatic updates: not set up yet - choose this extension's folder once. When Chrome asks, pick \"Allow on every visit\"."
+  const { updateFolderGrantedAt } = await chrome.storage.local.get("updateFolderGrantedAt").catch(() => ({}));
+  const line = $("folderLine");
+  line.classList.toggle("warn", !handle || !allowed);
+  line.textContent = !handle
+    ? "Automatic updates aren't set up yet. Click Choose folder once: this page shows exactly what to click when Chrome asks, and after that every update installs by itself."
     : allowed
-      ? "One-click and automatic updates: on (folder \u201c" + handle.name + "\u201d)."
-      : "Folder \u201c" + handle.name + "\u201d is remembered, but Chrome will ask again before writing to it. For automatic updates, click Change folder, pick the same folder and choose \"Allow on every visit\".";
+      ? "Automatic updates are on \u2713 (folder \u201c" + handle.name + "\u201d). New versions install by themselves."
+      : (updateFolderGrantedAt
+        ? "Chrome forgot its permission for the folder \u201c" + handle.name + "\u201d - last time it was probably told \u201cAllow this time\u201d. "
+        : "Chrome needs your OK to write to the folder \u201c" + handle.name + "\u201d. ") +
+        "Until then updates can't install by themselves. Click Allow folder access and choose \u201cAllow on every visit\u201d.";
+  $("allowBtn").hidden = !handle || allowed;
   $("pickBtn").textContent = handle ? "Change folder" : "Choose folder";
 }
 
@@ -203,6 +241,20 @@ $("versBtn").onclick = () => {
 };
 
 $("installBtn").onclick = () => install();
+$("allowBtn").onclick = async () => {
+  busy(true);
+  try {
+    const handle = await kvGet("extDir");
+    if (!handle) throw new Error("No folder remembered yet - click Choose folder.");
+    if (!(await ensurePermission(handle, true))) throw new Error("Chrome didn't allow it. Click Allow folder access again and choose “Allow on every visit”.");
+    if (!(await isRunningFolder(handle))) throw new Error("That folder isn't the one this extension runs from any more (it was moved). Click Change folder and choose its current folder.");
+    say("Folder access allowed ✓ - updates now install by themselves.", "ok");
+  } catch (e) {
+    say(e && e.name === "AbortError" ? "Nothing changed." : (e && e.message ? e.message : String(e)), "err");
+  }
+  await showFolderState();
+  busy(false);
+};
 $("braveBtn").onclick = () => {
   chrome.tabs.create({ url: BRAVE_FLAG_URL }).catch(() => say("Couldn't open it. Type brave://flags/#file-system-access-api in the address bar instead.", "err"));
 };

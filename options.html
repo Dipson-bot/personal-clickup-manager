@@ -1575,6 +1575,22 @@
     </div>
 
     <div class="card">
+      <h2>Client sites for everyone</h2>
+      <p class="hint" style="margin-bottom:12px;line-height:1.55;">
+        These sites are added to <b>everyone's</b> Site monitor and monitoring is switched on (once - anyone can untick it or delete sites later,
+        and deleted sites don't come back). Auto-detect also uses this list. It is saved to the repository <b>encrypted with your ClickUp workspace</b>,
+        so only people connected to your workspace can read it. One site per line: <code>Client name | https://site.com</code>.
+      </p>
+      <textarea id="admSites" rows="9" style="font-family:ui-monospace,monospace;font-size:12.5px;" placeholder="Client name | https://site.com"></textarea>
+      <div class="btns" style="margin-top:12px;">
+        <button class="primary" id="admSitesPublish">Publish to everyone</button>
+        <button type="button" id="admSitesMine" title="Put the sites from your own Site monitor in the box">Fill from my site monitor</button>
+        <span class="saved" id="admSitesMsg" style="display:none;"></span>
+      </div>
+      <p class="hint" id="admSitesState" style="margin-top:8px;"></p>
+    </div>
+
+    <div class="card">
       <h2>GitHub access</h2>
       <p class="hint" style="margin-bottom:12px;line-height:1.55;">
         Needed for <b>Upload this new version</b> and <b>Update notifications</b>. Create a fine-grained token at
@@ -1766,6 +1782,26 @@
     </div>
     <div class="hint" id="optLastSyncLine" style="margin-top:8px;display:none;"></div>
   </div>
+
+  <div class="card" id="shortcutsCard">
+    <h2>Keyboard shortcuts</h2>
+    <p class="hint" style="margin:0 0 10px;line-height:1.5;">Work with the extension without opening it. Change any of these on your browser's shortcuts page.</p>
+    <div id="shortcutList" class="hint" style="line-height:1.9;"></div>
+    <div class="btns" style="margin-top:10px;">
+      <button type="button" id="shortcutsChange">Change shortcuts</button>
+    </div>
+  </div>
+
+  <div class="card" id="helpCard">
+    <h2>Help &amp; diagnostics</h2>
+    <p class="hint" style="margin:0 0 10px;line-height:1.5;">Something not working? Click <b>Copy diagnostics</b> and paste it in a message to whoever helps you with
+      the extension. It says what's set up and the last errors, without any passwords, tokens, emails, links or client names.</p>
+    <div class="btns">
+      <button type="button" class="primary" id="diagCopy">Copy diagnostics</button>
+      <button type="button" id="setupShow">Show setup checklist</button>
+    </div>
+    <p class="hint" id="diagMsg" style="margin-top:8px;display:none;"></p>
+  </div>
   </div>
   </div>
   </section>
@@ -1778,6 +1814,7 @@
 <script src="lib-zip.js"></script>
 <script src="task-panel.js"></script>
 <script src="celebrate.js"></script>
+<script src="pcm-help.js"></script>
 <script src="options.js"></script>
 </body>
 </html>

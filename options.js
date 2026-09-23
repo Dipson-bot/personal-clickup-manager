@@ -5173,8 +5173,19 @@ async function loadSiteMonitorConfig() {
   $("siteMonitorEnabled").checked = !!cfg.enabled;
   $("siteMonitorBody").style.opacity = cfg.enabled ? "1" : "0.5";
   $("siteMonitorUrls").value = smFormatLines(sites);
+  smLoadedText = $("siteMonitorUrls").value;
   renderSiteMonitorStatus(cfg);
 }
+// Sites can arrive while this page is open (the team's client list). Show them,
+// unless the box has unsaved edits - otherwise saving the old list would drop them.
+let smLoadedText = null;
+chrome.storage.onChanged.addListener((ch, area) => {
+  if (area !== "local" || !ch.siteMonitorConfig || !$("siteMonitorUrls")) return;
+  const nv = ch.siteMonitorConfig.newValue;
+  const box = $("siteMonitorUrls").value;
+  // Unchanged since loaded, or just saved from here: safe to refresh.
+  if (box === smLoadedText || box === smFormatLines(nv && Array.isArray(nv.sites) ? nv.sites : [])) loadSiteMonitorConfig();
+});
 
 // Site list lines: "Client | https://site.com", "Client, site.com", "site.com Client"
 // or a bare URL. The part that is a web address is the URL; the rest is the client
@@ -5955,7 +5966,7 @@ const ADMIN_FILES = [
   "manifest.json", "background.js", "popup.html", "popup.js", "options.html", "options.js",
   "offscreen.html", "offscreen.js", "update.html", "update.js", "wrapup.html", "wrapup.js",
   "notify-menu.js", "export-tasks.js", "lib-zip.js", "lib-unzip.js", "lib-automation.js",
-  "lib-availability.js", "lib-clickup.js", "lib-crypto.js", "lib-drive.js", "task-panel.js", "lib-updater.js", "offscreen-updater.js", "celebrate.js", "celebrate.html", "celebrate-window.js", "fx.js",
+  "lib-availability.js", "lib-clickup.js", "lib-crypto.js", "lib-drive.js", "task-panel.js", "lib-updater.js", "offscreen-updater.js", "celebrate.js", "celebrate.html", "celebrate-window.js", "fx.js", "pcm-help.js",
   "icons/icon16.png", "icons/icon48.png", "icons/icon128.png", "icons/celebrate.png", "icons/sad.png",
   "sounds/notify.wav", "sounds/danger.mp3", "sounds/winner.wav",
   "README.md", "CHANGELOG.md",
@@ -6114,6 +6125,7 @@ async function admRefresh() {
   let st = null;
   try { st = await send({ type: "ADMIN_STATE" }); } catch (e) {}
   admPolLoad();
+  admSitesLoad();
   const version = (st && st.version) || chrome.runtime.getManifest().version;
   if ($("admCurrent")) $("admCurrent").textContent = "v" + version;
   if ($("admRepo") && st && st.repo) $("admRepo").textContent = st.repo;
@@ -6309,4 +6321,109 @@ async function admPolSend(notifyNow) {
 }
 if ($("admPolSave")) $("admPolSave").onclick = () => admPolSend(false);
 if ($("admPolNotify")) $("admPolNotify").onclick = () => admPolSend(true);
+
+// ---- General: keyboard shortcuts + help & diagnostics ----
+const SHORTCUT_LABELS = { "toggle-timer": "Start / stop the timer", _execute_action: "Open the popup", "open-dashboard": "Open the dashboard" };
+async function renderShortcuts() {
+  const el = $("shortcutList");
+  if (!el || !chrome.commands) return;
+  let cmds = [];
+  try { cmds = await chrome.commands.getAll(); } catch (e) {}
+  el.replaceChildren();
+  for (const c of cmds) {
+    const row = document.createElement("div");
+    const k = document.createElement("kbd");
+    k.style.cssText = "display:inline-block;min-width:92px;margin-right:8px;padding:1px 7px;border:1px solid var(--border);border-radius:5px;background:var(--bg2);color:var(--text);font:12px ui-monospace,monospace;";
+    k.textContent = c.shortcut || "not set";
+    row.append(k, document.createTextNode(SHORTCUT_LABELS[c.name] || c.description || c.name));
+    el.appendChild(row);
+  }
+  if (cmds.some((c) => !c.shortcut)) {
+    const n = document.createElement("div");
+    n.textContent = "\"not set\" means another extension already uses that key: pick your own with Change shortcuts.";
+    el.appendChild(n);
+  }
+}
+if ($("shortcutsChange")) $("shortcutsChange").onclick = async () => {
+  let scheme = "chrome";
+  try { if (navigator.brave && (await navigator.brave.isBrave())) scheme = "brave"; else if (/Edg\//.test(navigator.userAgent)) scheme = "edge"; } catch (e) {}
+  chrome.tabs.create({ url: scheme + "://extensions/shortcuts" }).catch(() => {});
+};
+renderShortcuts();
+window.addEventListener("focus", renderShortcuts); // back from the shortcuts page
+if ($("diagCopy")) $("diagCopy").onclick = async () => {
+  const msg = $("diagMsg");
+  msg.style.display = "block";
+  msg.style.color = "";
+  msg.textContent = "Collecting…";
+  try {
+    const text = await window.PcmHelp.copyDiagnostics();
+    msg.textContent = "Copied ✓ (" + text.split("\n").length + " lines). Paste it (Ctrl+V) in a message to whoever helps you with the extension.";
+  } catch (e) {
+    msg.style.color = "var(--red)";
+    msg.textContent = "Couldn't copy: " + (e && e.message ? e.message : e);
+  }
+};
+if ($("setupShow")) $("setupShow").onclick = async () => {
+  await window.PcmHelp.showSetup();
+  location.hash = "#dashboard";
+};
+
+// ---- Admin: client sites for everyone (client-sites.json, encrypted) ----
+let admSitesMineList = [];
+const admSitesText = (list) => list.map((s) => (s.name ? s.name + " | " : "") + s.url).join("\n");
+async function admSitesLoad() {
+  const box = $("admSites");
+  if (!box) return;
+  let r = null;
+  try { r = await send({ type: "ADMIN_SITES_GET" }, 30000); } catch (e) {}
+  if (!r || !r.ok) return;
+  admSitesMineList = Array.isArray(r.mine) ? r.mine : [];
+  const st = $("admSitesState");
+  if (!box.value.trim()) box.value = admSitesText(r.published && r.published.length ? r.published : admSitesMineList);
+  if (st) {
+    st.textContent = !r.connected ? "Connect ClickUp first: the list is locked to your ClickUp workspace."
+      : r.published ? r.published.length + " site(s) published " + new Date(r.publishedAt).toLocaleString([], { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" }) + "."
+      : "Nothing published yet. The box shows your own Site monitor list.";
+  }
+}
+function admSitesRead() {
+  const out = [];
+  for (const line of $("admSites").value.split("\n")) {
+    if (!line.trim()) continue;
+    const p = smParseLine(line);
+    if (p && p.url) out.push({ name: p.name || "", url: p.url });
+  }
+  return out;
+}
+if ($("admSitesMine")) $("admSitesMine").onclick = async () => {
+  await admSitesLoad();
+  $("admSites").value = admSitesText(admSitesMineList);
+};
+if ($("admSitesPublish")) $("admSitesPublish").onclick = async () => {
+  const msg = $("admSitesMsg");
+  const btn = $("admSitesPublish");
+  const sites = admSitesRead();
+  msg.style.display = "inline";
+  msg.style.color = "";
+  if (!sites.length) { msg.style.color = "var(--red)"; msg.textContent = "No web addresses found in the box."; return; }
+  btn.disabled = true;
+  msg.textContent = "Publishing " + sites.length + " site(s)…";
+  try {
+    const r = await send({ type: "ADMIN_SITES_PUBLISH", sites }, 60000);
+    if (r && r.ok) {
+      msg.textContent = "Published ✓ " + r.count + " site(s). Everyone connected to your ClickUp workspace gets them within about 1-2 minutes" +
+        (r.added ? " (" + r.added + " added here)" : "") + ".";
+      admSitesLoad();
+    } else {
+      msg.style.color = "var(--red)";
+      msg.textContent = "Couldn't publish: " + ((r && r.error) || "unknown error");
+    }
+  } catch (e) {
+    msg.style.color = "var(--red)";
+    msg.textContent = "Couldn't publish: " + (e && e.message ? e.message : e);
+  } finally {
+    btn.disabled = false;
+  }
+};
 
