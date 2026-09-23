@@ -474,20 +474,62 @@
     };
 
     // Say up front whether the built-in AI can run here.
-    aiState(false).then((s) => {
+    // Computers that can't run Chrome's built-in AI use a free online AI instead.
+    let online = false;
+    const stateReady = aiState(false).then((s) => {
       if (s === "unsupported" || s === "unavailable") {
-        go.disabled = true;
-        go.title = s === "unsupported"
-          ? "Built-in AI needs Chrome 138 or newer."
-          : "This computer can't run Chrome's built-in AI (it needs about 16 GB RAM or a 4 GB graphics card, and 22 GB free disk).";
-        if (!note.textContent) note.textContent = go.title + " Use \"Ask with\" or Copy instead.";
+        online = true;
+        go.textContent = "\u2728 Explain (free online AI)";
+        go.title = (s === "unsupported" ? "This Chrome has no built-in AI" : "This computer can't run Chrome's built-in AI") +
+          ", so this uses Pollinations.ai, a free public AI: no key or sign-in, but the task text is sent to it.";
       } else if ((s === "downloadable" || s === "downloading") && !note.textContent) {
         note.textContent = "First use downloads Chrome's AI model once (about 2 GB).";
       }
     });
 
     const paint = (text) => { out.textContent = ""; renderRichText(out, text); };
+    // ---- free online AI (Pollinations.ai), for computers without the built-in one ----
+    const ONLINE_OK = "pcm.onlineAiOk";
+    const askConsent = () => new Promise((resolve) => {
+      out.hidden = false; out.textContent = "";
+      out.appendChild(document.createTextNode("This computer can't run Chrome's built-in AI, so the explanation comes from Pollinations.ai, a free public AI (no key, no sign-in). The task text" +
+        (files.length ? " and your attached files' text" : "") + " will be sent to it. Avoid this for confidential client information.\n\n"));
+      const yes = el("button", "pcm-btn pri", "Use it"); yes.type = "button";
+      const no = el("button", "pcm-btn", "Cancel"); no.type = "button";
+      const row = el("div", "pcm-ai-row"); row.append(yes, no); out.appendChild(row);
+      yes.onclick = () => { try { localStorage.setItem(ONLINE_OK, "1"); } catch (e) {} resolve(true); };
+      no.onclick = () => { out.hidden = true; resolve(false); };
+    });
+    async function explainOnline() {
+      let ok = false;
+      try { ok = localStorage.getItem(ONLINE_OK) === "1"; } catch (e) {}
+      if (!ok && !(await askConsent())) return;
+      go.disabled = true; stop.hidden = false;
+      out.hidden = false; out.textContent = "Asking the free online AI\u2026 (usually 5-20 seconds)";
+      aiAbort = new AbortController();
+      const timer = setTimeout(() => aiAbort && aiAbort.abort(), 90000);
+      try {
+        // Kept short: the whole question travels in the web address.
+        const q = aiPrompt(d, files, 2500).slice(0, 4500);
+        const url = "https://text.pollinations.ai/" + encodeURIComponent(q) +
+          "?model=openai&private=true&system=" + encodeURIComponent(AI_SYSTEM);
+        const res = await fetch(url, { signal: aiAbort.signal, cache: "no-store" });
+        const text = res.ok ? (await res.text()).trim() : "";
+        if (!res.ok || !text || /^\s*[{<]/.test(text)) throw new Error(res.ok ? "empty answer" : "HTTP " + res.status);
+        paint((files.some((f) => f.kind === "image") ? "(Screenshots were left out: the online AI only reads text.)\n\n" : "") + text);
+      } catch (e) {
+        out.textContent = e && e.name === "AbortError"
+          ? "Stopped. (The free online AI is sometimes slow; try again, or use \"Ask with\".)"
+          : "The free online AI didn't answer (" + (e && e.message ? e.message : e) + "). It's a free public service and is sometimes busy: try again in a minute, or use \"Ask with\".";
+      } finally {
+        clearTimeout(timer);
+        aiAbort = null;
+        go.disabled = false; go.textContent = "\u2728 Explain again (online)"; stop.hidden = true;
+      }
+    }
     go.onclick = async () => {
+      await stateReady; // a click right after opening mustn't skip the online fallback
+      if (online) { explainOnline(); return; }
       go.disabled = true; stop.hidden = false;
       if (note.className !== "pcm-err") note.textContent = "";
       out.hidden = false; out.textContent = "Thinking…";

@@ -1035,7 +1035,7 @@ function appendFilterTaskRows(container, tasks, deadlineTasks, trackedTasks = []
     appendNameCell(row, nm, t, opts);
     row.appendChild(spans);
     if (withControls) appendTaskControls(row, t);
-    cuDecorateRow(row, t, "main", canDrag);
+    cuDecorateRow(row, t, "main", canDrag, opts.group);
     container.appendChild(row);
   }
   for (const dt of sortByPriority(deadlineTasks, deadlineOrder)) {
@@ -1064,7 +1064,7 @@ function appendFilterTaskRows(container, tasks, deadlineTasks, trackedTasks = []
     appendNameCell(row, nm, dt, opts);
     row.appendChild(spans);
     if (withControls) appendTaskControls(row, dt);
-    cuDecorateRow(row, dt, "deadline", canDrag);
+    cuDecorateRow(row, dt, "deadline", canDrag, opts.group);
     container.appendChild(row);
   }
   // Tasks tracked in this range but not surfaced by the due/config queries. In
@@ -1101,7 +1101,7 @@ function appendFilterTaskRows(container, tasks, deadlineTasks, trackedTasks = []
       appendNameCell(row, nm, t, opts);
       row.appendChild(spans);
       if (withControls) appendTaskControls(row, t);
-      cuDecorateRow(row, t, "tracked", canDrag);
+      cuDecorateRow(row, t, "tracked", canDrag, opts.group);
       container.appendChild(row);
     }
   }
@@ -1390,7 +1390,7 @@ function renderClickupTasksByClient(tasks, deadlineTasks, trackedTasks, scope, s
     subSpan.textContent = "est " + fmtDur(est) + (trk > 0 ? " · tracked " + fmtDur(trk) : "");
     head.appendChild(subSpan);
     listEl.appendChild(head);
-    appendFilterTaskRows(listEl, t1, t2, t3, { trackedLabel, hideClient: true, scope });
+    appendFilterTaskRows(listEl, t1, t2, t3, { trackedLabel, hideClient: true, scope, draggable: true, group: c });
   }
   listEl.style.display = any ? "block" : "none";
 }
@@ -2115,9 +2115,11 @@ function cuSetOrder(scope, section, ids) {
 }
 // Add the drag handle + identity dataset to a top-level row. Subtasks trail
 // their parent automatically, so they are never independently draggable.
-function cuDecorateRow(row, t, section, canDrag) {
+function cuDecorateRow(row, t, section, canDrag, group) {
   if (!canDrag || (t && t.isSubtask)) return;
   row.dataset.cuSection = section;
+  // Grouped-by-client lists: a row only moves within its own client's group.
+  row.dataset.cuGroup = group || "";
   row.dataset.cuId = cuId(t);
   row.classList.add("cu-draggable");
   const h = document.createElement("span");
@@ -2189,7 +2191,7 @@ function cuSetupDrag(container) {
     if (!cuDragging) return;
     const target = e.target && e.target.closest && e.target.closest(".cu-task.cu-draggable");
     // Confine reordering to within the section the drag started in.
-    if (!target || target === cuDragEl || target.dataset.cuSection !== cuDragSection) {
+    if (!target || target === cuDragEl || target.dataset.cuSection !== cuDragSection || (target.dataset.cuGroup || "") !== (cuDragEl.dataset.cuGroup || "")) {
       cuClearDropMarks(container);
       cuDropTarget = null;
       return;

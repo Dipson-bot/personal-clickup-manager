@@ -3703,9 +3703,11 @@ function cuSetOrderOpt(scope, section, ids) {
   cuManualOrderOpt[scope][section] = Array.isArray(ids) ? ids.slice() : [];
   chrome.storage.local.set({ cuManualOrder: cuManualOrderOpt });
 }
-function cuDecorateRowOpt(row, t, section, canDrag) {
+function cuDecorateRowOpt(row, t, section, canDrag, group) {
   if (!canDrag || (t && t.isSubtask)) return;
   row.dataset.cuSection = section;
+  // Grouped-by-client lists: a row only moves within its own client's group.
+  row.dataset.cuGroup = group || "";
   row.dataset.cuId = cuId(t);
   row.classList.add("cu-draggable");
   const h = document.createElement("span");
@@ -3768,7 +3770,7 @@ function cuSetupDragOpt(container) {
   container.addEventListener("dragover", (e) => {
     if (!cuDraggingOpt) return;
     const target = e.target && e.target.closest && e.target.closest(".cu-task.cu-draggable");
-    if (!target || target === cuDragElOpt || target.dataset.cuSection !== cuDragSectionOpt) {
+    if (!target || target === cuDragElOpt || target.dataset.cuSection !== cuDragSectionOpt || (target.dataset.cuGroup || "") !== (cuDragElOpt.dataset.cuGroup || "")) {
       cuClearDropMarksOpt(container);
       cuDropTargetOpt = null;
       return;
@@ -4026,14 +4028,13 @@ function renderClickupPreview(st) {
   // One set of sections (configured / tasks / tracked). With clients ticked it
   // runs once per client under that client's heading - the grouping the popup
   // and side panel use - instead of one flat list sorted across every client.
-  const renderSections = (lists, viewDeadline, viewTasks, viewTracked, grouped) => {
+  const renderSections = (lists, viewDeadline, viewTasks, viewTracked, grouped, groupName) => {
     const first = lists.children.length;
-    // Custom (drag) order layers on the active scope. Rows are only draggable in
-    // the flat (non-grouped) view; the grouped-by-client view still honours the
-    // saved order but shows no handles.
+    // Custom (drag) order layers on the active scope. In the grouped-by-client
+    // view each row carries its client (groupName) and only moves within it.
     const scope = view.scope || null;
     const useOrder = !!(cuFilter.manualOrder && scope);
-    const canDrag = useOrder && !grouped;
+    const canDrag = useOrder; // grouped: rows move within their own client (groupName)
     const mainOrder = useOrder ? cuOrderForOpt(scope, "main") : null;
     const deadlineOrder = useOrder ? cuOrderForOpt(scope, "deadline") : null;
     const trackedOrder = useOrder ? cuOrderForOpt(scope, "tracked") : null;
@@ -4080,7 +4081,7 @@ function renderClickupPreview(st) {
         appendNameCellOpt(row, nm, dt);
         row.appendChild(spans);
         appendTaskControlsOpt(row, dt);
-        cuDecorateRowOpt(row, dt, "deadline", canDrag);
+        cuDecorateRowOpt(row, dt, "deadline", canDrag, groupName);
         dList.appendChild(row);
       }
       lists.appendChild(dList);
@@ -4147,7 +4148,7 @@ function renderClickupPreview(st) {
         appendNameCellOpt(row, nm, t);
         row.appendChild(spans);
         appendTaskControlsOpt(row, t);
-        cuDecorateRowOpt(row, t, "main", canDrag);
+        cuDecorateRowOpt(row, t, "main", canDrag, groupName);
         listEl.appendChild(row);
       }
       lists.appendChild(listEl);
@@ -4187,7 +4188,7 @@ function renderClickupPreview(st) {
         appendNameCellOpt(row, nm, t);
         row.appendChild(spans);
         appendTaskControlsOpt(row, t);
-        cuDecorateRowOpt(row, t, "tracked", canDrag);
+        cuDecorateRowOpt(row, t, "tracked", canDrag, groupName);
         listEl.appendChild(row);
       }
       lists.appendChild(listEl);
@@ -4203,6 +4204,12 @@ function renderClickupPreview(st) {
     }
   };
   if (clientsSel.length) {
+    // All client groups sit in ONE scroll box with the stretch bar under it
+    // (each group's own list stops scrolling on its own inside it).
+    const gw = document.createElement("div");
+    gw.className = "cu-tasklist cu-groupwrap";
+    lists.appendChild(gw);
+    makeListResizable(gw, "dash");
     const clientOf = (t) => String((t && t.client) || "").trim();
     for (const c of clientsSel.slice().sort((a, b) => a.localeCompare(b))) {
       const d1 = viewDeadline.filter((t) => clientOf(t) === c);
@@ -4223,9 +4230,10 @@ function renderClickupPreview(st) {
       subSpan.className = "cu-chsub";
       subSpan.textContent = "est " + fmtDurOpt(est) + (trk > 0 ? " \u00b7 tracked " + fmtDurOpt(trk) : "");
       head.appendChild(subSpan);
-      lists.appendChild(head);
-      renderSections(lists, d1, t1, k1, true);
+      gw.appendChild(head);
+      renderSections(gw, d1, t1, k1, true, c);
     }
+    if (!gw.children.length) gw.remove();
   } else {
     renderSections(lists, viewDeadline, viewTasks, viewTracked, false);
   }

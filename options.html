@@ -552,6 +552,8 @@
   .cu-clienthead .cu-chname { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text); font-size: 13px; }
   .cu-clienthead .cu-chsub { flex-shrink: 0; font-weight: 600; color: var(--muted); font-size: 11.5px; }
   .cu-tasklist.cu-grouplist { margin-top: 4px; }
+  /* Grouped by client: one outer scroll box; the lists inside just flow. */
+  .cu-groupwrap .cu-tasklist { max-height: none !important; overflow: visible !important; }
   /* Fixed est / tracked slots so client + due chips line up on every row. */
   .cu-tasklist .cu-task .estpairs { min-width: 11.2em; justify-content: flex-start; }
   .cu-tasklist .cu-task .est { min-width: 4.4em; text-align: right; }
