@@ -31,6 +31,20 @@
   .vers label { display: block; font-size: 13px; font-weight: 600; margin-bottom: 6px; }
   .vers .hint { font-weight: 400; color: var(--muted); font-size: 12px; }
   .versRow { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+  .folder.warn { color: #b45309; background: rgba(245, 158, 11, .10); border: 1px solid rgba(245, 158, 11, .45); border-radius: 10px; padding: 10px 12px; line-height: 1.5; }
+  html[data-theme="dark"] .folder.warn { color: #fbbf24; }
+  /* Guide shown just before Chrome's own folder questions. */
+  .guide { margin: 0 0 16px; border: 1.5px solid var(--indigo); border-radius: 12px; padding: 14px 16px; }
+  .guide h2 { font-size: 15px; margin: 0 0 4px; }
+  .guide > p { font-size: 13px; color: var(--muted); margin: 0 0 10px; line-height: 1.5; }
+  .gstep { display: flex; gap: 10px; align-items: flex-start; margin: 10px 0; font-size: 13px; line-height: 1.5; }
+  .gstep > b { flex: none; width: 22px; height: 22px; border-radius: 50%; background: var(--indigo); color: #fff; display: grid; place-items: center; font-size: 12px; }
+  .mock { margin-top: 6px; border: 1px solid var(--border); border-radius: 10px; padding: 10px 12px; background: var(--bg); font-size: 12.5px; max-width: 360px; box-shadow: 0 4px 14px rgba(0,0,0,.08); }
+  .mock .q { font-weight: 600; margin-bottom: 8px; }
+  .mock .row { display: flex; gap: 6px; flex-wrap: wrap; }
+  .mock .opt { padding: 4px 10px; border-radius: 999px; border: 1px solid var(--border); color: var(--muted); }
+  .mock .opt.pick { border-color: var(--green); background: var(--green); color: #fff; font-weight: 600; box-shadow: 0 0 0 3px rgba(22,163,74,.25); }
+  .mock .opt.no { text-decoration: line-through; opacity: .7; }
   .versRow select { flex: 1 1 260px; min-width: 200px; font: inherit; font-size: 13px; padding: 7px 9px; border: 1px solid var(--border); border-radius: 8px; background: var(--card); color: var(--text); }
 </style>
 </head>
@@ -44,8 +58,23 @@
       <div class="v"><span>Latest</span><b id="latest">-</b></div>
     </div>
     <p class="folder" id="folderLine"></p>
+    <div class="guide" id="guide" hidden>
+      <h2>Chrome will ask you <span id="gCount">3 things</span> - here's what to click</h2>
+      <p>This is needed once. Answer it right and every update after this installs by itself, without this page.</p>
+      <div class="gstep" id="gPick"><b>1</b><div>Choose this extension's folder: the one you unzipped, with <code>manifest.json</code> inside
+        (it's shown as "Source" on this extension in chrome://extensions). Then click <b>Select Folder</b>.</div></div>
+      <div class="gstep" id="gEdit"><b>2</b><div>Chrome asks if the extension may edit files there. Click <b>Edit files</b>.
+        <div class="mock"><div class="q">Let this extension edit files?</div><div class="row"><span class="opt">Cancel</span><span class="opt pick">Edit files</span></div></div></div></div>
+      <div class="gstep"><b id="gLastNum">3</b><div>Chrome asks how long to allow it. Click <b>Allow on every visit</b> - not "Allow this time", or Chrome forgets and asks again at every update.
+        <div class="mock"><div class="q">Allow access to this folder?</div><div class="row"><span class="opt pick">Allow on every visit</span><span class="opt no">Allow this time</span><span class="opt no">Don't allow</span></div></div></div></div>
+      <div class="btns" style="margin-top:12px;">
+        <button class="primary" id="gGo">Continue</button>
+        <button id="gCancel">Cancel</button>
+      </div>
+    </div>
     <div class="btns">
       <button class="primary" id="installBtn" hidden>Install</button>
+      <button class="primary" id="allowBtn" hidden>Allow folder access</button>
       <button class="primary" id="braveBtn" hidden>Open Brave setting</button>
       <button id="pickBtn">Choose folder</button>
       <button id="checkBtn">Check for updates</button>
@@ -66,6 +95,7 @@
     </div>
   </div>
 </div>
+<script src="pcm-help.js"></script>
 <script type="module" src="update.js"></script>
 </body>
 </html>

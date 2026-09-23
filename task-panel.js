@@ -795,6 +795,12 @@
     h.append(back, t);
     const b = el("div", "pcm-sheet-b");
     sheet.append(h, b);
+    // A click anywhere outside the task card goes back too. Both the press and the
+    // release must be outside, so selecting text in the card never closes it.
+    let downOutside = false;
+    const outside = (e) => !e.target.closest(".pcm-panel, button, a, input, select, textarea");
+    sheet.addEventListener("mousedown", (e) => { downOutside = e.button === 0 && outside(e); });
+    sheet.addEventListener("click", (e) => { if (downOutside && outside(e)) close(); downOutside = false; });
     document.body.appendChild(sheet);
     document.documentElement.classList.add("pcm-sheet-open");
     back.focus();

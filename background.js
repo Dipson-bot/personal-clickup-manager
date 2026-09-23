@@ -62,6 +62,247 @@ async function setSiteMonitorConfig(cfg) {
   await chrome.storage.local.set({ siteMonitorConfig: cfg });
 }
 
+// ---------- Team client sites (Admin > "Client sites for everyone") ----------
+// The Admin publishes the agency's client websites to client-sites.json in the
+// repository. The repository is public, so the list is encrypted with the ClickUp
+// workspace ID: only copies connected to that workspace can read it. Each copy
+// adds every listed site ONCE (siteDirSeen remembers them, also kept in Drive),
+// so a site the user deletes never comes back. Monitoring stays off until the
+// user ticks "Enable site monitoring". update-policy.json carries sitesAt, so copies
+// download the file only when it has changed.
+const TEAM_SITES_PATH = "client-sites.json";
+const teamSitesPass = (teamId) => "pcm-team-sites:" + String(teamId);
+function siteHostKey(url) {
+  try { return new URL(url).hostname.toLowerCase().replace(/^www\./, ""); } catch (e) { return ""; }
+}
+function cleanTeamSites(list) {
+  const out = [];
+  const seen = new Set();
+  for (const s of Array.isArray(list) ? list : []) {
+    let url = String((s && s.url) || "").trim();
+    if (!url) continue;
+    if (!/^https?:\/\//i.test(url)) url = "https://" + url;
+    let u;
+    try { u = new URL(url); } catch (e) { continue; }
+    if (!/\.[a-z]{2,}$/i.test(u.hostname)) continue;
+    const k = siteHostKey(u.origin);
+    if (seen.has(k)) continue;
+    seen.add(k);
+    out.push({ name: String((s && s.name) || "").trim().slice(0, 120), url: u.origin });
+  }
+  return out.slice(0, 300);
+}
+// jsDelivr first (no request limits); GitHub's own copy when jsDelivr is older
+// than the change the settings file announced.
+async function readTeamSitesFile(wantAt) {
+  let best = null;
+  for (const base of ["https://cdn.jsdelivr.net/gh/" + UPDATE_REPO + "@main/", "https://raw.githubusercontent.com/" + UPDATE_REPO + "/main/"]) {
+    try {
+      const r = await fetch(base + TEAM_SITES_PATH + "?t=" + Date.now(), { cache: "no-store" });
+      const j = r.ok ? await r.json() : null;
+      if (j && (!best || (Number(j.updatedAt) || 0) > (Number(best.updatedAt) || 0))) best = j;
+    } catch (e) {}
+    if (best && (Number(best.updatedAt) || 0) >= wantAt) break;
+  }
+  return best;
+}
+async function decryptTeamSites(file, teamId) {
+  if (!file || !file.enc || !teamId) return null;
+  try {
+    const o = await decryptWithPassphrase(file.enc, teamSitesPass(teamId));
+    return cleanTeamSites(o && o.sites);
+  } catch (e) {
+    return null; // another workspace (or a damaged file)
+  }
+}
+// Add the team's sites this copy hasn't added before.
+async function applyTeamSites(sites) {
+  const got = await chrome.storage.local.get("siteDirSeen");
+  const seen = new Set(Array.isArray(got.siteDirSeen) ? got.siteDirSeen : []);
+  const cfg = await getSiteMonitorConfig();
+  const list = Array.isArray(cfg.sites) ? cfg.sites.slice() : [];
+  const have = new Set(list.map((s) => siteHostKey(s && s.url)));
+  let added = 0;
+  for (const s of sites) {
+    const k = siteHostKey(s.url);
+    if (!k || seen.has(k)) continue;
+    seen.add(k);
+    if (!have.has(k)) { list.push({ url: s.url, name: s.name }); have.add(k); added++; }
+  }
+  // Monitoring itself stays as the user set it (off by default): only people
+  // who tick "Enable site monitoring" get down alerts.
+  if (added) await setSiteMonitorConfig({ ...cfg, sites: list });
+  await chrome.storage.local.set({ siteDirSeen: [...seen] });
+  return added;
+}
+// Run from the once-a-minute update check. Cheap when nothing changed: one
+// storage read.
+async function maybeApplyTeamSites(policy) {
+  const want = Number(policy && policy.sitesAt) || 0;
+  if (!want) return;
+  const cfg = await getClickupConfig().catch(() => null);
+  const teamId = cfg && cfg.teamId;
+  if (!teamId) return; // not connected to ClickUp yet: tried again once it is
+  const { teamSites } = await chrome.storage.local.get("teamSites");
+  const key = want + ":" + teamId;
+  if (teamSites && teamSites.key === key) {
+    if (teamSites.status !== "fetch-failed" || Date.now() - (teamSites.triedAt || 0) < 5 * 60000) return;
+  }
+  // A fresh install signed in to Drive takes its own saved sites (and the ones it
+  // deleted) from Drive first, so deleted sites don't come back.
+  const { driveLastSync } = await chrome.storage.local.get("driveLastSync");
+  if (!driveLastSync && (await isSignedIn().catch(() => false))) return;
+  const file = await readTeamSitesFile(want);
+  if (!file) { await chrome.storage.local.set({ teamSites: { key, status: "fetch-failed", triedAt: Date.now() } }); return; }
+  const sites = await decryptTeamSites(file, teamId);
+  if (!sites) { await chrome.storage.local.set({ teamSites: { key, status: "other-workspace", triedAt: Date.now() } }); return; }
+  const added = await applyTeamSites(sites);
+  await chrome.storage.local.set({ teamSites: { key, status: "ok", triedAt: Date.now(), at: Number(file.updatedAt) || want, list: sites, added } });
+}
+
+// ---------- Diagnostics (Options > General > Help & diagnostics) ----------
+// The last 25 errors from the background and the pages (pcm-help.js), plus a
+// readable report the user copies and sends to whoever helps them. The report
+// never carries tokens, emails, links or long IDs (scrubDiag).
+async function diagLog(where, e) {
+  try {
+    const msg = String((e && e.message) || e || "error").slice(0, 300);
+    const { diagLog: log } = await chrome.storage.local.get("diagLog");
+    const next = (Array.isArray(log) ? log : []).concat({ at: Date.now(), where, msg });
+    await chrome.storage.local.set({ diagLog: next.slice(-25) });
+  } catch (e2) {}
+}
+self.addEventListener("error", (e) => { diagLog("background", (e.message || "error") + (e.lineno ? " (line " + e.lineno + ")" : "")); });
+self.addEventListener("unhandledrejection", (e) => { diagLog("background", "promise: " + ((e.reason && e.reason.message) || e.reason)); });
+function scrubDiag(s) {
+  return String(s == null ? "" : s)
+    .replace(/Bearer\s+\S+/gi, "Bearer [token]")
+    .replace(/\b(pk|ghp|gho|ghs|github_pat|ya29|sk)[_.-][\w.-]+/gi, "[token]")
+    .replace(/https?:\/\/[^\s"')<>]+/gi, "[link]")
+    .replace(/[\w.+-]+@[\w-]+(\.[\w-]+)+/g, "[email]")
+    .replace(/\b[A-Za-z0-9_-]{24,}\b/g, "[id]");
+}
+async function buildDiagReport(pageInfo) {
+  const p = pageInfo || {};
+  const when = (t) => (t ? new Date(t).toLocaleString() + " (" + Math.round((Date.now() - t) / 60000) + " min ago)" : "never");
+  const L = [];
+  const add = (k, v) => L.push(k + ": " + v);
+  L.push("Personal ClickUp Manager diagnostics");
+  add("Made", new Date().toString());
+  add("Version", chrome.runtime.getManifest().version);
+  add("Browser", p.browser || navigator.userAgent);
+  add("Platform", p.platform || "?");
+  add("Language", p.language || "?");
+  add("Folder picker available", p.folderPicker === false ? "no (Brave: needs the File System Access flag)" : "yes");
+  if (Array.isArray(p.setup) && p.setup.length) { L.push("Setup:"); for (const s of p.setup) L.push("  " + s); }
+
+  const settings = await getSettings().catch(() => ({}));
+  const cfg = await getClickupConfig().catch(() => null);
+  const cst = await getClickupState().catch(() => null);
+  L.push("ClickUp:");
+  L.push("  connected: " + (cfg && cfg.token ? "yes" : "no") + " · workspace chosen: " + (cfg && cfg.teamId ? "yes" : "no") + " · user found: " + (cfg && cfg.userId ? "yes" : "no"));
+  L.push("  last refresh: " + when(cst && cst.at));
+  if (cst && cst.error) L.push("  last error: " + cst.error + " at " + when(cst.errorAt));
+  if (cst && cst.rateLimitedUntil > Date.now()) L.push("  rate-limited for " + Math.round((cst.rateLimitedUntil - Date.now()) / 1000) + " s");
+  const tasks = cst && Array.isArray(cst.tasks) ? cst.tasks.length : 0;
+  L.push("  tasks due today: " + tasks + " · timer running: " + (cst && cst.running ? "yes" : "no"));
+
+  const signedIn = await isSignedIn().catch(() => false);
+  const { driveLastSync, updateInfo, updatePolicy, autoUpdateState, siteMonitorState, diagLog: log } =
+    await chrome.storage.local.get(["driveLastSync", "updateInfo", "updatePolicy", "autoUpdateState", "siteMonitorState", "diagLog"]);
+  add("Drive sync", (signedIn ? "signed in" : "off") + " · last sync " + when(driveLastSync));
+  L.push("Updates:");
+  L.push("  latest known: " + ((updateInfo && updateInfo.latest) || "?") + " · settings file checked " + when(updatePolicy && updatePolicy.at));
+  L.push("  install automatically: " + (settings.autoUpdate === false ? "off" : "on"));
+  if (autoUpdateState) L.push("  last automatic install: " + (autoUpdateState.reason || "ok") + " · tries failed " + (autoUpdateState.fails || 0) + " · " + when(autoUpdateState.lastTry));
+  const sm = await getSiteMonitorConfig().catch(() => ({ sites: [] }));
+  const down = siteMonitorState && typeof siteMonitorState === "object" ? Object.values(siteMonitorState).filter((s) => s && s.down).length : 0;
+  add("Site monitor", (sm.enabled ? "on" : "off") + " · " + (Array.isArray(sm.sites) ? sm.sites.length : 0) + " sites · " + down + " down");
+  let level = "?";
+  try { level = await new Promise((r) => chrome.notifications.getPermissionLevel(r)); } catch (e) {}
+  add("Notifications", level + (settings.notifyAll === false ? " · all turned off in the bell menu" : "") +
+    (Number(settings.notifyPausedUntil) > Date.now() ? " · paused until " + new Date(settings.notifyPausedUntil).toLocaleTimeString() : ""));
+  const off = Object.keys(settings).filter((k) => settings[k] === false);
+  if (off.length) add("Switched off", off.join(", "));
+  try {
+    const cmds = await chrome.commands.getAll();
+    add("Shortcuts", cmds.map((c) => (c.name === "_execute_action" ? "open popup" : c.name) + " = " + (c.shortcut || "not set")).join(" · "));
+  } catch (e) {}
+  try {
+    const alarms = await chrome.alarms.getAll();
+    L.push("Scheduled checks:");
+    for (const a of alarms.sort((x, y) => x.scheduledTime - y.scheduledTime)) {
+      L.push("  " + a.name + " in " + Math.max(0, Math.round((a.scheduledTime - Date.now()) / 60000)) + " min" + (a.periodInMinutes ? " (every " + a.periodInMinutes + " min)" : ""));
+    }
+  } catch (e) {}
+  try { add("Storage used", Math.round((await chrome.storage.local.getBytesInUse(null)) / 1024) + " KB"); } catch (e) {}
+  const errs = Array.isArray(log) ? log.slice(-15) : [];
+  L.push("Recent errors" + (errs.length ? " (oldest first):" : ": none"));
+  for (const e of errs) L.push("  " + new Date(e.at).toLocaleString() + " · " + e.where + " · " + e.msg);
+  return L.map(scrubDiag).join("\n");
+}
+
+// ---------- Keyboard shortcuts (manifest "commands"; changed at chrome://extensions/shortcuts) ----------
+// toggle-timer: stop the running timer, or start again the task stopped last
+// (else the Extra Task). Same effect as the task row's Stop / Start buttons.
+async function shortcutToggleTimer() {
+  const cfg = await getClickupConfig();
+  if (!cfg || !cfg.token || !cfg.teamId) {
+    await notify("cu-shortcut", "Connect ClickUp first", "The start/stop shortcut needs ClickUp connected (Options > ClickUp setup).", null, chrome.runtime.getURL("options.html#clickup"));
+    return;
+  }
+  const cur = await getCurrentTimeEntry(cfg.token, cfg.teamId).catch(() => null);
+  const st = (await getClickupState().catch(() => null)) || {};
+  if (cur) {
+    await stopTimer(cfg.token, cfg.teamId);
+    if (cur.taskId) await setTaskStatus(cfg.token, String(cur.taskId), "to do").catch(() => {});
+    await chrome.storage.local.set({ lastStoppedTask: { id: cur.taskId ? String(cur.taskId) : null, name: cur.taskName || "", at: Date.now() } });
+    if (String(st.activeTaskId || "") === String(cur.taskId || "")) await setClickupState({ ...st, activeTaskId: null });
+    clearFilterCache();
+    refreshClickup({ includeTasks: true }).catch(() => {});
+    await notify("cu-shortcut", "Timer stopped", (cur.taskName || "Your task") + " - start it again with the same shortcut.", null);
+    return;
+  }
+  const { lastStoppedTask } = await chrome.storage.local.get("lastStoppedTask");
+  let task = null;
+  if (lastStoppedTask && lastStoppedTask.id) {
+    task = await getTaskById(cfg.token, lastStoppedTask.id).catch(() => null);
+    if (task && isTaskDone(task)) task = null; // finished since: don't reopen it
+  }
+  if (!task && st.extraTask && st.extraTask.id) task = { id: st.extraTask.id, name: st.extraTask.name || "Extra Task" };
+  if (!task) {
+    await notify("cu-shortcut", "Nothing to start", "Start a task once from the popup; after that the shortcut starts and stops it.", null);
+    return;
+  }
+  if (task.assigneeCount > 1) {
+    await notify("cu-shortcut", "Can't start this task", "“" + (task.name || "This task") + "” has more than one person assigned. Start another task from the popup.", "danger");
+    return;
+  }
+  const id = String(task.id);
+  if (st.activeTaskId && String(st.activeTaskId) !== id) await setTaskStatus(cfg.token, String(st.activeTaskId), "to do").catch(() => {});
+  await setTaskStatus(cfg.token, id, "in progress").catch(() => {});
+  await startTimer(cfg.token, cfg.teamId, id);
+  await setClickupState({ ...st, activeTaskId: id });
+  clearFilterCache();
+  refreshClickup({ includeTasks: true }).catch(() => {});
+  await notify("cu-shortcut", "Timer started", (task.name || "Your task") + " - stop it with the same shortcut.", null);
+}
+chrome.commands.onCommand.addListener((command) => {
+  if (command === "toggle-timer") {
+    shortcutToggleTimer().catch((e) => {
+      diagLog("shortcut", e);
+      notify("cu-shortcut", "Shortcut failed", String(e && e.message ? e.message : e), "danger");
+    });
+  } else if (command === "open-dashboard") {
+    const url = chrome.runtime.getURL("options.html");
+    chrome.tabs.query({ url: url + "*" }).then((tabs) => {
+      const t = tabs[0];
+      if (t) { chrome.tabs.update(t.id, { active: true, url: url + "#dashboard" }); chrome.windows.update(t.windowId, { focused: true }).catch(() => {}); }
+      else chrome.tabs.create({ url: url + "#dashboard" });
+    }).catch(() => {});
+  }
+});
+
 async function checkOneSite(url, timeoutMs = SITE_MONITOR_CHECK_TIMEOUT_MS) {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
@@ -954,7 +1195,7 @@ async function pushAllToDrive(tok, accounts) {
 // Each key carries its own "last changed" stamp (extrasStamps) so the newest copy
 // wins per key: a fresh install adopts the Drive copy, while a newer local edit is
 // never overwritten by an older remote one.
-const EXTRA_KEYS = ["siteMonitorConfig", "theme", "cuFilter", "cuFilterMode", "cuFilterDefault", "customSounds", "cuManualOrder"];
+const EXTRA_KEYS = ["siteMonitorConfig", "theme", "cuFilter", "cuFilterMode", "cuFilterDefault", "customSounds", "cuManualOrder", "siteDirSeen"];
 const EXTRAS_MAX_SOUNDS = 1500000; // skip very large custom-sound files in the Drive copy
 async function collectExtras() {
   const got = await chrome.storage.local.get([...EXTRA_KEYS, "extrasStamps"]);
@@ -1635,6 +1876,33 @@ async function discoverClientSitesBg() {
     });
   }
 
+  // 3b) The team's client list (Admin > Client sites for everyone) is the most
+  //     reliable source: a client whose name matches gets that exact site, and
+  //     listed clients with no ClickUp tasks are shown too.
+  const { teamSites } = await chrome.storage.local.get("teamSites");
+  const teamList = teamSites && Array.isArray(teamSites.list) ? teamSites.list : [];
+  if (teamList.length) {
+    const coreKey = (n) => String(n || "").toLowerCase().split(/[^a-z0-9]+/).filter((w) => w && !SITE_NAME_STOPWORDS.has(w)).join("");
+    const byKey = new Map();
+    for (const s of teamList) {
+      for (const k of [siteNameKey(s.name), coreKey(s.name)]) if (k && k.length >= 3 && !byKey.has(k)) byKey.set(k, s);
+    }
+    const used = new Set();
+    for (const c of out) {
+      const s = byKey.get(c.key) || byKey.get(coreKey(c.name));
+      if (!s) continue;
+      used.add(s.url);
+      c.candidates = [s.url, ...c.candidates.filter((u) => siteHostKey(u) !== siteHostKey(s.url))].slice(0, 5);
+      c.url = s.url;
+      c.confidence = "high";
+      c.source = "team client list";
+    }
+    for (const s of teamList) {
+      if (used.has(s.url) || !s.name) continue;
+      out.push({ name: s.name, key: siteNameKey(s.name), taskCount: 0, url: s.url, confidence: "high", source: "team client list", candidates: [s.url] });
+    }
+  }
+
   // 4) Nothing in ClickUp for a client: try domains built from its name and keep
   //    the first one that actually answers. Clearly marked as a guess.
   const missing = out.filter((c) => !c.url).slice(0, 40);
@@ -2078,6 +2346,7 @@ async function refreshClickupImpl({ includeTasks = false, viaAlarm = false, forc
     // can say "couldn't refresh" without blanking the panel.
     const prev = (await getClickupState()) || {};
     const state = { ...prev, error: String(e && e.message ? e.message : e), errorAt: Date.now() };
+    diagLog("ClickUp refresh", e);
     // On a 429, back off: park a cooldown so auto-refreshes stop hitting the API
     // until ClickUp's own Retry-After window elapses (default ~1 min).
     if (e && e.status === 429) {
@@ -3238,6 +3507,8 @@ function normalizeUpdatePolicy(p) {
     holdUntil: Number(o.holdUntil) > 0 ? Number(o.holdUntil) : 0,
     notifyNonce: typeof o.notifyNonce === "string" ? o.notifyNonce.slice(0, 40) : "",
     notifiedAllAt: Number(o.notifiedAllAt) || 0,
+    // When the Admin last published the team's client sites (client-sites.json).
+    sitesAt: Number(o.sitesAt) || 0,
     updatedAt: Number(o.updatedAt) || 0,
     // The newest release, written by Admin publish / Notify, so a notification
     // needs nothing but this file. Only this repository's own releases count.
@@ -3312,6 +3583,7 @@ async function checkForUpdate(force, forceNotify = false) {
   const { updateInfo: prev } = await chrome.storage.local.get("updateInfo");
   const policy = await fetchUpdatePolicy();
   scheduleUpdateAlarm();
+  await maybeApplyTeamSites(policy).catch(() => {});
   // "Notify everyone now": a nonce this copy hasn't acted on yet skips the
   // reminder gap and any hold.
   const nonceNew = !!policy.notifyNonce && policy.notifyNonce !== (prev && prev.nonceSeen);
@@ -3467,7 +3739,10 @@ async function maybeAutoUpdate() {
   st.reason = (r && r.reason) || "no-reply";
   st.error = (r && r.error) || "";
   // A one-time setup problem isn't a failure to count - it just waits for setup.
-  if (!/^(no-folder|permission|moved)$/.test(st.reason)) st.fails = (st.fails || 0) + 1;
+  if (!/^(no-folder|permission|moved)$/.test(st.reason)) {
+    st.fails = (st.fails || 0) + 1;
+    diagLog("automatic update", st.reason + (st.error ? ": " + st.error : ""));
+  }
   await chrome.storage.local.set({ autoUpdateState: st });
 }
 
@@ -4696,6 +4971,8 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
           const cur = await getCurrentTimeEntry(cfg.token, cfg.teamId).catch(() => null);
           if (cur) await stopTimer(cfg.token, cfg.teamId).catch(() => {});
           await setTaskStatus(cfg.token, taskId, "to do");
+          // The start/stop shortcut starts this one again next time.
+          await chrome.storage.local.set({ lastStoppedTask: { id: taskId, name: (cur && String(cur.taskId) === taskId && cur.taskName) || "", at: Date.now() } });
           const st = (await getClickupState().catch(() => null)) || {};
           if (String(st.activeTaskId || "") === taskId) await setClickupState({ ...st, activeTaskId: null });
           clearFilterCache();
@@ -5084,6 +5361,53 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
           await chrome.storage.local.remove("updateInfo");
           checkForUpdate(true, false).catch(() => {});
           sendResponse({ ok: true, url: rel.html_url, tag, repoUpdated, repoError, notified });
+        } catch (e) {
+          sendResponse({ ok: false, error: String(e && e.message ? e.message : e) });
+        }
+        break;
+      }
+      case "DIAG_REPORT": {
+        try { sendResponse({ ok: true, text: await buildDiagReport(msg.page) }); }
+        catch (e) { sendResponse({ ok: false, error: String(e && e.message ? e.message : e) }); }
+        break;
+      }
+      case "ADMIN_SITES_GET": {
+        // The published team list (decrypted with this workspace) + this copy's own.
+        const cfg = await getClickupConfig().catch(() => null);
+        const { updatePolicy } = await chrome.storage.local.get("updatePolicy");
+        const want = Number(updatePolicy && updatePolicy.policy && updatePolicy.policy.sitesAt) || 0;
+        const file = await readTeamSitesFile(want).catch(() => null);
+        const published = cfg && cfg.teamId ? await decryptTeamSites(file, cfg.teamId) : null;
+        const mine = cleanTeamSites((await getSiteMonitorConfig()).sites);
+        sendResponse({ ok: true, connected: !!(cfg && cfg.teamId), published, publishedAt: file ? Number(file.updatedAt) || 0 : 0, mine });
+        break;
+      }
+      case "ADMIN_SITES_PUBLISH": {
+        // Encrypt the list with this ClickUp workspace, save it to the repo and
+        // announce it in update-policy.json (sitesAt) so every copy picks it up.
+        const { adminEnc } = await chrome.storage.local.get("adminEnc");
+        const saved = await decryptJSON(adminEnc, null);
+        if (!saved || !saved.token) { sendResponse({ ok: false, error: "Save a GitHub token first (GitHub access, below)." }); break; }
+        const cfg = await getClickupConfig().catch(() => null);
+        if (!cfg || !cfg.teamId) { sendResponse({ ok: false, error: "Connect ClickUp first: the list is locked to your ClickUp workspace." }); break; }
+        const sites = cleanTeamSites(msg.sites);
+        if (!sites.length) { sendResponse({ ok: false, error: "No valid sites in the list." }); break; }
+        try {
+          const head = { Authorization: "Bearer " + saved.token, Accept: "application/vnd.github+json" };
+          const now = Date.now();
+          const cur = await ghGetJsonFile(head, TEAM_SITES_PATH);
+          await ghPutJsonFile(head, TEAM_SITES_PATH, { v: 1, updatedAt: now, enc: await encryptWithPassphrase({ sites }, teamSitesPass(cfg.teamId)) },
+            cur.sha, "Update team client sites");
+          const pol = await ghGetJsonFile(head, UPDATE_POLICY_PATH);
+          const next = normalizeUpdatePolicy({ ...(pol.data || UPDATE_POLICY_DEFAULTS), sitesAt: now });
+          next.updatedAt = now;
+          await ghPutJsonFile(head, UPDATE_POLICY_PATH, next, pol.sha, "Announce updated team client sites");
+          await purgePolicyCdn();
+          fetch("https://purge.jsdelivr.net/gh/" + UPDATE_REPO + "@main/" + TEAM_SITES_PATH, { cache: "no-store" }).catch(() => {});
+          // This copy takes them straight away.
+          const added = await applyTeamSites(sites);
+          await chrome.storage.local.set({ teamSites: { key: now + ":" + cfg.teamId, status: "ok", triedAt: now, at: now, list: sites, added } });
+          sendResponse({ ok: true, count: sites.length, added, at: now });
         } catch (e) {
           sendResponse({ ok: false, error: String(e && e.message ? e.message : e) });
         }
