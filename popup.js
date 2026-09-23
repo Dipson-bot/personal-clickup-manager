@@ -604,7 +604,27 @@ function cuPrioCmp(a, b) {
     // person would (ACT-025.S1 before ACT-025.S3), instead of ClickUp's order.
     String(a.name || "").localeCompare(String(b.name || ""), undefined, { numeric: true, sensitivity: "base" });
 }
-function sortByPriority(rows) {
+// Stable identity for a task row. Regular tasks carry `.id`; deadline/configured
+// tasks carry `.taskId`. This is the key used for manual (drag) ordering.
+function cuId(t) {
+  return String(t && (t.id != null ? t.id : t.taskId));
+}
+// Comparator for the user's custom drag order: tasks appear in the exact order
+// their ids sit in `orderIds`. Ids not in the list (e.g. a task added since the
+// last arrange) sink to the bottom, where they fall back to the normal priority
+// order so they stay sensible until the user drags them into place.
+function cuManualCmp(orderIds) {
+  const rank = new Map();
+  const list = Array.isArray(orderIds) ? orderIds : [];
+  for (let i = 0; i < list.length; i++) rank.set(String(list[i]), i);
+  return (a, b) => {
+    const ra = rank.has(cuId(a)) ? rank.get(cuId(a)) : Infinity;
+    const rb = rank.has(cuId(b)) ? rank.get(cuId(b)) : Infinity;
+    if (ra !== rb) return ra - rb;
+    return cuPrioCmp(a, b);
+  };
+}
+function sortByPriority(rows, orderIds) {
   const list = Array.isArray(rows) ? rows : [];
   const idOf = (t) => String(t && (t.id != null ? t.id : t.taskId));
   const present = new Set(list.map(idOf));
@@ -617,7 +637,10 @@ function sortByPriority(rows) {
       subs.get(k).push(t);
     } else top.push(t);
   }
-  top.sort(cuPrioCmp);
+  // A custom drag order (when supplied) replaces the priority order for the
+  // top level only; subtasks always trail their parent in their own order.
+  const cmp = Array.isArray(orderIds) ? cuManualCmp(orderIds) : cuPrioCmp;
+  top.sort(cmp);
   const out = [];
   for (const p of top) {
     out.push(p);
@@ -844,6 +867,22 @@ function whoSlot(t) {
 // like the box on the wrap-up page; the height is remembered per list and a
 // double-click on that corner puts it back to normal. The normal cap on the
 // list's height is lifted the moment a drag starts, so it can grow past it.
+// Height of a list's rows (plus its bottom padding/border), independent of how
+// tall the box is stretched. 0 when it can't be measured (hidden page).
+function listContentHeight(el) {
+  const last = el && el.lastElementChild;
+  if (!last) return 0;
+  const r = el.getBoundingClientRect(), lr = last.getBoundingClientRect();
+  if (!r.height && !lr.height) return 0;
+  const cs = getComputedStyle(el);
+  return Math.ceil(lr.bottom - r.top + el.scrollTop + (parseFloat(cs.paddingBottom) || 0) + (parseFloat(cs.borderBottomWidth) || 0));
+}
+function capListToContent(el) {
+  // Only lists the user has resized: an untouched list keeps its CSS default.
+  if (!el.style.height) return;
+  const h = listContentHeight(el);
+  if (h > 0) el.style.maxHeight = h + "px";
+}
 function makeListResizable(el, key) {
   if (!el || el._pcmResizable) return;
   el._pcmResizable = true;
@@ -852,32 +891,60 @@ function makeListResizable(el, key) {
   let saved = 0;
   try { saved = Number(localStorage.getItem(store)) || 0; } catch (e) {}
   if (saved > 40) { el.style.height = saved + "px"; el.style.maxHeight = "none"; }
-  const inCorner = (e) => { const r = el.getBoundingClientRect(); return e.clientX > r.right - 18 && e.clientY > r.bottom - 18; };
+  // Never let the list be taller than its rows: with fewer tasks than the saved
+  // height it shrinks to fit, and dragging stops at the last task. Re-measured
+  // whenever the rows change (the popup refills the same list on every refresh).
+  // A timer, not requestAnimationFrame: rAF never fires while the page is hidden.
+  const recap = () => setTimeout(() => capListToContent(el), 0);
+  recap();
+  new MutationObserver(recap).observe(el, { childList: true });
   const save = () => {
     if (!el.style.height || !el.isConnected || !el.offsetHeight) return; // only after the user dragged it
     try { localStorage.setItem(store, String(el.offsetHeight)); } catch (e) {}
   };
-  el.addEventListener("pointerdown", (e) => {
-    if (!inCorner(e)) return;
+  // A full-width drag bar UNDER the list (the browser's own corner handle sat
+  // on top of the last row's buttons and was hard to grab). It's placed next to
+  // the list once the list is in the page.
+  const grip = document.createElement("div");
+  grip.className = "cu-grip";
+  grip.title = "Drag to make the list taller or shorter \u00b7 double-click to reset";
+  grip.setAttribute("role", "separator");
+  grip.setAttribute("aria-orientation", "horizontal");
+  const place = () => { if (el.isConnected && grip.previousElementSibling !== el) el.after(grip); };
+  setTimeout(place, 0);
+  new MutationObserver(place).observe(el, { childList: true });
+  grip.addEventListener("pointerdown", (e) => {
+    e.preventDefault();
+    const startY = e.clientY;
+    const startH = el.getBoundingClientRect().height;
+    const maxH = listContentHeight(el) || Infinity;
     el.style.maxHeight = "none";
-    // Saved when the drag ends (the size watcher below is only a backup: it
-    // depends on the page repainting, which a hidden panel doesn't do).
-    window.addEventListener("pointerup", () => setTimeout(save, 0), { once: true });
+    grip.classList.add("active");
+    try { grip.setPointerCapture(e.pointerId); } catch (e2) {}
+    const move = (ev) => {
+      const h = Math.max(60, Math.min(maxH, startH + ev.clientY - startY));
+      el.style.height = Math.round(h) + "px";
+    };
+    const up = () => {
+      grip.removeEventListener("pointermove", move);
+      grip.classList.remove("active");
+      capListToContent(el);
+      save();
+    };
+    grip.addEventListener("pointermove", move);
+    grip.addEventListener("pointerup", up, { once: true });
+    grip.addEventListener("pointercancel", up, { once: true });
   });
-  el.addEventListener("dblclick", (e) => {
-    if (!inCorner(e)) return;
+  grip.addEventListener("dblclick", () => {
     el.style.height = "";
     el.style.maxHeight = "";
     try { localStorage.removeItem(store); } catch (e2) {}
   });
-  let t = null;
-  new ResizeObserver(() => {
-    clearTimeout(t);
-    t = setTimeout(save, 300);
-  }).observe(el);
 }
 
 function appendNameCell(row, nm, t, opts) {
+  // ▸ opens the task details dropdown (task-panel.js).
+  if (window.PcmTaskPanel) row.appendChild(PcmTaskPanel.chevron(t));
   row.appendChild(prioBadge(t));
   // Every task row passes through here, so it's also where the row learns its
   // task object - the delegated estimate editor (document click handler below
@@ -931,7 +998,18 @@ function dueChip(t) {
 // caller turns them OFF for department / other-member scopes (read-only reports).
 function appendFilterTaskRows(container, tasks, deadlineTasks, trackedTasks = [], opts = {}) {
   const withControls = opts.controls !== false;
-  for (const t of sortByPriority(tasks)) {
+  // Custom (drag) order layers on top of the active date scope: each section
+  // keeps its own remembered order per scope. When manual mode is off (or no
+  // scope is known) the order arrays are null and sortByPriority falls back to
+  // the priority order. Rows are only made draggable in the flat, single-client
+  // views (opts.draggable) — never in the client-grouped popup report.
+  const scope = opts.scope || null;
+  const useOrder = !!(cuFilter.manualOrder && scope);
+  const canDrag = useOrder && opts.draggable === true;
+  const mainOrder = useOrder ? cuOrderFor(scope, "main") : null;
+  const deadlineOrder = useOrder ? cuOrderFor(scope, "deadline") : null;
+  const trackedOrder = useOrder ? cuOrderFor(scope, "tracked") : null;
+  for (const t of sortByPriority(tasks, mainOrder)) {
     const row = document.createElement("div");
     row.className = "cu-task" + (t.isSubtask ? " cu-sub" : "");
     const nm = document.createElement("a");
@@ -957,9 +1035,10 @@ function appendFilterTaskRows(container, tasks, deadlineTasks, trackedTasks = []
     appendNameCell(row, nm, t, opts);
     row.appendChild(spans);
     if (withControls) appendTaskControls(row, t);
+    cuDecorateRow(row, t, "main", canDrag);
     container.appendChild(row);
   }
-  for (const dt of sortByPriority(deadlineTasks)) {
+  for (const dt of sortByPriority(deadlineTasks, deadlineOrder)) {
     if (dt.error) continue;
     const row = document.createElement("div");
     row.className = "cu-task";
@@ -985,6 +1064,7 @@ function appendFilterTaskRows(container, tasks, deadlineTasks, trackedTasks = []
     appendNameCell(row, nm, dt, opts);
     row.appendChild(spans);
     if (withControls) appendTaskControls(row, dt);
+    cuDecorateRow(row, dt, "deadline", canDrag);
     container.appendChild(row);
   }
   // Tasks tracked in this range but not surfaced by the due/config queries. In
@@ -996,7 +1076,7 @@ function appendFilterTaskRows(container, tasks, deadlineTasks, trackedTasks = []
     sec.className = "cu-dhead";
     sec.textContent = opts.trackedLabel || "Tracked · no dates";
     container.appendChild(sec);
-    for (const t of sortByPriority(trackedTasks)) {
+    for (const t of sortByPriority(trackedTasks, trackedOrder)) {
       const row = document.createElement("div");
       row.className = "cu-task";
       const nm = document.createElement("a");
@@ -1021,6 +1101,7 @@ function appendFilterTaskRows(container, tasks, deadlineTasks, trackedTasks = []
       appendNameCell(row, nm, t, opts);
       row.appendChild(spans);
       if (withControls) appendTaskControls(row, t);
+      cuDecorateRow(row, t, "tracked", canDrag);
       container.appendChild(row);
     }
   }
@@ -1053,7 +1134,7 @@ function renderClickupTasks(tasks, deadlineTasks, trackedTasks, scope) {
   // In the Today scope the tracked section holds tasks worked today but not due
   // today; elsewhere it's date-less tasks. Label it accordingly.
   const trackedLabel = scope === "today" ? "Tracked · not due today" : "Tracked · no dates";
-  appendFilterTaskRows(listEl, hasTasks ? tasks : [], hasDeadline ? deadlineTasks : [], hasTracked ? trackedTasks : [], { trackedLabel });
+  appendFilterTaskRows(listEl, hasTasks ? tasks : [], hasDeadline ? deadlineTasks : [], hasTracked ? trackedTasks : [], { trackedLabel, scope, draggable: true });
 }
 
 // ---------- Estimate editing ----------
@@ -1309,7 +1390,7 @@ function renderClickupTasksByClient(tasks, deadlineTasks, trackedTasks, scope, s
     subSpan.textContent = "est " + fmtDur(est) + (trk > 0 ? " · tracked " + fmtDur(trk) : "");
     head.appendChild(subSpan);
     listEl.appendChild(head);
-    appendFilterTaskRows(listEl, t1, t2, t3, { trackedLabel, hideClient: true });
+    appendFilterTaskRows(listEl, t1, t2, t3, { trackedLabel, hideClient: true, scope });
   }
   listEl.style.display = any ? "block" : "none";
 }
@@ -1710,8 +1791,8 @@ function renderWeekDetail(w, agg) {
 // narrow the visible task LIST only; they never change the headline totals or
 // the badge.
 // "Due today" is ticked by default (a saved choice always wins).
-let cuFilter = { dueToday: true, dueTomorrow: false, dueWeek: false, dueNextWeek: false, dueCustom: false, missingDue: false, customFrom: "", customTo: "", missingEst: false, hasTracked: false, deadlineCrossed: false, waitingOthers: false, statuses: [], priorities: [], clients: [] };
-const CU_FILTER_KEYS = ["dueToday", "dueTomorrow", "dueWeek", "dueNextWeek", "dueCustom", "missingEst", "missingDue", "hasTracked", "deadlineCrossed", "waitingOthers", "groupSubtasks"];
+let cuFilter = { dueToday: true, dueTomorrow: false, dueWeek: false, dueNextWeek: false, dueCustom: false, missingDue: false, customFrom: "", customTo: "", missingEst: false, hasTracked: false, deadlineCrossed: false, waitingOthers: false, manualOrder: false, statuses: [], priorities: [], clients: [] };
+const CU_FILTER_KEYS = ["dueToday", "dueTomorrow", "dueWeek", "dueNextWeek", "dueCustom", "missingEst", "missingDue", "hasTracked", "deadlineCrossed", "waitingOthers", "groupSubtasks", "manualOrder"];
 const CU_PRIORITY_ORDER = ["urgent", "high", "normal", "low", "none"];
 
 function cuTodayEndMs() { const d = new Date(); d.setHours(23, 59, 59, 999); return d.getTime(); }
@@ -1994,14 +2075,156 @@ function cuAvailableFacets(st) {
 
 const CU_SCOPE_LABEL = { today: "due today", tomorrow: "due tomorrow", week: "this week", nextweek: "due next week", extended: "active today" };
 function cuActiveFilterCount(f) {
-  return CU_FILTER_KEYS.reduce((n, k) => n + (f[k] ? 1 : 0), 0)
+  return CU_FILTER_KEYS.reduce((n, k) => n + (k !== "manualOrder" && f[k] ? 1 : 0), 0)
     + (Array.isArray(f.statuses) ? f.statuses.length : 0)
     + (Array.isArray(f.priorities) ? f.priorities.length : 0)
     + (Array.isArray(f.clients) ? f.clients.length : 0);
 }
 
+// ---------- Custom (drag) task order ----------
+// With "Custom order" on, task rows carry a drag handle and can be dropped into
+// any arrangement. The order is remembered PER date scope and PER section, so
+// "custom + due today" and "custom + due next week" keep independent layouts.
+// It is stored as a global ranking of task ids, so it also orders the
+// grouped-by-client view and survives the refine filters. Shape:
+//   { [scope]: { main:[ids], deadline:[ids], tracked:[ids] } }
+// Persisted to chrome.storage.local.cuManualOrder, which the storage listener
+// mirrors to the other pages and background.js backs up to Drive.
+let cuManualOrder = {};
+let cuActiveScope = "extended";
+let cuDragging = false;
+let cuDragEl = null;
+let cuDragSection = null;
+let cuDropTarget = null;
+let cuDropAfter = false;
+let cuRevokeDraggable = null;
+
+function cuOrderFor(scope, section) {
+  const s = cuManualOrder && cuManualOrder[scope];
+  const arr = s && s[section];
+  // null -> sortByPriority keeps the priority order (the starting point before
+  // the user has dragged anything in this scope).
+  return Array.isArray(arr) ? arr : null;
+}
+function cuSetOrder(scope, section, ids) {
+  if (!scope) return;
+  if (!cuManualOrder || typeof cuManualOrder !== "object") cuManualOrder = {};
+  if (!cuManualOrder[scope] || typeof cuManualOrder[scope] !== "object") cuManualOrder[scope] = {};
+  cuManualOrder[scope][section] = Array.isArray(ids) ? ids.slice() : [];
+  chrome.storage.local.set({ cuManualOrder });
+}
+// Add the drag handle + identity dataset to a top-level row. Subtasks trail
+// their parent automatically, so they are never independently draggable.
+function cuDecorateRow(row, t, section, canDrag) {
+  if (!canDrag || (t && t.isSubtask)) return;
+  row.dataset.cuSection = section;
+  row.dataset.cuId = cuId(t);
+  row.classList.add("cu-draggable");
+  const h = document.createElement("span");
+  h.className = "cu-drag";
+  h.textContent = "⠿";
+  h.title = "Drag to reorder";
+  h.setAttribute("aria-hidden", "true");
+  row.insertBefore(h, row.firstChild);
+}
+function cuClearDropMarks(container) {
+  const marked = container.querySelectorAll(".cu-drop-before, .cu-drop-after");
+  for (const el of marked) el.classList.remove("cu-drop-before", "cu-drop-after");
+}
+// Turn the current drop into a saved id order for its section. Base order is the
+// rows' current DOM order (priority or a prior manual order); the dragged id is
+// lifted out and re-inserted next to the drop target.
+function cuCommitDrag(container) {
+  if (!cuDragEl || !cuDropTarget || cuDropTarget === cuDragEl) return;
+  const section = cuDragSection;
+  const rows = Array.prototype.filter.call(
+    container.querySelectorAll(".cu-task.cu-draggable"),
+    (r) => r.dataset.cuSection === section
+  );
+  const dragId = cuDragEl.dataset.cuId;
+  const targetId = cuDropTarget.dataset.cuId;
+  const ids = rows.map((r) => r.dataset.cuId).filter((id) => id !== dragId);
+  let idx = ids.indexOf(targetId);
+  if (idx < 0) idx = ids.length; else if (cuDropAfter) idx += 1;
+  ids.splice(idx, 0, dragId);
+  cuSetOrder(cuActiveScope, section, ids);
+}
+// One-time delegated wiring on the persistent list container. Rows are rebuilt
+// on every render, so every handler lives on the container and reads datasets.
+function cuSetupDrag(container) {
+  if (!container || container.dataset.cuDragWired === "1") return;
+  container.dataset.cuDragWired = "1";
+  // Arm dragging only from the handle: make the row draggable on mousedown and
+  // revoke it the moment the mouse is released without a drag.
+  container.addEventListener("mousedown", (e) => {
+    const h = e.target && e.target.closest && e.target.closest(".cu-drag");
+    const row = h && h.closest(".cu-task.cu-draggable");
+    if (!row) return;
+    row.draggable = true;
+    if (cuRevokeDraggable) cuRevokeDraggable();
+    const revoke = () => {
+      row.draggable = false;
+      document.removeEventListener("mouseup", revoke);
+      if (cuRevokeDraggable === revoke) cuRevokeDraggable = null;
+    };
+    cuRevokeDraggable = revoke;
+    document.addEventListener("mouseup", revoke);
+  });
+  container.addEventListener("dragstart", (e) => {
+    const row = e.target && e.target.closest && e.target.closest(".cu-task.cu-draggable");
+    // Only our armed handle-drags count; a native link drag leaves row.draggable false.
+    if (!row || !row.draggable) return;
+    cuDragging = true;
+    cuDragEl = row;
+    cuDragSection = row.dataset.cuSection || null;
+    cuDropTarget = null;
+    cuDropAfter = false;
+    row.classList.add("cu-dragging");
+    try {
+      e.dataTransfer.effectAllowed = "move";
+      e.dataTransfer.setData("text/plain", row.dataset.cuId || "");
+    } catch (_) {}
+  });
+  container.addEventListener("dragover", (e) => {
+    if (!cuDragging) return;
+    const target = e.target && e.target.closest && e.target.closest(".cu-task.cu-draggable");
+    // Confine reordering to within the section the drag started in.
+    if (!target || target === cuDragEl || target.dataset.cuSection !== cuDragSection) {
+      cuClearDropMarks(container);
+      cuDropTarget = null;
+      return;
+    }
+    e.preventDefault();
+    try { e.dataTransfer.dropEffect = "move"; } catch (_) {}
+    const rect = target.getBoundingClientRect();
+    const after = (e.clientY - rect.top) > rect.height / 2;
+    cuClearDropMarks(container);
+    target.classList.add(after ? "cu-drop-after" : "cu-drop-before");
+    cuDropTarget = target;
+    cuDropAfter = after;
+  });
+  container.addEventListener("drop", (e) => {
+    if (!cuDragging) return;
+    e.preventDefault();
+    cuCommitDrag(container);
+  });
+  container.addEventListener("dragend", () => {
+    if (cuDragEl) { cuDragEl.classList.remove("cu-dragging"); cuDragEl.draggable = false; }
+    cuClearDropMarks(container);
+    if (cuRevokeDraggable) cuRevokeDraggable();
+    cuDragging = false;
+    cuDragEl = null;
+    cuDragSection = null;
+    cuDropTarget = null;
+    cuDropAfter = false;
+    // A scheduled refresh may have been deferred while dragging, and the commit
+    // above changed the saved order; redraw now.
+    if (cuRenderPending) { cuRenderPending = false; renderClickup(); }
+  });
+}
+
 function renderClickup() {
-  if (cuEstEditing) { cuRenderPending = true; return; }
+  if (cuEstEditing || cuDragging) { cuRenderPending = true; return; }
   const cu = state.clickup || {};
   const statsCard = $("statsCard");
   const filterCard = $("filterCard");
@@ -2026,6 +2249,9 @@ function renderClickup() {
   // state.todayFilter). Refine boxes (missingEst/deadlineCrossed) only narrow the
   // task LIST below - they never move these bars or the toolbar badge.
   const view = resolveCuFilterView(st || {}, cuFilter);
+  // The custom-order layer is keyed by the active date scope, so a drag in
+  // "due today" is remembered separately from "due next week".
+  cuActiveScope = view.scope || "extended";
   const targetMs = st && Number(st.targetMs) > 0 ? Number(st.targetMs) : (Number(cu.targetHours) || 0) * 3600000;
   const estMs = Number(view.estimateMs) || 0;
   const spentTot = Number(view.spentMs) || 0;
@@ -2231,7 +2457,27 @@ function renderNowTracking() {
     await commit(); // note first, so it lands on this entry
     sendTaskAction(String(run.taskId), "stop");
   };
-  top.append(dot, lab, nm, time, stop);
+  // Same action as the task row's check button: saves the note, stops the timer
+  // and marks the task complete - no need to find the task in the list first.
+  const done = document.createElement("button");
+  done.type = "button";
+  done.className = "cu-now-done";
+  done.textContent = "✓ Complete";
+  done.title = "Mark this task complete (stops the timer)";
+  done.onclick = async () => {
+    done.disabled = true;
+    stop.disabled = true;
+    done.textContent = "…";
+    await commit(); // note first, so it lands on this entry
+    sendTaskAction(String(run.taskId), "complete");
+  };
+  // No Complete for the auto-detected Extra Task: it recurs Mon-Fri, and
+  // completing it by mistake makes ClickUp create next week's copy early. It can
+  // still be completed from its row in the task list below.
+  const isExtra = !!((st.extraTask && st.extraTask.id && String(st.extraTask.id) === String(run.taskId))
+    || /\bextra(?:\(s\)|s)?\s+task(?:\(s\)|s)?\b/i.test(String(run.taskName || run.name || "")));
+  if (isExtra) top.append(dot, lab, nm, time, stop);
+  else top.append(dot, lab, nm, time, stop, done);
   const noteRow = document.createElement("div");
   noteRow.className = "cu-now-noterow";
   noteRow.append(note, saved);
@@ -2745,7 +2991,9 @@ function cuTrimToSingle() {
 // "Clear all filters": one click instead of unticking each box. Leaves the view
 // on its default (no date box ticked = the extended "active today" list).
 function cuClearAllFilters() {
-  for (const k of CU_FILTER_KEYS) cuFilter[k] = false;
+  // Custom order is a view setting (the switch in the menu header), not a
+  // filter, so "Clear all" leaves it as it is.
+  for (const k of CU_FILTER_KEYS) if (k !== "manualOrder") cuFilter[k] = false;
   cuFilter.statuses = [];
   cuFilter.priorities = [];
   cuFilter.clients = [];
@@ -2789,7 +3037,7 @@ function cuSaveDefaultFilter() {
 function cuPaintClearBtn(menu) {
   const b = menu && menu.querySelector("[data-fclear]");
   if (!b) return;
-  const on = CU_FILTER_KEYS.some((k) => cuFilter[k]) ||
+  const on = CU_FILTER_KEYS.some((k) => k !== "manualOrder" && cuFilter[k]) ||
     (cuFilter.statuses && cuFilter.statuses.length) ||
     (cuFilter.priorities && cuFilter.priorities.length) ||
     (cuFilter.clients && cuFilter.clients.length);
@@ -2892,7 +3140,7 @@ function openCuFilterMenu(open) {
   const menu = $("cuFilterMenu");
   if (!btn || !menu) return;
   try {
-    const got = await chrome.storage.local.get(["cuFilter", "cuDueTodayOnly", "cuFilterDefault"]);
+    const got = await chrome.storage.local.get(["cuFilter", "cuDueTodayOnly", "cuFilterDefault", "cuManualOrder"]);
     // Nothing saved yet on this machine: start from the user's own default.
     if (!got.cuFilter && got.cuFilterDefault) cuApplyFilterSnapshot(got.cuFilterDefault);
     if (got.cuFilter && typeof got.cuFilter === "object") {
@@ -2907,10 +3155,12 @@ function openCuFilterMenu(open) {
       cuFilter.dueToday = true; // migrate the legacy single checkbox
       chrome.storage.local.set({ cuFilter }).catch(() => {});
     }
+    if (got.cuManualOrder && typeof got.cuManualOrder === "object") cuManualOrder = got.cuManualOrder;
   } catch (e) {}
   renderCuFilterMenu();
   cuFilterBtnLabel();
   renderClickup();
+  cuSetupDrag($("cuTaskList"));
 
   try {
     const gm = await chrome.storage.local.get("cuFilterMode");
@@ -2924,15 +3174,15 @@ function openCuFilterMenu(open) {
   if (saveDefBtn) saveDefBtn.onclick = (e) => {
     e.stopPropagation();
     cuSaveDefaultFilter();
-    saveDefBtn.textContent = "Saved as default \u2713";
-    setTimeout(() => { saveDefBtn.textContent = "Save as my default"; }, 1600);
+    saveDefBtn.textContent = "Saved \u2713";
+    setTimeout(() => { saveDefBtn.textContent = "Save default"; }, 1600);
   };
   const useDefBtn = menu.querySelector("[data-fusedef]");
   if (useDefBtn) useDefBtn.onclick = async (e) => {
     e.stopPropagation();
     const ok = await cuUseDefaultFilter();
-    useDefBtn.textContent = ok ? "Default applied \u2713" : "No default saved yet";
-    setTimeout(() => { useDefBtn.textContent = "Use my default"; }, 1600);
+    useDefBtn.textContent = ok ? "Applied \u2713" : "None saved";
+    setTimeout(() => { useDefBtn.textContent = "Use default"; }, 1600);
     cuPaintClearBtn(menu);
   };
   menu.querySelectorAll("[data-fmode]").forEach((b) => {
@@ -3030,6 +3280,12 @@ chrome.storage.onChanged.addListener((changes, area) => {
     if (!cuArrEq(cuFilter.clients, nvC)) { cuFilter.clients = nvC.slice(); diff = true; }
     for (const k of ["customFrom", "customTo"]) { const v = typeof nv[k] === "string" ? nv[k] : ""; if ((cuFilter[k] || "") !== v) { cuFilter[k] = v; diff = true; } }
     if (diff) { renderCuFilterMenu(); cuFilterBtnLabel(); renderClickup(); }
+  }
+  // Custom drag order changed here or on another page -> adopt it and repaint,
+  // unless a drag is in progress on this page (its own echo).
+  if (changes.cuManualOrder && changes.cuManualOrder.newValue && typeof changes.cuManualOrder.newValue === "object") {
+    cuManualOrder = changes.cuManualOrder.newValue;
+    if (!cuDragging) renderClickup();
   }
   if (changes.theme) applyTheme(changes.theme.newValue === "dark" ? "dark" : "light");
 });

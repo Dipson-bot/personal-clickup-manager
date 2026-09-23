@@ -218,7 +218,11 @@
   /* Finished task: same-width empty slot, so its row lines up with the rest. */
   .cu-actions-ghost { visibility: hidden; }
   /* Task lists stretch from their bottom-right corner (makeListResizable). */
-  .cu-tasklist.cu-resizable { resize: vertical; min-height: 60px; }
+  .cu-tasklist.cu-resizable { min-height: 60px; }
+  /* Drag bar under a stretchable list: full width, above nothing clickable. */
+  .cu-grip { height: 10px; margin: 2px 0 4px; cursor: ns-resize; display: flex; align-items: center; justify-content: center; border-radius: 6px; touch-action: none; user-select: none; }
+  .cu-grip::before { content: ""; width: 42px; height: 4px; border-radius: 3px; background: var(--border); transition: background .15s, width .15s; }
+  .cu-grip:hover::before, .cu-grip.active::before { background: var(--indigo); width: 64px; }
   .cu-iconbtn.done { font-weight: 700;color: var(--green); border-color: var(--green); }
   .cu-iconbtn.done:hover:not(:disabled) { color: #fff; background: var(--green); }
   .cu-iconbtn:disabled { opacity: 0.55; cursor: not-allowed; }
@@ -378,6 +382,16 @@
   .cu-task .trk.over { color: var(--red); }
   .cu-task .trk.running::after { content: " \25CF"; color: var(--green); }
 
+  /* Custom (drag) order: a faint ⠿ handle at the left of each top-level row, and
+     a coloured line marking where a dragged row will land. */
+  .cu-task .cu-drag { flex: 0 0 auto; align-self: stretch; display: inline-flex; align-items: center; padding: 0 5px 0 1px; margin-right: 2px; color: var(--muted); opacity: .5; cursor: grab; font-size: 12px; line-height: 1; user-select: none; }
+  .cu-task .cu-drag:hover { opacity: .95; }
+  .cu-task .cu-drag:active { cursor: grabbing; }
+  .cu-task.cu-draggable:hover { background: color-mix(in srgb, var(--indigo) 7%, transparent); border-radius: 6px; }
+  .cu-task.cu-dragging { opacity: .4; }
+  .cu-task.cu-drop-before { box-shadow: inset 0 2px 0 0 var(--indigo); }
+  .cu-task.cu-drop-after { box-shadow: inset 0 -2px 0 0 var(--indigo); }
+
   /* "Tracking now" strip - only while a timer runs */
   .cu-now { display: flex; align-items: center; gap: 8px; margin: 6px 0 4px; padding: 5px 8px; border-radius: 9px; border: 1px solid rgba(22, 163, 74, 0.35); background: rgba(22, 163, 74, 0.09); font-size: 11.5px; }
   .cu-now[hidden] { display: none; }
@@ -392,8 +406,12 @@
   .cu-now-name { width: 0; }
   .cu-now-name:hover { text-decoration: underline; }
   .cu-now-time { flex: none; font-variant-numeric: tabular-nums; color: var(--green); font-weight: 700; }
-  .cu-now-stop { flex: none; font-size: 11px; font-weight: 700; padding: 3px 9px; border-radius: 6px; border: 0; background: var(--red); color: #fff; cursor: pointer; }
+  .cu-now-stop { flex: none; line-height: 1.15; font-size: 11px; font-weight: 700; padding: 3px 9px; border-radius: 6px; border: 0; background: var(--red); color: #fff; cursor: pointer; }
   .cu-now-stop:disabled { opacity: .6; cursor: default; }
+  /* ✓ Complete beside Stop: theme colours only, so it reads in light and dark. */
+  .cu-now-done { flex: none; font-size: 11px; font-weight: 700; line-height: 1.15; padding: 3px 9px; border-radius: 6px; border: 0; box-shadow: inset 0 0 0 1px var(--green); background: transparent; color: color-mix(in srgb, var(--green) 50%, var(--text)); cursor: pointer; }
+  .cu-now-done:hover:not(:disabled) { background: var(--green); color: #fff; }
+  .cu-now-done:disabled { opacity: .6; cursor: default; }
 
   /* Extra Task mode: Custom (note) / Meeting */
   .xmode { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin: 6px 0 2px; font-size: 11.5px; }
@@ -426,6 +444,21 @@
   .cu-filter-defaults button[data-fsavedef]:hover, .cu-filter-defaults button[data-fusedef]:hover { color: var(--indigo); border-color: var(--indigo); background: var(--bg2); }
   .cu-filter-clear button:hover { color: var(--red); border-color: var(--red); background: var(--bg2); }
   .cu-filter-clear button:disabled { opacity: .45; cursor: default; color: var(--muted); border-color: var(--border); background: transparent; }
+  /* Filter menu header: compact, and pinned to the top while the menu scrolls. */
+  .cu-filter-bar { position: sticky; top: -5px; z-index: 2; margin: -5px -5px 6px; padding: 7px 7px 6px; background: var(--card); border-bottom: 1px solid var(--border); display: flex; flex-direction: column; gap: 5px; }
+  .cu-filter-bar .cu-filter-clear { margin: 0; }
+  .cu-filter-bar .cu-filter-defaults { flex-wrap: nowrap; gap: 4px; }
+  .cu-filter-bar .cu-filter-defaults button, .cu-filter-bar .cu-filter-defaults button[data-fclear] { flex: 1 1 0; min-width: 0; padding: 3px 4px; font-size: 10.5px; border-radius: 6px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .cu-filter-bar .cu-filter-mode { margin: 0; border-radius: 6px; }
+  .cu-filter-bar .cu-filter-mode button { padding: 3px 6px; font-size: 10.5px; }
+  .cu-filter-menu label.cu-switch-row { justify-content: space-between; padding: 2px 2px 0 4px; font-size: 11.5px; font-weight: 600; }
+  .cu-filter-menu label.cu-switch-row:hover { background: transparent; }
+  .cu-switch-row small { font-weight: 500; color: var(--muted); font-size: 10.5px; }
+  .cu-filter-menu input.cu-switch { appearance: none; -webkit-appearance: none; width: 30px; height: 17px; border-radius: 9px; background: var(--border); position: relative; transition: background .15s; flex: none; }
+  .cu-filter-menu input.cu-switch::after { content: ""; position: absolute; top: 2px; left: 2px; width: 13px; height: 13px; border-radius: 50%; background: #fff; box-shadow: 0 1px 2px rgba(0,0,0,.3); transition: left .15s; }
+  .cu-filter-menu input.cu-switch:checked { background: var(--indigo); }
+  .cu-filter-menu input.cu-switch:checked::after { left: 15px; }
+  .cu-filter-menu input.cu-switch:focus-visible { outline: 2px solid var(--indigo); outline-offset: 2px; }
 </style>
 </head>
 <body>
@@ -451,13 +484,16 @@
           <button type="button" class="cu-filter-btn" id="cuExportBtn" title="Export the tasks shown here (CSV, Excel, Google Sheets/Docs)">&#10515; Export</button>
           <button type="button" class="cu-filter-btn" id="cuFilterBtn" aria-expanded="false" aria-haspopup="true" title="Filter today's estimate &amp; task list">&#9662; Filter</button>
           <div class="cu-filter-menu" id="cuFilterMenu" hidden role="menu">
-            <div class="cu-filter-clear cu-filter-defaults"><button type="button" data-fclear title="Untick every filter at once">Clear all filters</button>
-              <button type="button" data-fsavedef title="Remember these filters (and the One at a time / Multiple mode) as your starting point">Save as my default</button>
-              <button type="button" data-fusedef title="Go back to the filters you saved as your default">Use my default</button>
-            </div>
-            <div class="cu-filter-mode" role="group" aria-label="Selection mode" title="One at a time: ticking a box replaces the other tick in the same group. Multiple: combine freely.">
-              <button type="button" data-fmode="single">One at a time</button>
-              <button type="button" data-fmode="multi">Multiple</button>
+            <div class="cu-filter-bar">
+              <div class="cu-filter-clear cu-filter-defaults"><button type="button" data-fclear title="Untick every filter at once">Clear all</button>
+                <button type="button" data-fsavedef title="Remember these filters (and the One at a time / Multiple mode) as your starting point">Save default</button>
+                <button type="button" data-fusedef title="Go back to the filters you saved as your default">Use default</button>
+              </div>
+              <div class="cu-filter-mode" role="group" aria-label="Selection mode" title="One at a time: ticking a box replaces the other tick in the same group. Multiple: combine freely.">
+                <button type="button" data-fmode="single">One at a time</button>
+                <button type="button" data-fmode="multi">Multiple</button>
+              </div>
+              <label class="cu-switch-row" title="Drag tasks into any order using the handle on the left. Your arrangement is remembered for each date view on its own (today, tomorrow, next week) and layers on top of the other filters."><span>Custom order <small>drag to arrange</small></span><input type="checkbox" class="cu-switch" data-cf="manualOrder" /></label>
             </div>
 <div class="cu-filter-group">
               <div class="cu-filter-h">Due</div>
@@ -678,6 +714,7 @@
 
   <script src="notify-menu.js"></script>
   <script src="export-tasks.js"></script>
+  <script src="task-panel.js"></script>
   <script src="popup.js"></script>
 </body>
 </html>

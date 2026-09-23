@@ -457,6 +457,61 @@ export async function getTaskDetail(token, taskId) {
   };
 }
 
+// ---------- Task details dropdown ----------
+// Everything the per-task dropdown shows, in 2 requests: the task (with its
+// markdown description and attachments) and its comments. Cached briefly so
+// opening / closing the same task doesn't re-pay; a new comment clears it.
+const PANEL_TTL_MS = 60000;
+const panelCache = new Map(); // task id -> { at, data }
+function commentText(c) {
+  if (c && typeof c.comment_text === "string" && c.comment_text.trim()) return c.comment_text.trim();
+  // Rich comments come as an array of pieces; keep their plain text.
+  const parts = Array.isArray(c && c.comment) ? c.comment : [];
+  return parts.map((p) => (p && (p.text || (p.type === "tag" && p.user && ("@" + p.user.username)))) || "").join("").trim();
+}
+export async function getTaskPanel(token, taskId, force) {
+  const key = String(taskId);
+  const hit = panelCache.get(key);
+  if (!force && hit && Date.now() - hit.at < PANEL_TTL_MS) return hit.data;
+  const [t, cj] = await Promise.all([
+    cuFetch(token, "/task/" + encodeURIComponent(key), [["include_markdown_description", "true"]]),
+    cuFetch(token, "/task/" + encodeURIComponent(key) + "/comment").catch(() => ({ comments: [] })),
+  ]);
+  const text = String((t && (t.markdown_description || t.description || t.text_content)) || "").trim();
+  const comments = (Array.isArray(cj && cj.comments) ? cj.comments : []).map((c) => ({
+    id: String(c.id || ""),
+    who: (c.user && (c.user.username || c.user.email)) || "Someone",
+    initials: (c.user && c.user.initials) || "",
+    color: (c.user && c.user.color) || "",
+    at: Number(c.date) || 0,
+    text: commentText(c),
+  })).filter((c) => c.text).sort((a, b) => b.at - a.at);
+  const data = {
+    id: String((t && t.id) || key),
+    name: (t && t.name) || "",
+    url: (t && t.url) || taskUrlFor(key),
+    status: (t && t.status && t.status.status) || "",
+    dueDateMs: t && t.due_date ? Number(t.due_date) : null,
+    estimateMs: Number(t && t.time_estimate) || 0,
+    list: (t && t.list && t.list.name) || "",
+    description: text,
+    links: extractTaskLinks(text),
+    attachments: (Array.isArray(t && t.attachments) ? t.attachments : [])
+      .filter((a) => a && a.url)
+      .map((a) => ({ title: a.title || a.url, url: a.url, ext: a.extension || "" })),
+    comments,
+  };
+  panelCache.set(key, { at: Date.now(), data });
+  return data;
+}
+export async function addTaskComment(token, taskId, text) {
+  const key = String(taskId);
+  // notify_all false: ClickUp still notifies assignees / watchers as usual.
+  await cuPost(token, "/task/" + encodeURIComponent(key) + "/comment", { comment_text: String(text), notify_all: false });
+  panelCache.delete(key);
+  return getTaskPanel(token, key, true);
+}
+
 // Due today looks up EVERY due-today task's subtasks, one request each, on every
 // refresh - 19 requests a time for a normal day, again on every popup open. A
 // short cache stops repeated opens and overlapping refreshes from re-paying that.

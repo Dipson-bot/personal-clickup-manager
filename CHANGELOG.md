@@ -1,5 +1,22 @@
 # Changelog
 
+## v3.9.5
+- Fixed: the Tasks card's Export could send the Explore tasks list instead (for example a "Due this week" export came out with Explore's "Today" tasks). Each section now exports its own list.
+- New: Client report. Turn on "Client report" in any Export menu (Tasks or Explore tasks) to get a version you can send to the client: internal work like the Extra Task and monthly container tasks is left out, task codes (ACT-054) become the plain-language titles and explanations from the client's audit file, subtasks roll up into one line per piece of work with progress (for example "2 of 4 steps done"), and each line shows the page, status (Completed, In progress, Planned) and date. Each report is for one client ("Report for" picks which), so other clients' work never goes into it; attach that client's audit once and it is remembered. Works for CSV, Excel, Markdown, Google Sheets and Google Docs, and follows the filters you applied.
+- Improved: the task details AI uses the client's remembered audit automatically.
+- Improved: "Ask with" no longer gets stuck on a long question. Long questions are copied and the AI site opens ready for Ctrl+V.
+- Fixed: exports dropped subtasks of subtasks (for example ACT-025.S1 under ACT-025 under a monthly task). They are now included.
+- New: task details dropdown. Click the small arrow at the left of any task to see its ClickUp description (with clickable links), attachments and comments, and post a comment to the task without opening ClickUp. "Explain this task" uses Chrome's built-in AI, which runs on your own computer: free, no key, no limits, and the task text stays on your computer. Attach files for more detail (Word, Excel, PowerPoint, CSV, HTML, Markdown, text and screenshots) with the Attach button, Ctrl+V or drag and drop. "Ask with" sends the question to ChatGPT, Claude, Perplexity or Copilot, or copies it for Gemini, OpenCode Desktop or any other AI, and remembers your choice. A big audit file is not sent whole: only the parts about the task are used, found by the task code in its name (for example ACT-066) or, without a code, by the words in its name.
+- New: Custom order. Turn on the "Custom order" switch at the top of the Filter menu and drag tasks by the handle on the left into the order you want to work on them. Each date filter (due today, due tomorrow, due next week and so on) remembers its own arrangement. Works in the popup, side panel and options page.
+- Fixed: false "Site down" alerts. The site monitor now checks your own internet connection first, so a PC that just woke up or lost Wi-Fi no longer reports every client site as down. It waits up to 30 seconds for a site to answer and tries 3 times, 20 seconds apart, before counting a failure (the same approach as UptimeRobot and Pingdom), and failures only count when they happen back to back.
+- New: "Check all now" and a Check button per site in Site monitor, plus Add, Edit and Delete buttons. Each site shows how fast it answered, or why it failed.
+- Changed: in the tracking bar, Stop now comes before Complete, and Complete is hidden while the Extra Task is being tracked, so the recurring Extra Task can't be completed by mistake. It can still be completed from its row in the task list.
+- Improved: task lists are resized with a drag bar under the list instead of the small corner handle, and can't be stretched taller than their tasks. Double-click the bar to reset.
+- Improved: the Filter menu header is compact and stays at the top while you scroll the menu. "Clear all" no longer turns Custom order off.
+- Improved: the Due today card shows one short summary line instead of three long ones, and the This week card shows a Mon-Fri chart of estimated vs tracked time.
+- Improved: "Reload extension" and "Set version & reload" reopen the page you were on after the restart.
+- Improved: Admin release notes are filled in automatically from the changelog.
+
 ## v3.9.4
 - Fixed: the end-of-day wrap-up now opens by itself at your wrap-up time (4:45 PM by default) instead of only showing a notification that was easy to miss. If the computer was asleep or Chrome was closed at that time, it opens as soon as Chrome is running again (up to 4 hours late). It still runs once per weekday and never twice.
 Fixed: the wrap-up reminder could be skipped for the day when the extension woke up just after the wrap-up time. It now always fires.
