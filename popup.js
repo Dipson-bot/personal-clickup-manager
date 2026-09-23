@@ -2258,7 +2258,8 @@ function renderClickup() {
   const estMs = Number(view.estimateMs) || 0;
   const spentTot = Number(view.spentMs) || 0;
 
-  $("cuTotal").textContent = st ? fmtDur(estMs) : "-";
+  if (st && window.pcmCountTo) window.pcmCountTo($("cuTotal"), "cuTotal", estMs, fmtDur);
+  else $("cuTotal").textContent = st ? fmtDur(estMs) : "-";
   $("cuTarget").textContent = targetMs > 0 ? "/ " + fmtDur(targetMs) : "";
 
   const fill = $("cuFill");

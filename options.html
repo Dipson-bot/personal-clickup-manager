@@ -1116,6 +1116,28 @@
         <label for="cuNotify" style="margin:0;font-weight:400;">Desktop reminders <span class="hint">- progressive: at 50%, ~86%, target reached, under-target nudge, and end-of-day warning</span></label>
       </div>
       <div class="checkbox">
+        <input type="checkbox" id="celebrations" />
+        <label for="celebrations" style="margin:0;font-weight:400;">Celebration animations <span class="hint">- fireworks when you reach a milestone, a little rain cloud when the day falls short</span></label>
+      </div>
+      <div class="checkbox" style="margin-left:22px;">
+        <input type="checkbox" id="celebrationWindow" />
+        <label for="celebrationWindow" style="margin:0;font-weight:400;">Pop up a small animation card when no extension page is open <span class="hint">- bottom-right corner, doesn't take the keyboard</span></label>
+      </div>
+      <div class="checkbox" style="margin-left:22px;align-items:center;">
+        <label for="celebrationSeconds" style="margin:0;font-weight:400;">Show for</label>
+        <select id="celebrationSeconds" style="width:auto;padding:3px 6px;">
+          <option value="2">2 seconds</option>
+          <option value="3">3 seconds</option>
+          <option value="5">5 seconds</option>
+          <option value="8">8 seconds</option>
+          <option value="10">10 seconds</option>
+        </select>
+      </div>
+      <div class="btns" style="margin:4px 0 8px 22px;">
+        <button type="button" id="celebrateTryHappy" title="Plays the fireworks here, and shows the notification and the pop-up window">Preview: target reached</button>
+        <button type="button" id="celebrateTrySad" title="Plays the rain cloud here, and shows the notification and the pop-up window">Preview: target missed</button>
+      </div>
+      <div class="checkbox">
         <input type="checkbox" id="cuHalfway" />
         <label for="cuHalfway" style="margin:0;font-weight:400;">Notify at halfway (50% of target)</label>
       </div>
@@ -1529,6 +1551,10 @@
           <label>Remind again every <span class="hint">- hours, 1-168, until they update</span></label>
           <input type="number" id="admPolRemind" min="1" max="168" step="1" placeholder="24" />
         </div>
+        <div>
+          <label>Install automatically after <span class="hint">- hours after announcing, 0-168 (important = straight away)</span></label>
+          <input type="number" id="admPolAuto" min="0" max="168" step="1" placeholder="1" />
+        </div>
       </div>
       <div class="row" style="max-width:620px;margin-top:10px;">
         <div>
@@ -1580,6 +1606,11 @@
   <div class="card" id="versionCard">
     <h2>Version and updates</h2>
     <p class="hint" id="versionLine" style="margin:0 0 10px;line-height:1.5;">Checking…</p>
+    <div class="checkbox" style="margin:0 0 4px;">
+      <input type="checkbox" id="autoUpdate" />
+      <label for="autoUpdate" style="margin:0;">Install updates automatically <span class="hint">- in the background, when you're not using the extension</span></label>
+    </div>
+    <p class="hint" id="autoUpdateLine" style="margin:0 0 10px;line-height:1.5;"></p>
     <p class="hint" style="margin:0 0 10px;line-height:1.5;">New versions are published as GitHub Releases. When one is out you get a
       notification with an <b>Update now</b> button and an "Update available" chip at the top of this page.
       <b>One-click updates:</b> choose this extension's folder once (<i>One-click updates…</i>); after that each
@@ -1604,6 +1635,13 @@
       <input type="checkbox" id="showAgentRouter" />
       <label for="showAgentRouter" style="margin:0;font-weight:400;">Show <b>Agent Router</b> (optional daily-login helper) <span class="hint">- adds its section to the sidebar and the Accounts card to the popup. Turning it off only hides it.</span></label>
     </div>
+    <h3 style="margin:14px 0 2px;font-size:13px;">Animations and effects</h3>
+    <p class="hint" style="margin:0 0 6px;">Light, but on a slower computer you can turn any of them off. They also switch off when Windows is set to reduce motion.</p>
+    <div class="checkbox"><input type="checkbox" id="fxLiquid" /><label for="fxLiquid" style="margin:0;font-weight:400;">Flowing progress bars <span class="hint">- a soft light moves along the Estimated / Tracked bars (a little faster once a target is met)</span></label></div>
+    <div class="checkbox"><input type="checkbox" id="fxChart" /><label for="fxChart" style="margin:0;font-weight:400;">Animated week chart <span class="hint">- bars grow in, and a day lifts when you point at it</span></label></div>
+    <div class="checkbox"><input type="checkbox" id="fxCount" /><label for="fxCount" style="margin:0;font-weight:400;">Counting numbers <span class="hint">- totals roll up to their new value</span></label></div>
+    <div class="checkbox"><input type="checkbox" id="fxIconRing" /><label for="fxIconRing" style="margin:0;font-weight:400;">Progress ring on the toolbar icon <span class="hint">- fills with today's tracked time against your target; green when it's met</span></label></div>
+    <div class="btns" style="margin-top:6px;"><button type="button" id="fxAllOff">Turn all animations off</button><span class="saved" id="fxMsg" style="display:none;"></span></div>
   </div>
 
   <div class="card" id="generalCard">
@@ -1734,10 +1772,12 @@
   </main>
   </div><!-- /.shell -->
 </div><!-- /.wrap -->
+<script src="fx.js"></script>
 <script src="notify-menu.js"></script>
 <script src="export-tasks.js"></script>
 <script src="lib-zip.js"></script>
 <script src="task-panel.js"></script>
+<script src="celebrate.js"></script>
 <script src="options.js"></script>
 </body>
 </html>

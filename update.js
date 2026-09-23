@@ -4,29 +4,13 @@
 // writing anything, a random check file proves the remembered folder is the one
 // Chrome is actually running this extension from (catches moved / copied /
 // wrong folders). Every replaced file is backed up and restored on failure.
-import { unzip, isSafePath } from "./lib-unzip.js";
+// Folder store, folder check and the install steps are shared with automatic
+// background updates (offscreen-updater.js) - see lib-updater.js.
+import { kvGet, kvSet, isRunningFolder, installPackage } from "./lib-updater.js";
 
 const $ = (id) => document.getElementById(id);
 const running = chrome.runtime.getManifest();
 const setupMode = new URLSearchParams(location.search).has("setup");
-
-// ---------- small IndexedDB store for the folder handle ----------
-function db() {
-  return new Promise((res, rej) => {
-    const r = indexedDB.open("pcm-updater", 1);
-    r.onupgradeneeded = () => r.result.createObjectStore("kv");
-    r.onsuccess = () => res(r.result);
-    r.onerror = () => rej(r.error);
-  });
-}
-async function kvGet(k) {
-  const d = await db();
-  return new Promise((res, rej) => { const q = d.transaction("kv").objectStore("kv").get(k); q.onsuccess = () => res(q.result); q.onerror = () => rej(q.error); });
-}
-async function kvSet(k, v) {
-  const d = await db();
-  return new Promise((res, rej) => { const t = d.transaction("kv", "readwrite"); t.objectStore("kv").put(v, k); t.oncomplete = res; t.onerror = () => rej(t.error); });
-}
 
 // ---------- UI helpers ----------
 function say(text, kind) {
@@ -49,27 +33,6 @@ async function ensurePermission(handle) {
   const opts = { mode: "readwrite" };
   if ((await handle.queryPermission(opts)) === "granted") return true;
   return (await handle.requestPermission(opts)) === "granted";
-}
-
-// True only if `handle` is the folder Chrome is running this extension from:
-// write a random file there, then read it back THROUGH the extension's own URL.
-async function isRunningFolder(handle) {
-  const name = "pcm-folder-check.txt";
-  const token = crypto.randomUUID();
-  let wrote = false;
-  try {
-    const fh = await handle.getFileHandle(name, { create: true });
-    const w = await fh.createWritable();
-    await w.write(token);
-    await w.close();
-    wrote = true;
-    const res = await fetch(chrome.runtime.getURL(name) + "?t=" + Date.now(), { cache: "no-store" });
-    return res.ok && (await res.text()).trim() === token;
-  } catch (e) {
-    return false;
-  } finally {
-    if (wrote) { try { await handle.removeEntry(name); } catch (e) {} }
-  }
 }
 
 // One-click updates need the File System Access API. Chrome, Edge, Opera,
@@ -122,34 +85,14 @@ async function showFolderState() {
     return;
   }
   const handle = await kvGet("extDir").catch(() => null);
-  $("folderLine").textContent = handle
-    ? "One-click updates: on (folder “" + handle.name + "”)."
-    : "One-click updates: not set up yet - choose this extension's folder once.";
+  let allowed = false;
+  try { allowed = !!handle && (await handle.queryPermission({ mode: "readwrite" })) === "granted"; } catch (e) {}
+  $("folderLine").textContent = !handle
+    ? "One-click and automatic updates: not set up yet - choose this extension's folder once. When Chrome asks, pick \"Allow on every visit\"."
+    : allowed
+      ? "One-click and automatic updates: on (folder \u201c" + handle.name + "\u201d)."
+      : "Folder \u201c" + handle.name + "\u201d is remembered, but Chrome will ask again before writing to it. For automatic updates, click Change folder, pick the same folder and choose \"Allow on every visit\".";
   $("pickBtn").textContent = handle ? "Change folder" : "Choose folder";
-}
-
-// ---------- write files with backup / rollback ----------
-async function dirFor(root, path, create) {
-  const parts = path.split("/");
-  let dir = root;
-  for (const p of parts.slice(0, -1)) dir = await dir.getDirectoryHandle(p, { create });
-  return { dir, name: parts[parts.length - 1] };
-}
-async function readIfExists(root, path) {
-  try {
-    const { dir, name } = await dirFor(root, path, false);
-    const f = await (await dir.getFileHandle(name)).getFile();
-    return new Uint8Array(await f.arrayBuffer());
-  } catch (e) { return null; }
-}
-async function writeFile(root, path, data) {
-  const { dir, name } = await dirFor(root, path, true);
-  const w = await (await dir.getFileHandle(name, { create: true })).createWritable();
-  await w.write(data);
-  await w.close();
-}
-async function removeFile(root, path) {
-  try { const { dir, name } = await dirFor(root, path, false); await dir.removeEntry(name); } catch (e) {}
 }
 
 // ---------- the update ----------
@@ -176,45 +119,17 @@ async function install(target) {
     }
     step("Folder confirmed: “" + root.name + "” is the folder Chrome runs this extension from.");
 
-    // 2. Download + unpack.
-    say((older ? "Rolling back to v" : "Downloading v") + ui.latest + "…");
-    const res = await fetch(ui.zip, { cache: "no-store" });
-    if (!res.ok) throw new Error("Download failed (HTTP " + res.status + ").");
-    const files = await unzip(await res.arrayBuffer());
-    step("Downloaded and unpacked " + files.length + " files.");
-
-    // 3. Check it's really the expected version of THIS extension.
-    const mf = files.find((f) => f.path === "manifest.json");
-    if (!mf) throw new Error("The download has no manifest.json - not an extension package.");
-    const next = JSON.parse(new TextDecoder().decode(mf.data));
-    if (next.version !== ui.latest) throw new Error("The download is v" + next.version + ", expected v" + ui.latest + ".");
-    if (next.name !== running.name) throw new Error("The download is a different extension (“" + next.name + "”).");
-    if (next.key && running.key && next.key !== running.key) throw new Error("The download has a different extension ID - refusing to install it.");
-    const bad = files.find((f) => !isSafePath(f.path));
-    if (bad) throw new Error("Unsafe file path in the package: " + bad.path);
-    step("Checked: v" + next.version + " of " + next.name + ".");
-
-    // 4. Back up what we're about to replace, then write (manifest.json last).
-    say("Installing v" + ui.latest + "…");
-    const backup = new Map();
-    for (const f of files) backup.set(f.path, await readIfExists(root, f.path));
-    const ordered = files.filter((f) => f.path !== "manifest.json").concat([mf]);
-    const written = [];
-    try {
-      for (const f of ordered) { await writeFile(root, f.path, f.data); written.push(f.path); }
-    } catch (e) {
-      step("Something failed while writing - restoring the previous version…");
-      for (const p of written.reverse()) {
-        const old = backup.get(p);
-        if (old) await writeFile(root, p, old).catch(() => {});
-        else await removeFile(root, p);
-      }
-      throw new Error("Couldn't write the new files (" + (e && e.message ? e.message : e) + "). Nothing was changed.");
-    }
-    step("Installed " + written.length + " files.");
+    // 2-4. Download, check it's this extension's expected version, back up, write
+    // (restoring the old files if anything fails) - shared with auto-updates.
+    say((older ? "Rolling back to v" : "Downloading v") + ui.latest + "\u2026");
+    await installPackage(root, ui, running, step);
 
     // 5. Reload into the new version; the background confirms "Updated to vX".
-    await chrome.storage.local.set({ updateDownload: { version: ui.latest, done: true, at: Date.now(), via: "updater" } });
+    await chrome.storage.local.set({
+      updateDownload: { version: ui.latest, done: true, at: Date.now(), via: "updater" },
+      // The restart closes this page; open the dashboard in its place.
+      reopenAfterReload: { url: chrome.runtime.getURL("options.html#dashboard"), at: Date.now() },
+    });
     say("Done - restarting the extension on v" + ui.latest + (older ? " (rolled back)" : "") + "…", "ok");
     setTimeout(() => chrome.runtime.reload(), 900);
   } catch (e) {
@@ -231,7 +146,7 @@ async function render() {
   const { updateInfo: ui } = await chrome.storage.local.get("updateInfo");
   if (setupMode) {
     $("title").textContent = "Turn on one-click updates";
-    $("lead").textContent = "Choose the folder you just unzipped this extension into. It's done once; future updates install with one click.";
+    $("lead").textContent = "Choose the folder you unzipped this extension into, and when Chrome asks, pick \"Allow on every visit\". It's done once; after that new versions install by themselves in the background.";
   }
   if (ui && ui.newer) {
     $("latest").textContent = "v" + ui.latest;

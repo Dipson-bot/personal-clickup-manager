@@ -355,6 +355,17 @@ const DEFAULT_SETTINGS = {
   // ---- End-of-day wrap-up ----
   // Weekday notification that opens wrapup.html (leftovers -> tomorrow, standup copy).
   clickupWrapUp: true,
+  // ---- Updates ----
+  // Install new versions automatically in the background (needs the one-time
+  // folder choice on the update page, with Chrome's "Allow on every visit").
+  autoUpdate: true,
+  // Fireworks in the extension's pages when a milestone is reached, and a small
+  // pop-up window with them when no extension page is being looked at.
+  celebrations: true,
+  celebrationWindow: true,
+  celebrationSeconds: 3, // how long the animation / pop-up card lasts (1-15)
+  // Visual effects (Options > General > Animations and effects).
+  fxLiquid: true, fxChart: true, fxCount: true, fxIconRing: true,
   clickupWrapUpTime: "16:45", // local "HH:MM"
   // ---- Departments (Department Creator) ----
   // Each department holds a name + a list of ClickUp users { id, name }. The
@@ -2120,6 +2131,12 @@ async function maybeNotifyClickup(state, { viaAlarm }) {
   const spentTxt = fmtDuration(spentMs);
   const tgtTxt = fmtDuration(tgtMs);
 
+  // Animation for the milestone (celebrate.js / celebrate.html): fireworks, or a
+  // little rain cloud when the day is falling short. Pictures for the toast.
+  const celebrate = (kind, big, mood, title, sub) => celebrateMilestone({ kind, big, mood, title, sub }).catch(() => {});
+  const IMG_HAPPY = { type: "image", imageUrl: chrome.runtime.getURL("icons/celebrate.png") };
+  const IMG_SAD = { type: "image", imageUrl: chrome.runtime.getURL("icons/sad.png") };
+
   // --- Estimate-based milestones (fire only while UNDER 100% of target) ---
 
   // Halfway milestone - fires only inside the 40%-60% window so the user
@@ -2129,8 +2146,9 @@ async function maybeNotifyClickup(state, { viaAlarm }) {
   if (settings.clickupHalfwayNotify !== false && estMs >= halfLo && estMs <= halfHi && seen.halfway !== today) {
     await notify("clickup-halfway-" + Date.now(), "ClickUp - halfway to your daily estimate ⏳",
       "Estimated " + estTxt + " (" + Math.round((estMs / tgtMs) * 100) + "% of " + tgtTxt + ")" +
-      (spentMs > 0 ? " · tracked " + spentTxt : "") + ".");
+      (spentMs > 0 ? " · tracked " + spentTxt : "") + ".", undefined, undefined, IMG_HAPPY);
     await chrome.storage.local.set({ clickupNotified: { ...seen, halfway: today } });
+    celebrate("halfway", false, "happy", "Halfway there! \u23f3", "Estimated " + estTxt + " of " + tgtTxt);
   }
 
   // "Almost there" - fires at ~86% (i.e. 6h of 7h) up to <100%.
@@ -2138,8 +2156,9 @@ async function maybeNotifyClickup(state, { viaAlarm }) {
   if (settings.clickupAlmostThereNotify !== false && estMs >= almostMs && estMs < tgtMs && seen.almost !== today) {
     await notify("clickup-almost-" + Date.now(), "ClickUp - almost at your daily estimate 🎯",
       "Just " + fmtDuration(Math.max(0, tgtMs - estMs)) + " to go (estimated " + estTxt + " of " + tgtTxt + ")" +
-      (spentMs > 0 ? " · tracked " + spentTxt : "") + ".");
+      (spentMs > 0 ? " · tracked " + spentTxt : "") + ".", undefined, undefined, IMG_HAPPY);
     await chrome.storage.local.set({ clickupNotified: { ...seen, almost: today } });
+    celebrate("almost", false, "happy", "Almost there! \ud83c\udfaf", "Just " + fmtDuration(Math.max(0, tgtMs - estMs)) + " to go");
   }
 
   // Target reached (>= 100%) - the day's estimate goal is met, so celebrate.
@@ -2148,8 +2167,20 @@ async function maybeNotifyClickup(state, { viaAlarm }) {
       await notify("clickup-met-" + Date.now(), "ClickUp - daily estimate reached ✓",
         estTxt + " estimated for today (target " + tgtTxt + ")" +
         (spentMs > 0 ? " · tracked " + spentTxt : "") + ".",
-        "winner");
+        "winner", undefined, IMG_HAPPY);
       await chrome.storage.local.set({ clickupNotified: { ...seen, met: today } });
+      celebrate("met", true, "happy", "Daily estimate reached! \ud83c\udf89", estTxt + " estimated for today");
+    }
+    // Estimate met, but TRACKED time still short at the end of the workday.
+    if (viaAlarm && spentMs < tgtMs && seen.spentShort !== today) {
+      const endH = Math.min(Number(settings.clickupWorkdayEndHour), officeHourBounds(settings).endHour - 1);
+      if (Number.isFinite(endH) && new Date().getHours() >= endH) {
+        const shortTxt = fmtDuration(Math.max(0, tgtMs - spentMs));
+        await notify("clickup-spentshort-" + Date.now(), "ClickUp - tracked time short today \ud83d\udd54",
+          "Tracked " + spentTxt + " of " + tgtTxt + " · " + shortTxt + " short (the estimate is met).", "danger", undefined, IMG_SAD);
+        await chrome.storage.local.set({ clickupNotified: { ...seen, spentShort: today } });
+        celebrate("spentShort", true, "sad", "Tracked time is short today", shortTxt + " short of " + tgtTxt);
+      }
     }
     return; // past target: no nudge / end-of-day nags
   }
@@ -2159,23 +2190,26 @@ async function maybeNotifyClickup(state, { viaAlarm }) {
   if (spentMs >= halfLo && spentMs <= halfHi && seen.spentHalfway !== today) {
     await notify("clickup-spent-half-" + Date.now(), "ClickUp - tracked halfway ⏳",
       "Tracked " + spentTxt + " (" + Math.round((spentMs / tgtMs) * 100) + "% of " + tgtTxt + ")" +
-      " · estimated " + estTxt + ".");
+      " · estimated " + estTxt + ".", undefined, undefined, IMG_HAPPY);
     await chrome.storage.local.set({ clickupNotified: { ...seen, spentHalfway: today } });
+    celebrate("spentHalfway", false, "happy", "Halfway tracked! \u23f3", "Tracked " + spentTxt + " of " + tgtTxt);
   }
 
   if (spentMs >= almostMs && spentMs < tgtMs && seen.spentAlmost !== today) {
     await notify("clickup-spent-almost-" + Date.now(), "ClickUp - almost there (tracked) 🎯",
       "Tracked " + spentTxt + " of " + tgtTxt + " - just " + fmtDuration(Math.max(0, tgtMs - spentMs)) + " to go" +
-      " · estimated " + estTxt + ".");
+      " · estimated " + estTxt + ".", undefined, undefined, IMG_HAPPY);
     await chrome.storage.local.set({ clickupNotified: { ...seen, spentAlmost: today } });
+    celebrate("spentAlmost", false, "happy", "Almost there! \ud83c\udfaf", "Tracked " + spentTxt + " of " + tgtTxt);
   }
 
   if (spentMs >= tgtMs && seen.spentMet !== today) {
     // Tracked time crossed the day's goal - same celebration as the estimate win.
     await notify("clickup-spent-met-" + Date.now(), "ClickUp - tracked target reached ✓",
       "Tracked " + spentTxt + " (target " + tgtTxt + ") · estimated " + estTxt + ".",
-      "winner");
+      "winner", undefined, IMG_HAPPY);
     await chrome.storage.local.set({ clickupNotified: { ...seen, spentMet: today } });
+    celebrate("spentMet", true, "happy", "Tracked target reached! \ud83c\udf89", "Tracked " + spentTxt + " today");
   }
 
   if (!viaAlarm) return; // don't nudge on manual refresh
@@ -2189,8 +2223,9 @@ async function maybeNotifyClickup(state, { viaAlarm }) {
     // Still under the day's target late in the day - the urgent alarm is right.
     await notify("clickup-nudge-" + Date.now(), "ClickUp - under your daily estimate",
       "Estimated " + estTxt + " / " + tgtTxt + " · tracked " + spentTxt + " · " + fmtDuration(shortMs) + " short.",
-      "danger");
+      "danger", undefined, IMG_SAD);
     await chrome.storage.local.set({ clickupNotified: { ...seen, nudge: today } });
+    celebrate("nudge", false, "sad", "Under your daily estimate", fmtDuration(shortMs) + " short of " + tgtTxt);
   }
   // End-of-day warning - fires once after workdayEndHour if still under target.
   const endHour = Math.min(Number(settings.clickupWorkdayEndHour), lastOfficeHour);
@@ -2198,8 +2233,9 @@ async function maybeNotifyClickup(state, { viaAlarm }) {
     const shortMs = Math.max(0, tgtMs - estMs);
     await notify("clickup-endofday-" + Date.now(), "ClickUp - workday winding down 🕔",
       "Estimated " + estTxt + " of " + tgtTxt + " · tracked " + spentTxt + " · " + fmtDuration(shortMs) + " short.",
-      "danger");
+      "danger", undefined, IMG_SAD);
     await chrome.storage.local.set({ clickupNotified: { ...seen, endOfDay: today } });
+    celebrate("endOfDay", true, "sad", "Not quite there today", fmtDuration(shortMs) + " short of " + tgtTxt);
   }
 }
 
@@ -2679,6 +2715,50 @@ async function updateBadge() {
     await chrome.action.setBadgeBackgroundColor({ color });
     await chrome.action.setBadgeText({ text });
   } catch (e) {}
+  // Progress ring around the toolbar icon: today's tracked time against target.
+  let ring = null;
+  if (settings.fxIconRing !== false) {
+    try {
+      const cfg = await getClickupConfig();
+      const st = await getClickupState();
+      if (cfg && cfg.token && st && Number(st.targetMs) > 0) ring = Math.max(0, Number(st.spentMs) || 0) / Number(st.targetMs);
+    } catch (e) {}
+  }
+  await setIconRing(ring).catch(() => {});
+}
+
+// Draws the extension icon with a thin progress ring around it (blue while under
+// target, green once met). null = the plain icon. Redrawn only when the ring
+// moves by at least 2%, so it costs nothing between changes.
+let iconRingShown = "unset";
+let iconBase = null;
+async function setIconRing(frac) {
+  const key = frac == null ? "plain" : String(Math.min(100, Math.round(frac * 50) * 2));
+  if (key === iconRingShown) return;
+  iconRingShown = key;
+  if (frac == null) {
+    await chrome.action.setIcon({ path: { 16: "icons/icon16.png", 48: "icons/icon48.png", 128: "icons/icon128.png" } });
+    return;
+  }
+  if (!iconBase) iconBase = await createImageBitmap(await (await fetch(chrome.runtime.getURL("icons/icon48.png"))).blob());
+  const met = frac >= 1;
+  const imageData = {};
+  for (const size of [16, 32]) {
+    const c = new OffscreenCanvas(size, size);
+    const g = c.getContext("2d");
+    const lw = Math.max(2, Math.round(size * 0.13));
+    const inset = lw + (size >= 32 ? 1 : 0);
+    g.drawImage(iconBase, inset, inset, size - inset * 2, size - inset * 2);
+    const r = (size - lw) / 2;
+    g.lineWidth = lw;
+    g.strokeStyle = "rgba(128,128,128,0.35)";
+    g.beginPath(); g.arc(size / 2, size / 2, r, 0, Math.PI * 2); g.stroke();
+    g.strokeStyle = met ? "#22c55e" : "#3b82f6";
+    g.lineCap = "round";
+    g.beginPath(); g.arc(size / 2, size / 2, r, -Math.PI / 2, -Math.PI / 2 + Math.PI * 2 * Math.min(1, frac)); g.stroke();
+    imageData[size] = g.getImageData(0, 0, size, size);
+  }
+  await chrome.action.setIcon({ imageData });
 }
 
 // ---------- online check ----------
@@ -2713,8 +2793,8 @@ async function ensureOffscreenDocument() {
   if (offscreenCreating) { await offscreenCreating; return; }
   offscreenCreating = chrome.offscreen.createDocument({
     url: "offscreen.html",
-    reasons: ["AUDIO_PLAYBACK"],
-    justification: "Play a chime when a reminder notification appears.",
+    reasons: ["AUDIO_PLAYBACK", "BLOBS"],
+    justification: "Play a chime when a reminder notification appears, and unpack update packages to install new versions in the background.",
   });
   try {
     await offscreenCreating;
@@ -2784,6 +2864,49 @@ const notifTargetUrls = new Map();
 // chain do await it), so the chime is no longer dropped on a cold worker.
 // `sound` = "danger" for the urgent alarm, "winner" for a milestone celebration,
 // or omitted for the default chime. `targetUrl` = optional link to open on click.
+// ---------- milestone animations ----------
+// Every milestone is saved as "celebrate" so any open extension page plays it
+// (celebrate.js). When the user isn't looking at an extension page, a small
+// window pops up with the animation and closes itself (settings.celebrationWindow,
+// on by default). Neither when celebrations are off or notifications are paused.
+async function celebrateMilestone({ kind, big, mood, title, sub, force }) {
+  const settings = await getSettings();
+  if (!force && (settings.celebrations === false || settings.notifyAll === false || Number(settings.notifyPausedUntil) > Date.now())) return;
+  const id = (kind || "milestone") + "-" + Date.now();
+  const secs = Math.max(1, Math.min(15, Number(settings.celebrationSeconds) || 3));
+  if (!force) await chrome.storage.local.set({ celebrate: { id, kind, big: !!big, mood: mood || "happy", secs, at: Date.now() } });
+  if (!force && settings.celebrationWindow === false) return;
+  // Someone is looking at the popup / side panel / an extension tab: it plays there.
+  if (!force) {
+    try {
+      // The popup means they're using it right now. A side panel only counts when
+      // it's in the window they're looking at: pinned in one window while they
+      // work in another app or window, it isn't seen, so the card still shows.
+      const ctx = await chrome.runtime.getContexts({ contextTypes: ["POPUP", "SIDE_PANEL"] });
+      if (ctx.some((c) => c.contextType === "POPUP")) return;
+      const w = await chrome.windows.getLastFocused({ populate: true });
+      if (w && w.focused && ctx.some((c) => c.contextType === "SIDE_PANEL" && c.windowId === w.id)) return;
+      const act = w && w.focused && (w.tabs || []).find((t) => t.active);
+      if (act && String(act.url || "").startsWith(chrome.runtime.getURL(""))) return;
+    } catch (e) {}
+  }
+  let left, top;
+  const width = 340, height = 112; // notification-card size
+  try {
+    const w = await chrome.windows.getLastFocused();
+    if (w && Number.isFinite(w.left) && Number.isFinite(w.width)) {
+      left = Math.max(0, w.left + w.width - width - 24);
+      top = Math.max(0, w.top + w.height - height - 24);
+    }
+  } catch (e) {}
+  const q = new URLSearchParams({ mood: mood || "happy", big: big ? "1" : "0", secs: String(secs), title: title || "", sub: sub || "" });
+  try {
+    await chrome.windows.create({ url: chrome.runtime.getURL("celebrate.html?" + q), type: "popup", width, height, left, top, focused: false });
+    // Seen in the window, so a page opened later doesn't replay it.
+    if (!force) await chrome.storage.local.set({ celebrateSeen: id });
+  } catch (e) {}
+}
+
 async function notify(id, title, message, sound, targetUrl, opts) {
   // Bell menu: everything off, or paused (e.g. lunch). Update notices don't use notify().
   try {
@@ -3101,13 +3224,16 @@ const UPDATE_REPO = "Dipson-bot/personal-clickup-manager";
 const UPDATE_POLICY_PATH = "update-policy.json";
 const UPDATE_POLICY_URL = "https://raw.githubusercontent.com/" + UPDATE_REPO + "/main/" + UPDATE_POLICY_PATH;
 const UPDATE_ALARM = "updateCheck";
-const UPDATE_POLICY_DEFAULTS = { checkEveryMinutes: 30, remindEveryHours: 24, important: false, holdUntil: 0, notifyNonce: "" };
+const UPDATE_POLICY_DEFAULTS = { checkEveryMinutes: 30, remindEveryHours: 24, important: false, holdUntil: 0, notifyNonce: "", autoInstallAfterHours: 1 };
 function normalizeUpdatePolicy(p) {
   const o = p && typeof p === "object" ? p : {};
   const num = (v, d, lo, hi) => { const n = Number(v); return Number.isFinite(n) ? Math.min(hi, Math.max(lo, Math.round(n))) : d; };
   return {
     checkEveryMinutes: num(o.checkEveryMinutes, 30, 15, 720),
     remindEveryHours: num(o.remindEveryHours, 24, 1, 168),
+    // Automatic installs wait this long after a release is announced, so a bad
+    // one can be held back before it reaches everyone. 0 = straight away.
+    autoInstallAfterHours: num(o.autoInstallAfterHours, 1, 0, 168),
     important: !!o.important,
     holdUntil: Number(o.holdUntil) > 0 ? Number(o.holdUntil) : 0,
     notifyNonce: typeof o.notifyNonce === "string" ? o.notifyNonce.slice(0, 40) : "",
@@ -3243,6 +3369,15 @@ async function checkForUpdate(force, forceNotify = false) {
   }
   info.newer = !!info.latest && cmpVersion(info.latest, current) > 0;
   info.critical = policy.important || !!info.notesCritical;
+  // Automatic install time for this version: when it was announced (or first
+  // seen here) + the Admin's delay; important releases don't wait; a hold wins.
+  if (info.latest && (!prev || prev.autoFor !== info.latest)) { info.autoFor = info.latest; info.autoFirstSeen = now; }
+  else if (prev) { info.autoFor = prev.autoFor; info.autoFirstSeen = prev.autoFirstSeen; }
+  {
+    const base = policy.latest === info.latest && policy.notifiedAllAt ? policy.notifiedAllAt : (info.autoFirstSeen || now);
+    const delay = info.critical ? 0 : policy.autoInstallAfterHours * 3600000;
+    info.autoAt = Math.max(base + delay, policy.holdUntil || 0);
+  }
   if (apiError) info.error = apiError; else delete info.error;
   // Notify when a version is new to us, again at the Admin's reminder interval
   // (important = at most every 4 hours) until its zip is downloaded, never
@@ -3283,6 +3418,59 @@ async function showUpdateNotification(info) {
 }
 // Runs on every install/reload. If the user downloaded an update, tell them
 // plainly whether it is now installed, or exactly what is still missing.
+// ---------- automatic background updates ----------
+// Every minute (after the update check): when a newer version's install time
+// has come, install it through the offscreen page with the folder the user chose
+// once, then restart on the new version. Never while the popup or side panel is
+// open; extension tabs (options etc.) only when the user has been away 5+
+// minutes, and they're reopened afterwards. Failures back off; after repeated
+// failures for one version it stops and the normal update notice takes over.
+const AUTO_RETRY_MS = 30 * 60000;
+const AUTO_MAX_FAILS = 4;
+async function maybeAutoUpdate() {
+  const settings = await getSettings();
+  if (settings.autoUpdate === false) return;
+  const { updateInfo: ui, autoUpdateState: prevState } = await chrome.storage.local.get(["updateInfo", "autoUpdateState"]);
+  if (!ui || !ui.newer || !ui.zip || !ui.latest) return;
+  const now = Date.now();
+  if (now < (Number(ui.autoAt) || 0)) return;
+  const st = prevState && prevState.version === ui.latest ? prevState : { version: ui.latest, fails: 0 };
+  if (st.fails >= AUTO_MAX_FAILS || (st.lastTry && now - st.lastTry < AUTO_RETRY_MS && st.reason)) return;
+  // Not while it's being used: popup / side panel open = wait; open tabs only
+  // when the user is away (they come back after the restart).
+  let tabs = [];
+  try {
+    const ctx = await chrome.runtime.getContexts({ contextTypes: ["POPUP", "SIDE_PANEL", "TAB"] });
+    if (ctx.some((c) => c.contextType === "POPUP" || c.contextType === "SIDE_PANEL")) return;
+    tabs = ctx.filter((c) => c.contextType === "TAB").map((c) => c.documentUrl).filter(Boolean);
+  } catch (e) {}
+  if (tabs.length) {
+    const idle = await new Promise((res) => { try { chrome.idle.queryState(300, res); } catch (e) { res("active"); } });
+    if (idle === "active") return;
+  }
+  st.lastTry = now;
+  await ensureOffscreenDocument();
+  let r = null;
+  for (let i = 0; i < 10 && !r; i++) {
+    try { r = await chrome.runtime.sendMessage({ target: "offscreen", type: "AUTO_UPDATE", ui: { latest: ui.latest, zip: ui.zip } }); }
+    catch (e) { await new Promise((res) => setTimeout(res, 300)); }
+  }
+  if (r && r.ok) {
+    await chrome.storage.local.set({
+      autoUpdateState: { version: ui.latest, installedAt: now, fails: 0 },
+      updateDownload: { version: ui.latest, done: true, at: now, via: "auto" },
+      reopenAfterReload: { urls: tabs, at: now },
+    });
+    setTimeout(() => chrome.runtime.reload(), 500);
+    return;
+  }
+  st.reason = (r && r.reason) || "no-reply";
+  st.error = (r && r.error) || "";
+  // A one-time setup problem isn't a failure to count - it just waits for setup.
+  if (!/^(no-folder|permission|moved)$/.test(st.reason)) st.fails = (st.fails || 0) + 1;
+  await chrome.storage.local.set({ autoUpdateState: st });
+}
+
 async function confirmUpdateApplied() {
   const { updateDownload: d } = await chrome.storage.local.get("updateDownload");
   if (!d || !d.done || !d.version) return;
@@ -3638,8 +3826,19 @@ clearStaleRunningOnce().catch(() => {});
     const { reopenAfterReload: r } = await chrome.storage.local.get("reopenAfterReload");
     if (!r) return;
     await chrome.storage.local.remove("reopenAfterReload");
-    if (r.url && String(r.url).startsWith(chrome.runtime.getURL("")) && Date.now() - (Number(r.at) || 0) < 60000) {
-      await chrome.tabs.create({ url: r.url });
+    // One page (Reload extension / Set version & reload / the update page): bring
+    // it back in front, on the same section. Several pages (an automatic update
+    // while the user was away): reopen them quietly in the background.
+    const urls = Array.isArray(r.urls) ? r.urls : [r.url];
+    const toFront = !Array.isArray(r.urls);
+    if (Date.now() - (Number(r.at) || 0) < 60000) {
+      let first = true;
+      for (const u of urls.slice(0, 6)) {
+        if (!u || !String(u).startsWith(chrome.runtime.getURL(""))) continue;
+        const tab = await chrome.tabs.create({ url: u, active: toFront && first }).catch(() => null);
+        if (toFront && first && tab && tab.windowId != null) chrome.windows.update(tab.windowId, { focused: true }).catch(() => {});
+        first = false;
+      }
     }
   } catch (e) {}
 })();
@@ -3660,7 +3859,8 @@ chrome.alarms.onAlarm.addListener(async (alarm) => {
     // adding one on the 30-min check only guarantees an overlapping burst.
     autoSyncIfSignedIn();
   } else if (alarm.name === UPDATE_ALARM) {
-    checkForUpdate().catch(() => {});
+    await checkForUpdate().catch(() => {});
+    await maybeAutoUpdate().catch(() => {});
     // Backstop for the wrap-up alarm (missed while asleep / Chrome closed).
     // Cheap: settings + one storage read, and it runs at most once a day.
     await maybeWrapUp().catch(() => {});
@@ -3761,6 +3961,21 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
           if (!text) { sendResponse({ ok: false, error: "Write a comment first." }); break; }
           sendResponse({ ok: true, data: await addTaskComment(cfg.token, msg.taskId, text.slice(0, 5000)) });
         } catch (e) { sendResponse({ ok: false, error: String(e && e.message ? e.message : e), status: e && e.status }); }
+        break;
+      }
+      case "CELEBRATE_PREVIEW": {
+        // Options > Preview: the animation in every open extension page (options,
+        // side panel, popup), the notification with its picture, and the card.
+        const sad = msg.mood === "sad";
+        const ps = await getSettings();
+        const secs = Math.max(1, Math.min(15, Number(msg.secs) || Number(ps.celebrationSeconds) || 3));
+        await chrome.storage.local.set({ celebrate: { id: "preview-" + Date.now(), kind: "preview", preview: true, big: true, mood: sad ? "sad" : "happy", secs, at: Date.now() } });
+        await notify("clickup-preview-" + Date.now(), sad ? "ClickUp - not quite there today (preview)" : "ClickUp - daily estimate reached \u2713 (preview)",
+          sad ? "This is what a missed-target notification looks like." : "This is what a target-reached notification looks like.",
+          sad ? "danger" : "winner", undefined, { type: "image", imageUrl: chrome.runtime.getURL(sad ? "icons/sad.png" : "icons/celebrate.png") });
+        await celebrateMilestone({ kind: "preview", big: true, mood: sad ? "sad" : "happy", force: true,
+          title: sad ? "Not quite there today" : "Daily estimate reached! \ud83c\udf89", sub: "Preview" });
+        sendResponse({ ok: true });
         break;
       }
       case "RELOAD_EXTENSION": {
@@ -4192,6 +4407,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       case "SET_SETTINGS": {
         const prevSettings = await getSettings();
         const next = await setSettings(msg.patch || {});
+        if (msg.patch && "fxIconRing" in msg.patch) updateBadge().catch(() => {}); // ring on/off right away
         await scheduleAgentRouterAlarms(next).catch(() => {});
         applyIdleInterval().catch(() => {});
         scheduleWrapUpAlarm().catch(() => {});
