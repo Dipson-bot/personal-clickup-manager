@@ -32,7 +32,19 @@
   .pcm-btn.pri:hover:not(:disabled) { color: #fff; filter: brightness(1.1); }
   .pcm-btn:disabled { opacity: .5; cursor: default; }
   .pcm-link { background: none; border: 0; padding: 0; color: var(--indigo); font-size: 11px; cursor: pointer; }
-  .pcm-ai-out { white-space: pre-wrap; line-height: 1.55; padding: 8px 10px; border-radius: 6px; background: var(--card); border: 1px solid var(--border); max-height: 280px; overflow: auto; }
+  .pcm-ai-out { white-space: pre-wrap; line-height: 1.55; padding: 8px 10px; border-radius: 6px; background: var(--card); border: 1px solid var(--border); max-height: 280px; overflow: auto; overflow-anchor: none; }
+  /* While a panel is open, stop the browser's scroll anchoring: as a streamed
+     answer grows, it kept the rows BELOW the panel in place by scrolling the
+     list down, which looked like the list scrolling by itself. */
+  html.pcm-open, html.pcm-open body, html.pcm-open .cu-tasklist { overflow-anchor: none; }
+  /* Popup (max 600px tall, not resizable): details open as a full-popup view. */
+  .pcm-sheet { position: fixed; inset: 0; z-index: 1000; background: var(--bg); color: var(--text); display: flex; flex-direction: column; }
+  .pcm-sheet-h { display: flex; align-items: center; gap: 10px; padding: 10px 12px; border-bottom: 1px solid var(--border); flex: none; }
+  .pcm-sheet-t { min-width: 0; font-weight: 700; font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .pcm-sheet-b { flex: 1; min-height: 0; overflow: auto; padding: 10px 12px 14px; }
+  .pcm-sheet .pcm-panel { margin: 0; border-left-width: 1px; border-radius: 8px; }
+  .pcm-sheet .pcm-desc { max-height: none; }
+  html.pcm-sheet-open body { min-height: 560px; overflow: hidden; }
   .pcm-ai-row { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
   .pcm-note { color: var(--muted); font-size: 11px; }
   .pcm-note:empty { display: none; }
@@ -358,6 +370,28 @@
     addToOpenPanel(files);
   });
 
+  // ---------- remembered explanations ----------
+  // One explanation per task in chrome.storage.local, which the popup, the side
+  // panel and the options page all share: explain a task in one place and it's
+  // already there in the others. Latest 200, none older than 30 days.
+  const EXPLAIN_KEY = "pcmAiExplain";
+  const hashStr = (str) => { let h = 5381; for (let i = 0; i < str.length; i++) h = ((h << 5) + h + str.charCodeAt(i)) | 0; return (h >>> 0).toString(36); };
+  async function explainGet(id) {
+    try { const g = await chrome.storage.local.get(EXPLAIN_KEY); return (g[EXPLAIN_KEY] || {})[String(id)] || null; } catch (e) { return null; }
+  }
+  async function explainSave(id, entry) {
+    try {
+      const g = await chrome.storage.local.get(EXPLAIN_KEY);
+      const all = g[EXPLAIN_KEY] || {};
+      all[String(id)] = entry;
+      const cutoff = Date.now() - 30 * 86400000;
+      const keep = Object.keys(all).filter((k) => all[k] && all[k].at >= cutoff).sort((a, b) => all[b].at - all[a].at).slice(0, 200);
+      const out = {};
+      for (const k of keep) out[k] = all[k];
+      await chrome.storage.local.set({ [EXPLAIN_KEY]: out });
+    } catch (e) {}
+  }
+
   function buildAi(sec, d) {
     const row = el("div", "pcm-ai-row");
     const go = el("button", "pcm-btn pri", "✨ Explain this task");
@@ -392,7 +426,8 @@
     const note = el("div", "pcm-note");
     const out = el("div", "pcm-ai-out");
     out.hidden = true;
-    sec.append(row, row2, chips, note, out);
+    const aiMeta = el("div", "pcm-note pcm-ai-meta");
+    sec.append(row, row2, chips, note, aiMeta, out);
 
     const files = [];
     const paintChips = () => {
@@ -487,7 +522,35 @@
       }
     });
 
-    const paint = (text) => { out.textContent = ""; renderRichText(out, text); };
+    // Repaint in one go and keep the reader's place inside the answer box.
+    const paint = (text) => {
+      const keep = out.scrollTop;
+      const frag = document.createDocumentFragment();
+      renderRichText(frag, text);
+      out.replaceChildren(frag);
+      out.scrollTop = keep;
+    };
+    // Remembered explanation: shown straight away, and updated when another page
+    // (popup / side panel / options) explains this same task.
+    const fp = hashStr(taskText(d)); // changes when the description or comments do
+    let generating = false;
+    const showSaved = (e) => {
+      if (!e || !e.text || generating) return;
+      out.hidden = false;
+      paint(e.text);
+      aiMeta.textContent = "Explained " + ago(e.at) + " \u00b7 " + (e.via === "online" ? "free online AI" : "built-in AI") +
+        (e.fp && e.fp !== fp ? " \u00b7 the task has changed since, explain again for an updated answer" : "");
+      aiMeta.title = new Date(e.at).toLocaleString();
+      go.textContent = online ? "\u2728 Explain again (online)" : "\u2728 Explain again";
+    };
+    stateReady.then(() => explainGet(d.id)).then(showSaved);
+    const onStore = (changes, area) => {
+      if (!panel || !panel.contains(sec)) { try { chrome.storage.onChanged.removeListener(onStore); } catch (e) {} return; }
+      if (area !== "local" || !changes[EXPLAIN_KEY]) return;
+      showSaved((changes[EXPLAIN_KEY].newValue || {})[String(d.id)]);
+    };
+    try { chrome.storage.onChanged.addListener(onStore); } catch (e) {}
+    const remember = (text, via) => { if (text && text.trim()) explainSave(d.id, { text: text.trim(), at: Date.now(), via, fp }); };
     // ---- free online AI (Pollinations.ai), for computers without the built-in one ----
     const ONLINE_OK = "pcm.onlineAiOk";
     const askConsent = () => new Promise((resolve) => {
@@ -504,7 +567,7 @@
       let ok = false;
       try { ok = localStorage.getItem(ONLINE_OK) === "1"; } catch (e) {}
       if (!ok && !(await askConsent())) return;
-      go.disabled = true; stop.hidden = false;
+      go.disabled = true; stop.hidden = false; generating = true;
       out.hidden = false; out.textContent = "Asking the free online AI\u2026 (usually 5-20 seconds)";
       aiAbort = new AbortController();
       const timer = setTimeout(() => aiAbort && aiAbort.abort(), 90000);
@@ -517,20 +580,22 @@
         const text = res.ok ? (await res.text()).trim() : "";
         if (!res.ok || !text || /^\s*[{<]/.test(text)) throw new Error(res.ok ? "empty answer" : "HTTP " + res.status);
         paint((files.some((f) => f.kind === "image") ? "(Screenshots were left out: the online AI only reads text.)\n\n" : "") + text);
+        aiMeta.textContent = "";
+        remember(text, "online");
       } catch (e) {
         out.textContent = e && e.name === "AbortError"
           ? "Stopped. (The free online AI is sometimes slow; try again, or use \"Ask with\".)"
           : "The free online AI didn't answer (" + (e && e.message ? e.message : e) + "). It's a free public service and is sometimes busy: try again in a minute, or use \"Ask with\".";
       } finally {
         clearTimeout(timer);
-        aiAbort = null;
+        aiAbort = null; generating = false;
         go.disabled = false; go.textContent = "\u2728 Explain again (online)"; stop.hidden = true;
       }
     }
     go.onclick = async () => {
       await stateReady; // a click right after opening mustn't skip the online fallback
       if (online) { explainOnline(); return; }
-      go.disabled = true; stop.hidden = false;
+      go.disabled = true; stop.hidden = false; generating = true; aiMeta.textContent = "";
       if (note.className !== "pcm-err") note.textContent = "";
       out.hidden = false; out.textContent = "Thinking…";
       aiAbort = new AbortController();
@@ -571,12 +636,13 @@
           paint(dropped + text);
         }
         if (!text.trim()) out.textContent = "The AI returned nothing. Try again, or use \"Ask with\".";
+        else remember(dropped + text, "builtin");
       } catch (e) {
         if (e && e.name === "AbortError") out.appendChild(document.createTextNode((out.textContent ? "\n" : "") + "(stopped)"));
         else out.textContent = "The built-in AI couldn't answer: " + (e && e.message ? e.message : e) + ". Use \"Ask with\" or Copy instead.";
       } finally {
         try { session && session.destroy(); } catch (e) {}
-        aiAbort = null;
+        aiAbort = null; generating = false;
         go.disabled = false; go.textContent = "✨ Explain again"; stop.hidden = true;
       }
     };
@@ -712,10 +778,81 @@
   function setChevrons() {
     document.querySelectorAll(".pcm-chev").forEach((b) => b.setAttribute("aria-expanded", String(b.dataset.taskId === openId)));
   }
+  // The popup (not the side panel) is small and can't be resized, so there the
+  // details take over the whole popup; elsewhere they open under the task row.
+  const isPopup = () => !!document.getElementById("cuTaskList") && !document.documentElement.classList.contains("in-panel");
+  let sheet = null;
+  function openSheet(row) {
+    sheet = el("div", "pcm-sheet");
+    sheet.setAttribute("role", "dialog");
+    const h = el("div", "pcm-sheet-h");
+    const back = el("button", "pcm-btn", "\u2190 Back");
+    back.type = "button";
+    back.onclick = () => close();
+    const nm = row && row.querySelector("a");
+    const t = el("span", "pcm-sheet-t", nm ? nm.textContent.replace(/^\u21b3\s*/, "") : "Task");
+    t.title = t.textContent;
+    h.append(back, t);
+    const b = el("div", "pcm-sheet-b");
+    sheet.append(h, b);
+    document.body.appendChild(sheet);
+    document.documentElement.classList.add("pcm-sheet-open");
+    back.focus();
+    return b;
+  }
+  document.addEventListener("keydown", (e) => { if (e.key === "Escape" && sheet) { e.preventDefault(); close(); } });
+
+  // Inline (side panel / options): make the list tall enough to show the open
+  // panel and scroll it into view; restored when the panel closes.
+  const scrollBox = (node) => {
+    for (let e = node && node.parentElement; e && e !== document.body; e = e.parentElement) {
+      const oy = getComputedStyle(e).overflowY;
+      if ((oy === "auto" || oy === "scroll") && e.classList.contains("cu-tasklist")) return e;
+    }
+    return null;
+  };
+  let fitQueued = false;
+  function fitInline() {
+    if (fitQueued) return;
+    fitQueued = true;
+    setTimeout(() => {
+      fitQueued = false;
+      if (!panel || sheet || !panel.isConnected) return;
+      const list = scrollBox(panel);
+      if (!list) return;
+      const row = panel.previousElementSibling;
+      const need = (row ? row.offsetHeight : 0) + panel.offsetHeight + 12;
+      const cap = Math.round(window.innerHeight * 0.8);
+      if (list.clientHeight < Math.min(need, cap)) {
+        if (!list.dataset.pcmGrow) { list.dataset.pcmGrow = "1"; list.dataset.pcmH = list.style.height; list.dataset.pcmMax = list.style.maxHeight; }
+        list.style.maxHeight = "none";
+        list.style.height = Math.min(need, cap) + "px";
+      }
+      if (!panel.dataset.scrolled) {
+        panel.dataset.scrolled = "1";
+        const top = (row || panel).getBoundingClientRect().top - list.getBoundingClientRect().top;
+        list.scrollTop += top - 4;
+        list.scrollIntoView({ block: "nearest" });
+      }
+    }, 0);
+  }
+  function restoreInline() {
+    document.querySelectorAll(".cu-tasklist[data-pcm-grow]").forEach((l) => {
+      l.style.height = l.dataset.pcmH || "";
+      l.style.maxHeight = l.dataset.pcmMax || "";
+      delete l.dataset.pcmGrow; delete l.dataset.pcmH; delete l.dataset.pcmMax;
+    });
+  }
+  let growWatch = null;
+
   function close() {
     if (aiAbort) aiAbort.abort();
     if (panel) panel.remove();
+    if (sheet) { sheet.remove(); sheet = null; document.documentElement.classList.remove("pcm-sheet-open"); }
+    if (growWatch) { growWatch.disconnect(); growWatch = null; }
+    restoreInline();
     panel = null; openId = null; addToOpenPanel = null;
+    document.documentElement.classList.remove("pcm-open");
     setChevrons();
   }
   function open(row, id) {
@@ -723,7 +860,13 @@
     openId = id;
     panel = el("div", "pcm-panel");
     panel.dataset.taskId = id;
-    row.after(panel);
+    if (isPopup()) openSheet(row).appendChild(panel);
+    else {
+      row.after(panel);
+      // Re-fit as the panel fills in (details load, AI answer, comments).
+      try { growWatch = new ResizeObserver(() => fitInline()); growWatch.observe(panel); } catch (e) {}
+    }
+    document.documentElement.classList.add("pcm-open");
     setChevrons();
     load(panel, id, false);
   }
@@ -740,10 +883,65 @@
       if (!openId || !panel) return;
       const btn = [...document.querySelectorAll(".pcm-chev")].find((b) => b.dataset.taskId === openId);
       const row = btn && btn.closest(".cu-task");
+      if (sheet) return; // the popup's full view doesn't follow the list
       if (row && panel.previousElementSibling !== row) row.after(panel);
       setChevrons();
     }, 0);
   }).observe(document.documentElement, { childList: true, subtree: true });
+
+  // Shared AI helper (also used by the export's "Rewrite in plain language").
+  // Chrome's built-in AI when this computer can run it; otherwise the free online
+  // AI, but only once the user has agreed to that (same consent as the panel).
+  window.PcmAI = {
+    async engine() {
+      const s = await aiState(false);
+      if (s === "available" || s === "downloadable" || s === "downloading") return "builtin";
+      return "online";
+    },
+    onlineAllowed() { try { return localStorage.getItem("pcm.onlineAiOk") === "1"; } catch (e) { return false; } },
+    allowOnline() { try { localStorage.setItem("pcm.onlineAiOk", "1"); } catch (e) {} },
+    // Returns the model's text. opts.schema = a JSON schema the built-in AI must follow.
+    // Other AIs the user can hand text to (ChatGPT, Claude, ...): same list as
+    // the panel's "Ask with".
+    targets: TARGETS.map((t) => ({ id: t.id, label: t.label })),
+    // Open `text` in one of those AIs: in the link when it fits, otherwise copied
+    // to the clipboard with the site opened. Returns a note for the user.
+    async openWith(id, text) {
+      const t = TARGETS.find((x) => x.id === id) || TARGETS[0];
+      if (t.url && encodeURIComponent(text).length <= LINK_MAX) {
+        chrome.tabs.create({ url: t.url + encodeURIComponent(text) }).catch(() => {});
+        return t.label + " opened with it filled in: press Enter there.";
+      }
+      await navigator.clipboard.writeText(text);
+      const url = t.url ? t.url.replace(/[?&][a-z]+=$/i, "") : (t.open || "");
+      if (url) chrome.tabs.create({ url }).catch(() => {});
+      return t.url ? "Copied. In " + t.label + ", press Ctrl+V, then Enter." : t.note;
+    },
+    // opts.engine: "auto" (default) | "builtin" | "online".
+    async generate(system, prompt, opts = {}) {
+      let engine = await this.engine();
+      if (opts.engine === "builtin") {
+        if (engine !== "builtin") throw new Error("Chrome's built-in AI isn't available on this computer. Choose another AI.");
+      } else if (opts.engine === "online") engine = "online";
+      if (engine === "builtin") {
+        const session = await LanguageModel.create({
+          initialPrompts: [{ role: "system", content: system }],
+          expectedInputs: [{ type: "text", languages: ["en"] }],
+          expectedOutputs: [{ type: "text", languages: ["en"] }],
+          signal: opts.signal,
+        });
+        try { return await session.prompt(prompt, opts.schema ? { responseConstraint: opts.schema, signal: opts.signal } : { signal: opts.signal }); }
+        finally { try { session.destroy(); } catch (e) {} }
+      }
+      if (!this.onlineAllowed()) { const e = new Error("needs-consent"); e.code = "consent"; throw e; }
+      const url = "https://text.pollinations.ai/" + encodeURIComponent(String(prompt).slice(0, 4500)) +
+        "?model=openai&private=true&system=" + encodeURIComponent(system);
+      const res = await fetch(url, { signal: opts.signal, cache: "no-store" });
+      const text = res.ok ? (await res.text()).trim() : "";
+      if (!res.ok || !text) throw new Error(res.ok ? "empty answer" : "HTTP " + res.status);
+      return text;
+    },
+  };
 
   window.PcmTaskPanel = {
     // The ▸ button for one task row.

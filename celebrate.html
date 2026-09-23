@@ -1,0 +1,21 @@
+<!doctype html>
+<html data-no-auto-celebrate="1">
+<head>
+  <meta charset="utf-8" />
+  <title>Milestone reached</title>
+  <style>
+    :root { color-scheme: dark; }
+    html, body { margin: 0; height: 100%; overflow: hidden; background: #151a3d; color: #fff;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; cursor: pointer; user-select: none; }
+    /* A notification-style card: message on the left, animation playing behind. */
+    .msg { position: absolute; left: 14px; right: 46%; top: 50%; transform: translateY(-50%); z-index: 1; }
+    .msg b { display: block; font-size: 14px; line-height: 1.3; text-shadow: 0 1px 6px rgba(0,0,0,.7); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .msg span { display: block; margin-top: 3px; font-size: 11.5px; opacity: .85; text-shadow: 0 1px 4px rgba(0,0,0,.7); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  </style>
+</head>
+<body title="Click to close">
+  <div class="msg"><b id="t">Milestone reached!</b><span id="s"></span></div>
+  <script src="celebrate.js"></script>
+  <script src="celebrate-window.js"></script>
+</body>
+</html>

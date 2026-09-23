@@ -2155,8 +2155,23 @@ function renderWeekChartOpt(w, targetMs) {
     const col = document.createElement("div");
     col.className = "wk-day" + (dayStart === today ? " today" : dayStart > today ? " future" : "");
     const est = Number(d.estimateMs) || 0, trk = Number(d.spentMs) || 0;
-    col.title = new Date(d.ts).toLocaleDateString(undefined, { weekday: "long", month: "short", day: "numeric" }) +
-      "\nEstimated " + fmtDurOpt(est) + "\nTracked " + fmtDurOpt(trk);
+    // Hover card: day, estimated, tracked, and how that compares to the target.
+    const tip = document.createElement("div");
+    tip.className = "wk-tip";
+    const tb = document.createElement("b");
+    tb.textContent = new Date(d.ts).toLocaleDateString(undefined, { weekday: "long", month: "short", day: "numeric" });
+    tip.appendChild(tb);
+    const tipLine = (color, label, v) => {
+      const row = document.createElement("div");
+      const sw = document.createElement("i");
+      sw.style.background = color;
+      row.append(sw, label + " " + fmtDurOpt(v) + (targetMs > 0 ? "  \u00b7  " + Math.round((v / targetMs) * 100) + "%" : ""));
+      tip.appendChild(row);
+    };
+    tipLine("var(--amber, #f5b400)", "Estimated", est);
+    tipLine("var(--blue, #4d8ef7)", "Tracked", trk);
+    col.appendChild(tip);
+    col.style.setProperty("--i", days.indexOf(d));
     const bars = document.createElement("div");
     bars.className = "wk-bars";
     if (targetMs > 0) {
@@ -2168,9 +2183,11 @@ function renderWeekChartOpt(w, targetMs) {
     const e = document.createElement("div");
     e.className = "wk-bar est";
     e.style.height = pct(est);
+    e.style.animationDelay = days.indexOf(d) * 70 + "ms"; // bars grow in one day after another
     const k = document.createElement("div");
     k.className = "wk-bar trk";
     k.style.height = pct(trk);
+    k.style.animationDelay = days.indexOf(d) * 70 + 90 + "ms";
     bars.append(e, k);
     const lab = document.createElement("div");
     lab.className = "wk-lab";
@@ -2209,8 +2226,13 @@ function renderOptionsWeekly(cu) {
   }
   const to = cu.weeklyTo === "friday" ? "friday" : "today";
   const agg = to === "friday" ? w.friday : w.today;
-  $("optWeekEst").textContent = fmtDurOpt(agg.estimateMs);
-  $("optWeekTrk").textContent = fmtDurOpt(agg.spentMs);
+  if (window.pcmCountTo) {
+    window.pcmCountTo($("optWeekEst"), "optWeekEst", agg.estimateMs, fmtDurOpt);
+    window.pcmCountTo($("optWeekTrk"), "optWeekTrk", agg.spentMs, fmtDurOpt);
+  } else {
+    $("optWeekEst").textContent = fmtDurOpt(agg.estimateMs);
+    $("optWeekTrk").textContent = fmtDurOpt(agg.spentMs);
+  }
   {
     const wTarget = (Number(cu.state && cu.state.targetMs) || 0) * (Number(agg.count) || 0);
     const setBar = (fillId, ofId, v) => {
@@ -3920,6 +3942,7 @@ function renderClickupPreview(st) {
   const big = document.createElement("div");
   big.className = "big";
   big.textContent = fmtDurOpt(estMs) + " ";
+  if (window.pcmCountTo) window.pcmCountTo(big.firstChild, "optTotal", estMs, fmtDurOpt);
   const muted = document.createElement("span");
   muted.className = "muted";
   muted.textContent = targetMs > 0 ? "/ " + fmtDurOpt(targetMs) + (met ? "  ·  target met ✓" : "") : "";
@@ -5716,6 +5739,102 @@ async function renderVersionRow() {
   const dl = $("downloadUpdateBtn");
   if (dl) { dl.style.display = ui && ui.newer ? "" : "none"; if (ui && ui.newer) dl.textContent = "Update to v" + ui.latest; }
 }
+// ---- automatic updates: switch + one status line ----
+// The folder handle lives in the updater's IndexedDB ("pcm-updater" / "kv" /
+// "extDir"); reading it here only checks whether setup was done and whether
+// Chrome still allows writing without asking ("Allow on every visit").
+async function autoUpdateFolderState() {
+  try {
+    const d = await new Promise((res, rej) => { const r = indexedDB.open("pcm-updater", 1); r.onupgradeneeded = () => r.result.createObjectStore("kv"); r.onsuccess = () => res(r.result); r.onerror = () => rej(r.error); });
+    const h = await new Promise((res) => { const q = d.transaction("kv").objectStore("kv").get("extDir"); q.onsuccess = () => res(q.result || null); q.onerror = () => res(null); });
+    if (!h) return "none";
+    return (await h.queryPermission({ mode: "readwrite" })) === "granted" ? "ok" : "ask";
+  } catch (e) { return "none"; }
+}
+async function renderAutoUpdate() {
+  const box = $("autoUpdate"), line = $("autoUpdateLine");
+  if (!box || !line) return;
+  let got = {};
+  try { got = await chrome.storage.local.get(["settings", "updateInfo", "autoUpdateState"]); } catch (e) {}
+  const on = !(got.settings && got.settings.autoUpdate === false);
+  box.checked = on;
+  line.textContent = "";
+  const setupLink = (label) => {
+    const a = document.createElement("a");
+    a.href = "#"; a.textContent = label;
+    a.onclick = (e) => { e.preventDefault(); window.open(chrome.runtime.getURL("update.html?setup=1"), "_blank"); };
+    return a;
+  };
+  if (!on) { line.textContent = "Off: you'll get a notice when a new version is out and install it with one click."; return; }
+  const folder = await autoUpdateFolderState();
+  if (folder === "none") {
+    line.append("Needs a one-time setup: ", setupLink("choose this extension's folder"), " and pick \"Allow on every visit\" when Chrome asks.");
+    return;
+  }
+  if (folder === "ask") {
+    line.append("Chrome needs permission again: ", setupLink("open the setup"), ", choose the folder and pick \"Allow on every visit\" so updates can install without asking.");
+    return;
+  }
+  const ui = got.updateInfo, st = got.autoUpdateState;
+  const when = (t) => new Date(t).toLocaleString([], { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" });
+  if (ui && ui.newer) {
+    if (st && st.version === ui.latest && st.fails >= 4) {
+      line.textContent = "Couldn't install v" + ui.latest + " automatically" + (st.error ? " (" + st.error + ")" : "") + ". Use Update now instead.";
+    } else if (Number(ui.autoAt) > Date.now()) {
+      line.textContent = "On. v" + ui.latest + " installs automatically after " + when(ui.autoAt) + ", at a moment you're not using the extension.";
+    } else {
+      line.textContent = "On. v" + ui.latest + " installs at the next quiet moment (popup and side panel closed, or you're away for a few minutes).";
+    }
+  } else {
+    line.textContent = "On. New versions install by themselves; you're up to date.";
+  }
+}
+if ($("autoUpdate")) $("autoUpdate").onchange = async () => {
+  try { await send({ type: "SET_SETTINGS", patch: { autoUpdate: $("autoUpdate").checked } }); } catch (e) {}
+  renderAutoUpdate();
+};
+chrome.storage.onChanged.addListener((ch, area) => {
+  if (area === "local" && (ch.updateInfo || ch.autoUpdateState || ch.settings)) renderAutoUpdate();
+});
+renderAutoUpdate();
+// Celebration animations (celebrate.js): saved straight away, on by default.
+(async () => {
+  try {
+    const g = await chrome.storage.local.get("settings");
+    const st = g.settings || {};
+    if ($("celebrations")) $("celebrations").checked = st.celebrations !== false;
+    if ($("celebrationWindow")) { $("celebrationWindow").checked = st.celebrationWindow !== false; $("celebrationWindow").disabled = st.celebrations === false; }
+    if ($("celebrationSeconds")) { $("celebrationSeconds").value = String([2, 3, 5, 8, 10].includes(Number(st.celebrationSeconds)) ? Number(st.celebrationSeconds) : 3); $("celebrationSeconds").disabled = st.celebrations === false; }
+  } catch (e) {}
+})();
+if ($("celebrations")) $("celebrations").onchange = () => {
+  send({ type: "SET_SETTINGS", patch: { celebrations: $("celebrations").checked } }).catch(() => {});
+  if ($("celebrationWindow")) $("celebrationWindow").disabled = !$("celebrations").checked;
+  if ($("celebrationSeconds")) $("celebrationSeconds").disabled = !$("celebrations").checked;
+};
+if ($("celebrationSeconds")) $("celebrationSeconds").onchange = () => { send({ type: "SET_SETTINGS", patch: { celebrationSeconds: Number($("celebrationSeconds").value) || 3 } }).catch(() => {}); };
+if ($("celebrationWindow")) $("celebrationWindow").onchange = () => { send({ type: "SET_SETTINGS", patch: { celebrationWindow: $("celebrationWindow").checked } }).catch(() => {}); };
+// Preview: the animation on this page + the real notification with its picture
+// + the pop-up window, so all three can be seen.
+for (const [id, mood] of [["celebrateTryHappy", "happy"], ["celebrateTrySad", "sad"]]) {
+  if ($(id)) $(id).onclick = () => {
+    // Plays here and in any open side panel / popup (via the shared signal).
+    send({ type: "CELEBRATE_PREVIEW", mood, secs: Number($("celebrationSeconds") && $("celebrationSeconds").value) || 3 }).catch(() => {});
+  };
+}
+// ---- Animations and effects (fx.js + the toolbar ring in background.js) ----
+const FX_KEYS = ["fxLiquid", "fxChart", "fxCount", "fxIconRing"];
+(async () => {
+  try { const g = await chrome.storage.local.get("settings"); const st = g.settings || {}; for (const k of FX_KEYS) if ($(k)) $(k).checked = st[k] !== false; } catch (e) {}
+})();
+for (const k of FX_KEYS) if ($(k)) $(k).onchange = () => { send({ type: "SET_SETTINGS", patch: { [k]: $(k).checked } }).catch(() => {}); };
+if ($("fxAllOff")) $("fxAllOff").onclick = async () => {
+  const patch = { celebrations: false };
+  for (const k of FX_KEYS) { patch[k] = false; if ($(k)) $(k).checked = false; }
+  if ($("celebrations")) $("celebrations").checked = false;
+  try { await send({ type: "SET_SETTINGS", patch }); } catch (e) {}
+  const m = $("fxMsg"); if (m) { m.style.display = "inline"; m.textContent = "All animations are off \u2713"; setTimeout(() => { m.style.display = "none"; }, 2500); }
+};
 if ($("downloadUpdateBtn")) $("downloadUpdateBtn").onclick = () => { window.open(chrome.runtime.getURL("update.html"), "_blank"); };
 if ($("setupUpdatesBtn")) $("setupUpdatesBtn").onclick = () => { window.open(chrome.runtime.getURL("update.html?setup=1"), "_blank"); };
 if ($("reloadExtBtn")) $("reloadExtBtn").onclick = () => { send({ type: "RELOAD_EXTENSION" }).catch(() => {}); };
@@ -5836,8 +5955,8 @@ const ADMIN_FILES = [
   "manifest.json", "background.js", "popup.html", "popup.js", "options.html", "options.js",
   "offscreen.html", "offscreen.js", "update.html", "update.js", "wrapup.html", "wrapup.js",
   "notify-menu.js", "export-tasks.js", "lib-zip.js", "lib-unzip.js", "lib-automation.js",
-  "lib-availability.js", "lib-clickup.js", "lib-crypto.js", "lib-drive.js", "task-panel.js",
-  "icons/icon16.png", "icons/icon48.png", "icons/icon128.png",
+  "lib-availability.js", "lib-clickup.js", "lib-crypto.js", "lib-drive.js", "task-panel.js", "lib-updater.js", "offscreen-updater.js", "celebrate.js", "celebrate.html", "celebrate-window.js", "fx.js",
+  "icons/icon16.png", "icons/icon48.png", "icons/icon128.png", "icons/celebrate.png", "icons/sad.png",
   "sounds/notify.wav", "sounds/danger.mp3", "sounds/winner.wav",
   "README.md", "CHANGELOG.md",
 ];
@@ -6138,6 +6257,7 @@ if ($("showAgentRouter")) $("showAgentRouter").onchange = async () => {
 function admPolFill(p) {
   if (!p) return;
   if ($("admPolRemind")) $("admPolRemind").value = p.remindEveryHours;
+  if ($("admPolAuto")) $("admPolAuto").value = p.autoInstallAfterHours != null ? p.autoInstallAfterHours : 1;
   if ($("admPolImportant")) $("admPolImportant").checked = !!p.important;
   if ($("admPolHold")) {
     const d = p.holdUntil ? new Date(p.holdUntil) : null;
@@ -6160,6 +6280,7 @@ function admPolRead() {
   const hold = $("admPolHold") && $("admPolHold").value ? new Date($("admPolHold").value).getTime() : 0;
   return {
     remindEveryHours: Number($("admPolRemind").value) || 24,
+    autoInstallAfterHours: $("admPolAuto") && $("admPolAuto").value !== "" ? Math.max(0, Math.min(168, Number($("admPolAuto").value) || 0)) : 1,
     important: !!$("admPolImportant").checked,
     holdUntil: hold > Date.now() ? hold : 0,
   };
