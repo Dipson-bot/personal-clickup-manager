@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Personal Clickup Manager",
-  "version": "3.9.4",
+  "version": "3.9.5",
   "description": "Stay on top of your ClickUp estimates with proactive nudges, daily target tracking, and timely progress reminders. Get notified on milestones and deadlines without having to open ClickUp—so you never fall behind on your daily goals.",
   "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAul0yjxWWZljLk5eq01jDZyK2vp1KNDJ0rhrVqmo1QMmJ43cXfkwVg2QZhUyZv9UmKIBYKAhKzbdxEHxCF9+CAG+tlwgYItdtf3vucZrt+5E9OcSXKIm0cYBq66DpzphWCUfBWnewEEC1eq4kxaNWEB0mI3uvNHcDREf67eUoksjB9k0RDvEcLRi4oUhb59VzK0C6NMwvLycF9Nz6AZnO4A1iKZmBkmbYDy8ZDyNdFacSkWdzKiUIWpq0HcGUHvVN+DS72rJPmkxjCWqrZ//hL7jl51AkgNUHvo8FoSqskVO6r0/Og4d0s1Dj4Au4mxu+o2TgUwhAZVzYB2gtFNEBfwIDAQAB",
   "permissions": ["alarms", "storage", "identity", "scripting", "tabs", "cookies", "notifications", "offscreen", "downloads", "idle", "sidePanel"],

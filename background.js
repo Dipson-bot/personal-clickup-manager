@@ -18,7 +18,7 @@ import {
   pullAccountsFromDrive,
 } from "./lib-drive.js";
 import { runAllAccounts, runAccountLogin, URLS, GITHUB_KEEP_COOKIES } from "./lib-automation.js";
-import { verifyToken, getTeams, fetchTodayEstimate, fetchWeeklySummary, fetchDateRangeEstimate, createTaskCache, fetchTeamMembers, fmtDuration, findExtraTaskByName, parseTaskIdFromUrl, getCurrentTimeEntry, getRunningTaskProgress, startTimer, stopTimer, getTaskById, setTaskStatus, taskUrlFor, clientLabelFromContainer, resolveSpaceNamesFor, taskContainer, cuPriorityName, isTaskDone, getSubtasksOfParent, getTaskTree, getTaskDetail, updateTimeEntry, setTaskDueDate, clearTaskTreeCache, listWorkspaceClients, cuRowAssignees, fetchDoneBetween } from "./lib-clickup.js";
+import { verifyToken, getTeams, fetchTodayEstimate, fetchWeeklySummary, fetchDateRangeEstimate, createTaskCache, fetchTeamMembers, fmtDuration, findExtraTaskByName, parseTaskIdFromUrl, getCurrentTimeEntry, getRunningTaskProgress, startTimer, stopTimer, getTaskById, setTaskStatus, taskUrlFor, clientLabelFromContainer, resolveSpaceNamesFor, taskContainer, cuPriorityName, isTaskDone, getSubtasksOfParent, getTaskTree, getTaskDetail, updateTimeEntry, setTaskDueDate, clearTaskTreeCache, listWorkspaceClients, cuRowAssignees, fetchDoneBetween, getTaskPanel, addTaskComment } from "./lib-clickup.js";
 import { resolveRelayKey, pickProbeModel, probeRelay } from "./lib-availability.js";
 
 const CHECK_ALARM = "dailyLoginCheck";
@@ -33,8 +33,25 @@ const SITE_MONITOR_ALARM = "siteMonitor";
 // SITE_MONITOR_FAILURES consecutive checks before it's declared "down".
 // Config lives in chrome.storage.local under "siteMonitorConfig".
 const SITE_MONITOR_FAILURES = 2; // 2 consecutive failures = ~10 min at 5-min interval
-const SITE_MONITOR_CHECK_TIMEOUT_MS = 5000; // 5s max per fetch
+// Timeouts / retries follow the big uptime services: UptimeRobot and Pingdom wait
+// 30s before calling a request timed out, and UptimeRobot re-tries a connection
+// failure up to 3 times, 20s apart, before a check counts as failed. A cold,
+// uncached WordPress page (managed WordPress host behind Cloudflare) can take several
+// seconds to wake - a 5s limit flagged live sites as down.
+const SITE_MONITOR_CHECK_TIMEOUT_MS = 30000;
 const SITE_MONITOR_PERIOD_MIN = 5; // check interval
+const SITE_MONITOR_RETRIES = 2; // extra tries after the first (3 in total)
+const SITE_MONITOR_RETRY_GAP_MS = 20000;
+const SITE_MONITOR_PARALLEL = 6; // sites checked at the same time
+const SITE_MONITOR_PROBE_TIMEOUT_MS = 8000; // "is this PC online" probes
+// A failure only counts as CONSECUTIVE when the previous check was recent;
+// a fail from just before the PC slept + the first check after waking is not
+// an outage. Anything older than this resets the count.
+const SITE_MONITOR_STALE_MS = 15 * 60000;
+// Known-good addresses used to tell "the site is down" from "this PC is
+// offline" (Chrome up before Wi-Fi / VPN, DNS hiccup). Only probed when a
+// site check failed, so a quiet run costs nothing extra.
+const SITE_MONITOR_PROBES = ["https://www.gstatic.com/generate_204", "https://www.cloudflare.com/cdn-cgi/trace"];
 
 async function getSiteMonitorConfig() {
   const { siteMonitorConfig } = await chrome.storage.local.get("siteMonitorConfig");
@@ -45,50 +62,108 @@ async function setSiteMonitorConfig(cfg) {
   await chrome.storage.local.set({ siteMonitorConfig: cfg });
 }
 
-async function checkOneSite(url) {
+async function checkOneSite(url, timeoutMs = SITE_MONITOR_CHECK_TIMEOUT_MS) {
   const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), SITE_MONITOR_CHECK_TIMEOUT_MS);
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
     // no-cors: the extension has no host permission for client sites, so a
     // normal (CORS) fetch fails for EVERY site and would report it "down". An
     // opaque no-cors response still proves the server answered; a real outage
     // (DNS/connect/TLS failure, timeout) rejects and lands in the catch.
+    const t0 = Date.now();
     const res = await fetch(url, { method: "GET", mode: "no-cors", cache: "no-store", redirect: "follow", signal: controller.signal });
     clearTimeout(timer);
-    if (res.type === "opaque" || res.type === "opaqueredirect") return { ok: true, status: 0 };
-    return { ok: res.status < 500, status: res.status };
+    const ms = Date.now() - t0;
+    if (res.type === "opaque" || res.type === "opaqueredirect") return { ok: true, status: 0, ms };
+    return { ok: res.status < 500, status: res.status, ms };
   } catch (e) {
     clearTimeout(timer);
-    return { ok: false, status: 0, error: String(e && e.message ? e.message : e) };
+    const msg = String(e && e.message ? e.message : e);
+    return { ok: false, status: 0, error: e && e.name === "AbortError" ? "No reply within " + Math.round(timeoutMs / 1000) + "s" : msg };
   }
 }
 
-async function checkSites() {
+// Is THIS machine online? navigator.onLine is a quick "definitely not"; the
+// probes settle it when it says yes (it also says yes on a captive portal).
+async function internetReachable() {
+  try { if (typeof navigator !== "undefined" && navigator.onLine === false) return false; } catch (e) {}
+  for (const u of SITE_MONITOR_PROBES) {
+    const r = await checkOneSite(u, SITE_MONITOR_PROBE_TIMEOUT_MS);
+    if (r.ok) return true;
+  }
+  return false;
+}
+
+// opts.manual (the options page's "Check now" buttons): decide up/down from this
+// one check - no 2-check wait and no notification, since the user is looking at
+// the result. The offline test and the slow retry still apply, so a blip on the
+// user's own connection can't mark a site down. opts.url limits it to one site.
+const sleepMs = (ms) => new Promise((r) => setTimeout(r, ms));
+
+async function checkSites(opts = {}) {
   const cfg = await getSiteMonitorConfig();
-  if (!cfg || !cfg.enabled || !Array.isArray(cfg.sites) || cfg.sites.length === 0) return;
+  if (!cfg || !Array.isArray(cfg.sites) || cfg.sites.length === 0) return { checked: 0 };
+  if (!cfg.enabled && !opts.manual) return { checked: 0 };
   const now = Date.now();
   const state = (await chrome.storage.local.get("siteMonitorState"))["siteMonitorState"] || {};
-  for (const site of cfg.sites) {
-    if (!site || !site.url) continue;
+  const sites = cfg.sites.filter((s) => s && s.url && (!opts.url || s.url === opts.url));
+  // 1) One check per site (30s timeout), a few sites at a time.
+  const results = new Map();
+  const first = await mapLimit(sites, SITE_MONITOR_PARALLEL, (s) => checkOneSite(s.url));
+  sites.forEach((s, i) => results.set(s.url, first[i]));
+  let failed = sites.filter((s) => !results.get(s.url).ok);
+  // 2) Anything failed: is it us? Offline, or half the list failing in the same
+  //    minute, is this PC's connection - never a client outage. Don't count it.
+  let localProblem = false;
+  if (failed.length) {
+    if (!(await internetReachable())) localProblem = true;
+    else if (failed.length >= 2 && failed.length * 2 >= sites.length) localProblem = true;
+  }
+  // 3) Still suspect: re-try up to SITE_MONITOR_RETRIES more times, 20s apart
+  //    (UptimeRobot's confirmation re-checks). Any answer clears it.
+  for (let attempt = 0; attempt < SITE_MONITOR_RETRIES && failed.length && !localProblem; attempt++) {
+    await sleepMs(SITE_MONITOR_RETRY_GAP_MS);
+    const retried = await mapLimit(failed, SITE_MONITOR_PARALLEL, (s) => checkOneSite(s.url));
+    failed.forEach((s, i) => results.set(s.url, retried[i]));
+    failed = failed.filter((s) => !results.get(s.url).ok);
+  }
+  for (const site of sites) {
     const key = site.url;
     const prev = state[key] || { up: null, fails: 0, lastCheck: 0, lastDownNotified: 0 };
-    const result = await checkOneSite(site.url);
+    const result = results.get(key);
+    // A fail count from long ago (PC asleep, Chrome closed) isn't consecutive.
+    if (prev.lastCheck && now - prev.lastCheck > SITE_MONITOR_STALE_MS) prev.fails = 0;
     prev.lastCheck = now;
+    if (localProblem && !result.ok) {
+      // Leave up/fails untouched; just note why nothing was decided.
+      prev.lastError = "Couldn't check: this computer looked offline";
+      prev.skippedAt = now;
+      state[key] = prev;
+      continue;
+    }
     if (result.ok) {
       prev.fails = 0;
+      prev.lastError = "";
+      prev.lastMs = result.ms || 0;
       // First successful check, or a recovery - mark up. No notify: the user only
       // wants "down" alerts, not "back up" ones.
       if (prev.up !== true) prev.up = true;
     } else {
       prev.fails = (prev.fails || 0) + 1;
-      if (prev.fails >= SITE_MONITOR_FAILURES && prev.up !== false) {
+      prev.lastError = result.error || ("HTTP " + result.status);
+      if (opts.manual) {
+        // Seen by the user directly: mark it down now, silently. Counting it as
+        // a full outage also stops the next alarm from alerting about it again.
+        prev.up = false;
+        prev.fails = Math.max(prev.fails, SITE_MONITOR_FAILURES);
+      } else if (prev.fails >= SITE_MONITOR_FAILURES && prev.up !== false) {
         // Site went down - notify ONCE
         prev.up = false;
         prev.lastDownNotified = now;
         await notify(
           "site-down-" + key + "-" + now,
           "Site down: " + (site.name || site.url),
-          (site.name || site.url) + " is not responding (failed " + prev.fails + " consecutive checks).",
+          (site.name || site.url) + " didn't answer " + (SITE_MONITOR_RETRIES + 1) + " tries in each of the last " + prev.fails + " checks (~" + (prev.fails * SITE_MONITOR_PERIOD_MIN) + " min). " + prev.lastError,
           "danger"
         );
       }
@@ -99,6 +174,9 @@ async function checkSites() {
   // stays current. Previously a steadily-up site never re-saved its lastCheck, so
   // the options page froze at the last status change and looked like it had stopped.
   await chrome.storage.local.set({ siteMonitorState: state });
+  const res = sites.map((s) => results.get(s.url) || {});
+  return { checked: sites.length, up: res.filter((r) => r.ok).length,
+    down: localProblem ? 0 : res.filter((r) => !r.ok).length, offline: localProblem };
 }
 
 // ---------- existing alarm constants ----------
@@ -865,7 +943,7 @@ async function pushAllToDrive(tok, accounts) {
 // Each key carries its own "last changed" stamp (extrasStamps) so the newest copy
 // wins per key: a fresh install adopts the Drive copy, while a newer local edit is
 // never overwritten by an older remote one.
-const EXTRA_KEYS = ["siteMonitorConfig", "theme", "cuFilter", "cuFilterMode", "cuFilterDefault", "customSounds"];
+const EXTRA_KEYS = ["siteMonitorConfig", "theme", "cuFilter", "cuFilterMode", "cuFilterDefault", "customSounds", "cuManualOrder"];
 const EXTRAS_MAX_SOUNDS = 1500000; // skip very large custom-sound files in the Drive copy
 async function collectExtras() {
   const got = await chrome.storage.local.get([...EXTRA_KEYS, "extrasStamps"]);
@@ -2364,6 +2442,12 @@ async function scheduleWrapUpAlarm() {
     const when = nextWrapUpAt(s.clickupWrapUpTime);
     const ex = await chrome.alarms.get(WRAPUP_ALARM);
     if (ex && Math.abs(ex.scheduledTime - when) < 60000) return;
+    // The worker wakes every minute; one that wakes just after the wrap-up
+    // minute (before the alarm is delivered) used to push TODAY's pending alarm
+    // to tomorrow. Leave an alarm for today's configured time alone.
+    const [h, m] = parseHM(s.clickupWrapUpTime, [16, 45]);
+    const todayAt = new Date().setHours(h, m, 0, 0);
+    if (ex && Math.abs(ex.scheduledTime - todayAt) < 60000 && ex.scheduledTime > Date.now() - 10 * 60000) return;
     await chrome.alarms.create(WRAPUP_ALARM, { when });
   } catch (e) {}
 }
@@ -2376,6 +2460,25 @@ function wrapUpOpenTasks(st) {
 }
 async function onWrapUpAlarm() {
   await scheduleWrapUpAlarm(); // tomorrow's
+  await maybeWrapUp();
+}
+// How long after the wrap-up time a late start (PC asleep, Chrome closed, alarm
+// lost) still gets today's wrap-up. Checked from the every-minute update alarm.
+const WRAPUP_LATE_MS = 4 * 3600000;
+// Open the wrap-up page, or bring an already-open one to the front.
+async function openWrapUpPage() {
+  const url = chrome.runtime.getURL("wrapup.html");
+  try {
+    const tabs = await chrome.tabs.query({ url: url + "*" });
+    if (tabs && tabs.length) {
+      await chrome.tabs.update(tabs[0].id, { active: true });
+      if (tabs[0].windowId != null) await chrome.windows.update(tabs[0].windowId, { focused: true }).catch(() => {});
+      return;
+    }
+  } catch (e) {}
+  await chrome.tabs.create({ url }).catch(() => {});
+}
+async function maybeWrapUp() {
   const s = await getSettings();
   if (s.clickupWrapUp === false) return;
   const now = new Date();
@@ -2383,7 +2486,8 @@ async function onWrapUpAlarm() {
   const [h, m] = parseHM(s.clickupWrapUpTime, [16, 45]);
   const at = new Date(now);
   at.setHours(h, m, 0, 0);
-  if (now.getTime() < at.getTime() - 60000) return; // a missed alarm from an earlier day
+  if (now.getTime() < at.getTime() - 5000) return; // not time yet today
+  if (now.getTime() > at.getTime() + WRAPUP_LATE_MS) return; // too late to be useful
   const { cuWrapUpShown } = await chrome.storage.local.get("cuWrapUpShown");
   if (cuWrapUpShown === todayString()) return;
   const cfg = await getClickupConfig();
@@ -2391,6 +2495,9 @@ async function onWrapUpAlarm() {
   const st = await getClickupState().catch(() => null);
   if (!st) return;
   await chrome.storage.local.set({ cuWrapUpShown: todayString() });
+  // Open the page itself: a notification alone is easy to miss (Focus Assist,
+  // Do Not Disturb, or it slides into the Action Center unseen).
+  await openWrapUpPage();
   const open = wrapUpOpenTasks(st).length;
   const target = Number(st.targetMs) > 0 ? " of " + fmtDuration(st.targetMs) : "";
   await notify("wrapup-" + Date.now(), "Time to wrap up the day 📋",
@@ -3524,6 +3631,18 @@ ensurePeriodicAlarms();
 // Clear stale "running" flags + backfill login checkpoints once per worker start,
 // so the popup shows the right status without waiting for the 30-min check.
 clearStaleRunningOnce().catch(() => {});
+// Reopen the page that pressed "Reload extension" / "Set version & reload".
+// Only for a fresh request (the restart takes a second or two) and only once.
+(async () => {
+  try {
+    const { reopenAfterReload: r } = await chrome.storage.local.get("reopenAfterReload");
+    if (!r) return;
+    await chrome.storage.local.remove("reopenAfterReload");
+    if (r.url && String(r.url).startsWith(chrome.runtime.getURL("")) && Date.now() - (Number(r.at) || 0) < 60000) {
+      await chrome.tabs.create({ url: r.url });
+    }
+  } catch (e) {}
+})();
 // Agent Router's twice-daily Claude/GPT quota-batch reminders (converted from
 // Beijing time to whatever moment that is for this user). These are absolute
 // `when` alarms (not a countdown), so re-deriving them each wake is harmless.
@@ -3542,6 +3661,9 @@ chrome.alarms.onAlarm.addListener(async (alarm) => {
     autoSyncIfSignedIn();
   } else if (alarm.name === UPDATE_ALARM) {
     checkForUpdate().catch(() => {});
+    // Backstop for the wrap-up alarm (missed while asleep / Chrome closed).
+    // Cheap: settings + one storage read, and it runs at most once a day.
+    await maybeWrapUp().catch(() => {});
   } else if (alarm.name === CLICKUP_ALARM) {
     refreshClickup({ viaAlarm: true }).catch(() => {});
   } else if (alarm.name === BALANCE_ALARM) {
@@ -3623,7 +3745,31 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         try { sendResponse(await downloadUpdate()); } catch (e) { sendResponse({ ok: false, reason: String(e && e.message ? e.message : e) }); }
         break;
       }
+      case "CLICKUP_TASK_PANEL": {
+        try {
+          const cfg = await getClickupConfig();
+          if (!cfg || !cfg.token) { sendResponse({ ok: false, error: "ClickUp isn't connected." }); break; }
+          sendResponse({ ok: true, data: await getTaskPanel(cfg.token, msg.taskId, !!msg.force) });
+        } catch (e) { sendResponse({ ok: false, error: String(e && e.message ? e.message : e), status: e && e.status }); }
+        break;
+      }
+      case "CLICKUP_TASK_COMMENT": {
+        try {
+          const cfg = await getClickupConfig();
+          const text = String(msg.text || "").trim();
+          if (!cfg || !cfg.token) { sendResponse({ ok: false, error: "ClickUp isn't connected." }); break; }
+          if (!text) { sendResponse({ ok: false, error: "Write a comment first." }); break; }
+          sendResponse({ ok: true, data: await addTaskComment(cfg.token, msg.taskId, text.slice(0, 5000)) });
+        } catch (e) { sendResponse({ ok: false, error: String(e && e.message ? e.message : e), status: e && e.status }); }
+        break;
+      }
       case "RELOAD_EXTENSION": {
+        // A reload closes every extension page. Remember the page that asked
+        // (with its #section) so it comes straight back once we've restarted.
+        const back = String((sender && (sender.url || (sender.tab && sender.tab.url))) || "");
+        if (back.startsWith(chrome.runtime.getURL(""))) {
+          await chrome.storage.local.set({ reopenAfterReload: { url: back, at: Date.now() } }).catch(() => {});
+        }
         sendResponse({ ok: true });
         setTimeout(() => chrome.runtime.reload(), 150);
         break;
@@ -3647,6 +3793,14 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
           chrome.alarms.clear(SITE_MONITOR_ALARM).catch(() => {});
         }
         sendResponse({ ok: true });
+        break;
+      }
+      case "SITE_MONITOR_CHECK_NOW": {
+        try {
+          const summary = await checkSites({ manual: true, url: msg.url || "" });
+          const state = (await chrome.storage.local.get("siteMonitorState"))["siteMonitorState"] || {};
+          sendResponse({ ok: true, summary, state });
+        } catch (e) { sendResponse({ ok: false, reason: String(e && e.message ? e.message : e) }); }
         break;
       }
       case "GET_SITE_MONITOR_STATE": {

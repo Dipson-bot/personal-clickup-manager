@@ -25,6 +25,16 @@
     .xp-sep { height: 1px; background: var(--border); margin: 6px 0; }
     .xp-msg { margin: 6px 4px 2px; font-size: 11.5px; color: var(--muted); }
     .xp-msg.err { color: var(--red); }
+    .xp-cr { margin: 2px 0 4px; padding: 6px 8px; border-radius: 8px; background: var(--bg2); display: flex; flex-direction: column; gap: 5px; }
+    .xp-cr[hidden] { display: none; }
+    .xp-cr-h { font-size: 11px; color: var(--muted); line-height: 1.4; }
+    .xp-cr-row { display: flex; align-items: center; gap: 6px; font-size: 11.5px; min-width: 0; }
+    .xp-cr-row .n { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .xp-cr-row .ok { color: var(--green); }
+    .xp-cr-row .no { color: var(--amber, #d97706); }
+    .xp-cr-sel { flex: 1; min-width: 0; font: inherit; font-size: 11.5px; padding: 3px 5px; border: 1px solid var(--border); border-radius: 6px; background: var(--card); color: var(--text); }
+    .xp-cr-row button { flex: none; font: inherit; font-size: 11px; padding: 2px 8px; border: 1px solid var(--border); border-radius: 6px; background: var(--card); color: var(--text); cursor: pointer; }
+    .xp-cr-row button:hover { border-color: var(--indigo); color: var(--indigo); }
   `;
   document.head.appendChild(css);
 
@@ -269,6 +279,254 @@
     return out.join("\n").replace(/\n{3,}/g, "\n\n").trim() + "\n";
   }
 
+  // =================== Client report (plain language, no internal work) ===================
+  // The normal export is for the team: task codes (ACT-054), the Extra Task,
+  // monthly container tasks. The client report turns the same rows into
+  // something a client can read, using the client's own audit file: each code
+  // becomes the audit's title and its "What this means" text, subtasks roll up
+  // into one line per piece of work, and internal tasks are left out.
+  const CODE_RE = /\b[A-Z]{2,6}-\d{1,4}(?:\.[A-Z]{0,2}\d{1,3})?\b/;
+  const baseCode = (c) => String(c || "").replace(/\.[A-Z]{0,2}\d{1,3}$/, "");
+  const INTERNAL_RE = /\bextra(?:\(s\)|s)?\s+task(?:\(s\)|s)?\b|\bmeeting\b|\bstand-?up\b|\bdaily\s+tracking\b|\binternal\b/i;
+  const txt = (el) => String((el && el.textContent) || "").replace(/\s+/g, " ").trim();
+
+  // ---- audit file -> { code: { title, meaning, where, todo, doneWhen } } ----
+  function parseAudit(html) {
+    const doc = new DOMParser().parseFromString(html, "text/html");
+    const items = {};
+    const put = (code, f) => {
+      if (!code) return;
+      const cur = items[code] || (items[code] = {});
+      for (const k of Object.keys(f)) if (f[k] && !cur[k]) cur[k] = String(f[k]).slice(0, 1200);
+    };
+    // 1) Tables with an ID column: read columns by their header names.
+    for (const table of doc.querySelectorAll("table")) {
+      const heads = [...table.querySelectorAll("tr th")].map((th) => txt(th).toLowerCase());
+      if (!heads.length) continue;
+      const col = (re) => heads.findIndex((h) => re.test(h));
+      const cId = col(/^(id|code|ref)$/), cTitle = col(/^(task|action|title|item|work)$/);
+      if (cId < 0 || cTitle < 0) continue;
+      const cMean = col(/what this means|^why|meaning/), cWhere = col(/^where|^url|^page/), cTodo = col(/what to do|exact action/), cDone = col(/done when/);
+      for (const tr of table.querySelectorAll("tr")) {
+        const tds = tr.querySelectorAll("td");
+        if (!tds.length) continue;
+        const code = (txt(tds[cId]).match(CODE_RE) || [])[0];
+        if (!code || txt(tds[cId]) !== code) continue;
+        put(code, { title: txt(tds[cTitle]), meaning: cMean >= 0 ? txt(tds[cMean]) : "", where: cWhere >= 0 ? txt(tds[cWhere]) : "", todo: cTodo >= 0 ? txt(tds[cTodo]) : "", doneWhen: cDone >= 0 ? txt(tds[cDone]) : "" });
+      }
+    }
+    // 2) Action cards: a code tag, a bold title, then "Label: value" rows.
+    for (const tag of doc.querySelectorAll(".tag, .fid")) {
+      const code = (txt(tag).match(CODE_RE) || [])[0];
+      if (!code || txt(tag) !== code) continue;
+      const card = tag.closest("li, details, article, section, .card") || tag.parentElement;
+      if (!card) continue;
+      const f = {};
+      for (const row of card.querySelectorAll(".frow")) {
+        const lab = txt(row.querySelector(".flab")).toLowerCase();
+        const val = txt(row.querySelector(".fval"));
+        if (/what this means/.test(lab)) f.meaning = val;
+        else if (/^where/.test(lab)) f.where = val;
+        else if (/what to do/.test(lab)) f.todo = val;
+        else if (/done when/.test(lab)) f.doneWhen = val;
+        else if (/^solution/.test(lab)) f.solution = val;
+      }
+      const t = card.querySelector(".ftitle") || [...card.children].find((c) => c.tagName === "DIV" && !c.classList.contains("frow") && txt(c).length > 8 && txt(c).length < 200);
+      if (t) f.title = txt(t);
+      // Finding cards have no "What this means"; their Solution reads well enough.
+      if (!f.meaning && f.solution) f.meaning = firstSentences(f.solution, 320);
+      delete f.solution;
+      put(code, f);
+    }
+    const title = txt(doc.querySelector("h1")) || txt(doc.querySelector("title"));
+    return { items, title, count: Object.keys(items).length };
+  }
+
+  // ---- remembered audits, one per client (IndexedDB, shared by all pages) ----
+  const clientKey = (c) => String(c || "").toLowerCase().replace(/[^a-z0-9]+/g, "");
+  function db() {
+    return new Promise((res, rej) => {
+      const r = indexedDB.open("pcm-audits", 1);
+      r.onupgradeneeded = () => r.result.createObjectStore("audits");
+      r.onsuccess = () => res(r.result);
+      r.onerror = () => rej(r.error);
+    });
+  }
+  async function auditGet(client) {
+    const k = clientKey(client);
+    if (!k) return null;
+    try {
+      const d = await db();
+      return await new Promise((res) => {
+        const q = d.transaction("audits").objectStore("audits").get(k);
+        q.onsuccess = () => res(q.result || null);
+        q.onerror = () => res(null);
+      });
+    } catch (e) { return null; }
+  }
+  async function auditSave(client, fileName, parsed) {
+    const k = clientKey(client);
+    if (!k) throw new Error("No client to save the audit for.");
+    const rec = { client, fileName, savedAt: Date.now(), title: parsed.title, items: parsed.items, count: parsed.count };
+    const d = await db();
+    await new Promise((res, rej) => {
+      const tx = d.transaction("audits", "readwrite");
+      tx.objectStore("audits").put(rec, k);
+      tx.oncomplete = res;
+      tx.onerror = () => rej(tx.error);
+    });
+    return rec;
+  }
+  window.pcmAudit = { parse: parseAudit, get: auditGet, save: auditSave, key: clientKey };
+
+  // ---- rows -> client report ----
+  const cleanName = (s) => String(s || "")
+    .replace(/https?:\/\/\S+/g, "")
+    .replace(CODE_RE, "").replace(/^\s*[|:\-–—]\s*/, "")
+    .replace(/\[[A-Z]{3}\d{2}\]/g, "") // [SEP26]
+    .replace(/[✓✔]/g, "")
+    .replace(/\s*[|]\s*$/, "").replace(/\s{2,}/g, " ").trim();
+  const firstSentences = (s, max) => {
+    const t = String(s || "").replace(/\s+/g, " ").trim();
+    if (t.length <= max) return t;
+    const cut = t.slice(0, max);
+    const end = Math.max(cut.lastIndexOf(". "), cut.lastIndexOf("! "), cut.lastIndexOf("? "));
+    return (end > 60 ? cut.slice(0, end + 1) : cut + "…");
+  };
+  const IN_PROGRESS_RE = /progress|review|qa|testing|waiting|blocked|doing|started/i;
+  function buildClientReport(rows, audits) {
+    // Drop internal work; remember each main row so no-code subtasks can join it.
+    const kept = [];
+    let main = null;
+    for (const t of rows) {
+      if (!t.isSubtask) main = t;
+      if (INTERNAL_RE.test(t.name || "") || (main && INTERNAL_RE.test(main.name || ""))) continue;
+      kept.push({ t, main: t.isSubtask ? main : null });
+    }
+    // A main task with no code whose subtasks carry codes is a container
+    // ("Acme - SEO - 2026-09 Sep"): its subtasks report on their own.
+    const hasCode = (t) => CODE_RE.test(t.name || "");
+    const containers = new Set();
+    for (const k of kept) if (k.main && !hasCode(k.main) && hasCode(k.t)) containers.add(String(k.main.id));
+    const byClient = new Map();
+    for (const { t, main: m } of kept) {
+      if (!t.isSubtask && containers.has(String(t.id))) continue;
+      const client = t.client || (m && m.client) || "Other";
+      if (!byClient.has(client)) byClient.set(client, new Map());
+      const groups = byClient.get(client);
+      const code = (String(t.name || "").match(CODE_RE) || [])[0];
+      const key = code ? "code:" + baseCode(code)
+        : (t.isSubtask && m && !containers.has(String(m.id))) ? ((String(m.name || "").match(CODE_RE) || [])[0] ? "code:" + baseCode(m.name.match(CODE_RE)[0]) : "task:" + m.id)
+        : "task:" + t.id;
+      if (!groups.has(key)) groups.set(key, { key, code: key.startsWith("code:") ? key.slice(5) : "", tasks: [] });
+      groups.get(key).tasks.push(t);
+    }
+    const out = [];
+    for (const [client, groups] of byClient) {
+      const audit = audits.get(clientKey(client)) || null;
+      const items = [];
+      for (const g of groups.values()) {
+        const a = g.code && audit && audit.items ? (audit.items[g.code] || null) : null;
+        const lead = g.tasks.find((x) => !x.isSubtask) || g.tasks[0];
+        const doneN = g.tasks.filter((x) => x.done).length;
+        const status = doneN === g.tasks.length ? "Completed"
+          : (doneN > 0 || g.tasks.some((x) => IN_PROGRESS_RE.test(x.status || ""))) ? "In progress" : "Planned";
+        const dates = g.tasks.map((x) => Number(x.dueDateMs) || 0).filter(Boolean).sort((x, y) => x - y);
+        items.push({
+          title: (a && a.title) || cleanName(lead.name) || "Task",
+          meaning: (a && a.meaning) || firstSentences(cleanInfo(lead.info).replace(/\nWhy: /, " "), 280),
+          where: (a && a.where) || "",
+          status,
+          progress: g.tasks.length > 1 ? doneN + " of " + g.tasks.length + " steps done" : "",
+          dateMs: status === "Completed" ? dates[dates.length - 1] || null : dates[0] || null,
+          steps: g.tasks.length > 1 ? g.tasks.map((x) => ({ name: cleanName(x.name), done: !!x.done })).filter((s) => s.name) : [],
+          fromAudit: !!a,
+        });
+      }
+      const rank = { Completed: 0, "In progress": 1, Planned: 2 };
+      items.sort((x, y) => rank[x.status] - rank[y.status] || (x.dateMs || 0) - (y.dateMs || 0));
+      out.push({ client, audit, items });
+    }
+    return out;
+  }
+  const dayLabel = (ms) => (ms ? new Date(ms).toLocaleDateString([], { day: "numeric", month: "short", year: "numeric" }) : "");
+  const clientName = (c) => String(c || "").replace(/[^\p{L}\p{N}&'().,\- ]/gu, "").replace(/\s+SEO$/i, "").trim() || c;
+  function rangeLabel(rows) {
+    const ds = rows.map((t) => Number(t.dueDateMs) || 0).filter(Boolean).sort((a, b) => a - b);
+    if (!ds.length) return "";
+    const f = (ms) => new Date(ms).toLocaleDateString([], { day: "numeric", month: "short" });
+    const y = new Date(ds[ds.length - 1]).getFullYear();
+    return ds.length === 1 || f(ds[0]) === f(ds[ds.length - 1]) ? f(ds[0]) + " " + y : f(ds[0]) + " - " + f(ds[ds.length - 1]) + " " + y;
+  }
+  const summaryOf = (items) => {
+    const n = (s) => items.filter((i) => i.status === s).length;
+    return [n("Completed") + " completed", n("In progress") + " in progress", n("Planned") + " planned"].join(" · ");
+  };
+  function crMatrix(report) {
+    const multi = report.length > 1;
+    const head = (multi ? ["Client"] : []).concat(["Work item", "What this means", "Where", "Status", "Date"]);
+    const out = [head];
+    for (const sec of report) for (const i of sec.items) {
+      out.push((multi ? [clientName(sec.client)] : []).concat([
+        i.title, i.meaning, i.where, i.status + (i.progress && i.status !== "Completed" ? " (" + i.progress + ")" : ""), dayLabel(i.dateMs),
+      ]));
+    }
+    return out;
+  }
+  function crHtmlTable(m, title, subtitle) {
+    const rows = m.map((r, i) => "<tr>" + r.map((c) => i
+      ? '<td style="vertical-align:top">' + esc(c) + "</td>"
+      : '<td style="background:#4a86e8;color:#ffffff;font-weight:bold">' + esc(c) + "</td>").join("") + "</tr>").join("");
+    return '<html><head><meta charset="utf-8"><title>' + esc(title) + "</title></head><body>" +
+      "<h2>" + esc(title) + "</h2><p>" + esc(subtitle) + "</p>" +
+      '<table border="1" cellspacing="0" cellpadding="5"><colgroup><col style="width:260px"><col style="width:460px"><col style="width:220px"></colgroup>' + rows + "</table></body></html>";
+  }
+  function crDocHtml(report, title) {
+    const p = ['<html><head><meta charset="utf-8"><title>' + esc(title) + "</title></head><body>", "<h1>" + esc(title) + "</h1>"];
+    for (const sec of report) {
+      if (report.length > 1) p.push("<h1>" + esc(clientName(sec.client)) + "</h1>");
+      p.push('<p style="color:#666666">' + esc(summaryOf(sec.items)) + "</p>");
+      for (const status of ["Completed", "In progress", "Planned"]) {
+        const list = sec.items.filter((i) => i.status === status);
+        if (!list.length) continue;
+        p.push("<h2>" + esc(status) + "</h2>");
+        for (const i of list) {
+          p.push("<h3>" + esc(i.title) + "</h3>");
+          const meta = [i.progress, dayLabel(i.dateMs)].filter(Boolean).join(" · ");
+          if (meta) p.push('<p style="color:#666666">' + esc(meta) + "</p>");
+          if (i.meaning) p.push("<p>" + esc(i.meaning) + "</p>");
+          if (i.where) p.push("<p><b>Where:</b> " + esc(i.where) + "</p>");
+          if (i.steps.length) p.push("<ul>" + i.steps.map((s) => "<li>" + (s.done ? "&#10003; " : "") + esc(s.name) + "</li>").join("") + "</ul>");
+        }
+      }
+    }
+    p.push("</body></html>");
+    return p.join("");
+  }
+  function crMarkdown(report, title) {
+    const out = ["# " + title, ""];
+    for (const sec of report) {
+      if (report.length > 1) out.push("# " + clientName(sec.client), "");
+      out.push("_" + summaryOf(sec.items) + "_", "");
+      for (const status of ["Completed", "In progress", "Planned"]) {
+        const list = sec.items.filter((i) => i.status === status);
+        if (!list.length) continue;
+        out.push("## " + status, "");
+        for (const i of list) {
+          out.push("### " + i.title);
+          const meta = [i.progress, dayLabel(i.dateMs)].filter(Boolean).join(" · ");
+          if (meta) out.push("_" + meta + "_");
+          if (i.meaning) out.push("", i.meaning);
+          if (i.where) out.push("", "**Where:** " + i.where);
+          if (i.steps.length) { out.push(""); for (const s of i.steps) out.push("- " + (s.done ? "[x] " : "[ ] ") + s.name); }
+          out.push("");
+        }
+      }
+    }
+    return out.join("\n").replace(/\n{3,}/g, "\n\n").trim() + "\n";
+  }
+  PCM.clientReport = { build: buildClientReport, matrix: crMatrix, markdown: crMarkdown, doc: crDocHtml, cleanName, parseAudit };
+
   function download(name, mime, text) {
     const url = URL.createObjectURL(new Blob([text], { type: mime }));
     const a = document.createElement("a");
@@ -324,17 +582,26 @@
       }
     }
     const out = [];
-    for (const t of top) {
+    const emitted = new Set();
+    // Depth-first, so a subtask's own subtasks (ACT-025 under the monthly task,
+    // ACT-025.S1-S3 under ACT-025) follow it instead of being dropped.
+    const emit = (t, client) => {
+      const id = String(t.id);
+      if (emitted.has(id)) return;
+      emitted.add(id);
       out.push(t);
-      const listed = new Set((kids.get(String(t.id)) || []).map((k) => String(k.id)));
-      for (const k of kids.get(String(t.id)) || []) out.push(k);
+      for (const k of kids.get(id) || []) emit(k, client || t.client);
       // Subtasks that weren't in the view get added under their parent too.
-      for (const s of subsOf[String(t.id)] || []) {
-        if (listed.has(String(s.id)) || byId.has(String(s.id))) continue;
+      for (const s of subsOf[id] || []) {
+        if (byId.has(String(s.id)) || emitted.has(String(s.id))) continue;
         const d = detailOf[String(s.id)] || null; // subtasks need their own fetch for the description
-        out.push({ ...s, ...(d || {}), info: (d && d.description) || s.description || "", isSubtask: true, client: t.client });
+        emitted.add(String(s.id));
+        out.push({ ...s, ...(d || {}), info: (d && d.description) || s.description || "", isSubtask: true, client: t.client || client });
       }
-    }
+    };
+    for (const t of top) emit(t, t.client);
+    // Anything whose parent chain never reached a top row still gets exported.
+    for (const t of rows) if (!emitted.has(String(t.id))) emit({ ...t, isSubtask: false }, t.client);
     return out;
   }
 
@@ -373,6 +640,101 @@
     };
     const subs = mkOpt("Include subtasks", true);
     const share = mkOpt("Google: anyone with the link can view", true);
+    let crOn = false;
+    try { crOn = localStorage.getItem("pcm.clientReport") === "1"; } catch (e) {}
+    const cr = mkOpt("Client report (plain language, for the client)", crOn);
+    cr.parentElement.title = "Leaves out internal work (Extra Task, meetings), turns task codes into the audit's plain-language titles and explanations, and rolls subtasks into one line per piece of work.";
+    const crBox = document.createElement("div");
+    crBox.className = "xp-cr";
+    menu.appendChild(crBox);
+    const picker = document.createElement("input");
+    picker.type = "file"; picker.accept = ".html,.htm"; picker.hidden = true;
+    menu.appendChild(picker);
+    // Clients in this view (internal-only rows don't count).
+    const viewClients = () => {
+      const d = getData() || { rows: [] };
+      return [...new Set(d.rows.filter((t) => !INTERNAL_RE.test(t.name || "")).map((t) => t.client).filter(Boolean))];
+    };
+    let pickFor = "";
+    // A client report is for ONE client (a report with every client's work in it
+    // can't be sent to any of them). "All clients" stays available for internal use.
+    const ALL = "__all__";
+    let forClient = "";
+    const paintCr = async () => {
+      crBox.hidden = !cr.checked;
+      if (!cr.checked) return;
+      crBox.textContent = "";
+      const clients = viewClients().sort((x, y) => clientName(x).localeCompare(clientName(y)));
+      if (!clients.length) { const r = document.createElement("div"); r.className = "xp-cr-h"; r.textContent = "No client tasks in this view."; crBox.appendChild(r); return; }
+      const have = new Map();
+      for (const c of clients) have.set(c, await auditGet(c));
+      if (!forClient || (forClient !== ALL && !clients.includes(forClient))) {
+        let last = "";
+        try { last = localStorage.getItem("pcm.clientReportFor") || ""; } catch (e) {}
+        forClient = clients.find((c) => clientKey(c) === last) || clients.find((c) => have.get(c)) || clients[0];
+      }
+      const row = document.createElement("div");
+      row.className = "xp-cr-row";
+      const lab = document.createElement("span");
+      lab.textContent = "Report for";
+      const sel = document.createElement("select");
+      sel.className = "xp-cr-sel";
+      for (const c of clients) {
+        const o = document.createElement("option");
+        o.value = c; o.textContent = clientName(c) + (have.get(c) ? " \u2713" : "");
+        sel.appendChild(o);
+      }
+      if (clients.length > 1) { const o = document.createElement("option"); o.value = ALL; o.textContent = "All clients (a section each, internal use)"; sel.appendChild(o); }
+      sel.value = forClient;
+      sel.onchange = () => {
+        forClient = sel.value;
+        try { if (forClient !== ALL) localStorage.setItem("pcm.clientReportFor", clientKey(forClient)); } catch (e) {}
+        paintCr();
+      };
+      row.append(lab, sel);
+      crBox.appendChild(row);
+      const auditRow = (c) => {
+        const a = have.get(c);
+        const r = document.createElement("div");
+        r.className = "xp-cr-row";
+        const n = document.createElement("span");
+        n.className = "n";
+        const st = document.createElement("span");
+        st.className = a ? "ok" : "no";
+        st.textContent = (forClient === ALL ? clientName(c) + ": " : "Audit: ") + (a ? "\u2713 " + a.fileName : "none yet (optional)");
+        st.title = a ? a.fileName + " \u00b7 " + (a.count || Object.keys(a.items || {}).length) + " items \u00b7 saved " + new Date(a.savedAt).toLocaleDateString()
+          : "Optional. Without it the report still hides codes and internal tasks, but uses the task names.";
+        n.appendChild(st);
+        const b = document.createElement("button");
+        b.type = "button";
+        b.textContent = a ? "Change" : "Attach";
+        b.onclick = () => { pickFor = c; picker.click(); };
+        r.append(n, b);
+        crBox.appendChild(r);
+      };
+      if (forClient === ALL) clients.slice(0, 8).forEach(auditRow);
+      else auditRow(forClient);
+      const h = document.createElement("div");
+      h.className = "xp-cr-h";
+      h.textContent = forClient === ALL
+        ? "Every client in one report, each in its own section. Don't send this one to a client."
+        : "Only " + clientName(forClient) + "'s work goes in. Internal tasks are left out and task codes become plain language from the audit.";
+      crBox.appendChild(h);
+    };
+    picker.onchange = async () => {
+      const f = picker.files && picker.files[0];
+      picker.value = "";
+      if (!f || !pickFor) return;
+      msg.className = "xp-msg"; msg.textContent = "Reading " + f.name + "\u2026";
+      try {
+        const parsed = parseAudit(await f.text());
+        if (!parsed.count) throw new Error("No task codes (like ACT-054) found in " + f.name + ". Is it the client's audit file?");
+        await auditSave(pickFor, f.name, parsed);
+        msg.textContent = "Saved for " + clientName(pickFor) + ": " + parsed.count + " items read from the audit.";
+      } catch (e) { msg.className = "xp-msg err"; msg.textContent = String((e && e.message) || e); }
+      paintCr();
+    };
+    cr.onchange = () => { try { localStorage.setItem("pcm.clientReport", cr.checked ? "1" : "0"); } catch (e) {} paintCr(); };
     menu.appendChild(Object.assign(document.createElement("div"), { className: "xp-sep" }));
     const msg = document.createElement("div");
     msg.className = "xp-msg";
@@ -387,6 +749,42 @@
         if (!d.rows.length) throw new Error("This view has no tasks (" + (d.title || "current view") + "), so there is nothing to export.");
         let rows = d.rows.slice();
         rows = await withSubtasks(rows, note, subs.checked);
+        if (cr.checked) {
+          // One client's report: only that client's rows go in.
+          if (forClient && forClient !== ALL) rows = rows.filter((t) => clientKey(t.client) === clientKey(forClient));
+          const audits = new Map();
+          for (const c of new Set(rows.map((t) => t.client).filter(Boolean))) { const a = await auditGet(c); if (a) audits.set(clientKey(c), a); }
+          const report = buildClientReport(rows, audits);
+          if (!report.some((sec) => sec.items.length)) throw new Error("Nothing to report: every task in this view is internal work (like the Extra Task).");
+          const who = report.length === 1 ? clientName(report[0].client) : "Clients";
+          // Range from the reported work only (not the Extra Task or a monthly container).
+          const span = rangeLabel(report.flatMap((sec) => sec.items).map((i) => ({ dueDateMs: i.dateMs })));
+          const title = who + " \u00b7 Work report" + (span ? " \u00b7 " + span : "");
+          const m = crMatrix(report);
+          const summary = report.map((sec) => (report.length > 1 ? clientName(sec.client) + ": " : "") + summaryOf(sec.items)).join("  |  ");
+          const noAudit = report.filter((sec) => !sec.audit).map((sec) => clientName(sec.client));
+          const file = safeName(who + " work report") + "_" + new Date().toISOString().slice(0, 10);
+          // Title + summary above the grid in the spreadsheet formats.
+          const lead = [[title], [summary], []];
+          const tail = noAudit.length ? "  (No audit for " + noAudit.join(", ") + ": those lines use the task names.)" : "";
+          if (kind === "csv") { download(file + ".csv", "text/csv;charset=utf-8", "\ufeff" + toCsv(lead.concat(m))); note("Saved " + file + ".csv" + tail); }
+          else if (kind === "xls") { download(file + ".xls", "application/vnd.ms-excel", crHtmlTable(m, title, summary)); note("Saved " + file + ".xls (opens in Excel)" + tail); }
+          else if (kind === "md") {
+            const text = crMarkdown(report, title);
+            download(file + ".md", "text/markdown;charset=utf-8", text);
+            try { await navigator.clipboard.writeText(text); note("Saved " + file + ".md and copied to the clipboard" + tail); } catch (e) { note("Saved " + file + ".md" + tail); }
+          } else {
+            note("Creating in Google Drive\u2026");
+            const res = await chrome.runtime.sendMessage({ type: "EXPORT_TO_GOOGLE", kind, name: file, share: share.checked, html: crDocHtml(report, title), csv: toCsv(lead.concat(m)) });
+            if (!res || !res.ok) throw new Error((res && (res.error || res.reason)) || "Google export failed");
+            note("Opening\u2026" + tail);
+            chrome.tabs.create({ url: res.url }).catch(() => {});
+            if (!tail) setTimeout(close, 700);
+          }
+          buttons.forEach((b) => (b.disabled = false));
+          if (item) item.blur();
+          return;
+        }
         const m = toMatrix(rows);
         const title = d.title || "tasks";
         const file = safeName(title) + "_" + new Date().toISOString().slice(0, 10);
@@ -426,6 +824,7 @@
       menu.appendChild(b);
     }
     menu.appendChild(msg);
+    paintCr();
   }
 
   // Pages call this with their own "what's on screen right now" function.

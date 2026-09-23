@@ -72,8 +72,32 @@ async function isRunningFolder(handle) {
   }
 }
 
+// One-click updates need the File System Access API. Chrome, Edge, Opera,
+// Vivaldi and Arc have it. Brave ships it switched off (a flag an extension
+// can't change, but can open for the user); a work/school policy can also block
+// it, which only shows up as a refusal when the picker is called.
+const canPickFolder = typeof window.showDirectoryPicker === "function";
+const isBrave = !!navigator.brave;
+const BRAVE_FLAG_URL = "chrome://flags/#file-system-access-api";
+function noPickerMessage() {
+  if (isBrave) {
+    return "Brave has folder access turned off, so one-click updates need one setting first. Click \"Open Brave setting\", choose Enabled, then click Relaunch at the bottom of that page. After Brave restarts, come back here and click Install.";
+  }
+  return "This browser doesn't let extensions write to a folder, so one-click updates can't work here. Use \"Download the zip instead\" below: unzip it over this extension's folder, then click Reload on this extension in the extensions page.";
+}
+function blockedByPolicyMessage() {
+  return "This computer's settings (often set by a work or school IT team) block folder access, so one-click updates can't work here. Use \"Download the zip instead\" below: unzip it over this extension's folder, then click Reload on this extension in the extensions page.";
+}
+
 async function pickFolder() {
-  const handle = await window.showDirectoryPicker({ id: "pcm-extension-folder", mode: "readwrite", startIn: "downloads" });
+  if (!canPickFolder) throw new Error(noPickerMessage());
+  let handle;
+  try {
+    handle = await window.showDirectoryPicker({ id: "pcm-extension-folder", mode: "readwrite", startIn: "downloads" });
+  } catch (e) {
+    if (e && (e.name === "SecurityError" || e.name === "NotAllowedError")) throw new Error(blockedByPolicyMessage());
+    throw e;
+  }
   if (!(await ensurePermission(handle))) throw new Error("Chrome didn't get permission to edit that folder.");
   if (!(await isRunningFolder(handle))) {
     throw new Error("That isn't the folder this extension runs from. In chrome://extensions open Details on this extension; the \"Source\" line shows the right folder.");
@@ -91,6 +115,12 @@ async function rememberedFolder() {
 }
 
 async function showFolderState() {
+  if (!canPickFolder) {
+    $("folderLine").textContent = noPickerMessage();
+    $("pickBtn").hidden = true;
+    $("braveBtn").hidden = !isBrave;
+    return;
+  }
   const handle = await kvGet("extDir").catch(() => null);
   $("folderLine").textContent = handle
     ? "One-click updates: on (folder “" + handle.name + "”)."
@@ -258,6 +288,9 @@ $("versBtn").onclick = () => {
 };
 
 $("installBtn").onclick = () => install();
+$("braveBtn").onclick = () => {
+  chrome.tabs.create({ url: BRAVE_FLAG_URL }).catch(() => say("Couldn't open it. Type brave://flags/#file-system-access-api in the address bar instead.", "err"));
+};
 $("pickBtn").onclick = async () => {
   busy(true);
   try {
