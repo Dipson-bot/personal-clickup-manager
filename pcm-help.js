@@ -162,6 +162,55 @@
     if (area === "local" && (ch.setupHidden || ch.clickupEnc || ch.driveLastSync || ch.settings)) soon();
   });
 
+  // ---- floating tracker button (for the "Tracking now" strips) ----
+  // Hidden when the setting is off, the browser can't float windows, or the
+  // tracker is already floating. A small "New" tag for the first 3 views.
+  const floatInfo = { on: true, open: false, seen: 0 };
+  const floatCss = document.createElement("style");
+  floatCss.textContent = `
+    .pcm-float { flex: none; display: inline-flex; align-items: center; gap: 4px; font: inherit; font-size: 11.5px; padding: 3px 8px; border-radius: 7px;
+      border: 1px solid var(--border); background: var(--card, transparent); color: var(--text); cursor: pointer; white-space: nowrap; }
+    .pcm-float:hover { border-color: var(--indigo, #6366f1); color: var(--indigo, #6366f1); }
+    .pcm-float .new { font-size: 9.5px; font-weight: 700; letter-spacing: .03em; padding: 1px 5px; border-radius: 999px; background: var(--indigo, #6366f1); color: #fff; }
+  `;
+  document.head.appendChild(floatCss);
+  const floatSupported = "documentPictureInPicture" in window;
+  chrome.storage.local.get(["settings", "floatOpen", "floatHintSeen"]).then((g) => {
+    floatInfo.on = !(g.settings && g.settings.floatTracker === false);
+    floatInfo.open = !!g.floatOpen;
+    floatInfo.seen = Number(g.floatHintSeen) || 0;
+    document.querySelectorAll(".pcm-float").forEach((b) => { b.hidden = !floatInfo.on || floatInfo.open; });
+  }).catch(() => {});
+  chrome.storage.onChanged.addListener((ch, area) => {
+    if (area !== "local") return;
+    if (ch.settings) floatInfo.on = !(ch.settings.newValue && ch.settings.newValue.floatTracker === false);
+    if (ch.floatOpen) floatInfo.open = !!ch.floatOpen.newValue;
+    if (ch.settings || ch.floatOpen) document.querySelectorAll(".pcm-float").forEach((b) => { b.hidden = !floatInfo.on || floatInfo.open; });
+  });
+  function openFloat() {
+    chrome.storage.local.set({ floatHintSeen: 99 }).catch(() => {});
+    chrome.runtime.sendMessage({ type: "FLOAT_TRACKER_OPEN" }, () => void chrome.runtime.lastError);
+  }
+  function floatButton() {
+    if (!floatSupported) return null;
+    const b = document.createElement("button");
+    b.type = "button";
+    b.className = "pcm-float";
+    b.title = "Float this tracker over all your apps, so you always see the time against the estimate";
+    b.textContent = "⧉ Float";
+    if (floatInfo.seen < 3) {
+      const n = document.createElement("span");
+      n.className = "new";
+      n.textContent = "NEW";
+      b.appendChild(n);
+      floatInfo.seen++;
+      chrome.storage.local.set({ floatHintSeen: floatInfo.seen }).catch(() => {});
+    }
+    b.hidden = !floatInfo.on || floatInfo.open;
+    b.onclick = (e) => { e.stopPropagation(); openFloat(); };
+    return b;
+  }
+
   // ---- diagnostics ----
   async function copyDiagnostics() {
     const ua = navigator.userAgentData;
@@ -183,5 +232,6 @@
     await navigator.clipboard.writeText(r.text);
     return r.text;
   }
-  window.PcmHelp = { copyDiagnostics, refreshSetup: soon, showSetup: () => chrome.storage.local.set({ setupHidden: false }) };
+  window.PcmHelp = { copyDiagnostics, refreshSetup: soon, showSetup: () => chrome.storage.local.set({ setupHidden: false }),
+    floatButton, openFloat, floatSupported };
 })();

@@ -367,6 +367,28 @@
   .cu-account-actions button.danger:hover { border-color: var(--red); color: var(--red); }
   .opt-coll { }
   .opt-coll.collapsed { display: none; }
+  /* ClickUp setup: grouped settings, one short line each. */
+  .set-sec { margin-top: 20px; }
+  .set-sec > h3 { margin: 0 0 4px; font-size: 12px; font-weight: 700; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); }
+  .set-box { border: 1px solid var(--border); border-radius: 10px; padding: 2px 14px; background: var(--card); }
+  .set-line { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; padding: 9px 0; border-top: 1px solid var(--border); font-size: 13.5px; line-height: 1.4; }
+  .set-box > .set-line:first-child { border-top: 0; }
+  .set-line > label { margin: 0; font-weight: 400; }
+  .set-line input[type="checkbox"] { margin: 0; flex: none; }
+  .set-line input[type="text"], .set-line input[type="time"] { width: 70px; padding: 5px 8px; text-align: center; }
+  .set-line input[type="time"] { width: 120px; }
+  .set-line select { width: auto; min-width: 150px; padding: 5px 8px; }
+  .set-line .grow { flex: 1; min-width: 180px; }
+  .set-line .hint { flex-basis: 100%; margin: -2px 0 0; }
+  .set-line.indent { padding-left: 26px; }
+  .set-line a { color: var(--indigo); }
+  html[data-theme="dark"] .set-line a { color: #a5b4fc; }
+  html[data-theme="dark"] .set-line input[type="time"] { background: var(--bg2); color: var(--text); color-scheme: dark; border-color: var(--border); }
+  .set-line.col { display: block; }
+  .set-line.col textarea { margin-top: 6px; }
+  details.set-more { margin-top: 6px; }
+  details.set-more > summary { cursor: pointer; color: var(--indigo); font-size: 12.5px; }
+  details.set-more > div { margin-top: 6px; font-size: 12.5px; color: var(--muted); line-height: 1.55; }
   .opt-toggle { display: inline-flex; border: 1px solid var(--border); border-radius: 8px; overflow: hidden; }
   .opt-toggle button {
     background: #fff; border: 0; padding: 7px 14px; font-size: 12.5px;
@@ -993,9 +1015,8 @@
       <button type="button" class="pw-toggle" data-target="cuToken" aria-label="Show token" title="Show / hide">👁</button>
     </div>
     <p class="hint" style="margin-top:6px;line-height:1.5;">
-      In ClickUp: click your avatar (top-right) → <b>Settings</b> → <b>Apps</b> → under <b>API Token</b>
-      click <b>Generate</b>, then <b>Copy</b> and paste it here. It's stored obfuscated on this machine
-      (same as your other secrets) and is only ever sent to ClickUp. Revoke it anytime from that same page.
+      In ClickUp: your avatar → <b>Settings</b> → <b>Apps</b> → <b>API Token</b> → <b>Generate</b>, then copy it here.
+      It's only ever sent to ClickUp.
     </p>
     <div class="btns">
       <button class="primary" id="cuSaveToken">Save &amp; connect</button>
@@ -1007,17 +1028,14 @@
       <label style="margin-top:16px;">Workspace <span class="hint">- which ClickUp workspace to read</span></label>
       <select id="cuTeam"></select>
 
-      <label style="margin-top:16px;">Admin API token <span class="hint">- optional, for the Filter Tasks card only</span></label>
+      <label style="margin-top:16px;">Admin API token <span class="hint">- optional, leave blank if unsure</span></label>
       <div class="pw-wrap">
         <input type="password" id="cuAdminToken" autocomplete="off" spellcheck="false" placeholder="pk_... (workspace Owner/Admin)" />
         <button type="button" class="pw-toggle" data-target="cuAdminToken" aria-label="Show admin token" title="Show / hide">👁</button>
       </div>
-      <p class="hint" style="margin-top:6px;line-height:1.5;">
-        Used <b>only</b> to read other members' per-day tracked time in the <b>Filter Tasks</b> card
-        (department / All users views). Your personal token above continues to power today's estimate
-        and the Weekly Totals. A personal API token can't see other users' tracked entries; only a
-        workspace Owner/Admin token can. Leave blank to use your personal token everywhere.
-      </p>
+      <details class="set-more"><summary>What is this for?</summary><div>
+        Only for seeing other people's tracked time in Filter tasks (department and All users views). A personal token
+        can't read teammates' time entries; a workspace Owner or Admin token can. Everything else uses your own token.</div></details>
       <div class="btns" style="margin-top:8px;">
         <button id="cuSaveAdminToken">Save admin token</button>
         <span class="saved" id="cuAdminTokenMsg" style="display:none;"></span>
@@ -1027,204 +1045,111 @@
   </div>
 
   <div class="card cu-needs-config" id="cuTrackCard" style="display:none;">
-    <h2>Tracking settings <span class="hint" style="font-weight:400;">targets, configured tasks, reminders and office hours</span></h2>
+    <h2>Tracking settings</h2>
     <div id="cuSettingsBody" style="display:none;">
       <div class="opt-coll" id="cuAdvBody">
-      <div class="row" style="margin-top:12px;">
-        <div>
-          <label>Daily target (hours)</label>
-          <input type="text" id="cuTarget" inputmode="decimal" placeholder="7" />
-        </div>
-        <div>
-          <label>Nudge me if under target after <span class="hint">- local hour, 0-23</span></label>
-          <input type="text" id="cuNudge" inputmode="numeric" placeholder="15" />
+
+      <div class="set-sec">
+        <h3>Daily goal</h3>
+        <div class="set-box">
+          <div class="set-line"><span class="grow">Daily target</span><input type="text" id="cuTarget" inputmode="decimal" placeholder="7" /> hours</div>
+          <div class="set-line"><span class="grow">Nudge me if I'm under target after</span><input type="text" id="cuNudge" inputmode="numeric" placeholder="15" /> o'clock</div>
+          <div class="set-line"><span class="grow">My workday ends at</span><input type="text" id="cuWorkdayEnd" inputmode="numeric" placeholder="16" /> o'clock</div>
+          <div class="set-line"><input type="checkbox" id="cuBadge" /><label for="cuBadge">Show my progress on the toolbar icon</label></div>
         </div>
       </div>
 
-      <label style="margin-top:14px;">Configured task URL(s) <span class="hint">- one per line (e.g. your "Extra(s) Task(s)", weekly, or multi-day tasks). Each task's total estimate is spread across its working days.</span></label>
-      <textarea id="cuDeadlineUrls" rows="3" placeholder="https://app.clickup.com/t/36162007/86eyrpk3c"></textarea>
-      <p class="hint" style="margin-top:6px;line-height:1.5;">
-        Tasks with a <b>start + due date range</b> are treated as <b>extended</b>: their estimate is
-        divided across the <b>working days (Mon-Fri)</b> in that range, so a Tue→Thu task shows
-        estimate ÷ 3 on each of those days. Tasks with <b>no date range</b> (or a same-day range -
-        e.g. a daily recurring occurrence like the auto-detected Extra(s) Task(s)) contribute their
-        estimate <b>÷ 5 (Mon-Fri) every weekday</b>, so a 7h weekly task = 1h24m per day and daily
-        totals accumulate across the week. A task that has a <b>due date but no start date</b> is
-        treated as <b>single-day</b>: it counts once, in full, on its due date.
-      </p>
-
-      <div class="row" style="margin-top:8px;">
-        <div>
-          <label>Extended task division</label>
-          <select id="cuExtendedMode">
-            <option value="days">All days (start → due)</option>
-            <option value="excl0">Exclude untracked days</option>
-          </select>
-          <p class="hint" style="margin-top:4px;line-height:1.4;">
-            <b>All days</b>: divide the estimate equally across every working day (Mon-Fri) in the
-            range; each day always shows 1/N of the estimate, no matter how many days have passed.
-            <b>Exclude untracked days</b>: skip the days where you tracked 0 minutes and re-divide
-            the estimate onto the remaining (tracked) days. Default: All days (exclude OFF).
-          </p>
-        </div>
-        <div>
-          <label>Weekly totals - show up to</label>
-          <select id="cuWeeklyTo">
-            <option value="today">Today (Mon → today)</option>
-            <option value="friday">Friday (full week)</option>
-          </select>
-          <p class="hint" style="margin-top:4px;line-height:1.4;">
-            The Weekly Totals card accumulates the estimate + tracked time from Monday up to
-            either today or the full week through Friday.
-          </p>
+      <div class="set-sec">
+        <h3>Reminders</h3>
+        <div class="set-box">
+          <div class="set-line"><input type="checkbox" id="cuNotify" /><label for="cuNotify">Desktop reminders when I'm behind, when I reach my target, and at the end of the day</label></div>
+          <div class="set-line indent"><input type="checkbox" id="cuHalfway" /><label for="cuHalfway">Also at halfway</label></div>
+          <div class="set-line indent"><input type="checkbox" id="cuAlmostThere" /><label for="cuAlmostThere">Also when almost there</label></div>
+          <div class="set-line" id="cuRunningThresholdRow"><input type="checkbox" id="cuRunningNotify" /><label for="cuRunningNotify">Warn me</label><input type="text" id="cuRunningThreshold" inputmode="numeric" placeholder="10" /><span>minutes before a running task reaches its estimate</span></div>
+          <div class="set-line"><input type="checkbox" id="cuIdleNotify" /><label for="cuIdleNotify">Remind me when no timer is running, every</label><input type="text" id="cuIdleRepeat" inputmode="numeric" placeholder="60" /><span>minutes</span></div>
+          <div class="set-line" id="cuIdleRow"><span class="grow">Office hours</span><input type="text" id="cuIdleStart" inputmode="numeric" placeholder="8" /><span>to</span><input type="text" id="cuIdleEnd" inputmode="numeric" placeholder="17" /><span>o'clock</span>
+            <p class="hint" id="officeHoursNote">All reminders stay quiet outside these hours and at weekends.</p></div>
+          <div class="set-line"><input type="checkbox" id="cuAwayNotify" /><label for="cuAwayNotify">Offer to remove time when I've been away for</label><input type="text" id="cuAwayMin" inputmode="numeric" placeholder="15" /><span>minutes or more</span></div>
+          <div class="set-line"><input type="checkbox" id="cuWrapUp" /><label for="cuWrapUp">End-of-day wrap-up at</label><input type="time" id="cuWrapUpTime" /><a href="wrapup.html" target="_blank" rel="noopener">Open now</a>
+            <p class="hint">Move leftover tasks to tomorrow and copy a standup for Slack.</p></div>
         </div>
       </div>
 
-      <div class="row" style="margin-top:12px;">
-        <div>
-          <label>Client tag source</label>
-          <select id="cuClientLevel">
-            <option value="auto">Auto-detect</option>
-            <option value="field">Client Name field</option>
-            <option value="space">Space name</option>
-            <option value="folder">Folder name</option>
-            <option value="list">List name</option>
-          </select>
-          <p class="hint" style="margin-top:4px;line-height:1.4;">
-            Which source names the <b>client</b> shown on each task's tag (and in the Client filter).
-            <b>Auto-detect</b>: use the task's <b>Client Name custom field</b> when it has one (e.g.
-            "Acme Plumbing"), otherwise fall back to the Folder, then Space, then List name.
-            <b>Client Name field</b> forces the custom field; the others force a hierarchy level.
-            Changes apply immediately - no ClickUp refresh needed.
-          </p>
+      <div class="set-sec">
+        <h3>Celebrations</h3>
+        <div class="set-box">
+          <div class="set-line"><input type="checkbox" id="celebrations" /><label for="celebrations">Fireworks when I hit a milestone, a rain cloud when the day falls short</label></div>
+          <div class="set-line indent"><input type="checkbox" id="celebrationWindow" /><label for="celebrationWindow">Also as a small pop-up card when no extension page is open</label></div>
+          <div class="set-line indent"><span class="grow">Show for</span>
+            <select id="celebrationSeconds">
+              <option value="2">2 seconds</option>
+              <option value="3">3 seconds</option>
+              <option value="5">5 seconds</option>
+              <option value="8">8 seconds</option>
+              <option value="10">10 seconds</option>
+            </select></div>
+          <div class="set-line indent">
+            <button type="button" id="celebrateTryHappy" title="Plays the fireworks here, and shows the notification and the pop-up window">Preview: target reached</button>
+            <button type="button" id="celebrateTrySad" title="Plays the rain cloud here, and shows the notification and the pop-up window">Preview: target missed</button>
+          </div>
         </div>
       </div>
 
-      <div class="row" style="margin-top:12px;">
-        <div>
-          <label>Workday ends at <span class="hint">- local hour, 0-23</span></label>
-          <input type="text" id="cuWorkdayEnd" inputmode="numeric" placeholder="16" />
+      <div class="set-sec">
+        <h3>Weeks and syncing</h3>
+        <div class="set-box">
+          <div class="set-line"><span class="grow">A week runs</span>
+            <select id="cuWeekMode">
+              <option value="sun-sat">Sunday to Saturday</option>
+              <option value="mon-sun">Monday to Sunday</option>
+              <option value="mon-fri">Monday to Friday</option>
+              <option value="sun-thu">Sunday to Thursday</option>
+            </select></div>
+          <div class="set-line"><span class="grow">Weekly totals count up to</span>
+            <select id="cuWeeklyTo">
+              <option value="today">Today</option>
+              <option value="friday">Friday (full week)</option>
+            </select></div>
+          <div class="set-line"><span class="grow">Sync with ClickUp every</span>
+            <select id="cuSyncMin">
+              <option value="2">2 minutes</option>
+              <option value="3">3 minutes</option>
+              <option value="5">5 minutes (default)</option>
+              <option value="10">10 minutes</option>
+              <option value="15">15 minutes</option>
+              <option value="30">30 minutes</option>
+            </select>
+            <p class="hint">Faster syncing uses more of ClickUp's request limit; 5 minutes suits most people.</p></div>
         </div>
       </div>
 
-      <div class="checkbox">
-        <input type="checkbox" id="cuBadge" />
-        <label for="cuBadge" style="margin:0;font-weight:400;">Show progress on the toolbar badge <span class="hint">- a login that "needs you" still takes priority</span></label>
-      </div>
-      <div class="checkbox">
-        <input type="checkbox" id="cuNotify" />
-        <label for="cuNotify" style="margin:0;font-weight:400;">Desktop reminders <span class="hint">- progressive: at 50%, ~86%, target reached, under-target nudge, and end-of-day warning</span></label>
-      </div>
-      <div class="checkbox">
-        <input type="checkbox" id="celebrations" />
-        <label for="celebrations" style="margin:0;font-weight:400;">Celebration animations <span class="hint">- fireworks when you reach a milestone, a little rain cloud when the day falls short</span></label>
-      </div>
-      <div class="checkbox" style="margin-left:22px;">
-        <input type="checkbox" id="celebrationWindow" />
-        <label for="celebrationWindow" style="margin:0;font-weight:400;">Pop up a small animation card when no extension page is open <span class="hint">- bottom-right corner, doesn't take the keyboard</span></label>
-      </div>
-      <div class="checkbox" style="margin-left:22px;align-items:center;">
-        <label for="celebrationSeconds" style="margin:0;font-weight:400;">Show for</label>
-        <select id="celebrationSeconds" style="width:auto;padding:3px 6px;">
-          <option value="2">2 seconds</option>
-          <option value="3">3 seconds</option>
-          <option value="5">5 seconds</option>
-          <option value="8">8 seconds</option>
-          <option value="10">10 seconds</option>
-        </select>
-      </div>
-      <div class="btns" style="margin:4px 0 8px 22px;">
-        <button type="button" id="celebrateTryHappy" title="Plays the fireworks here, and shows the notification and the pop-up window">Preview: target reached</button>
-        <button type="button" id="celebrateTrySad" title="Plays the rain cloud here, and shows the notification and the pop-up window">Preview: target missed</button>
-      </div>
-      <div class="checkbox">
-        <input type="checkbox" id="cuHalfway" />
-        <label for="cuHalfway" style="margin:0;font-weight:400;">Notify at halfway (50% of target)</label>
-      </div>
-      <div class="checkbox">
-        <input type="checkbox" id="cuAlmostThere" />
-        <label for="cuAlmostThere" style="margin:0;font-weight:400;">Notify when "almost there" (~86% of target)</label>
-      </div>
-      <div class="checkbox">
-        <input type="checkbox" id="cuRunningNotify" />
-        <label for="cuRunningNotify" style="margin:0;font-weight:400;">Notify when a running timer nears its task's own estimate <span class="hint">- e.g. "50 of 60 min tracked, wrap up soon" while a ClickUp timer is live on that task</span></label>
-      </div>
-      <div class="row" id="cuRunningThresholdRow" style="margin-top:8px;max-width:260px;">
-        <div>
-          <label>Warn when <span class="hint">- minutes left before that task's estimate is hit</span></label>
-          <input type="text" id="cuRunningThreshold" inputmode="numeric" placeholder="10" />
+      <div class="set-sec">
+        <h3>Tasks and clients</h3>
+        <div class="set-box">
+          <div class="set-line col"><label for="cuDeadlineUrls">Recurring or multi-day tasks <span class="hint">- ClickUp links, one per line</span></label>
+            <textarea id="cuDeadlineUrls" rows="3" placeholder="https://app.clickup.com/t/..."></textarea>
+            <details class="set-more"><summary>How are their estimates split across days?</summary><div>
+              A task with a <b>start and due date</b> has its estimate divided across the working days (Mon-Fri) in that range,
+              so a Tue to Thu task counts a third on each day. A task with <b>no date range</b> (like the weekly Extra Task) counts a
+              fifth of its estimate every weekday. A task with only a <b>due date</b> counts in full on that day.</div></details></div>
+          <div class="set-line"><span class="grow">Split multi-day estimates across</span>
+            <select id="cuExtendedMode">
+              <option value="days">All working days</option>
+              <option value="excl0">Only days I tracked time</option>
+            </select></div>
+          <div class="set-line"><span class="grow">Client name comes from</span>
+            <select id="cuClientLevel">
+              <option value="auto">Auto-detect</option>
+              <option value="field">Client Name field</option>
+              <option value="space">Space name</option>
+              <option value="folder">Folder name</option>
+              <option value="list">List name</option>
+            </select>
+            <p class="hint">Auto-detect uses the task's List name, then the Client Name field, Folder or Space.</p></div>
         </div>
       </div>
 
-      <div class="checkbox">
-        <input type="checkbox" id="cuIdleNotify" />
-        <label for="cuIdleNotify" style="margin:0;font-weight:400;">Remind me if I'm not tracking during office hours <span class="hint">- "Time tracking hasn't started yet. Are you working?" when no ClickUp timer is running on a weekday within the hours below</span></label>
-      </div>
-      <p class="hint" id="officeHoursNote" style="margin:10px 0 0;">These hours govern <b>every</b> ClickUp reminder, not just the one above: halfway, almost there, target reached, "under your daily estimate" and the end-of-day warning all stay silent outside them and at weekends.</p>
-      <div class="row" id="cuIdleRow" style="margin-top:8px;max-width:520px;">
-        <div>
-          <label>Office hours start <span class="hint">- local hour, 0-23</span></label>
-          <input type="text" id="cuIdleStart" inputmode="numeric" placeholder="8" />
-        </div>
-        <div>
-          <label>Office hours end <span class="hint">- local hour, 0-23</span></label>
-          <input type="text" id="cuIdleEnd" inputmode="numeric" placeholder="17" />
-        </div>
-        <div>
-          <label>Re-remind every <span class="hint">- minutes, 5-480</span></label>
-          <input type="text" id="cuIdleRepeat" inputmode="numeric" placeholder="60" />
-        </div>
-      </div>
-
-      <div class="row" style="margin-top:12px;max-width:520px;">
-        <div>
-          <label>A week runs <span class="hint">- used by "Due this week" and "Due next week", by Explore's week view and by the Week column in exports</span></label>
-          <select id="cuWeekMode">
-            <option value="sun-sat">Sunday to Saturday</option>
-            <option value="mon-sun">Monday to Sunday</option>
-            <option value="mon-fri">Monday to Friday</option>
-            <option value="sun-thu">Sunday to Thursday</option>
-          </select>
-        </div>
-      </div>
-
-      <div class="row" style="margin-top:12px;max-width:520px;">
-        <div>
-          <label>Sync with ClickUp every <span class="hint">- reminders are checked on each sync. ClickUp allows about 100 requests a minute and one sync uses roughly 10-40, so 2 minutes is the safe minimum</span></label>
-          <select id="cuSyncMin">
-            <option value="2">2 minutes</option>
-            <option value="3">3 minutes</option>
-            <option value="5">5 minutes (default)</option>
-            <option value="10">10 minutes</option>
-            <option value="15">15 minutes</option>
-            <option value="30">30 minutes</option>
-          </select>
-        </div>
-      </div>
-
-      <div class="checkbox">
-        <input type="checkbox" id="cuAwayNotify" />
-        <label for="cuAwayNotify" style="margin:0;font-weight:400;">Ask me about away time <span class="hint">- if a timer kept running while I was away from the computer (idle or locked), offer to remove that time when I'm back</span></label>
-      </div>
-      <div class="row" style="margin-top:8px;max-width:260px;">
-        <div>
-          <label>Away for at least <span class="hint">- minutes, 5-240</span></label>
-          <input type="text" id="cuAwayMin" inputmode="numeric" placeholder="15" />
-        </div>
-      </div>
-
-      <div class="checkbox">
-        <input type="checkbox" id="cuWrapUp" />
-        <label for="cuWrapUp" style="margin:0;font-weight:400;">End-of-day wrap-up <span class="hint">- weekdays: move leftover tasks to tomorrow and copy a standup for Slack</span> <a href="wrapup.html" target="_blank" rel="noopener">Open now</a></label>
-      </div>
-      <div class="row" style="margin-top:8px;max-width:260px;">
-        <div>
-          <label>Remind me at <span class="hint">- local time</span></label>
-          <input type="time" id="cuWrapUpTime" style="width:100%;" />
-        </div>
-      </div>
-
-      <div class="btns">
+      <div class="btns" style="margin-top:16px;">
         <button class="primary" id="cuSave">Save settings</button>
         <button id="cuRefreshNow">Refresh now</button>
         <span class="saved" id="cuSaveMsg" style="display:none;">Saved ✓</span>
@@ -1236,10 +1161,7 @@
   <div class="card" id="deptCard" style="display:none;">
     <h2>Department Creator</h2>
     <p class="hint" style="margin:0 0 12px;line-height:1.5;">
-      Group ClickUp users into departments (or categories). Then use the
-      <b>Department ▸ User</b> dropdown in the <b>Filter tasks</b> card above to see
-      tasks assigned to a whole department or a single user at once. Search the box
-      below to add users - type <i>Ja</i> to get suggestions like <i>Jack</i>.
+      Group teammates into departments, then pick a department in Filter tasks to see all their tasks at once.
     </p>
     <div class="row">
       <div>
@@ -1781,6 +1703,32 @@
       </span>
     </div>
     <div class="hint" id="optLastSyncLine" style="margin-top:8px;display:none;"></div>
+    <details id="driveWhere" style="margin-top:10px;">
+      <summary style="cursor:pointer;font-size:13px;font-weight:600;">Where is it saved?</summary>
+      <p class="hint" style="margin:8px 0;line-height:1.55;">
+        In your Google Drive's <b>hidden app data</b>: a private area that only this extension can open. It doesn't show up as a folder
+        in My Drive, and nobody you share Drive files with can see it. To check its size or delete it: open Google Drive settings,
+        go to <b>Manage apps</b>, find this extension (it says "Hidden app data") and use <b>Options &gt; Delete hidden app data</b>.
+      </p>
+      <div class="hint" id="driveFiles" style="line-height:1.7;"></div>
+      <div class="btns" style="margin-top:8px;">
+        <button type="button" id="driveSettingsBtn">Open Google Drive settings</button>
+      </div>
+    </details>
+  </div>
+
+  <div class="card" id="floatCard">
+    <h2>Floating tracker</h2>
+    <p class="hint" style="margin:0 0 10px;line-height:1.5;">A small window that stays on top of every app, showing the task you're tracking, how close it is to the
+      estimate, and a face that goes from sad to happy as you reach it (and grumpy once you go over). Open it with <b>&#10697; Float</b> in the
+      Tracking now bar, or the button below. Chrome needs one click in a small pinned tab to show it.</p>
+    <div class="checkbox" style="margin:0 0 4px;"><input type="checkbox" id="floatTracker" /><label for="floatTracker" style="margin:0;font-weight:400;">Show the Float button</label></div>
+    <div class="checkbox" style="margin:0 0 4px;"><input type="checkbox" id="floatHover" /><label for="floatHover" style="margin:0;font-weight:400;">Show the full view when I point at it <span class="hint">- off: click it to switch</span></label></div>
+    <div class="checkbox" style="margin:0 0 4px;"><input type="checkbox" id="floatToday" /><label for="floatToday" style="margin:0;font-weight:400;">Show today's total</label></div>
+    <div class="btns" style="margin-top:10px;">
+      <button type="button" id="floatNow">Float it now</button>
+    </div>
+    <p class="hint" id="floatUnsupported" style="margin:8px 0 0;display:none;">This browser can't show floating windows. Use Chrome or Edge 116 or newer.</p>
   </div>
 
   <div class="card" id="shortcutsCard">

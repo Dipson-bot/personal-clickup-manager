@@ -2481,6 +2481,8 @@ function renderNowTracking() {
     || /\bextra(?:\(s\)|s)?\s+task(?:\(s\)|s)?\b/i.test(String(run.taskName || run.name || "")));
   if (isExtra) top.append(dot, lab, nm, time, stop);
   else top.append(dot, lab, nm, time, stop, done);
+  const fl = window.PcmHelp && window.PcmHelp.floatButton();
+  if (fl) top.insertBefore(fl, stop);
   const noteRow = document.createElement("div");
   noteRow.className = "cu-now-noterow";
   noteRow.append(note, saved);

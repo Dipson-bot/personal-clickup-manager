@@ -16,6 +16,8 @@ import {
   pullFromDrive,
   pushAccountsToDrive,
   pullAccountsFromDrive,
+  listDriveFiles,
+  getDriveAccount,
 } from "./lib-drive.js";
 import { runAllAccounts, runAccountLogin, URLS, GITHUB_KEEP_COOKIES } from "./lib-automation.js";
 import { verifyToken, getTeams, fetchTodayEstimate, fetchWeeklySummary, fetchDateRangeEstimate, createTaskCache, fetchTeamMembers, fmtDuration, findExtraTaskByName, parseTaskIdFromUrl, getCurrentTimeEntry, getRunningTaskProgress, startTimer, stopTimer, getTaskById, setTaskStatus, taskUrlFor, clientLabelFromContainer, resolveSpaceNamesFor, taskContainer, cuPriorityName, isTaskDone, getSubtasksOfParent, getTaskTree, getTaskDetail, updateTimeEntry, setTaskDueDate, clearTaskTreeCache, listWorkspaceClients, cuRowAssignees, fetchDoneBetween, getTaskPanel, addTaskComment } from "./lib-clickup.js";
@@ -607,6 +609,8 @@ const DEFAULT_SETTINGS = {
   celebrationSeconds: 3, // how long the animation / pop-up card lasts (1-15)
   // Visual effects (Options > General > Animations and effects).
   fxLiquid: true, fxChart: true, fxCount: true, fxIconRing: true,
+  // Floating tracker (tracker.html): the Float button, full view on hover, today's total.
+  floatTracker: true, floatHover: true, floatToday: true,
   clickupWrapUpTime: "16:45", // local "HH:MM"
   // ---- Departments (Department Creator) ----
   // Each department holds a name + a list of ClickUp users { id, name }. The
@@ -2520,20 +2524,28 @@ async function maybeNotifyClickup(state, { viaAlarm }) {
 async function maybeNotifyRunningTask(cfg) {
   if (!cfg || !cfg.token || !cfg.teamId) return;
   const settings = await getSettings();
-  if (settings.clickupRunningNotify === false) return;
   let entry;
   try {
     entry = await getCurrentTimeEntry(cfg.token, cfg.teamId);
   } catch (e) {
     return; // best-effort - don't let a failed lookup break the rest of the refresh
   }
-  if (!entry) return;
+  if (!entry) { await chrome.storage.local.set({ runningProgress: null }); return; }
   let progress;
   try {
     progress = await getRunningTaskProgress(cfg.token, cfg.teamId, entry.taskId, entry.startMs);
   } catch (e) {
     return;
   }
+  // The floating tracker's bar and face: estimate + time tracked today before this
+  // timer started (the live part is added on the page, second by second).
+  await chrome.storage.local.set({ runningProgress: {
+    taskId: String(entry.taskId), startMs: entry.startMs || 0, taskName: (progress && progress.taskName) || entry.taskName || "",
+    estimateMs: progress ? progress.estimateMs : 0,
+    closedMs: progress ? Math.max(0, progress.trackedMs - Math.max(0, Date.now() - (entry.startMs || Date.now()))) : 0,
+    at: Date.now(),
+  } });
+  if (settings.clickupRunningNotify === false) return;
   if (!progress) return; // task has no estimate set - nothing to compare against
   const { clickupNotified } = await chrome.storage.local.get("clickupNotified");
   const seen = clickupNotified && typeof clickupNotified === "object" ? clickupNotified : {};
@@ -5364,6 +5376,48 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         } catch (e) {
           sendResponse({ ok: false, error: String(e && e.message ? e.message : e) });
         }
+        break;
+      }
+      case "FLOAT_TRACKER_OPEN": {
+        // The floating tracker lives in a small pinned tab (tracker.html): Chrome
+        // only opens an always-on-top window after a click on that page, and
+        // closes it with that page. Reuse the tab when it's already there.
+        try {
+          const url = chrome.runtime.getURL("tracker.html");
+          const [back] = await chrome.tabs.query({ active: true, lastFocusedWindow: true }).catch(() => []);
+          const backId = back && !String(back.url || "").startsWith(url) ? back.id : "";
+          const found = await chrome.tabs.query({ url: url + "*" });
+          if (found[0]) {
+            await chrome.tabs.update(found[0].id, { active: true, url: url + "?back=" + backId });
+            await chrome.windows.update(found[0].windowId, { focused: true }).catch(() => {});
+          } else {
+            await chrome.tabs.create({ url: url + "?back=" + backId, pinned: true, index: 0, active: true });
+          }
+          sendResponse({ ok: true });
+        } catch (e) {
+          sendResponse({ ok: false, error: String(e && e.message ? e.message : e) });
+        }
+        break;
+      }
+      case "DRIVE_FILES": {
+        // Drive Sync card > "Where is it saved?": the files in the hidden
+        // app-data area and the Google account they belong to. No contents.
+        try {
+          const tok = await getValidToken(false);
+          if (!tok) { sendResponse({ ok: false, reason: "signed-out" }); break; }
+          const files = await listDriveFiles(tok);
+          const account = await getDriveAccount().catch(() => "");
+          sendResponse({ ok: true, files, account: account || "" });
+        } catch (e) {
+          sendResponse({ ok: false, error: String(e && e.message ? e.message : e) });
+        }
+        break;
+      }
+      case "TRACKER_PROGRESS": {
+        // The tracker saw a different running task than its numbers: recompute.
+        const cfg = await getClickupConfig().catch(() => null);
+        await maybeNotifyRunningTask(cfg).catch(() => {});
+        sendResponse({ ok: true });
         break;
       }
       case "DIAG_REPORT": {
