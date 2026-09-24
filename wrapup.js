@@ -101,8 +101,9 @@ function toRich(text) {
 }
 const toPlain = (text) => text.replace(LINK_RE, "$2 ($1)");
 
-async function move(t, btn) {
-  const day = nextWorkday();
+async function move(t, btn, dayMs, dayLabel) {
+  const day = dayMs || nextWorkday();
+  t._movedTo = dayLabel || "";
   btn.disabled = true;
   btn.textContent = "Moving…";
   let r;
@@ -159,7 +160,7 @@ function render() {
     if (moved.has(String(t.id))) {
       const ok = document.createElement("span");
       ok.className = "ok";
-      ok.textContent = "Moved to " + label + " ✓";
+      ok.textContent = "Moved to " + (moved.get(String(t.id))._movedTo || label) + " ✓";
       row.append(ok);
     } else {
       const b = document.createElement("button");
@@ -178,6 +179,24 @@ function render() {
     all.disabled = true;
     for (const [t, b] of pending) await move(t, b);
     all.disabled = false;
+  };
+  // Same, to any day the user picks (keeps each task's time of day).
+  const pick = $("moveAllDate"), dateIn = $("moveDate");
+  pick.hidden = pending.length < 1;
+  const tmr = new Date(nextWorkday());
+  dateIn.min = new Date(dayFloor(Date.now()) + 86400000 - new Date().getTimezoneOffset() * 60000).toISOString().slice(0, 10);
+  dateIn.value = new Date(tmr.getTime() - tmr.getTimezoneOffset() * 60000).toISOString().slice(0, 10);
+  pick.onclick = () => { try { dateIn.showPicker(); } catch (e) { dateIn.style.pointerEvents = "auto"; dateIn.focus(); dateIn.click(); } };
+  dateIn.onchange = async () => {
+    if (!dateIn.value) return;
+    const [y, m, d] = dateIn.value.split("-").map(Number);
+    const dayMs = new Date(y, m - 1, d).getTime();
+    const lbl = new Date(dayMs).toLocaleDateString([], { weekday: "short", month: "short", day: "numeric" });
+    pick.disabled = all.disabled = true;
+    pick.textContent = "Moving…";
+    for (const [t, b] of pending) await move(t, b, dayMs, lbl);
+    pick.disabled = all.disabled = false;
+    pick.textContent = "Move all to date…";
   };
 
   if (!standupEdited) $("standup").value = buildStandup();

@@ -1354,7 +1354,33 @@ function markTrk(trk, t) {
   const st = (optClickup && optClickup.state) || null;
   const run = st && st.running;
   const id = t && (t.id != null ? t.id : t.taskId);
-  if (run && id != null && String(run.taskId) === String(id)) trk.classList.add("running");
+  if (run && id != null && String(run.taskId) === String(id)) {
+    trk.classList.add("running");
+    liveTrk(trk, t, st, run, est, fmtDurOpt);
+  }
+}
+// The running task's tracked time is a snapshot from when its list was last built
+// (the week lists are rebuilt about hourly to spare ClickUp's rate limit), so add
+// the time since that snapshot and keep counting here - no extra ClickUp calls.
+function liveTrk(trk, t, st, run, est, fmt) {
+  let at = 0;
+  for (const b of [st, st.todayFilter, st.thisWeek, st.nextWeek]) {
+    if (b && ["tasks", "deadlineTasks", "trackedTasks"].some((k) => Array.isArray(b[k]) && b[k].includes(t))) { at = Number(b.at) || 0; break; }
+  }
+  if (!at) at = Number(st.at) || Date.now();
+  trk.dataset.liveBase = String(Number(t.spentMs) || 0);
+  trk.dataset.liveFrom = String(Math.max(Number(run.startMs) || 0, at));
+  trk.dataset.liveEst = String(est || 0);
+  const paint = () => {
+    if (!trk.isConnected) return false;
+    const ms = Number(trk.dataset.liveBase) + Math.max(0, Date.now() - Number(trk.dataset.liveFrom));
+    trk.textContent = fmt(ms);
+    const e = Number(trk.dataset.liveEst);
+    trk.classList.toggle("over", e > 0 && ms > e);
+    return true;
+  };
+  paint();
+  const iv = setInterval(() => { if (!paint()) clearInterval(iv); }, 20000);
 }
 
 // Small floating message used by the due-date editor (both pages).
@@ -4255,8 +4281,12 @@ function renderClickupPreview(st) {
       subSpan.className = "cu-chsub";
       subSpan.textContent = "est " + fmtDurOpt(est) + (trk > 0 ? " \u00b7 tracked " + fmtDurOpt(trk) : "");
       head.appendChild(subSpan);
-      gw.appendChild(head);
-      renderSections(gw, d1, t1, k1, true, c);
+      // Each client in its own card, so the groups are easy to tell apart.
+      const card = document.createElement("div");
+      card.className = "cu-clientcard";
+      card.appendChild(head);
+      gw.appendChild(card);
+      renderSections(card, d1, t1, k1, true, c);
     }
     if (!gw.children.length) gw.remove();
   } else {
@@ -5638,7 +5668,7 @@ setInterval(() => { if (!document.hidden) syncClickupRunning(); }, 60000);
 // ---------- Sidebar navigation (tabbed layout) ----------
 // One section visible at a time; the choice is remembered (per browser) and can
 // be deep-linked with #dashboard / #clickup / #agent / #sites / #general.
-const OPT_TABS = ["dashboard", "clickup", "agent", "sites", "admin", "general"];
+const OPT_TABS = ["dashboard", "clickup", "agent", "sites", "bulk", "admin", "general"];
 function showOptTab(name) {
   if (!OPT_TABS.includes(name)) name = "dashboard";
   document.querySelectorAll("#sideNav [data-tab]").forEach((b) => b.classList.toggle("on", b.dataset.tab === name));
@@ -5968,7 +5998,7 @@ const ADMIN_FILES = [
   "manifest.json", "background.js", "popup.html", "popup.js", "options.html", "options.js",
   "offscreen.html", "offscreen.js", "update.html", "update.js", "wrapup.html", "wrapup.js",
   "notify-menu.js", "export-tasks.js", "lib-zip.js", "lib-unzip.js", "lib-automation.js",
-  "lib-availability.js", "lib-clickup.js", "lib-crypto.js", "lib-drive.js", "task-panel.js", "lib-updater.js", "offscreen-updater.js", "celebrate.js", "celebrate.html", "celebrate-window.js", "fx.js", "pcm-help.js", "tracker.html", "tracker.js",
+  "lib-availability.js", "lib-clickup.js", "lib-crypto.js", "lib-drive.js", "task-panel.js", "lib-updater.js", "offscreen-updater.js", "celebrate.js", "celebrate.html", "celebrate-window.js", "fx.js", "pcm-help.js", "tracker.html", "tracker.js", "bulk-edit.js", "pcm-search.js",
   "icons/icon16.png", "icons/icon48.png", "icons/icon128.png", "icons/celebrate.png", "icons/sad.png",
   "sounds/notify.wav", "sounds/danger.mp3", "sounds/winner.wav",
   "README.md", "CHANGELOG.md",

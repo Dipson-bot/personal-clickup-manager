@@ -303,6 +303,8 @@
   /* Per-client section header (shown when the Client filter is active): client
      name on the left, its est/tracked subtotal on the right. */
   .cu-clienthead { display: flex; align-items: baseline; gap: 8px; }
+  .cu-clientcard { border: 1px solid var(--border); border-radius: 10px; background: var(--bg); padding: 4px 8px 2px; margin: 0 0 8px; }
+  .cu-clientcard > .cu-clienthead { margin: 0 0 2px; padding: 2px 0 6px; border-top: 0; border-bottom: 1px solid var(--border); }
   .cu-clienthead .cu-chname { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text); }
   .cu-clienthead .cu-chsub { flex-shrink: 0; font-weight: 600; color: var(--muted); font-size: 10px; }
   /* Clear space + a divider between client groups, rows tight under their name. */
@@ -718,6 +720,7 @@
   <script src="task-panel.js"></script>
   <script src="celebrate.js"></script>
   <script src="pcm-help.js"></script>
+  <script src="pcm-search.js"></script>
   <script src="popup.js"></script>
 </body>
 </html>

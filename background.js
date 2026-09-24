@@ -4830,6 +4830,11 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
 
           if (cur) await stopTimer(cfg.token, cfg.teamId).catch(() => {});
           for (const rid of toRevert) await setTaskStatus(cfg.token, rid, "to do").catch(() => {});
+          // Remember the task we switched away from (e.g. for a meeting), so the
+          // floating tracker can offer "Back to <task>" when the Extra Task ends.
+          if (cur && cur.taskId && String(cur.taskId) !== taskId) {
+            await chrome.storage.local.set({ resumeTask: { id: String(cur.taskId), name: cur.taskName || "", at: Date.now() } });
+          }
 
           // Set this task to "in progress" and start its timer (with the optional
           // Custom note / "Meeting" description from the Extra Task controls).
@@ -5548,6 +5553,68 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
               };
             }).filter((r) => r.version && r.zip),
           });
+        } catch (e) {
+          sendResponse({ ok: false, error: String(e && e.message ? e.message : e) });
+        }
+        break;
+      }
+      case "CLICKUP_BULK_ONE": {
+        // Bulk edit tab: change ONE task and report its old values (for Undo).
+        // msg.change = { kind: "due", mode: "set"|"shift"|"clear", dayMs, days }
+        //            | { kind: "status", value } | { kind: "priority", value: "urgent|high|normal|low|none" }
+        //            | { kind: "estimate", ms } | { kind: "restore", before }.
+        // No refresh here: the tab asks for one refresh when the batch is done.
+        const cfg = await getClickupConfig();
+        if (!cfg || !cfg.token) { sendResponse({ ok: false, reason: "not-configured" }); break; }
+        const taskId = msg.taskId ? String(msg.taskId) : null;
+        const ch = msg.change || {};
+        if (!taskId) { sendResponse({ ok: false, reason: "no-task" }); break; }
+        const PRIO = { urgent: 1, high: 2, normal: 3, low: 4, none: null };
+        const put = async (body) => {
+          for (let attempt = 0; attempt < 3; attempt++) {
+            const res = await fetch("https://api.clickup.com/api/v2/task/" + encodeURIComponent(taskId), {
+              method: "PUT", headers: { Authorization: cfg.token, "Content-Type": "application/json" }, body: JSON.stringify(body),
+            });
+            if (res.status === 429) {
+              const wait = Math.min(60, Number(res.headers.get("Retry-After")) || 20);
+              await new Promise((z) => setTimeout(z, wait * 1000));
+              continue;
+            }
+            if (!res.ok) {
+              let why = "HTTP " + res.status;
+              try { const j = await res.json(); if (j && (j.err || j.error)) why = j.err || j.error; } catch (e) {}
+              throw new Error(why);
+            }
+            return;
+          }
+          throw new Error("ClickUp is busy (rate limit) - try again in a minute");
+        };
+        try {
+          const task = await getTaskById(cfg.token, taskId);
+          if (!task) throw new Error("task not found");
+          const before = {
+            dueDateMs: task.dueDateMs || null, dueDateHasTime: task.dueDateHasTime != null ? !!task.dueDateHasTime : null,
+            status: task.status || "", priority: task.priority || "none", estimateMs: Number(task.estimateMs) || 0,
+          };
+          let body = null;
+          if (ch.kind === "due") {
+            if (ch.mode === "clear") body = { due_date: null };
+            else if (ch.mode === "shift") {
+              if (!before.dueDateMs) { sendResponse({ ok: false, skipped: true, error: "has no due date to move" }); break; }
+              body = { due_date: before.dueDateMs + Math.round(Number(ch.days) || 0) * 86400000 };
+            } else body = { due_date: shiftDueToDay(before.dueDateMs, Number(ch.dayMs)) };
+            if (body.due_date && before.dueDateHasTime != null) body.due_date_time = before.dueDateHasTime;
+          } else if (ch.kind === "status") body = { status: String(ch.value || "") };
+          else if (ch.kind === "priority") body = { priority: PRIO[String(ch.value || "none").toLowerCase()] ?? null };
+          else if (ch.kind === "estimate") body = { time_estimate: Math.max(0, Math.round(Number(ch.ms) || 0)) };
+          else if (ch.kind === "restore" && ch.before) {
+            const b = ch.before;
+            body = { due_date: b.dueDateMs || null, status: b.status || undefined, priority: PRIO[String(b.priority || "none").toLowerCase()] ?? null, time_estimate: Number(b.estimateMs) || 0 };
+            if (b.dueDateMs && b.dueDateHasTime != null) body.due_date_time = !!b.dueDateHasTime;
+          }
+          if (!body) throw new Error("nothing to change");
+          await put(body);
+          sendResponse({ ok: true, before });
         } catch (e) {
           sendResponse({ ok: false, error: String(e && e.message ? e.message : e) });
         }
