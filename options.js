@@ -2813,10 +2813,20 @@ async function renderOptionsFilter() {
         }
         return true;
       });
+    // "Due in this range only" (default on): drop multi-day tasks that are only
+    // in progress here (due after the range) and show each task's FULL estimate
+    // instead of the share that falls inside the range.
+    // "Missing due date" asks for tasks WITHOUT a due date, so it wins over this.
+    const dueOnly = !!($("optFltDueOnly") && $("optFltDueOnly").checked) && !flt.due;
+    const rangeLo = new Date(fromTs).setHours(0, 0, 0, 0), rangeHi = new Date(toTs).setHours(23, 59, 59, 999);
+    const dueInRange = (ms) => { const v = Number(ms) || 0; return v >= rangeLo && v <= rangeHi; };
     let shownTasks = tasks.filter(passTask);
+    if (dueOnly) shownTasks = shownTasks.filter((t) => dueInRange(t.dueDateMs))
+      .map((t) => (Number(t.totalEstimateMs) > 0 ? { ...t, estimateMs: Number(t.totalEstimateMs) } : t));
     let shownTracked = (Array.isArray(d.trackedTasks) ? d.trackedTasks : []).filter(passTask);
     let shownDeadline = deadline.filter((dt) => {
       if (dt.error) return false;
+      if (dueOnly && dt.dueDateMs && !dueInRange(dt.dueDateMs)) return false;
       const t = { estimateMs: dt.dayEstimateMs, startDateMs: dt.startDateMs, dueDateMs: dt.dueDateMs, done: dt.done };
       return passTask(t);
     });
@@ -2842,6 +2852,12 @@ async function renderOptionsFilter() {
           + shownDeadline.reduce((x, t) => x + (Number(t.dayEstimateMs) || 0), 0);
         spentShown = [].concat(shownTasks, shownDeadline, shownTracked).reduce((x, t) => x + (Number(t.spentMs) || 0), 0);
       }
+    }
+    if (dueOnly && estShown == null) {
+      // Totals follow the rows actually shown.
+      estShown = shownTasks.reduce((x, t) => x + (Number(t.estimateMs) || 0), 0)
+        + shownDeadline.reduce((x, t) => x + (Number(t.dayEstimateMs) || 0), 0);
+      spentShown = [].concat(shownTasks, shownDeadline, shownTracked).reduce((x, t) => x + (Number(t.spentMs) || 0), 0);
     }
     shownTasks = cuGroupSubtaskRowsOpt(shownTasks);
     optFltExport = cuExportRowsOpt(shownTasks, shownDeadline, shownTracked, label + (clientPick ? " - " + clientPick : ""));
@@ -2967,6 +2983,12 @@ function initOptionsFilterControls() {
     const el = $(id);
     if (el) el.onchange = renderOptionsFilter;
   });
+  // "Due in this range only" is a view mode, remembered on this computer.
+  const dueOnlyEl = $("optFltDueOnly");
+  if (dueOnlyEl) {
+    try { if (localStorage.getItem("optFltDueOnly") === "0") dueOnlyEl.checked = false; } catch (e) {}
+    dueOnlyEl.onchange = () => { try { localStorage.setItem("optFltDueOnly", dueOnlyEl.checked ? "1" : "0"); } catch (e) {} renderOptionsFilter(); };
+  }
   const deptSel = $("optFltDept");
   if (deptSel) deptSel.onchange = () => { syncDeptUserSelect(); renderOptionsFilter(); };
   const deptUserSel = $("optFltDeptUser");

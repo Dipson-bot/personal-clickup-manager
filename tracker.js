@@ -121,6 +121,8 @@
     #root.big .bh { font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: .05em; color: var(--muted); margin-bottom: 5px; cursor: default; }
     #root.big details > summary.bh { cursor: pointer; }
     #root.big textarea.xin { width: 100%; box-sizing: border-box; resize: vertical; font-size: 12.5px; margin-bottom: 6px; }
+    #root.big #eDesc { min-height: 120px; line-height: 1.45; }
+    #root.big .dmsg { font-weight: 400; text-transform: none; letter-spacing: 0; margin-left: 4px; }
     #root.big .wrap { white-space: normal; overflow: visible; line-height: 1.5; }
     #root.big .wrap a { color: #6366f1; word-break: break-all; }
     #root.big .cmt { padding: 6px 0; border-top: 1px solid var(--border); color: var(--text); }
@@ -466,7 +468,9 @@
     if (b.dataset.act === "pickfiles") { pip.document.getElementById("eFileIn").click(); return; }
     if (b.dataset.act === "rmfile") { bigFiles.splice(Number(b.dataset.i), 1); paintFiles(); return; }
     if (b.dataset.act === "comment") { postComment(); return; }
-    if (b.dataset.act === "xopen") { note.commit(); qc.post(); if (expanded) closeBig(); openExtraPanel(); return; }
+    if (b.dataset.act === "descfile") { pip.document.getElementById("eDescIn").click(); return; }
+    if (b.dataset.act === "descsave") { dsc.save(); return; }
+    if (b.dataset.act === "xopen") { note.commit(); qc.post(); dsc.save(); if (expanded) closeBig(); openExtraPanel(); return; }
     if (b.dataset.act === "xcancel") { xPanel = false; paint(); return; }
     if (b.dataset.act === "xmeet") { startExtra("Meeting"); return; }
     if (b.dataset.act === "xgo") { const i = pip.document.getElementById("xnote"); startExtra(i ? i.value.trim() : ""); return; }
@@ -477,7 +481,7 @@
     const run = st.running;
     const act = b.dataset.act;
     let r = null;
-    if (act === "stop" || act === "complete" || act === "resume") { await note.commit(); await qc.post(); } // note + a typed comment land first
+    if (act === "stop" || act === "complete" || act === "resume") { await note.commit(); await qc.post(); await dsc.save(); } // note + a typed comment land first
     if (act === "stop" && run) r = await send({ type: "CLICKUP_TASK_STOP", taskId: String(run.taskId) });
     else if (act === "complete" && run) {
       const extraRun = (st.extraTask && String(st.extraTask.id) === String(run.taskId)) || /\bextra(?:\(s\)|s)?\s+task(?:\(s\)|s)?\b/i.test(String(run.taskName || ""));
@@ -562,8 +566,11 @@
         '<div id="eFiles" class="files"></div>' +
         '<div class="row"><button class="x" data-act="pickfiles">&#128206; Attach</button><input type="file" id="eFileIn" multiple hidden />' +
         '<span class="sub" id="eCmsg"></span><span class="btns"><button class="x pri" data-act="comment">Comment</button></span></div></div>' +
+      '<div class="bsec" id="eDescBox"><div class="bh">Description <span id="eDmsg" class="dmsg"></span></div>' +
+        '<textarea class="xin" id="eDesc" rows="8" placeholder="Loading…"></textarea>' +
+        '<div class="row"><button class="x" data-act="descfile" title="Upload a file to the task and put its link where the cursor is (e.g. inside File: &quot;&quot;). You can also paste a screenshot or drop a file on the box.">&#128206; Add file</button><input type="file" id="eDescIn" multiple hidden />' +
+        '<span class="btns"><button class="x pri" data-act="descsave" id="eDescSave" disabled title="Save the description to ClickUp (Ctrl+S)">Save</button></span></div></div>' +
       '<div class="bsec"><div class="bh">Comments</div><div id="eComments" class="sub wrap">Loading…</div></div>' +
-      '<details class="bsec"><summary class="bh">Description</summary><div id="eDesc" class="sub wrap"></div></details>' +
       '<div class="bfoot"><span class="btns" style="margin-left:0"><button data-act="stop">&#9632; Stop</button>' +
         (isExtra ? "" : '<button data-act="complete">&#10003; Done</button>') +
         (!isExtra && st.extraTask && st.extraTask.id ? '<button data-act="xopen">&#8644; Extra</button>' : "") +
@@ -582,6 +589,7 @@
     drop.addEventListener("drop", (e) => { e.preventDefault(); drop.classList.remove("over"); addFiles([...(e.dataTransfer.files || [])]); });
     d.getElementById("eFileIn").addEventListener("change", (e) => { addFiles([...(e.target.files || [])]); e.target.value = ""; });
     ta.addEventListener("keydown", (e) => { if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) { e.preventDefault(); postComment(); } });
+    dsc.bind(d, run);
     loadPanel(run.taskId, true);
     cw.seenBefore = cw.seen || 0;
     markSeen();
@@ -662,6 +670,77 @@
     b.textContent = "💬 " + cw.newCount;
     b.title = cw.newCount + " new comment" + (cw.newCount === 1 ? "" : "s") + " from others on this task - click to read";
   }
+  // ---------- description: editable (fill in File: "" with links or notes) ----------
+  // Saved to ClickUp as markdown. Unsaved text survives shrinking the view and
+  // the 3-minute refresh, and is saved before Stop / Done / Back / Extra. If
+  // the description was changed in ClickUp meanwhile, nothing is overwritten.
+  const dsc = {
+    taskId: "", from: null, draft: null, saving: null,
+    dirty() { return this.draft != null && this.from != null && this.draft !== this.from; },
+    el(id) { return pip && pip.document.getElementById(id); },
+    msg(t, bad) { const m = this.el("eDmsg"); if (m) { m.textContent = t; m.style.color = bad ? "var(--red)" : ""; } },
+    sync() { const b = this.el("eDescSave"); if (b) b.disabled = !this.dirty(); if (this.dirty()) this.msg("unsaved"); },
+    bind(d, run) {
+      if (this.taskId !== String(run.taskId)) { this.taskId = String(run.taskId); this.from = null; this.draft = null; }
+      const ta = d.getElementById("eDesc");
+      if (this.from != null) { ta.value = this.draft != null ? this.draft : this.from; ta.placeholder = "No description yet. Write one here."; }
+      ta.addEventListener("input", () => { this.draft = ta.value; this.sync(); });
+      ta.addEventListener("keydown", (e) => { if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "s") { e.preventDefault(); this.save(); } });
+      ta.addEventListener("paste", (e) => { const fl = [...((e.clipboardData && e.clipboardData.files) || [])]; if (fl.length) { e.preventDefault(); this.upload(fl); } });
+      ta.addEventListener("dragover", (e) => { e.preventDefault(); e.stopPropagation(); });
+      ta.addEventListener("drop", (e) => { const fl = [...((e.dataTransfer && e.dataTransfer.files) || [])]; if (fl.length) { e.preventDefault(); e.stopPropagation(); this.upload(fl); } });
+      d.getElementById("eDescIn").addEventListener("change", (e) => { this.upload([...(e.target.files || [])]); e.target.value = ""; });
+      this.sync();
+    },
+    // From ClickUp (open, refresh, 3-minute poll): never replaces unsaved typing.
+    loaded(text) {
+      if (this.dirty()) return;
+      this.from = text; this.draft = null;
+      const ta = this.el("eDesc");
+      if (ta) { ta.value = text; ta.placeholder = "No description yet. Write one here."; }
+      this.sync();
+    },
+    async upload(files) {
+      const list = files.slice(0, 10).filter((f) => f.size <= 10 * 1024 * 1024);
+      if (!list.length) { this.msg("files over 10 MB: attach them in ClickUp", true); return; }
+      this.msg("uploading " + list.length + " file" + (list.length === 1 ? "" : "s") + "…");
+      const payload = await Promise.all(list.map((f) => new Promise((ok) => {
+        const fr = new FileReader();
+        fr.onload = () => ok({ name: f.name && f.name !== "image.png" ? f.name : "screenshot-" + new Date().toISOString().slice(0, 19).replace(/[:T]/g, "-") + ".png", type: f.type || "application/octet-stream", b64: String(fr.result || "").split(",")[1] || "" });
+        fr.readAsDataURL(f);
+      })));
+      const r = await send({ type: "CLICKUP_TASK_ATTACH", taskId: this.taskId, files: payload, noComment: true });
+      if (!r || !r.ok) { this.msg("upload failed: " + ((r && r.error) || "no reply"), true); return; }
+      const ta = this.el("eDesc");
+      const add = (r.files || []).map((f) => f.url || f.name).join("\n");
+      const cur = this.draft != null ? this.draft : (this.from || "");
+      if (ta) {
+        const s = ta.selectionStart != null ? ta.selectionStart : ta.value.length, e = ta.selectionEnd != null ? ta.selectionEnd : s;
+        ta.value = ta.value.slice(0, s) + add + ta.value.slice(e);
+        ta.selectionStart = ta.selectionEnd = s + add.length;
+        this.draft = ta.value;
+      } else this.draft = cur + (cur ? "\n" : "") + add;
+      this.sync();
+      this.msg("link added, Save to keep it");
+    },
+    async save() {
+      if (!this.dirty()) return true;
+      if (this.saving) return this.saving;
+      const b = this.el("eDescSave");
+      if (b) { b.disabled = true; b.textContent = "Saving…"; }
+      this.saving = send({ type: "CLICKUP_TASK_DESCRIPTION", taskId: this.taskId, text: this.draft, expected: this.from }).then((r) => {
+        this.saving = null;
+        const b2 = this.el("eDescSave");
+        if (b2) b2.textContent = "Save";
+        if (r && r.ok && r.data) { this.from = r.data.description; this.draft = null; const ta = this.el("eDesc"); if (ta) ta.value = this.from; this.sync(); this.msg("saved ✓"); return true; }
+        if (r && r.changed) { this.from = r.current || ""; this.sync(); this.msg("changed in ClickUp meanwhile - Save again to replace it", true); return false; }
+        this.sync();
+        this.msg("not saved: " + ((r && r.error) || "no reply"), true);
+        return false;
+      });
+      return this.saving;
+    },
+  };
   function paintPanel(p) {
     const d = pip.document;
     const bits = [p.status ? "Status " + p.status : "", p.dueDateMs ? "Due " + new Date(p.dueDateMs).toLocaleDateString([], { month: "short", day: "numeric" }) : "No due date", p.estimateMs ? "Est " + fmt(p.estimateMs) : ""];
@@ -670,8 +749,7 @@
     d.getElementById("eComments").innerHTML = cs.length
       ? cs.map((c) => '<div class="cmt"><b>' + esc(c.who) + '</b>' + (cw.seenBefore && Number(c.at) > cw.seenBefore && c.userId !== cw.me ? '<span class="newtag">NEW</span>' : "") + ' <span class="when">' + (c.at ? esc(new Date(c.at).toLocaleString([], { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" })) : "") + "</span><div>" + linkify(c.text) + "</div></div>").join("")
       : "No comments yet.";
-    const desc = String(p.description || "").trim();
-    d.getElementById("eDesc").innerHTML = desc ? linkify(desc) : "No description.";
+    dsc.loaded(String(p.description || "").trim());
   }
   function addFiles(list) {
     for (const f of list.slice(0, 10)) {

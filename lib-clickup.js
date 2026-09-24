@@ -512,6 +512,30 @@ export async function addTaskComment(token, taskId, text) {
   panelCache.delete(key);
   return getTaskPanel(token, key, true);
 }
+// Save a task's description (floating tracker's bigger view). Written as
+// markdown so bold, lists and links keep their formatting. `expected` is the
+// text the user started editing from: if someone changed the description in
+// ClickUp since then, nothing is written and their version comes back
+// (err.code "changed", err.current) instead of being overwritten.
+export async function setTaskDescription(token, taskId, text, expected) {
+  const key = String(taskId);
+  const norm = (s) => String(s || "").replace(/\r\n/g, "\n").trim();
+  if (expected != null) {
+    const t = await cuFetch(token, "/task/" + encodeURIComponent(key), [["include_markdown_description", "true"]]);
+    const current = norm(t && (t.markdown_description || t.description || t.text_content));
+    if (current !== norm(expected)) {
+      const err = new Error("This description was changed in ClickUp while you were editing.");
+      err.code = "changed";
+      err.current = current;
+      throw err;
+    }
+  }
+  const md = norm(text);
+  // ClickUp clears a description only with a single space (an empty value is ignored).
+  await cuPut(token, "/task/" + encodeURIComponent(key), md ? { markdown_content: md, description: md } : { description: " " });
+  panelCache.delete(key);
+  return getTaskPanel(token, key, true);
+}
 
 // Due today looks up EVERY due-today task's subtasks, one request each, on every
 // refresh - 19 requests a time for a normal day, again on every popup open. A
