@@ -23,7 +23,7 @@ import {
   driveQuota,
 } from "./lib-drive.js";
 import { runAllAccounts, runAccountLogin, URLS, GITHUB_KEEP_COOKIES } from "./lib-automation.js";
-import { verifyToken, getTeams, fetchTodayEstimate, fetchWeeklySummary, fetchDateRangeEstimate, createTaskCache, fetchTeamMembers, fmtDuration, findExtraTaskByName, parseTaskIdFromUrl, getCurrentTimeEntry, getRunningTaskProgress, startTimer, stopTimer, getTaskById, setTaskStatus, taskUrlFor, clientLabelFromContainer, resolveSpaceNamesFor, taskContainer, cuPriorityName, isTaskDone, getSubtasksOfParent, getTaskTree, getTaskDetail, updateTimeEntry, setTaskDueDate, clearTaskTreeCache, listWorkspaceClients, cuRowAssignees, fetchDoneBetween, getTaskPanel, addTaskComment } from "./lib-clickup.js";
+import { verifyToken, getTeams, fetchTodayEstimate, fetchWeeklySummary, fetchDateRangeEstimate, createTaskCache, fetchTeamMembers, fmtDuration, findExtraTaskByName, parseTaskIdFromUrl, getCurrentTimeEntry, getRunningTaskProgress, startTimer, stopTimer, getTaskById, setTaskStatus, taskUrlFor, clientLabelFromContainer, resolveSpaceNamesFor, taskContainer, cuPriorityName, isTaskDone, getSubtasksOfParent, getTaskTree, getTaskDetail, updateTimeEntry, setTaskDueDate, clearTaskTreeCache, listWorkspaceClients, cuRowAssignees, fetchDoneBetween, getTaskPanel, addTaskComment, setTaskDescription } from "./lib-clickup.js";
 import { resolveRelayKey, pickProbeModel, probeRelay } from "./lib-availability.js";
 
 const CHECK_ALARM = "dailyLoginCheck";
@@ -4386,7 +4386,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
           if (!cfg || !cfg.token) { sendResponse({ ok: false, error: "ClickUp isn't connected." }); break; }
           const taskId = String(msg.taskId || "");
           const files = Array.isArray(msg.files) ? msg.files.slice(0, 10) : [];
-          const links = [];
+          const links = [], uploaded = [];
           for (const f of files) {
             const bin = atob(String(f.b64 || ""));
             const bytes = new Uint8Array(bin.length);
@@ -4399,11 +4399,27 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
             if (!res.ok) throw new Error("upload of " + (f.name || "a file") + " failed (HTTP " + res.status + ")");
             const j = await res.json().catch(() => ({}));
             links.push((f.name || "file") + (j && j.url ? ": " + j.url : ""));
+            uploaded.push({ name: f.name || "file", url: (j && j.url) || "" });
           }
+          // Description editor: only upload, the links go into the description.
+          if (msg.noComment) { sendResponse({ ok: true, files: uploaded }); break; }
           const text = [String(msg.text || "").trim(), links.length ? "Attached: " + links.join("\n") : ""].filter(Boolean).join("\n\n");
           const data = text ? await addTaskComment(cfg.token, taskId, text.slice(0, 5000)) : null;
           sendResponse({ ok: true, data, uploaded: links.length });
         } catch (e) { sendResponse({ ok: false, error: String(e && e.message ? e.message : e) }); }
+        break;
+      }
+      case "CLICKUP_TASK_DESCRIPTION": {
+        // Floating tracker's bigger view: save the task's description. Refuses
+        // (changed: true + their text) if it was edited in ClickUp meanwhile.
+        try {
+          const cfg = await getClickupConfig();
+          if (!cfg || !cfg.token) { sendResponse({ ok: false, error: "ClickUp isn't connected." }); break; }
+          const data = await setTaskDescription(cfg.token, String(msg.taskId || ""), String(msg.text || "").slice(0, 60000), msg.expected);
+          sendResponse({ ok: true, data });
+        } catch (e) {
+          sendResponse({ ok: false, error: String(e && e.message ? e.message : e), changed: e && e.code === "changed", current: e && e.current });
+        }
         break;
       }
       case "CLICKUP_OPEN_TASKS": {

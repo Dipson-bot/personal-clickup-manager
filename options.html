@@ -996,6 +996,10 @@
           <label>To</label>
           <input type="date" id="optFltTo" />
         </div>
+        <div class="chk" title="On: only tasks whose DUE DATE is inside these dates, with their full estimates. Off: also multi-day tasks that are in progress on these dates (started before, due after), with the part of their estimate that falls inside the range.">
+          <input type="checkbox" id="optFltDueOnly" checked />
+          <label for="optFltDueOnly" style="margin:0;font-weight:600;color:var(--text);font-size:12px;">Due in this range only</label>
+        </div>
         <div class="chk">
           <input type="checkbox" id="optFltOnlyMissing" />
           <label for="optFltOnlyMissing" style="margin:0;font-weight:400;color:var(--text);font-size:12px;">Only missing estimates</label>
