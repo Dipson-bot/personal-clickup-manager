@@ -236,9 +236,22 @@ async function driveFetch(path, token, options = {}, _retried = false) {
       if (fresh) return driveFetch(path, fresh, options, true);
     }
     const text = await res.text().catch(() => "");
+    // Google Drive is full: flag it so the background tells the user (once a day).
+    if (/storageQuotaExceeded|quotaExceeded|insufficient.?storage/i.test(text)) {
+      try { await chrome.storage.local.set({ driveFullAt: Date.now() }); } catch (e) {}
+    }
     throw new Error(`Drive API error ${res.status}: ${text.slice(0, 200)}`);
   }
   return res;
+}
+
+// How full the user's Google Drive is: { limit, usage } in bytes (limit 0 =
+// unlimited). Used before backing up Task files and in "Where is it saved?".
+export async function driveQuota(token) {
+  const res = await driveFetch("/drive/v3/about?fields=storageQuota(limit,usage)", token);
+  const j = await res.json().catch(() => ({}));
+  const q = (j && j.storageQuota) || {};
+  return { limit: Number(q.limit) || 0, usage: Number(q.usage) || 0 };
 }
 
 async function findFileId(token, name) {
@@ -285,6 +298,12 @@ async function writeFile(token, name, body) {
   });
   return null;
 }
+
+// Task files backup (Options > Task files): the files' text, one JSON file in
+// the hidden app-data area. Screenshots aren't included (they stay local).
+const TASKFILES_FILENAME = "pcm-task-files.json";
+export async function pushTaskFiles(token, payload) { return writeFile(token, TASKFILES_FILENAME, payload); }
+export async function pullTaskFiles(token) { return readFile(token, TASKFILES_FILENAME); }
 
 // True if we currently hold (or can silently get) a Google token.
 export async function isSignedIn() {

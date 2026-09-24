@@ -481,6 +481,7 @@ export async function getTaskPanel(token, taskId, force) {
   const comments = (Array.isArray(cj && cj.comments) ? cj.comments : []).map((c) => ({
     id: String(c.id || ""),
     who: (c.user && (c.user.username || c.user.email)) || "Someone",
+    userId: c.user && c.user.id != null ? String(c.user.id) : "", // tells my comments from others'
     initials: (c.user && c.user.initials) || "",
     color: (c.user && c.user.color) || "",
     at: Number(c.date) || 0,

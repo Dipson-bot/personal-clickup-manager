@@ -14,6 +14,7 @@
   });
   const esc = (s) => String(s == null ? "" : s).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
   const fmtDur = (ms) => { const m = Math.round((Number(ms) || 0) / 60000); const h = Math.floor(m / 60); return h ? h + "h" + (m % 60 ? " " + (m % 60) + "m" : "") : m + "m"; };
+  const fmtShort = (ms) => new Date(ms).toLocaleDateString([], { month: "short", day: "numeric" });
   const fmtDay = (ms) => (ms ? new Date(ms).toLocaleDateString([], { weekday: "short", month: "short", day: "numeric" }) : "no date");
   const isoDay = (ms) => { const d = new Date(ms); return new Date(d.getTime() - d.getTimezoneOffset() * 60000).toISOString().slice(0, 10); };
   const fromIso = (v) => { const [y, m, d] = String(v).split("-").map(Number); return new Date(y, m - 1, d).getTime(); };
@@ -61,6 +62,10 @@
     let res = null;
     if (kind === "overdue") {
       res = await send({ type: "CLICKUP_OVERDUE", force: !!force }, 40000);
+    } else if (kind === "any") {
+      // Every open task, with or without dates - the only way to find tasks
+      // that have no due date at all.
+      res = await send({ type: "CLICKUP_OPEN_TASKS", force: !!force }, 60000);
     } else {
       const r = range(kind);
       if (!r) { list.innerHTML = '<div class="hint" style="padding:14px;">Pick both dates.</div>'; return; }
@@ -107,8 +112,12 @@
 
   function shown() {
     const client = $("bkClient").value, status = $("bkStatus").value, q = $("bkSearch").value.trim().toLowerCase();
+    const missing = $("bkMissing").value;
     return tasks.filter((t) => {
       if (client && clientOf(t) !== client) return false;
+      if (missing === "due" && t.dueDateMs) return false;
+      if (missing === "start" && t.startDateMs) return false;
+      if (missing === "est" && Number(t.estimateMs) > 0) return false;
       if (status === "open" && isDone(t)) return false;
       if (status && status !== "open" && String(t.status || "").trim() !== status) return false;
       if (q && !(String(t.name || "").toLowerCase().includes(q) || clientOf(t).toLowerCase().includes(q))) return false;
@@ -132,8 +141,11 @@
         '<a class="nm" href="' + esc(t.url || "https://app.clickup.com/t/" + encodeURIComponent(id)) + '" target="_blank" rel="noopener" title="' + esc(t.name) + '">' + (t.isSubtask ? "↳ " : "") + esc(t.name || "(task)") + "</a>" +
         '<span class="cl" title="' + esc(clientOf(t)) + '">' + esc(clientOf(t)) + "</span>" +
         '<span class="st">' + esc(t.status || "") + (t.priority ? " · " + esc(t.priority) : "") + "</span>" +
-        '<span class="du"><span class="bk-due" role="button" tabindex="0" title="Click to change just this task\'s due date">' + esc(fmtDay(t.dueDateMs)) + "</span>" +
-        (t.estimateMs ? " · " + esc(fmtDur(t.estimateMs)) : "") + "</span>" + mark + "</div>";
+        '<span class="du">' +
+        '<span class="bk-start' + (t.startDateMs ? "" : " bk-miss") + '" role="button" tabindex="0" title="Start date - click to change">' + (t.startDateMs ? "from " + esc(fmtShort(t.startDateMs)) : "+ start") + "</span>" +
+        '<span class="bk-due' + (t.dueDateMs ? "" : " bk-miss") + '" role="button" tabindex="0" title="Due date - click to change">' + (t.dueDateMs ? esc(fmtDay(t.dueDateMs)) : "+ due") + "</span>" +
+        '<span class="bk-est' + (Number(t.estimateMs) > 0 ? "" : " bk-miss") + '" role="button" tabindex="0" title="Estimate - click to change (e.g. 1h 30m, 45m, 1.5h)">' + (Number(t.estimateMs) > 0 ? esc(fmtDur(t.estimateMs)) : "+ est") + "</span>" +
+        "</span>" + mark + "</div>";
     }).join("");
     renderCount();
   }
@@ -151,19 +163,20 @@
   // ---------- the change ----------
   function change() {
     const kind = $("bkKind").value;
-    if (kind === "due") {
+    if (kind === "due" || kind === "start") {
+      const what = kind === "due" ? "due date" : "start date";
       const mode = $("bkDueMode").value;
       if (mode === "set") {
         if (!$("bkDueDate").value) return { error: "Pick a date." };
         const dayMs = fromIso($("bkDueDate").value);
-        return { change: { kind, mode, dayMs }, text: "set the due date of {n} to " + fmtDay(dayMs) };
+        return { change: { kind, mode, dayMs }, text: "set the " + what + " of {n} to " + fmtDay(dayMs) };
       }
       if (mode === "shift") {
         const days = Math.round(Number($("bkShift").value));
         if (!Number.isFinite(days) || !days) return { error: "Enter a number of days, like 2 or -1." };
-        return { change: { kind, mode, days }, text: "move the due date of {n} " + (days > 0 ? "later" : "earlier") + " by " + Math.abs(days) + " day" + (Math.abs(days) === 1 ? "" : "s") };
+        return { change: { kind, mode, days }, text: "move the " + what + " of {n} " + (days > 0 ? "later" : "earlier") + " by " + Math.abs(days) + " day" + (Math.abs(days) === 1 ? "" : "s") };
       }
-      return { change: { kind, mode: "clear" }, text: "remove the due date of {n}" };
+      return { change: { kind, mode: "clear" }, text: "remove the " + what + " of {n}" };
     }
     if (kind === "status") {
       const v = $("bkStatusVal").value;
@@ -181,7 +194,7 @@
   }
   function paintKind() {
     const k = $("bkKind").value;
-    $("bkDueOpts").hidden = k !== "due";
+    $("bkDueOpts").hidden = k !== "due" && k !== "start";
     $("bkStatusOpts").hidden = k !== "status";
     $("bkPrioOpts").hidden = k !== "priority";
     $("bkEstOpts").hidden = k !== "estimate";
@@ -280,19 +293,96 @@
       setTimeout(render, 600); // let "syncing" show briefly, then the full date
     }, 300);
   };
+  // Start date and estimate: a small editor in place of the chip. Saved through
+  // the same one-task change as the bulk tools (CLICKUP_BULK_ONE).
+  const parseEst = (v) => {
+    const s = String(v || "").trim().toLowerCase().replace(",", ".");
+    if (!s) return 0;
+    let m = 0, hit = false;
+    const h = s.match(/(\d+(?:\.\d+)?)\s*h/); if (h) { m += Number(h[1]) * 60; hit = true; }
+    const mm = s.match(/(\d+)\s*m/); if (mm) { m += Number(mm[1]); hit = true; }
+    if (!hit && /^\d+(\.\d+)?$/.test(s)) m = Number(s) <= 12 && s.includes(".") ? Number(s) * 60 : Number(s); // "1.5" = hours, "45" = minutes
+    return Math.round(m) * 60000;
+  };
+  async function saveOne(t, change, chip) {
+    chip.textContent = "saving…";
+    const r = await send({ type: "CLICKUP_BULK_ONE", taskId: String(t.id), change }, 90000);
+    if (r && r.ok) {
+      if (change.kind === "start") t.startDateMs = change.mode === "clear" ? null : new Date(new Date(change.dayMs).setHours(12, 0, 0, 0)).getTime();
+      if (change.kind === "estimate") t.estimateMs = change.ms;
+      results.set(String(t.id), { kind: "ok" });
+      send({ type: "CLICKUP_REFRESH", includeTasks: true, forceWeeks: true }, 60000);
+    } else {
+      results.set(String(t.id), { kind: "no", title: (r && (r.error || r.reason)) || "no reply" });
+    }
+    render();
+  }
+  function editInline(chip) {
+    const row = chip.closest(".bk-row");
+    const t = row && tasks.find((x) => String(x.id) === row.dataset.id);
+    if (!t || running || chip._editing) return;
+    chip._editing = true;
+    const isStart = chip.classList.contains("bk-start");
+    const input = document.createElement("input");
+    input.className = "bk-edit";
+    if (isStart) {
+      input.type = "date";
+      if (t.startDateMs) input.value = isoDay(t.startDateMs);
+      input.title = "Pick the start date (Clear = no start date). Esc cancels.";
+    } else {
+      input.type = "text";
+      input.placeholder = "e.g. 1h 30m";
+      input.value = Number(t.estimateMs) > 0 ? fmtDur(t.estimateMs) : "";
+      input.title = "1h 30m, 45m or 1.5h, then Enter. Esc cancels.";
+    }
+    chip.textContent = "";
+    chip.appendChild(input);
+    input.focus();
+    if (isStart) { try { input.showPicker(); } catch (e) {} }
+    let done = false;
+    const cancel = () => { if (done) return; done = true; chip._editing = false; render(); };
+    const save = () => {
+      if (done) return;
+      done = true;
+      chip._editing = false;
+      if (isStart) {
+        if (!input.value) { if (t.startDateMs) saveOne(t, { kind: "start", mode: "clear" }, chip); else render(); return; }
+        const dayMs = fromIso(input.value);
+        if (t.startDateMs && isoDay(t.startDateMs) === input.value) { render(); return; }
+        saveOne(t, { kind: "start", mode: "set", dayMs }, chip);
+      } else {
+        const ms = parseEst(input.value);
+        if (ms === (Number(t.estimateMs) || 0)) { render(); return; }
+        saveOne(t, { kind: "estimate", ms }, chip);
+      }
+    };
+    let lastKey = 0;
+    input.addEventListener("keydown", (e) => {
+      lastKey = Date.now();
+      if (e.key === "Enter") { e.preventDefault(); save(); }
+      else if (e.key === "Escape") { e.preventDefault(); cancel(); }
+    });
+    if (isStart) input.addEventListener("change", () => { if (Date.now() - lastKey > 400) save(); });
+    input.addEventListener("blur", () => setTimeout(save, 0));
+    input.addEventListener("click", (e) => e.stopPropagation());
+  }
   $("bkList").addEventListener("click", (e) => {
-    const chip = e.target.closest(".bk-due");
-    if (chip && !chip._editing) { e.preventDefault(); editOne(chip); }
+    const chip = e.target.closest(".bk-due, .bk-start, .bk-est");
+    if (!chip || chip._editing || e.target.tagName === "INPUT") return;
+    e.preventDefault();
+    if (chip.classList.contains("bk-due")) editOne(chip); else editInline(chip);
   });
   $("bkList").addEventListener("keydown", (e) => {
-    const chip = e.target.closest && e.target.closest(".bk-due");
-    if (chip && (e.key === "Enter" || e.key === " ") && !chip._editing) { e.preventDefault(); editOne(chip); }
+    const chip = e.target.closest && e.target.closest(".bk-due, .bk-start, .bk-est");
+    if (!chip || chip._editing || e.target.tagName === "INPUT" || (e.key !== "Enter" && e.key !== " ")) return;
+    e.preventDefault();
+    if (chip.classList.contains("bk-due")) editOne(chip); else editInline(chip);
   });
   $("bkAll").onchange = () => {
     for (const t of shown()) { if ($("bkAll").checked) picked.add(String(t.id)); else picked.delete(String(t.id)); }
     render();
   };
-  for (const id of ["bkClient", "bkStatus"]) $(id).onchange = render;
+  for (const id of ["bkClient", "bkStatus", "bkMissing"]) $(id).onchange = render;
   $("bkSearch").oninput = render;
   $("bkRange").onchange = () => load(false);
   $("bkFrom").onchange = $("bkTo").onchange = () => { if ($("bkFrom").value && $("bkTo").value) load(false); };

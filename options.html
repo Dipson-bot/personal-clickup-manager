@@ -11,12 +11,13 @@
     --red: #dc2626;
     --amber: #d97706;
     --blue: #3b82f6;
-    --bg: #e9ecf1;
-    --card: #f7f8fa;
-    --text: #1f2937;
-    --muted: #6b7280;
-    --border: #dadfe6;
-    --bg2: #e3e7ee;
+    --bg: #f1ece4;
+    --card: #faf7f2;
+    --text: #2e2a26;
+    --muted: #7b7064;
+    --border: #e0d7ca;
+    --bg2: #ece5da;
+    --field: #fffdf9;
     color-scheme: light;
   }
   * { box-sizing: border-box; }
@@ -120,7 +121,7 @@
   .hint { font-weight: 400; color: var(--muted); font-size: 12.5px; }
   input[type="text"], input[type="password"], select, textarea {
     width: 100%; padding: 10px 12px; font-size: 14px;
-    border: 1px solid var(--border); border-radius: 8px; background: #fff; color: var(--text);
+    border: 1px solid var(--border); border-radius: 8px; background: var(--field, #fff); color: var(--text);
   }
   textarea { font-family: inherit; resize: vertical; }
   input:focus, select:focus, textarea:focus { outline: 2px solid #c7d2fe; border-color: var(--indigo); }
@@ -131,7 +132,7 @@
   .btns { margin-top: 18px; display: flex; gap: 8px; flex-wrap: wrap; }
   button {
     padding: 10px 16px; font-size: 14px; border-radius: 8px;
-    border: 1px solid var(--border); background: #fff; color: var(--text); cursor: pointer;
+    border: 1px solid var(--border); background: var(--field, #fff); color: var(--text); cursor: pointer;
   }
   button:hover { background: #f3f4f6; }
   button.primary { background: var(--indigo); color: #fff; border: none; font-weight: 600; }
@@ -386,6 +387,29 @@
   html[data-theme="dark"] .set-line input[type="time"] { background: var(--bg2); color: var(--text); color-scheme: dark; border-color: var(--border); }
   .set-line.col { display: block; }
   .set-line.col textarea { margin-top: 6px; }
+  /* Task files tab */
+  .tf-bar { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 14px; margin-bottom: 8px; }
+  .tf-bar input[type="search"] { flex: 1; min-width: 180px; padding: 6px 10px; }
+  .tf-bar label { display: inline-flex; align-items: center; gap: 6px; margin: 0; font-weight: 400; font-size: 13px; }
+  .tf-list { border: 1px solid var(--border); border-radius: 10px; max-height: 560px; overflow: auto; }
+  .tf-client { border-top: 1px solid var(--border); }
+  .tf-client:first-child { border-top: 0; }
+  .tf-client.over { outline: 2px dashed var(--indigo); outline-offset: -3px; background: var(--bg2); }
+  .tf-head { display: flex; align-items: center; gap: 10px; padding: 8px 10px; cursor: pointer; }
+  .tf-head:hover { background: var(--bg2); }
+  .tf-tog { width: auto; border: 0; background: none; color: var(--muted); padding: 0 2px; cursor: pointer; }
+  .tf-name { flex: 1; min-width: 0; font-weight: 600; font-size: 13.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .tf-count { font-size: 12px; color: var(--muted); white-space: nowrap; }
+  .tf-client.empty .tf-count { color: var(--amber, #d97706); }
+  .tf-add { width: auto; font-size: 12px; padding: 4px 10px; }
+  .tf-files { padding: 0 10px 8px 34px; }
+  .tf-file { display: flex; align-items: center; gap: 8px; padding: 5px 0; border-top: 1px dashed var(--border); font-size: 13px; }
+  .tf-file:first-child { border-top: 0; }
+  .tf-file.bad .tf-fn { color: var(--amber, #d97706); }
+  .tf-fn { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .tf-file .hint { font-size: 11.5px; white-space: nowrap; }
+  .tf-rm { width: auto; border: 0; background: none; color: var(--muted); cursor: pointer; padding: 0 4px; }
+  .tf-rm:hover { color: var(--red); }
   /* Bulk edit tab */
   .bk-filters { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; margin-bottom: 10px; }
   .bk-filters label { display: inline-flex; align-items: center; gap: 6px; margin: 0; font-size: 13px; font-weight: 600; }
@@ -404,8 +428,10 @@
   .bk-row .cl { font-size: 11.5px; color: var(--muted); white-space: nowrap; max-width: 150px; overflow: hidden; text-overflow: ellipsis; }
   .bk-row .st, .bk-row .du { font-size: 11.5px; color: var(--muted); white-space: nowrap; }
   .bk-row .res { text-align: center; }
-  .bk-row .bk-due { cursor: pointer; padding: 1px 6px; border-radius: 6px; border: 1px dashed transparent; }
-  .bk-row .bk-due:hover, .bk-row .bk-due:focus { border-color: var(--indigo); color: var(--text); outline: none; }
+  .bk-row .bk-due, .bk-row .bk-start, .bk-row .bk-est { cursor: pointer; padding: 1px 6px; border-radius: 6px; border: 1px dashed transparent; }
+  .bk-row .bk-due:hover, .bk-row .bk-due:focus, .bk-row .bk-start:hover, .bk-row .bk-start:focus, .bk-row .bk-est:hover, .bk-row .bk-est:focus { border-color: var(--indigo); color: var(--text); outline: none; }
+  .bk-row .bk-miss { color: var(--amber, #d97706); }
+  .bk-row .bk-edit { font-size: 11.5px; padding: 1px 4px; width: 118px; }
   .bk-row .bk-due input.due-input { font-size: 11.5px; padding: 1px 4px; width: auto; }
   .bk-row .res.ok { color: var(--green); } .bk-row .res.no { color: var(--red); } .bk-row .res.skip { color: var(--muted); }
   .bk-action { margin-top: 14px; padding: 12px 14px; border: 1px solid var(--border); border-radius: 10px; background: var(--bg2); }
@@ -422,7 +448,7 @@
   details.set-more > div { margin-top: 6px; font-size: 12.5px; color: var(--muted); line-height: 1.55; }
   .opt-toggle { display: inline-flex; border: 1px solid var(--border); border-radius: 8px; overflow: hidden; }
   .opt-toggle button {
-    background: #fff; border: 0; padding: 7px 14px; font-size: 12.5px;
+    background: var(--field, #fff); border: 0; padding: 7px 14px; font-size: 12.5px;
     color: var(--muted); cursor: pointer; font-family: inherit;
   }
   .opt-toggle button.on { background: var(--indigo); color: #fff; font-weight: 600; }
@@ -445,7 +471,7 @@
   /* Department Creator - user search autocomplete + chips */
   .au-wrap { position: relative; }
   .au-wrap input { width: 100%; box-sizing: border-box; }
-  .au-suggest { position: absolute; top: 100%; left: 0; right: 0; z-index: 30; background: #fff; color: var(--text); border: 1px solid var(--border); border-top: none; border-radius: 0 0 10px 10px; max-height: 210px; overflow-y: auto; box-shadow: 0 8px 20px rgba(0, 0, 0, 0.12); display: none; }
+  .au-suggest { position: absolute; top: 100%; left: 0; right: 0; z-index: 30; background: var(--field, #fff); color: var(--text); border: 1px solid var(--border); border-top: none; border-radius: 0 0 10px 10px; max-height: 210px; overflow-y: auto; box-shadow: 0 8px 20px rgba(0, 0, 0, 0.12); display: none; }
   .au-suggest .au-item { padding: 8px 12px; font-size: 13px; cursor: pointer; }
   .au-suggest .au-item:hover, .au-suggest .au-item.sel { background: var(--bg2, #eef2f7); }
   .au-suggest .au-item .au-hint { color: var(--muted); font-size: 11px; margin-left: 6px; }
@@ -527,7 +553,7 @@
   html[data-theme="dark"] {
     --indigo: #6366f1; --indigo-dark: #4f46e5; --green: #22c55e;
     --red: #f87171; --amber: #fbbf24; --blue: #60a5fa;
-    --bg: #0f1115; --card: #181b21; --text: #e8eaed; --muted: #9aa3b2; --border: #2b3038; --bg2: #22262e;
+    --bg: #0f1115; --card: #181b21; --text: #e8eaed; --muted: #9aa3b2; --border: #2b3038; --bg2: #22262e; --field: #181b21;
   }
   html[data-theme="dark"] input[type="text"],
   html[data-theme="dark"] input[type="password"],
@@ -798,6 +824,7 @@
     <button type="button" data-tab="clickup"><svg class="nv-i" viewBox="0 0 24 24" aria-hidden="true"><path d="M9 11l3 3l8-8"/><path d="M20 12v6a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h9"/></svg><span>ClickUp setup</span></button>
     <button type="button" data-tab="agent"><svg class="nv-i" viewBox="0 0 24 24" aria-hidden="true"><circle cx="8" cy="15" r="4"/><path d="M10.85 12.15L19 4"/><path d="M18 5l2 2"/><path d="M15 8l2 2"/></svg><span>Agent Router</span></button>
     <button type="button" data-tab="sites"><svg class="nv-i" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M3.6 9h16.8M3.6 15h16.8"/><path d="M11.5 3a17 17 0 0 0 0 18M12.5 3a17 17 0 0 1 0 18"/></svg><span>Site monitor</span></button>
+    <button type="button" data-tab="files"><svg class="nv-i" viewBox="0 0 24 24" aria-hidden="true"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><path d="M9 13h6M12 10v6"/></svg><span>Task files</span></button>
     <button type="button" data-tab="bulk"><svg class="nv-i" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 6h10M4 12h10M4 18h6"/><path d="M15 19l1.5-4.5L20 11l2 2-3.5 3.5z"/></svg><span>Bulk edit</span></button>
     <button type="button" data-tab="admin"><svg class="nv-i" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3l8 3v6c0 4.5-3.2 7.9-8 9-4.8-1.1-8-4.5-8-9V6z"/><path d="M9 12l2 2 4-4"/></svg><span>Admin</span></button>
     <button type="button" data-tab="general"><svg class="nv-i" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg><span>General</span></button>
@@ -1227,6 +1254,23 @@
   </div>
   </section>
 
+  <!-- ===================== Task files ===================== -->
+  <section class="panel" data-panel="files">
+  <div class="card" id="tfCard">
+    <h2>Task files</h2>
+    <p class="hint" style="margin:0 0 12px;line-height:1.55;">Add each client's audit and reference files once. <b>Explain this task</b> then uses the parts of that client's files that are about the task (and says which file they came from), and the client report can use the client's HTML audit. Works with HTML, Word, Excel, PowerPoint, PDF, CSV, Markdown, text and screenshots. Old .doc / .xls files: save them as .docx / .xlsx first. Google Docs / Sheets: download them (File &gt; Download) and add the file.</p>
+    <div class="tf-bar">
+      <input type="search" id="tfSearch" placeholder="Search clients" />
+      <label><input type="checkbox" id="tfAll" /> All workspace clients</label>
+      <label title="The files' text is kept in your Google Drive's hidden app data, so a new computer or a reinstall gets them back. Screenshots stay on this computer."><input type="checkbox" id="tfDrive" /> Back up to Google Drive</label>
+    </div>
+    <div class="hint" id="tfSummary" style="margin:0 0 6px;"></div>
+    <div class="hint" id="tfMsg" hidden style="margin:0 0 8px;"></div>
+    <div class="tf-list" id="tfList"><div class="hint" style="padding:14px;">Loading…</div></div>
+    <input type="file" id="tfPicker" multiple hidden accept=".html,.htm,.md,.markdown,.txt,.csv,.tsv,.json,.xml,.docx,.xlsx,.pptx,.pdf,.doc,.xls,image/*" />
+  </div>
+  </section>
+
   <!-- ===================== Bulk edit ===================== -->
   <section class="panel" data-panel="bulk">
   <div class="card" id="bulkCard">
@@ -1240,9 +1284,11 @@
         <option value="week" selected>This week</option>
         <option value="nextweek">Next week</option>
         <option value="custom">Custom dates</option>
+        <option value="any">Any date (all open tasks)</option>
       </select></label>
       <span id="bkCustom" hidden><input type="date" id="bkFrom" /> to <input type="date" id="bkTo" /></span>
       <label>Client <select id="bkClient"><option value="">All clients</option></select></label>
+      <label>Missing <select id="bkMissing" title="Show only tasks that are missing this"><option value="">Anything</option><option value="due">No due date</option><option value="start">No start date</option><option value="est">No estimate</option></select></label>
       <label>Status <select id="bkStatus"><option value="open">All not done</option><option value="">Any status</option></select></label>
       <input type="search" id="bkSearch" placeholder="Search task names" />
       <button type="button" id="bkReload" title="Load again from ClickUp">&#8635;</button>
@@ -1257,6 +1303,7 @@
       <div class="bk-actrow">
         <label>Change <select id="bkKind">
           <option value="due">Due date</option>
+          <option value="start">Start date</option>
           <option value="status">Status</option>
           <option value="priority">Priority</option>
           <option value="estimate">Estimate</option>
@@ -1816,6 +1863,9 @@
     <div class="checkbox" style="margin:0 0 4px;"><input type="checkbox" id="floatTracker" /><label for="floatTracker" style="margin:0;font-weight:400;">Show the Float button</label></div>
     <div class="checkbox" style="margin:0 0 4px;"><input type="checkbox" id="floatHover" /><label for="floatHover" style="margin:0;font-weight:400;">Show the full view when I point at it <span class="hint">- off: click it to switch</span></label></div>
     <div class="checkbox" style="margin:0 0 4px;"><input type="checkbox" id="floatToday" /><label for="floatToday" style="margin:0;font-weight:400;">Show today's total</label></div>
+    <div class="checkbox" style="margin:6px 0 4px;align-items:center;"><label for="floatSize" style="margin:0;font-weight:400;">Size</label>
+      <select id="floatSize" style="width:auto;padding:3px 6px;"><option value="normal">Normal</option><option value="compact">Compact (covers less of the screen)</option></select>
+      <span class="hint">- takes effect the next time you open the tracker</span></div>
     <div class="btns" style="margin-top:10px;">
       <button type="button" id="floatNow">Float it now</button>
     </div>
@@ -1852,10 +1902,12 @@
 <script src="export-tasks.js"></script>
 <script src="lib-zip.js"></script>
 <script src="task-panel.js"></script>
+<script src="lib-taskfiles.js"></script>
 <script src="celebrate.js"></script>
 <script src="pcm-help.js"></script>
 <script src="pcm-search.js"></script>
 <script src="options.js"></script>
 <script src="bulk-edit.js"></script>
+<script src="task-files.js"></script>
 </body>
 </html>

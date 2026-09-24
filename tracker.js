@@ -89,7 +89,7 @@
 
   // ---------- the floating window ----------
   const PIP_CSS = `
-    :root { --bg: #fff; --text: #1f2937; --muted: #6b7280; --border: #e5e7eb; --track: #eef0f3; --blue: #378ADD; --green: #16a34a; --red: #dc2626; --amber: #b45309; color-scheme: light; }
+    :root { --bg: #faf7f2; --text: #2e2a26; --muted: #7b7064; --border: #e0d7ca; --track: #ece5da; --blue: #378ADD; --green: #16a34a; --red: #dc2626; --amber: #b45309; color-scheme: light; }
     html[data-theme="dark"] { --bg: #181b21; --text: #e8eaed; --muted: #9aa3b2; --border: #2b3038; --track: #2b3038; --blue: #60a5fa; --green: #22c55e; --red: #f87171; --amber: #fbbf24; color-scheme: dark; }
     html, body { margin: 0; height: 100%; background: var(--bg); color: var(--text); font: 12.5px/1.35 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; overflow: hidden; user-select: none; }
     #root { height: 100%; box-sizing: border-box; padding: 8px 10px; display: flex; align-items: center; gap: 10px; }
@@ -113,7 +113,28 @@
     .xin:focus { outline: 2px solid #6366f1; outline-offset: -1px; }
     .chip { flex: none; max-width: 42%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 10.5px; font-weight: 600; padding: 1px 7px; border-radius: 999px; background: rgba(99,102,241,.16); color: #6366f1; }
     html[data-theme="dark"] .chip { color: #a5b4fc; }
-    #fNote { font-size: 11.5px; padding: 2px 7px; }
+    #fCmt { font-size: 11.5px; padding: 2px 7px; }
+    #fPick, #fClear { padding: 1px 6px; }
+    #root.big { display: block; overflow: auto; padding: 10px 12px; user-select: text; }
+    #root.big .bhead { display: flex; gap: 10px; align-items: flex-start; padding-bottom: 8px; border-bottom: 1px solid var(--border); }
+    #root.big .bsec { margin-top: 10px; }
+    #root.big .bh { font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: .05em; color: var(--muted); margin-bottom: 5px; cursor: default; }
+    #root.big details > summary.bh { cursor: pointer; }
+    #root.big textarea.xin { width: 100%; box-sizing: border-box; resize: vertical; font-size: 12.5px; margin-bottom: 6px; }
+    #root.big .wrap { white-space: normal; overflow: visible; line-height: 1.5; }
+    #root.big .wrap a { color: #6366f1; word-break: break-all; }
+    #root.big .cmt { padding: 6px 0; border-top: 1px solid var(--border); color: var(--text); }
+    #root.big .cmt:first-child { border-top: 0; }
+    #root.big .cmt .when { color: var(--muted); font-size: 11px; }
+    #root.big .files { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 6px; }
+    #root.big .file { font-size: 11.5px; padding: 2px 4px 2px 8px; border: 1px solid var(--border); border-radius: 999px; display: inline-flex; align-items: center; gap: 4px; }
+    #root.big .file .rm { border: 0; background: none; padding: 0 3px; font-size: 11px; color: var(--muted); }
+    #root.big #eDrop.over { outline: 2px dashed #6366f1; outline-offset: 3px; border-radius: 8px; }
+    #root.big .bfoot { margin-top: 12px; padding-top: 8px; border-top: 1px solid var(--border); }
+    button.next { max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; text-align: left; }
+    #cBadge { position: fixed; top: 3px; left: 3px; z-index: 5; font: 700 10.5px/1.2 -apple-system, "Segoe UI", sans-serif; padding: 2px 6px; border-radius: 999px; background: #ef4444; border: 0; color: #fff; cursor: pointer; box-shadow: 0 1px 3px rgba(0,0,0,.3); }
+    #cBadge[hidden] { display: none; }
+    .newtag { font-size: 9.5px; font-weight: 700; padding: 0 5px; border-radius: 999px; background: #ef4444; color: #fff; margin-left: 4px; }
     .close { margin-left: auto; background: none; border: 0; color: var(--muted); font-size: 14px; padding: 0 2px; }
   `;
   let full = false;
@@ -164,17 +185,33 @@
     const st = d.createElement("style");
     st.textContent = PIP_CSS;
     d.head.appendChild(st);
+    // 💬 badge: new comments from someone else on the running task.
+    const badge = d.createElement("button");
+    badge.id = "cBadge";
+    badge.hidden = true;
+    badge.onclick = (e) => { e.stopPropagation(); openBig(); };
+    d.body.appendChild(badge);
     const root = d.createElement("div");
     root.id = "root";
     d.body.appendChild(root);
-    root.addEventListener("mouseenter", () => { if (data.settings.floatHover !== false) { full = true; paint(); } });
-    root.addEventListener("mouseleave", () => { if (data.settings.floatHover !== false && !note.busy()) { full = false; paint(); } });
+    root.addEventListener("mouseenter", () => { if (!expanded && data.settings.floatHover !== false) { full = true; paint(); } });
+    root.addEventListener("mouseleave", () => { if (!expanded && data.settings.floatHover !== false && !note.busy() && !qc.busy()) { full = false; paint(); } });
     // Moving: only Chrome's own top bar (the empty part, not the extension name
     // chip) drags a floating window - Chrome ignores moveBy from the page (tested).
     root.addEventListener("click", (e) => {
-      if (data.settings.floatHover === false && !e.target.closest("button,a")) { full = !full; paint(); }
+      // Expanded: a click on blank space (not text, buttons or boxes) shrinks it back.
+      if (expanded && (e.target === root || e.target.classList.contains("bfoot") || e.target.classList.contains("btns"))) { closeBig(); return; }
+      if (!expanded && data.settings.floatHover === false && !e.target.closest("button,a,input,textarea")) { full = !full; paint(); }
     });
     root.addEventListener("click", onAction);
+    // Files dropped on the small tracker go with the next comment.
+    root.addEventListener("dragenter", () => { if (!expanded && !full) { full = true; paint(); } });
+    root.addEventListener("dragover", (e) => { if (!expanded && pip.document.getElementById("fCmt")) e.preventDefault(); });
+    root.addEventListener("drop", (e) => {
+      if (expanded || !pip.document.getElementById("fCmt")) return;
+      e.preventDefault();
+      qc.addFiles([...(e.dataTransfer.files || [])]);
+    });
   }
   function theme() {
     const t = data.theme === "dark" || data.theme === "light" ? data.theme
@@ -194,16 +231,20 @@
     if (run && run.startMs && st.at) spent += Math.max(0, now - Math.max(run.startMs, st.at));
     const today = showToday ? "Today " + fmt(spent) + "/" + fmt(st.targetMs) : "";
     if (!run) {
+      if (expanded) { closeBig(); return; }
       const canResume = data.last && data.last.id;
       const extra = st.extraTask && st.extraTask.id;
+      // Suggest what to do next: today's open tasks, most urgent first.
+      const nexts = nextTasks(st, compact() ? 1 : 2);
       root.dataset.key = "";
-      root.innerHTML = '<div class="face">' + faceSVG("sleep", full ? 40 : 50) + '</div><div class="col">' +
+      root.innerHTML = '<div class="face">' + faceSVG("sleep", full || compact() ? 38 : 50) + '</div><div class="col">' +
         '<div class="lab" style="color:var(--amber)">No timer running</div>' +
-        (today ? '<div class="sub">' + esc(today) + "</div>" : "") +
         (full
-          ? '<div class="row"><span class="btns" style="margin-left:0">' +
+          ? nexts.map((t) => '<div class="row"><button class="x next" data-act="startid" data-id="' + esc(t.id) + '" title="Start: ' + esc(t.name) + '">&#9654; ' + esc(t.name) + "</button></div>").join("") +
+            '<div class="row"><span class="btns" style="margin-left:0">' +
             (extra ? '<button data-act="xopen">Start Extra Task</button>' : "") + (canResume ? '<button data-act="resume" title="' + esc(data.last.name || "") + '">Resume last</button>' : "") + "</span></div>"
-          : (today ? "" : '<div class="sub">Point here to start a task</div>')) +
+          : (nexts.length ? '<div class="sub">Next: ' + esc(nexts[0].name) + "</div>" : "") +
+            (today ? '<div class="sub">' + esc(today) + "</div>" : nexts.length ? "" : '<div class="sub">Point here to start a task</div>')) +
         "</div>";
       return;
     }
@@ -225,6 +266,19 @@
     const isExtra = !!((st.extraTask && String(st.extraTask.id) === String(run.taskId)) ||
       /\bextra(?:\(s\)|s)?\s+task(?:\(s\)|s)?\b/i.test(String(run.taskName || "")));
     const bar = '<div class="row"><div class="trk"><b style="width:' + width.toFixed(1) + "%;background:" + barColor + (p == null ? ";opacity:.35" : "") + '"></b></div><span class="tm"' + (over ? ' style="color:var(--red)"' : "") + ">" + esc(time) + "</span></div>";
+    if (expanded) {
+      if (bigKey !== run.taskId + ":" + run.startMs) { closeBig(); return; }
+      const d = pip.document;
+      d.getElementById("eFace").innerHTML = faceSVG(p, 36);
+      const eb = d.getElementById("eBar");
+      eb.style.width = width.toFixed(1) + "%";
+      eb.style.background = barColor;
+      eb.style.opacity = p == null ? ".35" : "";
+      const et = d.getElementById("eTime");
+      et.textContent = time + (today ? " · " + today : "");
+      et.style.color = over ? "var(--red)" : "";
+      return;
+    }
     if (full) {
       // Built once per timer, then only the face / bar / numbers are updated, so
       // the note being typed is never wiped by the every-second refresh.
@@ -235,14 +289,15 @@
         const client = clientOf(st, run.taskId);
         root.innerHTML = '<div class="face" id="fFace"></div><div class="col">' +
           '<div class="row"><a class="nm" href="https://app.clickup.com/t/' + encodeURIComponent(run.taskId) + '" target="_blank" title="' + esc(run.taskName) + '">' + esc(run.taskName || "(task)") + "</a>" +
-          (client ? '<span class="chip" title="Client">' + esc(client) + "</span>" : "") +
+          (client && !compact() ? '<span class="chip" title="Client">' + esc(client) + "</span>" : "") +
+          '<button class="x" data-act="big" title="Bigger view: comments, attach screenshots and files, description">&#10529;</button>' +
           (!isExtra && st.extraTask && st.extraTask.id ? '<button class="x" data-act="xopen" title="Switch to the Extra Task now (meeting or a quick note)">&#8644; Extra</button>' : "") +
           (isExtra && data.last && data.last.id ? '<button class="x pri" data-act="resume" title="Stop the Extra Task and go back to: ' + esc(data.last.name || "your task") + '">&#8617; Back to task</button>' : "") + "</div>" +
           '<div class="row"><div class="trk"><b id="fBar"></b></div><span class="tm" id="fTime"></span></div>' +
-          '<div class="row"><input class="xin" id="fNote" maxlength="500" placeholder="Add a note to this time entry" title="Shows in the Description column of your ClickUp Timesheet. Enter to save; it\'s also saved when you press Stop or Done." /><span class="sub" id="fSaved"></span></div>' +
-          '<div class="row"><span class="sub" id="fToday" style="font-size:11.5px"></span><span class="btns"><button data-act="stop" title="Save the note and stop the timer">&#9632; Stop</button>' +
-          (isExtra ? "" : '<button data-act="complete" title="Save the note and mark the task complete (stops the timer)">&#10003; Done</button>') + "</span></div></div>";
-        note.bind(pip.document.getElementById("fNote"), pip.document.getElementById("fSaved"), run);
+          (compact() ? "" : '<div class="row"><input class="xin" id="fCmt" maxlength="2000" placeholder="Comment + Enter" title="Posts a comment on the task. Paste screenshots with Ctrl+V, drop files on the tracker or use the paperclip. Anything still here is posted when you press Stop or Done." /><button class="x" data-act="qcpick" id="fPick" title="Attach files">&#128206;</button><button class="x" data-act="qcclear" id="fClear" hidden title="Remove the attached files">&#10005;</button><input type="file" id="fFileIn" multiple hidden /><span class="sub" id="fCmsg"></span></div>') +
+          '<div class="row"><span class="sub" id="fToday" style="font-size:11.5px"></span><span class="btns"><button data-act="stop" title="Post the comment (if any) and stop the timer">&#9632; Stop</button>' +
+          (isExtra ? "" : '<button data-act="complete" title="Post the comment (if any) and mark the task complete (stops the timer)">&#10003; Done</button>') + "</span></div></div>";
+        if (!compact()) qc.bind(pip.document, String(run.taskId));
       }
       const d = pip.document;
       d.getElementById("fFace").innerHTML = faceSVG(p, 40);
@@ -256,9 +311,31 @@
       d.getElementById("fToday").textContent = today || label;
     } else {
       root.dataset.key = "";
-      root.innerHTML = '<div class="face">' + faceSVG(p, 50) + '</div><div class="col">' + bar +
+      root.innerHTML = '<div class="face">' + faceSVG(p, compact() ? 40 : 50) + '</div><div class="col">' + bar +
         '<div class="lab" style="color:' + labColor + '">' + esc(label) + "</div></div>";
     }
+  }
+  // Today's open tasks to suggest when nothing is running: not done, not the
+  // Extra Task, single-assignee, most urgent first, then earliest due.
+  const PRIO_RANK = { urgent: 0, high: 1, normal: 2, low: 3 };
+  const DONE_RE = /^(closed|done|complete|completed|resolved|shipped|approved)$/i;
+  function nextTasks(st, n) {
+    const extraId = st.extraTask && st.extraTask.id ? String(st.extraTask.id) : "";
+    const seen = new Set();
+    const out = [];
+    const dayStart = new Date().setHours(0, 0, 0, 0), dayEnd = dayStart + 86400000;
+    for (const t of st.tasks || []) {
+      const due = Number(t && t.dueDateMs) || 0;
+      if (due < dayStart || due >= dayEnd) continue; // due TODAY only
+      const id = t && String(t.id != null ? t.id : t.taskId || "");
+      if (!id || seen.has(id) || t.error) continue;
+      seen.add(id);
+      if (id === extraId || /\bextra(?:\(s\)|s)?\s+task(?:\(s\)|s)?\b/i.test(String(t.name || ""))) continue;
+      if (t.done || DONE_RE.test(String(t.status || "").trim())) continue;
+      if (Number(t.assigneeCount) > 1) continue;
+      out.push({ id, name: t.name || "(task)", r: PRIO_RANK[String(t.priority || "").toLowerCase()] ?? 4, due: Number(t.dueDateMs) || Infinity });
+    }
+    return out.sort((a, b) => a.r - b.r || a.due - b.due).slice(0, n);
   }
   // The running task's client, from the task lists already loaded.
   function clientOf(st, id) {
@@ -271,6 +348,68 @@
     }
     return "";
   }
+  // Quick comment in the small hover view (most people comment rather than write
+  // a time-entry note). Enter posts it; Stop / Done / switching post a comment
+  // still in the box first, so nothing typed is lost.
+  const qc = {
+    value: "", files: [], taskId: "", d: null,
+    el(id) { return this.d && this.d.getElementById(id); },
+    bind(doc, taskId) {
+      if (this.taskId !== taskId) { this.value = ""; this.files = []; }
+      this.taskId = taskId; this.d = doc;
+      const input = this.el("fCmt");
+      if (!input) return;
+      input.value = this.value;
+      input.oninput = () => { this.value = input.value; this.msg(""); };
+      input.onkeydown = (e) => { if (e.key === "Enter") { e.preventDefault(); this.post(); } };
+      input.addEventListener("paste", (e) => {
+        const fl = [...((e.clipboardData && e.clipboardData.files) || [])];
+        if (fl.length) { e.preventDefault(); this.addFiles(fl); }
+      });
+      this.el("fFileIn").onchange = (e) => { this.addFiles([...(e.target.files || [])]); e.target.value = ""; };
+      this.paintFiles();
+    },
+    msg(t, bad) { const m = this.el("fCmsg"); if (m) { m.textContent = t; m.style.color = bad ? "var(--red)" : ""; } },
+    busy() { return !!((this.d && this.d.activeElement === this.el("fCmt")) || this.value.trim() || this.files.length); },
+    addFiles(list) {
+      for (const f of list.slice(0, 10)) {
+        if (f.size > 10 * 1024 * 1024) { this.msg(f.name + " is over 10 MB", true); continue; }
+        const fr = new FileReader();
+        fr.onload = () => {
+          const name = f.name && f.name !== "image.png" ? f.name : "screenshot-" + new Date().toISOString().slice(0, 19).replace(/[:T]/g, "-") + ".png";
+          this.files.push({ name, type: f.type || "application/octet-stream", b64: String(fr.result || "").split(",")[1] || "" });
+          this.paintFiles();
+        };
+        fr.readAsDataURL(f);
+      }
+    },
+    paintFiles() {
+      const pick = this.el("fPick"), clr = this.el("fClear");
+      if (!pick) return;
+      pick.innerHTML = "&#128206;" + (this.files.length ? this.files.length : "");
+      pick.title = this.files.length ? "Attached: " + this.files.map((f) => f.name).join(", ") + " (click to add more)" : "Attach files";
+      if (clr) clr.hidden = !this.files.length;
+    },
+    async post() {
+      const text = this.value.trim();
+      if ((!text && !this.files.length) || !this.taskId) return true;
+      this.msg(this.files.length ? "Uploading…" : "Posting…");
+      const r = this.files.length
+        ? await send({ type: "CLICKUP_TASK_ATTACH", taskId: this.taskId, text, files: this.files })
+        : await send({ type: "CLICKUP_TASK_COMMENT", taskId: this.taskId, text });
+      if (r && r.ok) {
+        this.value = ""; this.files = [];
+        const i = this.el("fCmt"); if (i) i.value = "";
+        this.paintFiles();
+        this.msg("Posted ✓");
+        setTimeout(() => { const m = this.el("fCmsg"); if (m && m.textContent === "Posted ✓") m.textContent = ""; }, 1800);
+        return true;
+      }
+      this.msg("Not posted", true);
+      const m = this.el("fCmsg"); if (m) m.title = (r && r.error) || "";
+      return false;
+    },
+  };
   // Note = the running time entry's Description in ClickUp (same as the popup's
   // "Add a note to this time entry"). Saved on Enter, when the box loses focus,
   // and before Stop / Done / switching tasks.
@@ -306,7 +445,28 @@
   async function onAction(e) {
     const b = e.target.closest("button[data-act]");
     if (!b || busy) return;
-    if (b.dataset.act === "xopen") { note.commit(); openExtraPanel(); return; }
+    if (b.dataset.act === "startid") {
+      busy = true;
+      b.disabled = true;
+      b.textContent = "Starting…";
+      const r = await send({ type: "CLICKUP_TASK_START", taskId: String(b.dataset.id), force: true });
+      busy = false;
+      await load();
+      paint();
+      if (r && r.ok === false && pip) {
+        const col = pip.document.querySelector("#root .col");
+        if (col) { const m = pip.document.createElement("div"); m.className = "sub"; m.style.color = "var(--red)"; m.textContent = r.reason === "multi-assignee" ? "Shared task: start it from the popup" : "Couldn't start it"; col.appendChild(m); }
+      }
+      return;
+    }
+    if (b.dataset.act === "qcpick") { pip.document.getElementById("fFileIn").click(); return; }
+    if (b.dataset.act === "qcclear") { qc.files = []; qc.paintFiles(); return; }
+    if (b.dataset.act === "big") { openBig(); return; }
+    if (b.dataset.act === "small") { closeBig(); return; }
+    if (b.dataset.act === "pickfiles") { pip.document.getElementById("eFileIn").click(); return; }
+    if (b.dataset.act === "rmfile") { bigFiles.splice(Number(b.dataset.i), 1); paintFiles(); return; }
+    if (b.dataset.act === "comment") { postComment(); return; }
+    if (b.dataset.act === "xopen") { note.commit(); qc.post(); if (expanded) closeBig(); openExtraPanel(); return; }
     if (b.dataset.act === "xcancel") { xPanel = false; paint(); return; }
     if (b.dataset.act === "xmeet") { startExtra("Meeting"); return; }
     if (b.dataset.act === "xgo") { const i = pip.document.getElementById("xnote"); startExtra(i ? i.value.trim() : ""); return; }
@@ -317,7 +477,7 @@
     const run = st.running;
     const act = b.dataset.act;
     let r = null;
-    if (act === "stop" || act === "complete" || act === "resume") await note.commit(); // the note lands on this entry first
+    if (act === "stop" || act === "complete" || act === "resume") { await note.commit(); await qc.post(); } // note + a typed comment land first
     if (act === "stop" && run) r = await send({ type: "CLICKUP_TASK_STOP", taskId: String(run.taskId) });
     else if (act === "complete" && run) {
       const extraRun = (st.extraTask && String(st.extraTask.id) === String(run.taskId)) || /\bextra(?:\(s\)|s)?\s+task(?:\(s\)|s)?\b/i.test(String(run.taskName || ""));
@@ -342,6 +502,214 @@
       return;
     }
     paint();
+  }
+
+  // ---------- big view (⤢): note, comment with files, comments, description ----------
+  // The window grows (Chrome allows resizeTo after a click; if it refuses, the
+  // user can drag a corner) and shows the running task like the task details
+  // panel. The every-second refresh only touches the face / bar / time here.
+  let expanded = false;
+  let bigKey = "";
+  // Content sizes (Chrome adds its own title bar on top). resizeTo() takes the
+  // OUTER size, so the small window is put back to exactly what it was.
+  const SMALL = [340, 140], BIG = [460, 640];
+  // Options > Floating tracker > Size: Compact covers less of the screen (no
+  // comment box on hover - ⤢ has it), applied when the tracker is (re)opened.
+  const COMPACT = [300, 96];
+  const compact = () => data.settings.floatSize === "compact";
+  let savedPos = null, savedOuter = null;
+  const tryResize = (w, h) => { try { pip.resizeTo(w, h); } catch (e) {} };
+  const bigFiles = []; // { name, type, b64, size }
+  function linkify(text) {
+    return esc(text).replace(/https?:\/\/[^\s<"']+/g, (u) => '<a href="' + u + '" target="_blank" rel="noopener">' + u + "</a>").replace(/\n/g, "<br>");
+  }
+  function openBig() {
+    const st = data.st || {};
+    const run = st.running;
+    if (!run) return;
+    expanded = true;
+    bigKey = run.taskId + ":" + run.startMs;
+    // Remember where the small tracker was: Chrome may shift the window to keep
+    // the bigger one on screen, and we ask it to go back there on ⤡.
+    savedPos = { x: pip.screenX, y: pip.screenY };
+    savedOuter = { w: pip.outerWidth, h: pip.outerHeight };
+    // Grow only into the free space right of / below the window when it fits:
+    // Chrome can't be asked to move a floating window, so if the bigger window
+    // would run off screen Chrome shifts it and it can't be put back.
+    const scr = pip.screen || screen;
+    const frameH = Math.max(0, pip.outerHeight - pip.innerHeight), frameW = Math.max(0, pip.outerWidth - pip.innerWidth);
+    const roomW = (scr.availLeft || 0) + scr.availWidth - pip.screenX;
+    const roomH = (scr.availTop || 0) + scr.availHeight - pip.screenY;
+    const w = BIG[0] + frameW, h = BIG[1] + frameH;
+    const fitW = roomW >= 360 ? Math.min(w, roomW) : w;
+    const fitH = roomH >= 380 ? Math.min(h, roomH) : h;
+    tryResize(fitW, fitH);
+    const d = pip.document;
+    const root = d.getElementById("root");
+    root.dataset.key = "";
+    root.classList.add("big");
+    const isExtra = !!((st.extraTask && String(st.extraTask.id) === String(run.taskId)) || /\bextra(?:\(s\)|s)?\s+task(?:\(s\)|s)?\b/i.test(String(run.taskName || "")));
+    const client = clientOf(st, run.taskId);
+    root.innerHTML =
+      '<div class="bhead"><span class="face" id="eFace"></span><div class="col">' +
+        '<div class="row"><a class="nm" href="https://app.clickup.com/t/' + encodeURIComponent(run.taskId) + '" target="_blank" title="' + esc(run.taskName) + '">' + esc(run.taskName || "(task)") + "</a>" +
+        '<button class="x" data-act="small" title="Back to the small tracker">&#10530; Smaller</button></div>' +
+        '<div class="row">' + (client ? '<span class="chip">' + esc(client) + "</span>" : "") + '<span class="sub" id="eMeta">Loading task…</span></div>' +
+        '<div class="row"><div class="trk"><b id="eBar"></b></div><span class="tm" id="eTime"></span></div></div></div>' +
+      '<div class="bsec"><div class="bh">Note on this time entry</div><div class="row"><input class="xin" id="eNote" maxlength="500" placeholder="Shows in your ClickUp Timesheet" /><span class="sub" id="eSaved"></span></div></div>' +
+      '<div class="bsec" id="eDrop"><div class="bh">Comment on the task</div>' +
+        '<textarea class="xin" id="eComment" rows="3" placeholder="Write a comment. Paste a screenshot with Ctrl+V, or drop files here."></textarea>' +
+        '<div id="eFiles" class="files"></div>' +
+        '<div class="row"><button class="x" data-act="pickfiles">&#128206; Attach</button><input type="file" id="eFileIn" multiple hidden />' +
+        '<span class="sub" id="eCmsg"></span><span class="btns"><button class="x pri" data-act="comment">Comment</button></span></div></div>' +
+      '<div class="bsec"><div class="bh">Comments</div><div id="eComments" class="sub wrap">Loading…</div></div>' +
+      '<details class="bsec"><summary class="bh">Description</summary><div id="eDesc" class="sub wrap"></div></details>' +
+      '<div class="bfoot"><span class="btns" style="margin-left:0"><button data-act="stop">&#9632; Stop</button>' +
+        (isExtra ? "" : '<button data-act="complete">&#10003; Done</button>') +
+        (!isExtra && st.extraTask && st.extraTask.id ? '<button data-act="xopen">&#8644; Extra</button>' : "") +
+        (isExtra && data.last && data.last.id ? '<button class="pri" data-act="resume">&#8617; Back to task</button>' : "") + "</span></div>";
+    if (note.key !== run.taskId + ":" + run.startMs) note.reset(run);
+    note.bind(d.getElementById("eNote"), d.getElementById("eSaved"), run);
+    bigFiles.length = 0;
+    const ta = d.getElementById("eComment");
+    ta.addEventListener("paste", (e) => {
+      const items = [...((e.clipboardData && e.clipboardData.files) || [])];
+      if (items.length) { e.preventDefault(); addFiles(items); }
+    });
+    const drop = d.getElementById("eDrop");
+    drop.addEventListener("dragover", (e) => { e.preventDefault(); drop.classList.add("over"); });
+    drop.addEventListener("dragleave", () => drop.classList.remove("over"));
+    drop.addEventListener("drop", (e) => { e.preventDefault(); drop.classList.remove("over"); addFiles([...(e.dataTransfer.files || [])]); });
+    d.getElementById("eFileIn").addEventListener("change", (e) => { addFiles([...(e.target.files || [])]); e.target.value = ""; });
+    ta.addEventListener("keydown", (e) => { if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) { e.preventDefault(); postComment(); } });
+    loadPanel(run.taskId, true);
+    cw.seenBefore = cw.seen || 0;
+    markSeen();
+    paint();
+  }
+  function closeBig() {
+    expanded = false;
+    bigKey = "";
+    if (savedOuter) tryResize(savedOuter.w, savedOuter.h); else tryResize(SMALL[0], SMALL[1] + 32);
+    // Back where it was. Chrome may ignore this for floating windows; then it
+    // stays put and can be dragged back by its top bar.
+    if (savedPos) { const p = savedPos; setTimeout(() => { try { pip.moveTo(p.x, p.y); } catch (e) {} }, 60); }
+    const root = pip.document.getElementById("root");
+    root.classList.remove("big");
+    paintBadge();
+    root.dataset.key = "";
+    full = false;
+    paint();
+  }
+  async function loadPanel(taskId, force) {
+    const r = await send({ type: "CLICKUP_TASK_PANEL", taskId: String(taskId), force: !!force });
+    if (!expanded || !pip) return;
+    const d = pip.document;
+    if (!r || !r.ok || !r.data) { d.getElementById("eComments").textContent = "Couldn't load the task: " + ((r && r.error) || "no reply"); return; }
+    paintPanel(r.data);
+  }
+  // ---------- new-comment watch (running task, every 3 minutes while open) ----------
+  const cw = { taskId: "", at: 0, seen: 0, seenBefore: 0, latestAt: 0, newCount: 0, busy: false, me: null };
+  async function myUserId() {
+    if (cw.me != null) return cw.me;
+    const r = await send({ type: "GET_STATE" });
+    cw.me = String((r && r.clickup && r.clickup.user && r.clickup.user.id) || "");
+    return cw.me;
+  }
+  async function pollComments(force) {
+    if (!pip || cw.busy) return;
+    const run = data.st && data.st.running;
+    if (!run) { cw.taskId = ""; cw.newCount = 0; paintBadge(); return; }
+    const id = String(run.taskId);
+    if (!force && cw.taskId === id && Date.now() - cw.at < 180000) return;
+    cw.busy = true;
+    try {
+      const me = await myUserId();
+      const r = await send({ type: "CLICKUP_TASK_PANEL", taskId: id, force: true });
+      if (!r || !r.ok || !r.data) return;
+      const cs = r.data.comments || [];
+      const g = await chrome.storage.local.get("commentsSeen").catch(() => ({}));
+      const seenMap = (g && g.commentsSeen) || {};
+      const latest = cs.reduce((m, c) => Math.max(m, Number(c.at) || 0), 0);
+      // First look at this task: older comments don't count as new.
+      if (seenMap[id] == null) { seenMap[id] = latest || Date.now(); await saveSeen(seenMap); }
+      cw.taskId = id; cw.at = Date.now(); cw.latestAt = latest; cw.seen = seenMap[id];
+      cw.newCount = cs.filter((c) => Number(c.at) > seenMap[id] && (!me || c.userId !== me)).length;
+      paintBadge();
+      if (expanded && bigKey.startsWith(id + ":")) paintPanel(r.data);
+    } finally { cw.busy = false; }
+  }
+  async function saveSeen(map) {
+    const keys = Object.keys(map).sort((a, b) => map[b] - map[a]).slice(0, 200);
+    const out = {};
+    for (const k of keys) out[k] = map[k];
+    try { await chrome.storage.local.set({ commentsSeen: out }); } catch (e) {}
+  }
+  async function markSeen() {
+    if (!cw.taskId) return;
+    const g = await chrome.storage.local.get("commentsSeen").catch(() => ({}));
+    const m = (g && g.commentsSeen) || {};
+    m[cw.taskId] = Math.max(cw.latestAt || 0, Date.now());
+    await saveSeen(m);
+    cw.seen = m[cw.taskId];
+    cw.newCount = 0;
+    paintBadge();
+  }
+  function paintBadge() {
+    const b = pip && pip.document.getElementById("cBadge");
+    if (!b) return;
+    b.hidden = !cw.newCount || expanded;
+    b.textContent = "💬 " + cw.newCount;
+    b.title = cw.newCount + " new comment" + (cw.newCount === 1 ? "" : "s") + " from others on this task - click to read";
+  }
+  function paintPanel(p) {
+    const d = pip.document;
+    const bits = [p.status ? "Status " + p.status : "", p.dueDateMs ? "Due " + new Date(p.dueDateMs).toLocaleDateString([], { month: "short", day: "numeric" }) : "No due date", p.estimateMs ? "Est " + fmt(p.estimateMs) : ""];
+    d.getElementById("eMeta").textContent = bits.filter(Boolean).join(" · ");
+    const cs = (p.comments || []).slice(0, 5);
+    d.getElementById("eComments").innerHTML = cs.length
+      ? cs.map((c) => '<div class="cmt"><b>' + esc(c.who) + '</b>' + (cw.seenBefore && Number(c.at) > cw.seenBefore && c.userId !== cw.me ? '<span class="newtag">NEW</span>' : "") + ' <span class="when">' + (c.at ? esc(new Date(c.at).toLocaleString([], { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" })) : "") + "</span><div>" + linkify(c.text) + "</div></div>").join("")
+      : "No comments yet.";
+    const desc = String(p.description || "").trim();
+    d.getElementById("eDesc").innerHTML = desc ? linkify(desc) : "No description.";
+  }
+  function addFiles(list) {
+    for (const f of list.slice(0, 10)) {
+      if (f.size > 10 * 1024 * 1024) { setCmsg("“" + f.name + "” is over 10 MB - attach it in ClickUp instead.", true); continue; }
+      const fr = new FileReader();
+      fr.onload = () => {
+        const b64 = String(fr.result || "").split(",")[1] || "";
+        const name = f.name && f.name !== "image.png" ? f.name : "screenshot-" + new Date().toISOString().slice(0, 19).replace(/[:T]/g, "-") + ".png";
+        bigFiles.push({ name, type: f.type || "application/octet-stream", b64, size: f.size });
+        paintFiles();
+      };
+      fr.readAsDataURL(f);
+    }
+  }
+  function paintFiles() {
+    const box = pip.document.getElementById("eFiles");
+    box.innerHTML = bigFiles.map((f, i) => '<span class="file">' + esc(f.name) + ' <button class="rm" data-act="rmfile" data-i="' + i + '" title="Remove">&#10005;</button></span>').join("");
+  }
+  function setCmsg(t, bad) { const m = pip.document.getElementById("eCmsg"); if (m) { m.textContent = t; m.style.color = bad ? "var(--red)" : ""; } }
+  async function postComment() {
+    const d = pip.document;
+    const ta = d.getElementById("eComment");
+    const text = ta.value.trim();
+    if (!text && !bigFiles.length) { setCmsg("Write a comment or attach a file first.", true); return; }
+    const run = (data.st || {}).running;
+    if (!run) return;
+    setCmsg(bigFiles.length ? "Uploading " + bigFiles.length + " file" + (bigFiles.length === 1 ? "" : "s") + "…" : "Posting…");
+    d.querySelectorAll('[data-act="comment"]').forEach((b) => { b.disabled = true; });
+    const r = bigFiles.length
+      ? await send({ type: "CLICKUP_TASK_ATTACH", taskId: String(run.taskId), text, files: bigFiles.map(({ name, type, b64 }) => ({ name, type, b64 })) })
+      : await send({ type: "CLICKUP_TASK_COMMENT", taskId: String(run.taskId), text });
+    d.querySelectorAll('[data-act="comment"]').forEach((b) => { b.disabled = false; });
+    if (!r || !r.ok) { setCmsg("Not posted: " + ((r && r.error) || "no reply"), true); return; }
+    ta.value = "";
+    bigFiles.length = 0;
+    paintFiles();
+    setCmsg("Posted ✓");
+    if (r.data) paintPanel(r.data); else loadPanel(run.taskId, true);
   }
 
   // ---------- host page ----------
@@ -372,7 +740,7 @@
   async function openPip() {
     if (pip || !supported) return;
     try {
-      pip = await window.documentPictureInPicture.requestWindow({ width: 340, height: 116 });
+      pip = await window.documentPictureInPicture.requestWindow({ width: (compact() ? COMPACT : SMALL)[0], height: (compact() ? COMPACT : SMALL)[1] });
     } catch (e) {
       $("lead").textContent = "Chrome didn't open it (" + (e && e.message ? e.message : e) + "). Click again.";
       return;
@@ -382,6 +750,7 @@
     paint();
     chrome.storage.local.set({ floatOpen: true }).catch(() => {});
     hostState("floating");
+    pollComments(true); // new comments on the running task
     pip.addEventListener("pagehide", () => {
       pip = null;
       chrome.storage.local.set({ floatOpen: false }).catch(() => {});
@@ -400,6 +769,7 @@
     if (ch.clickupState || ch.runningProgress || ch.settings || ch.lastStoppedTask || ch.resumeTask || ch.theme) load().then(() => { theme(); paint(); });
   });
   setInterval(paint, 1000);
+  setInterval(() => { pollComments(false); }, 30000); // each task is checked at most every 3 minutes
   // A timer started or stopped in ClickUp itself shows up within a minute.
   setInterval(() => { if (pip) send({ type: "CLICKUP_SYNC_RUNNING" }); }, 60000);
 })();

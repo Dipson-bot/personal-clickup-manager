@@ -360,14 +360,25 @@
   async function auditGet(client) {
     const k = clientKey(client);
     if (!k) return null;
+    let rec = null;
     try {
       const d = await db();
-      return await new Promise((res) => {
+      rec = await new Promise((res) => {
         const q = d.transaction("audits").objectStore("audits").get(k);
         q.onsuccess = () => res(q.result || null);
         q.onerror = () => res(null);
       });
-    } catch (e) { return null; }
+    } catch (e) {}
+    if (rec) return rec;
+    // None saved from here: use an HTML audit from Options > Task files.
+    try {
+      const f = window.PcmFiles && await window.PcmFiles.auditHtml(client);
+      if (f && f.html) {
+        const parsed = parseAudit(f.html);
+        if (parsed && parsed.count) return { client, fileName: f.name, savedAt: f.addedAt, title: parsed.title, items: parsed.items, count: parsed.count };
+      }
+    } catch (e) {}
+    return null;
   }
   async function auditSave(client, fileName, parsed) {
     const k = clientKey(client);

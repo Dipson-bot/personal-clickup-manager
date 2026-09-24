@@ -18,6 +18,9 @@ import {
   pullAccountsFromDrive,
   listDriveFiles,
   getDriveAccount,
+  pushTaskFiles,
+  pullTaskFiles,
+  driveQuota,
 } from "./lib-drive.js";
 import { runAllAccounts, runAccountLogin, URLS, GITHUB_KEEP_COOKIES } from "./lib-automation.js";
 import { verifyToken, getTeams, fetchTodayEstimate, fetchWeeklySummary, fetchDateRangeEstimate, createTaskCache, fetchTeamMembers, fmtDuration, findExtraTaskByName, parseTaskIdFromUrl, getCurrentTimeEntry, getRunningTaskProgress, startTimer, stopTimer, getTaskById, setTaskStatus, taskUrlFor, clientLabelFromContainer, resolveSpaceNamesFor, taskContainer, cuPriorityName, isTaskDone, getSubtasksOfParent, getTaskTree, getTaskDetail, updateTimeEntry, setTaskDueDate, clearTaskTreeCache, listWorkspaceClients, cuRowAssignees, fetchDoneBetween, getTaskPanel, addTaskComment } from "./lib-clickup.js";
@@ -161,6 +164,97 @@ async function maybeApplyTeamSites(policy) {
   const added = await applyTeamSites(sites);
   await chrome.storage.local.set({ teamSites: { key, status: "ok", triedAt: Date.now(), at: Number(file.updatedAt) || want, list: sites, added } });
 }
+
+// ---------- Task files backup (Options > Task files) ----------
+// The files live in IndexedDB "pcm-taskfiles" (lib-taskfiles.js). Their text
+// (not screenshots) is mirrored to Drive's hidden app data; a computer with no
+// files yet takes the backup. Runs a few seconds after files change, and on the
+// regular Drive sync.
+function tfDb() {
+  return new Promise((res, rej) => {
+    const r = indexedDB.open("pcm-taskfiles", 1);
+    r.onupgradeneeded = () => { const s = r.result.createObjectStore("files", { keyPath: "id" }); s.createIndex("ck", "ck"); };
+    r.onsuccess = () => res(r.result);
+    r.onerror = () => rej(r.error);
+  });
+}
+async function tfAll() {
+  const d = await tfDb();
+  return new Promise((res, rej) => { const q = d.transaction("files").objectStore("files").getAll(); q.onsuccess = () => res(q.result || []); q.onerror = () => rej(q.error); });
+}
+async function tfPutMany(recs) {
+  const d = await tfDb();
+  await new Promise((res, rej) => { const tx = d.transaction("files", "readwrite"); const s = tx.objectStore("files"); for (const r of recs) s.put(r); tx.oncomplete = res; tx.onerror = () => rej(tx.error); });
+}
+let tfSyncing = null;
+function syncTaskFiles() {
+  if (tfSyncing) return tfSyncing;
+  tfSyncing = (async () => {
+    const settings = await getSettings().catch(() => ({}));
+    if (settings.taskFilesDrive === false) return { ok: true, off: true };
+    const tok = await getValidToken(false).catch(() => null);
+    if (!tok) return { ok: false, reason: "signed-out" };
+    const local = await tfAll();
+    const { taskFilesChangedAt = 0, taskFilesPushedAt = 0 } = await chrome.storage.local.get(["taskFilesChangedAt", "taskFilesPushedAt"]);
+    // Restore only on a computer that has never changed its Task files (a new
+    // install / second computer) - if the user deleted them all here, the empty
+    // list is pushed instead, so deleted files don't come back.
+    if (!local.length && !taskFilesChangedAt) {
+      const remote = await pullTaskFiles(tok).catch(() => null);
+      const recs = remote && Array.isArray(remote.files) ? remote.files.filter((r) => r && r.id && r.ck) : [];
+      if (recs.length) {
+        await tfPutMany(recs);
+        await chrome.storage.local.set({ taskFilesPushedAt: Date.now(), taskFilesChangedAt: Date.now() });
+        return { ok: true, restored: recs.length };
+      }
+      if (!taskFilesChangedAt) return { ok: true, nothing: true }; // never had any: don't write an empty backup
+    }
+    if (taskFilesChangedAt <= taskFilesPushedAt) return { ok: true, upToDate: true };
+    const files = local.map(({ blob, ...rest }) => rest); // text only - screenshots stay on this computer
+    const payload = { v: 1, at: Date.now(), files };
+    // Not enough room in the user's Google Drive: pause the backup and say so.
+    const q = await driveQuota(tok).catch(() => null);
+    const need = JSON.stringify(payload).length + 20 * 1048576; // the backup + a safety margin
+    if (q && q.limit && q.limit - q.usage < need) {
+      await notifyDriveFull(q, "Task files backup is paused");
+      return { ok: false, reason: "drive-full" };
+    }
+    await pushTaskFiles(tok, payload);
+    await chrome.storage.local.set({ taskFilesPushedAt: Date.now() });
+    return { ok: true, pushed: files.length };
+  })().catch((e) => ({ ok: false, error: String(e && e.message ? e.message : e) })).finally(() => { tfSyncing = null; });
+  return tfSyncing;
+}
+// Google Drive (almost) full: one notification a day, whichever sync hit it.
+async function notifyDriveFull(q, what) {
+  const { driveFullNotifiedAt = 0 } = await chrome.storage.local.get("driveFullNotifiedAt");
+  if (Date.now() - driveFullNotifiedAt < 24 * 3600000) return;
+  await chrome.storage.local.set({ driveFullNotifiedAt: Date.now() });
+  const gb = (n) => (n / 1073741824).toFixed(1) + " GB";
+  chrome.notifications.create("drive-full-" + Date.now(), {
+    type: "basic", iconUrl: chrome.runtime.getURL("icons/icon128.png"), priority: 2,
+    title: "Google Drive is almost full",
+    message: (what ? what + ": " : "Drive sync can't save: ") + (q && q.limit ? gb(q.usage) + " of " + gb(q.limit) + " used. " : "") +
+      "Free up space in Google Drive (or turn off the backup in Options) so your settings and files keep syncing.",
+    buttons: [{ title: "Open Google Drive storage" }],
+  }, () => void chrome.runtime.lastError);
+}
+chrome.notifications.onButtonClicked.addListener((id) => {
+  if (id.startsWith("drive-full-")) { chrome.notifications.clear(id).catch(() => {}); chrome.tabs.create({ url: "https://drive.google.com/settings/storage" }).catch(() => {}); }
+});
+chrome.notifications.onClicked.addListener((id) => {
+  if (id.startsWith("drive-full-")) { chrome.notifications.clear(id).catch(() => {}); chrome.tabs.create({ url: "https://drive.google.com/settings/storage" }).catch(() => {}); }
+});
+// Any Drive write refused because the Drive is full (lib-drive sets driveFullAt).
+chrome.storage.onChanged.addListener((ch, area) => {
+  if (area === "local" && ch.driveFullAt && ch.driveFullAt.newValue) notifyDriveFull(null, "").catch(() => {});
+});
+let tfTimer = null;
+chrome.storage.onChanged.addListener((ch, area) => {
+  if (area !== "local" || !ch.taskFilesChangedAt) return;
+  clearTimeout(tfTimer);
+  tfTimer = setTimeout(() => { syncTaskFiles().catch(() => {}); }, 5000);
+});
 
 // ---------- Diagnostics (Options > General > Help & diagnostics) ----------
 // The last 25 errors from the background and the pages (pcm-help.js), plus a
@@ -499,10 +593,12 @@ async function persistFilterCache() {
 // "Deadline crossed" source: every task assigned to me that is past its due
 // date and not complete, across ALL dates (see CLICKUP_OVERDUE). 5-min cache.
 let overdueCache = null;
+let openTasksCache = null; // Bulk edit "Any date" (CLICKUP_OPEN_TASKS)
 let doneTodayCache = null; // wrap-up's "closed today" list, kept one minute
 function clearFilterCache() {
   filterCache.clear();
   overdueCache = null;
+  openTasksCache = null;
   chrome.storage.local.set({ [FILTER_STORE_KEY]: {} }).catch(() => {});
 }
 hydrateFilterCache();
@@ -610,7 +706,9 @@ const DEFAULT_SETTINGS = {
   // Visual effects (Options > General > Animations and effects).
   fxLiquid: true, fxChart: true, fxCount: true, fxIconRing: true,
   // Floating tracker (tracker.html): the Float button, full view on hover, today's total.
-  floatTracker: true, floatHover: true, floatToday: true,
+  floatTracker: true, floatHover: true, floatToday: true, floatSize: "normal",
+  // Task files: back the files' text up to Drive (hidden app data).
+  taskFilesDrive: true,
   clickupWrapUpTime: "16:45", // local "HH:MM"
   // ---- Departments (Department Creator) ----
   // Each department holds a name + a list of ClickUp users { id, name }. The
@@ -2643,11 +2741,17 @@ async function maybeNotifyNotTracking(cfg, { viaAlarm = false } = {}) {
 // the Extra Task and tasks waiting on someone else.
 const TOP_PRIO_RANK = { urgent: 0, high: 1, normal: 2, low: 3 };
 function pickTopTask(st) {
-  const b = (st && st.todayFilter && Array.isArray(st.todayFilter.tasks)) ? st.todayFilter : (st || {});
+  // todayFilter follows the Filter the user has on (e.g. "this week"), so it can
+  // hold tasks due later: only a task whose due date is TODAY qualifies.
   const waiting = (st && st.waiting) || {};
   const rank = (t) => { const r = TOP_PRIO_RANK[String(t.priority || "").toLowerCase()]; return r == null ? 4 : r; };
-  const open = (Array.isArray(b.tasks) ? b.tasks : []).filter((t) => t && t.id != null && !t.done &&
-    t.type !== "extra" && !/^extras?\s+tasks?\b/i.test(t.name || "") && !waiting[String(t.id)]);
+  const dayStart = new Date().setHours(0, 0, 0, 0), dayEnd = dayStart + 86400000;
+  const dueToday = (t) => { const d = Number(t && t.dueDateMs) || 0; return d >= dayStart && d < dayEnd; };
+  const seen = new Set();
+  const pool = [...((st && st.tasks) || []), ...((st && st.todayFilter && st.todayFilter.tasks) || [])]
+    .filter((t) => t && t.id != null && !seen.has(String(t.id)) && seen.add(String(t.id)));
+  const open = pool.filter((t) => !t.done && dueToday(t) && Number(t.assigneeCount || 1) <= 1 &&
+    t.type !== "extra" && !/\bextra(?:\(s\)|s)?\s+task(?:\(s\)|s)?\b/i.test(t.name || "") && !waiting[String(t.id)]);
   open.sort((a, c) => rank(a) - rank(c) || (Number(c.estimateMs) || 0) - (Number(a.estimateMs) || 0));
   return open[0] || null;
 }
@@ -3486,6 +3590,7 @@ async function autoSyncIfSignedIn(opts) {
   try {
     if (!(await isSignedIn())) return; // no valid/silently-refreshable token
     await syncNow(opts);
+    syncTaskFiles().catch(() => {}); // Task files backup / restore
   } catch (e) {}
 }
 
@@ -3720,15 +3825,19 @@ async function maybeAutoUpdate() {
   if (now < (Number(ui.autoAt) || 0)) return;
   const st = prevState && prevState.version === ui.latest ? prevState : { version: ui.latest, fails: 0 };
   if (st.fails >= AUTO_MAX_FAILS || (st.lastTry && now - st.lastTry < AUTO_RETRY_MS && st.reason)) return;
-  // Not while it's being used: popup / side panel open = wait; open tabs only
-  // when the user is away (they come back after the restart).
+  // Not while it's being used: popup open = wait. Open extension tabs and the
+  // side panel only when the user has been away 5+ minutes (tabs come back after
+  // the restart). The side panel used to block it completely, so people who keep
+  // it open all day never got an automatic install.
   let tabs = [];
+  let panel = false;
   try {
     const ctx = await chrome.runtime.getContexts({ contextTypes: ["POPUP", "SIDE_PANEL", "TAB"] });
-    if (ctx.some((c) => c.contextType === "POPUP" || c.contextType === "SIDE_PANEL")) return;
+    if (ctx.some((c) => c.contextType === "POPUP")) return;
+    panel = ctx.some((c) => c.contextType === "SIDE_PANEL");
     tabs = ctx.filter((c) => c.contextType === "TAB").map((c) => c.documentUrl).filter(Boolean);
   } catch (e) {}
-  if (tabs.length) {
+  if (tabs.length || panel) {
     const idle = await new Promise((res) => { try { chrome.idle.queryState(300, res); } catch (e) { res("active"); } });
     if (idle === "active") return;
   }
@@ -3754,6 +3863,23 @@ async function maybeAutoUpdate() {
   if (!/^(no-folder|permission|moved)$/.test(st.reason)) {
     st.fails = (st.fails || 0) + 1;
     diagLog("automatic update", st.reason + (st.error ? ": " + st.error : ""));
+  } else if (st.setupNoticeFor !== ui.latest) {
+    // "Install updates automatically" is ticked, but the one-time folder setup
+    // was never done (or Chrome was told "Allow this time"): it would otherwise
+    // retry silently forever. Say so ONCE per version, with the way to fix it.
+    st.setupNoticeFor = ui.latest;
+    const why = st.reason === "no-folder"
+      ? "Automatic updates need a one-time setup on this computer: choose the extension's folder and pick “Allow on every visit”."
+      : st.reason === "moved"
+        ? "The extension's folder has moved. Choose its current folder once and pick “Allow on every visit”."
+        : "Chrome didn't keep its permission for the extension's folder (usually “Allow this time” was picked). Set it up again and pick “Allow on every visit”.";
+    chrome.notifications.create("auto-update-setup-" + ui.latest, {
+      type: "basic", iconUrl: chrome.runtime.getURL("icons/icon128.png"), priority: 2, requireInteraction: true,
+      title: "v" + ui.latest + " couldn't install automatically",
+      message: why + " It takes about 30 seconds and only once.",
+      buttons: [{ title: "Set up automatic updates" }, { title: "Install this update now" }],
+    }, () => void chrome.runtime.lastError);
+    diagLog("automatic update", "waiting for setup: " + st.reason);
   }
   await chrome.storage.local.set({ autoUpdateState: st });
 }
@@ -3818,7 +3944,12 @@ chrome.downloads.onChanged.addListener((delta) => {
 });
 chrome.notifications.onButtonClicked.addListener((id, btn) => {
   (async () => {
-    if (id.startsWith("update-available-")) {
+    if (id.startsWith("auto-update-setup-")) {
+      // Both open the update page: the setup version walks through the folder
+      // step; the other has "Install" ready (and does the setup on the way).
+      chrome.notifications.clear(id).catch(() => {});
+      openUpdater(btn === 0);
+    } else if (id.startsWith("update-available-")) {
       chrome.notifications.clear(id).catch(() => {});
       if (btn === 0) openUpdater();
       else {
@@ -4180,6 +4311,11 @@ chrome.notifications.onClicked.addListener((id) => {
       openUpdater();
       return;
     }
+    if (id.startsWith("auto-update-setup-")) {
+      chrome.notifications.clear(id).catch(() => {});
+      openUpdater(true);
+      return;
+    }
     let url = notifTargetUrls.get(id);
     if (!url) {
       if (id.startsWith("ar-quota-") || id.startsWith("daily-login-")) {
@@ -4238,6 +4374,76 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
           if (!cfg || !cfg.token) { sendResponse({ ok: false, error: "ClickUp isn't connected." }); break; }
           sendResponse({ ok: true, data: await getTaskPanel(cfg.token, msg.taskId, !!msg.force) });
         } catch (e) { sendResponse({ ok: false, error: String(e && e.message ? e.message : e), status: e && e.status }); }
+        break;
+      }
+      case "CLICKUP_TASK_ATTACH": {
+        // Floating tracker's big view: upload files (screenshots pasted with
+        // Ctrl+V, dropped or picked) to the task, then post the comment with their
+        // links - ClickUp's API can't put files inside a comment itself.
+        // msg.files = [{ name, type, b64 }] (base64; messages can't carry Blobs).
+        try {
+          const cfg = await getClickupConfig();
+          if (!cfg || !cfg.token) { sendResponse({ ok: false, error: "ClickUp isn't connected." }); break; }
+          const taskId = String(msg.taskId || "");
+          const files = Array.isArray(msg.files) ? msg.files.slice(0, 10) : [];
+          const links = [];
+          for (const f of files) {
+            const bin = atob(String(f.b64 || ""));
+            const bytes = new Uint8Array(bin.length);
+            for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+            const fd = new FormData();
+            fd.append("attachment", new Blob([bytes], { type: f.type || "application/octet-stream" }), String(f.name || "file").slice(0, 120));
+            const res = await fetch("https://api.clickup.com/api/v2/task/" + encodeURIComponent(taskId) + "/attachment", {
+              method: "POST", headers: { Authorization: cfg.token }, body: fd,
+            });
+            if (!res.ok) throw new Error("upload of " + (f.name || "a file") + " failed (HTTP " + res.status + ")");
+            const j = await res.json().catch(() => ({}));
+            links.push((f.name || "file") + (j && j.url ? ": " + j.url : ""));
+          }
+          const text = [String(msg.text || "").trim(), links.length ? "Attached: " + links.join("\n") : ""].filter(Boolean).join("\n\n");
+          const data = text ? await addTaskComment(cfg.token, taskId, text.slice(0, 5000)) : null;
+          sendResponse({ ok: true, data, uploaded: links.length });
+        } catch (e) { sendResponse({ ok: false, error: String(e && e.message ? e.message : e) }); }
+        break;
+      }
+      case "CLICKUP_OPEN_TASKS": {
+        // Bulk edit "Any date": every open task assigned to me, with or without
+        // dates (so missing due / start dates and estimates can be found). Up to
+        // 6 pages, cached 3 minutes.
+        const cfg = await getClickupConfig();
+        if (!cfg || !cfg.token || !cfg.teamId || cfg.userId == null) { sendResponse({ ok: false, reason: "not-configured" }); break; }
+        if (!msg.force && openTasksCache && Date.now() - openTasksCache.at < 3 * 60000) { sendResponse({ ok: true, data: openTasksCache.data }); break; }
+        try {
+          const raw = [];
+          for (let page = 0; page < 6; page++) {
+            const url = "https://api.clickup.com/api/v2/team/" + encodeURIComponent(cfg.teamId) + "/task?page=" + page +
+              "&subtasks=true&include_closed=false&assignees[]=" + encodeURIComponent(cfg.userId);
+            const res = await fetch(url, { headers: { Authorization: cfg.token } });
+            if (res.status === 429) { if (page === 0) throw new Error("ClickUp rate limit - try again in a minute"); break; }
+            if (!res.ok) { if (page === 0) throw new Error("ClickUp HTTP " + res.status); break; }
+            const j = await res.json().catch(() => null);
+            const batch = j && Array.isArray(j.tasks) ? j.tasks : [];
+            raw.push(...batch);
+            if (batch.length < 100 || j.last_page === true) break;
+          }
+          const settings = await getSettings().catch(() => ({}));
+          const tasks = raw.filter((t) => !isTaskDone(t)).map((t) => {
+            const est = Number(t.time_estimate) || 0;
+            return {
+              id: t.id, name: t.name || "(untitled task)", url: taskUrlFor(t.id),
+              estimateMs: est, spentMs: Number(t.time_spent) || 0,
+              startDateMs: Number(t.start_date) || null, dueDateMs: Number(t.due_date) || null,
+              status: (t.status && t.status.status) || "", priority: cuPriorityName(t),
+              done: false, container: taskContainer(t), isSubtask: !!t.parent, parentId: t.parent || undefined,
+            };
+          });
+          const data = { tasks, deadlineTasks: [], trackedTasks: [] };
+          await annotateClients(cfg.token, data, settings.cuClientLevel || "auto").catch(() => {});
+          openTasksCache = { at: Date.now(), data };
+          sendResponse({ ok: true, data });
+        } catch (e) {
+          sendResponse({ ok: false, error: String(e && e.message ? e.message : e) });
+        }
         break;
       }
       case "CLICKUP_TASK_COMMENT": {
@@ -5404,6 +5610,10 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         }
         break;
       }
+      case "TASKFILES_SYNC": {
+        sendResponse(await syncTaskFiles());
+        break;
+      }
       case "DRIVE_FILES": {
         // Drive Sync card > "Where is it saved?": the files in the hidden
         // app-data area and the Google account they belong to. No contents.
@@ -5412,7 +5622,8 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
           if (!tok) { sendResponse({ ok: false, reason: "signed-out" }); break; }
           const files = await listDriveFiles(tok);
           const account = await getDriveAccount().catch(() => "");
-          sendResponse({ ok: true, files, account: account || "" });
+          const quota = await driveQuota(tok).catch(() => null);
+          sendResponse({ ok: true, files, account: account || "", quota });
         } catch (e) {
           sendResponse({ ok: false, error: String(e && e.message ? e.message : e) });
         }
@@ -5595,6 +5806,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
           const before = {
             dueDateMs: task.dueDateMs || null, dueDateHasTime: task.dueDateHasTime != null ? !!task.dueDateHasTime : null,
             status: task.status || "", priority: task.priority || "none", estimateMs: Number(task.estimateMs) || 0,
+            startDateMs: task.startDateMs || null,
           };
           let body = null;
           if (ch.kind === "due") {
@@ -5604,6 +5816,13 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
               body = { due_date: before.dueDateMs + Math.round(Number(ch.days) || 0) * 86400000 };
             } else body = { due_date: shiftDueToDay(before.dueDateMs, Number(ch.dayMs)) };
             if (body.due_date && before.dueDateHasTime != null) body.due_date_time = before.dueDateHasTime;
+          } else if (ch.kind === "start") {
+            // Start date: set a day (noon if it had none) / shift / clear.
+            if (ch.mode === "clear") body = { start_date: null };
+            else if (ch.mode === "shift") {
+              if (!before.startDateMs) { sendResponse({ ok: false, skipped: true, error: "has no start date to move" }); break; }
+              body = { start_date: before.startDateMs + Math.round(Number(ch.days) || 0) * 86400000 };
+            } else body = { start_date: shiftDueToDay(before.startDateMs, Number(ch.dayMs)) };
           } else if (ch.kind === "status") body = { status: String(ch.value || "") };
           else if (ch.kind === "priority") body = { priority: PRIO[String(ch.value || "none").toLowerCase()] ?? null };
           else if (ch.kind === "estimate") body = { time_estimate: Math.max(0, Math.round(Number(ch.ms) || 0)) };
@@ -5611,6 +5830,8 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
             const b = ch.before;
             body = { due_date: b.dueDateMs || null, status: b.status || undefined, priority: PRIO[String(b.priority || "none").toLowerCase()] ?? null, time_estimate: Number(b.estimateMs) || 0 };
             if (b.dueDateMs && b.dueDateHasTime != null) body.due_date_time = !!b.dueDateHasTime;
+            // Older Undo records (before start dates were covered) mustn't clear it.
+            if ("startDateMs" in b) body.start_date = b.startDateMs || null;
           }
           if (!body) throw new Error("nothing to change");
           await put(body);
