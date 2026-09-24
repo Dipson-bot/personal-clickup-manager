@@ -250,6 +250,14 @@ async function findFileId(token, name) {
   return data.files && data.files.length ? data.files[0].id : null;
 }
 
+// What the sync keeps in the hidden app-data area (names, sizes, dates only),
+// so the Drive Sync card can show the user exactly what is saved.
+export async function listDriveFiles(token) {
+  const res = await driveFetch("/drive/v3/files?spaces=appDataFolder&pageSize=50&fields=files(name,size,modifiedTime)", token);
+  const data = await res.json();
+  return Array.isArray(data.files) ? data.files : [];
+}
+
 async function readFile(token, name) {
   const id = await findFileId(token, name);
   if (!id) return null;

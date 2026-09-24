@@ -3677,6 +3677,8 @@ function renderNowTracking() {
     || /\bextra(?:\(s\)|s)?\s+task(?:\(s\)|s)?\b/i.test(String(run.taskName || run.name || "")));
   if (isExtra) top.append(dot, lab, nm, time, stop);
   else top.append(dot, lab, nm, time, stop, done);
+  const fl = window.PcmHelp && window.PcmHelp.floatButton();
+  if (fl) top.insertBefore(fl, stop);
   const noteRow = document.createElement("div");
   noteRow.className = "cu-now-noterow";
   noteRow.append(note, saved);
@@ -5966,7 +5968,7 @@ const ADMIN_FILES = [
   "manifest.json", "background.js", "popup.html", "popup.js", "options.html", "options.js",
   "offscreen.html", "offscreen.js", "update.html", "update.js", "wrapup.html", "wrapup.js",
   "notify-menu.js", "export-tasks.js", "lib-zip.js", "lib-unzip.js", "lib-automation.js",
-  "lib-availability.js", "lib-clickup.js", "lib-crypto.js", "lib-drive.js", "task-panel.js", "lib-updater.js", "offscreen-updater.js", "celebrate.js", "celebrate.html", "celebrate-window.js", "fx.js", "pcm-help.js",
+  "lib-availability.js", "lib-clickup.js", "lib-crypto.js", "lib-drive.js", "task-panel.js", "lib-updater.js", "offscreen-updater.js", "celebrate.js", "celebrate.html", "celebrate-window.js", "fx.js", "pcm-help.js", "tracker.html", "tracker.js",
   "icons/icon16.png", "icons/icon48.png", "icons/icon128.png", "icons/celebrate.png", "icons/sad.png",
   "sounds/notify.wav", "sounds/danger.mp3", "sounds/winner.wav",
   "README.md", "CHANGELOG.md",
@@ -6321,6 +6323,48 @@ async function admPolSend(notifyNow) {
 }
 if ($("admPolSave")) $("admPolSave").onclick = () => admPolSend(false);
 if ($("admPolNotify")) $("admPolNotify").onclick = () => admPolSend(true);
+
+// ---- Drive Sync > "Where is it saved?" ----
+const DRIVE_FILE_LABELS = {
+  "daily-login-state.json": "Done / not-done status",
+  "daily-login-accounts.json": "Accounts, settings, site list and ClickUp connection (credentials obfuscated)",
+  "daily-login-key.json": "The key used to obfuscate them",
+};
+if ($("driveWhere")) $("driveWhere").addEventListener("toggle", async () => {
+  if (!$("driveWhere").open) return;
+  const box = $("driveFiles");
+  box.textContent = "Checking Drive…";
+  const r = await send({ type: "DRIVE_FILES" }).catch(() => null);
+  if (!r || !r.ok) {
+    box.textContent = r && r.reason === "signed-out" ? "Sign in above to see what's saved." : "Couldn't check Drive right now.";
+    return;
+  }
+  box.replaceChildren();
+  const head = document.createElement("div");
+  head.textContent = r.files.length
+    ? r.files.length + " file(s) in the Drive of " + (r.account || "the signed-in Google account") + ":"
+    : "Nothing saved yet - it's written on the next sync.";
+  box.appendChild(head);
+  for (const f of r.files) {
+    const row = document.createElement("div");
+    const kb = Math.max(1, Math.round((Number(f.size) || 0) / 1024));
+    const when = f.modifiedTime ? new Date(f.modifiedTime).toLocaleString([], { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" }) : "";
+    row.textContent = "• " + (DRIVE_FILE_LABELS[f.name] || f.name) + " · " + kb + " KB" + (when ? " · updated " + when : "");
+    box.appendChild(row);
+  }
+});
+if ($("driveSettingsBtn")) $("driveSettingsBtn").onclick = () => chrome.tabs.create({ url: "https://drive.google.com/drive/settings" }).catch(() => {});
+
+// ---- General: floating tracker (tracker.html) ----
+const FLOAT_KEYS = ["floatTracker", "floatHover", "floatToday"];
+(async () => {
+  try { const g = await chrome.storage.local.get("settings"); const st = g.settings || {}; for (const k of FLOAT_KEYS) if ($(k)) $(k).checked = st[k] !== false; } catch (e) {}
+})();
+for (const k of FLOAT_KEYS) if ($(k)) $(k).onchange = () => { send({ type: "SET_SETTINGS", patch: { [k]: $(k).checked } }).catch(() => {}); };
+if ($("floatNow")) {
+  if (!("documentPictureInPicture" in window)) { $("floatNow").disabled = true; $("floatUnsupported").style.display = "block"; }
+  $("floatNow").onclick = () => window.PcmHelp && window.PcmHelp.openFloat();
+}
 
 // ---- General: keyboard shortcuts + help & diagnostics ----
 const SHORTCUT_LABELS = { "toggle-timer": "Start / stop the timer", _execute_action: "Open the popup", "open-dashboard": "Open the dashboard" };
