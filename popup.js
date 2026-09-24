@@ -707,7 +707,31 @@ function markTrk(trk, t) {
   const st = (state && state.clickup && state.clickup.state) || null;
   const run = st && st.running;
   const id = t && (t.id != null ? t.id : t.taskId);
-  if (run && id != null && String(run.taskId) === String(id)) trk.classList.add("running");
+  if (run && id != null && String(run.taskId) === String(id)) {
+    trk.classList.add("running");
+    liveTrk(trk, t, st, run, est);
+  }
+}
+// The running task's tracked time is a snapshot from when its list was last built
+// (the week lists are rebuilt about hourly to spare ClickUp's rate limit), so add
+// the time since that snapshot and keep counting here - no extra ClickUp calls.
+function liveTrk(trk, t, st, run, est) {
+  let at = 0;
+  for (const b of [st, st.todayFilter, st.thisWeek, st.nextWeek]) {
+    if (b && ["tasks", "deadlineTasks", "trackedTasks"].some((k) => Array.isArray(b[k]) && b[k].includes(t))) { at = Number(b.at) || 0; break; }
+  }
+  if (!at) at = Number(st.at) || Date.now();
+  const base = Number(t.spentMs) || 0;
+  const from = Math.max(Number(run.startMs) || 0, at);
+  const paint = () => {
+    if (!trk.isConnected) return false;
+    const ms = base + Math.max(0, Date.now() - from);
+    trk.textContent = fmtDur(ms);
+    trk.classList.toggle("over", est > 0 && ms > est);
+    return true;
+  };
+  paint();
+  const iv = setInterval(() => { if (!paint()) clearInterval(iv); }, 20000);
 }
 
 // Small floating message used by the due-date editor (both pages).
@@ -1389,8 +1413,12 @@ function renderClickupTasksByClient(tasks, deadlineTasks, trackedTasks, scope, s
     subSpan.className = "cu-chsub";
     subSpan.textContent = "est " + fmtDur(est) + (trk > 0 ? " · tracked " + fmtDur(trk) : "");
     head.appendChild(subSpan);
-    listEl.appendChild(head);
-    appendFilterTaskRows(listEl, t1, t2, t3, { trackedLabel, hideClient: true, scope, draggable: true, group: c });
+    // Each client in its own card, so the groups are easy to tell apart.
+    const card = document.createElement("div");
+    card.className = "cu-clientcard";
+    card.appendChild(head);
+    listEl.appendChild(card);
+    appendFilterTaskRows(card, t1, t2, t3, { trackedLabel, hideClient: true, scope, draggable: true, group: c });
   }
   listEl.style.display = any ? "block" : "none";
 }

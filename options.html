@@ -386,6 +386,37 @@
   html[data-theme="dark"] .set-line input[type="time"] { background: var(--bg2); color: var(--text); color-scheme: dark; border-color: var(--border); }
   .set-line.col { display: block; }
   .set-line.col textarea { margin-top: 6px; }
+  /* Bulk edit tab */
+  .bk-filters { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; margin-bottom: 10px; }
+  .bk-filters label { display: inline-flex; align-items: center; gap: 6px; margin: 0; font-size: 13px; font-weight: 600; }
+  .bk-filters select, .bk-filters input[type="date"] { width: auto; padding: 5px 8px; font-weight: 400; }
+  .bk-filters input[type="search"] { flex: 1; min-width: 160px; padding: 6px 10px; }
+  .bk-filters #bkReload { width: auto; padding: 5px 10px; }
+  .bk-listhead { display: flex; align-items: center; justify-content: space-between; padding: 6px 10px; border: 1px solid var(--border); border-bottom: 0; border-radius: 10px 10px 0 0; background: var(--bg2); }
+  .bk-listhead label { margin: 0; font-weight: 600; font-size: 13px; display: inline-flex; gap: 6px; align-items: center; }
+  .bk-list { max-height: 420px; overflow: auto; border: 1px solid var(--border); border-radius: 0 0 10px 10px; }
+  .bk-row { display: grid; grid-template-columns: 22px minmax(0, 1fr) auto auto auto 20px; gap: 10px; align-items: center; padding: 7px 10px; border-top: 1px solid var(--border); font-size: 13px; }
+  .bk-row:first-child { border-top: 0; }
+  .bk-row:hover { background: var(--bg2); }
+  .bk-row input { margin: 0; }
+  .bk-row .nm { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text); text-decoration: none; }
+  .bk-row .nm:hover { text-decoration: underline; }
+  .bk-row .cl { font-size: 11.5px; color: var(--muted); white-space: nowrap; max-width: 150px; overflow: hidden; text-overflow: ellipsis; }
+  .bk-row .st, .bk-row .du { font-size: 11.5px; color: var(--muted); white-space: nowrap; }
+  .bk-row .res { text-align: center; }
+  .bk-row .bk-due { cursor: pointer; padding: 1px 6px; border-radius: 6px; border: 1px dashed transparent; }
+  .bk-row .bk-due:hover, .bk-row .bk-due:focus { border-color: var(--indigo); color: var(--text); outline: none; }
+  .bk-row .bk-due input.due-input { font-size: 11.5px; padding: 1px 4px; width: auto; }
+  .bk-row .res.ok { color: var(--green); } .bk-row .res.no { color: var(--red); } .bk-row .res.skip { color: var(--muted); }
+  .bk-action { margin-top: 14px; padding: 12px 14px; border: 1px solid var(--border); border-radius: 10px; background: var(--bg2); }
+  .bk-actrow { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 10px; font-size: 13px; }
+  .bk-actrow label { display: inline-flex; align-items: center; gap: 6px; margin: 0; font-weight: 600; }
+  .bk-actrow select, .bk-actrow input[type="date"] { width: auto; padding: 5px 8px; font-weight: 400; }
+  .bk-actrow .spacer { flex: 1; }
+  .bk-actrow #bkApply { width: auto; }
+  .bk-confirm, .bk-result { margin-top: 10px; font-size: 13px; display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+  .bk-confirm button, .bk-result button { width: auto; }
+  .bk-confirm[hidden], .bk-result[hidden] { display: none; }
   details.set-more { margin-top: 6px; }
   details.set-more > summary { cursor: pointer; color: var(--indigo); font-size: 12.5px; }
   details.set-more > div { margin-top: 6px; font-size: 12.5px; color: var(--muted); line-height: 1.55; }
@@ -576,6 +607,8 @@
   .cu-tasklist.cu-grouplist { margin-top: 4px; }
   /* Grouped by client: one outer scroll box; the lists inside just flow. */
   .cu-groupwrap .cu-tasklist { max-height: none !important; overflow: visible !important; }
+  .cu-clientcard { border: 1px solid var(--border); border-radius: 12px; background: var(--bg); padding: 8px 12px 4px; margin: 0 0 12px; }
+  .cu-clientcard > .cu-clienthead { margin: 0 0 4px; padding: 0 0 8px; border-top: 0; border-bottom: 1px solid var(--border); }
   /* Fixed est / tracked slots so client + due chips line up on every row. */
   .cu-tasklist .cu-task .estpairs { min-width: 11.2em; justify-content: flex-start; }
   .cu-tasklist .cu-task .est { min-width: 4.4em; text-align: right; }
@@ -765,6 +798,7 @@
     <button type="button" data-tab="clickup"><svg class="nv-i" viewBox="0 0 24 24" aria-hidden="true"><path d="M9 11l3 3l8-8"/><path d="M20 12v6a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h9"/></svg><span>ClickUp setup</span></button>
     <button type="button" data-tab="agent"><svg class="nv-i" viewBox="0 0 24 24" aria-hidden="true"><circle cx="8" cy="15" r="4"/><path d="M10.85 12.15L19 4"/><path d="M18 5l2 2"/><path d="M15 8l2 2"/></svg><span>Agent Router</span></button>
     <button type="button" data-tab="sites"><svg class="nv-i" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M3.6 9h16.8M3.6 15h16.8"/><path d="M11.5 3a17 17 0 0 0 0 18M12.5 3a17 17 0 0 1 0 18"/></svg><span>Site monitor</span></button>
+    <button type="button" data-tab="bulk"><svg class="nv-i" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 6h10M4 12h10M4 18h6"/><path d="M15 19l1.5-4.5L20 11l2 2-3.5 3.5z"/></svg><span>Bulk edit</span></button>
     <button type="button" data-tab="admin"><svg class="nv-i" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3l8 3v6c0 4.5-3.2 7.9-8 9-4.8-1.1-8-4.5-8-9V6z"/><path d="M9 12l2 2 4-4"/></svg><span>Admin</span></button>
     <button type="button" data-tab="general"><svg class="nv-i" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg><span>General</span></button>
   </nav>
@@ -1189,6 +1223,63 @@
       <button class="danger" id="deptDelete" style="display:none;">Delete department</button>
       <button id="deptRefreshUsers" type="button">Refresh user list</button>
       <span class="saved" id="deptMsg" style="display:none;"></span>
+    </div>
+  </div>
+  </section>
+
+  <!-- ===================== Bulk edit ===================== -->
+  <section class="panel" data-panel="bulk">
+  <div class="card" id="bulkCard">
+    <h2>Bulk edit tasks</h2>
+    <p class="hint" style="margin:0 0 12px;line-height:1.5;">Pick the tasks, tick the ones to change, then change their due date, status, priority or estimate in one go. You can undo the last change.</p>
+    <div class="bk-filters">
+      <label>Tasks due <select id="bkRange">
+        <option value="overdue">Overdue (not done)</option>
+        <option value="today">Today</option>
+        <option value="tomorrow">Tomorrow</option>
+        <option value="week" selected>This week</option>
+        <option value="nextweek">Next week</option>
+        <option value="custom">Custom dates</option>
+      </select></label>
+      <span id="bkCustom" hidden><input type="date" id="bkFrom" /> to <input type="date" id="bkTo" /></span>
+      <label>Client <select id="bkClient"><option value="">All clients</option></select></label>
+      <label>Status <select id="bkStatus"><option value="open">All not done</option><option value="">Any status</option></select></label>
+      <input type="search" id="bkSearch" placeholder="Search task names" />
+      <button type="button" id="bkReload" title="Load again from ClickUp">&#8635;</button>
+    </div>
+    <div class="bk-listhead">
+      <label><input type="checkbox" id="bkAll" /> Select all shown</label>
+      <span class="hint" id="bkCount"></span>
+    </div>
+    <div class="bk-list" id="bkList"><div class="hint" style="padding:14px;">Loading…</div></div>
+
+    <div class="bk-action">
+      <div class="bk-actrow">
+        <label>Change <select id="bkKind">
+          <option value="due">Due date</option>
+          <option value="status">Status</option>
+          <option value="priority">Priority</option>
+          <option value="estimate">Estimate</option>
+        </select></label>
+        <span id="bkDueOpts">
+          <select id="bkDueMode">
+            <option value="set">Set to</option>
+            <option value="shift">Move by</option>
+            <option value="clear">Clear it</option>
+          </select>
+          <input type="date" id="bkDueDate" />
+          <span id="bkShiftWrap" hidden><input type="text" id="bkShift" inputmode="numeric" value="1" style="width:60px;text-align:center;" /> days <span class="hint">(use - for earlier)</span></span>
+        </span>
+        <span id="bkStatusOpts" hidden><select id="bkStatusVal"></select></span>
+        <span id="bkPrioOpts" hidden><select id="bkPrioVal">
+          <option value="urgent">Urgent</option><option value="high">High</option><option value="normal" selected>Normal</option><option value="low">Low</option><option value="none">No priority</option>
+        </select></span>
+        <span id="bkEstOpts" hidden><input type="text" id="bkEstH" inputmode="numeric" placeholder="0" style="width:56px;text-align:center;" /> h <input type="text" id="bkEstM" inputmode="numeric" placeholder="30" style="width:56px;text-align:center;" /> m</span>
+        <span class="spacer"></span>
+        <button type="button" class="primary" id="bkApply" disabled>Apply to 0 tasks</button>
+      </div>
+      <div id="bkConfirm" class="bk-confirm" hidden></div>
+      <div id="bkResult" class="bk-result" hidden></div>
     </div>
   </div>
   </section>
@@ -1763,6 +1854,8 @@
 <script src="task-panel.js"></script>
 <script src="celebrate.js"></script>
 <script src="pcm-help.js"></script>
+<script src="pcm-search.js"></script>
 <script src="options.js"></script>
+<script src="bulk-edit.js"></script>
 </body>
 </html>

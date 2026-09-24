@@ -14,9 +14,14 @@
   // ---------- data ----------
   let data = { st: null, rp: null, settings: {}, last: null, theme: "" };
   async function load() {
-    const g = await chrome.storage.local.get(["clickupState", "runningProgress", "settings", "lastStoppedTask", "theme"]);
+    const g = await chrome.storage.local.get(["clickupState", "runningProgress", "settings", "lastStoppedTask", "resumeTask", "theme"]);
     const st = g.clickupState && typeof g.clickupState === "object" ? g.clickupState : null;
-    data = { st, rp: g.runningProgress || null, settings: g.settings || {}, last: g.lastStoppedTask || null, theme: g.theme || "" };
+    const extraId = st && st.extraTask && st.extraTask.id ? String(st.extraTask.id) : "";
+    // The task to go back to after a meeting / Extra Task (switched away from within
+    // the last 12 hours); otherwise the last task stopped, unless that was the Extra Task.
+    const rt = g.resumeTask && Date.now() - (g.resumeTask.at || 0) < 12 * 3600000 ? g.resumeTask : null;
+    const ls = g.lastStoppedTask && String(g.lastStoppedTask.id) !== extraId ? g.lastStoppedTask : null;
+    data = { st, rp: g.runningProgress || null, settings: g.settings || {}, last: rt || ls, theme: g.theme || "" };
   }
   const send = (msg) => new Promise((res) => {
     try { chrome.runtime.sendMessage(msg, (r) => { void chrome.runtime.lastError; res(r || null); }); } catch (e) { res(null); }
@@ -76,7 +81,7 @@
     return "Way over!";
   }
   const fmt = (ms) => {
-    const m = Math.floor(Math.max(0, ms) / 60000);
+    const m = Math.round(Math.max(0, ms) / 60000); // same rounding as the dashboard
     const h = Math.floor(m / 60);
     return h ? h + "h" + (m % 60 ? " " + (m % 60) + "m" : "") : m + "m";
   };
@@ -106,6 +111,9 @@
     button.pri { background: #4f46e5; border-color: #4f46e5; color: #fff; }
     .xin { flex: 1; min-width: 0; font: inherit; font-size: 12px; padding: 3px 7px; border-radius: 7px; border: 1px solid var(--border); background: var(--bg); color: var(--text); }
     .xin:focus { outline: 2px solid #6366f1; outline-offset: -1px; }
+    .chip { flex: none; max-width: 42%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 10.5px; font-weight: 600; padding: 1px 7px; border-radius: 999px; background: rgba(99,102,241,.16); color: #6366f1; }
+    html[data-theme="dark"] .chip { color: #a5b4fc; }
+    #fNote { font-size: 11.5px; padding: 2px 7px; }
     .close { margin-left: auto; background: none; border: 0; color: var(--muted); font-size: 14px; padding: 0 2px; }
   `;
   let full = false;
@@ -116,6 +124,7 @@
   function openExtraPanel() {
     xPanel = true;
     const root = pip.document.getElementById("root");
+    root.dataset.key = "";
     root.innerHTML = '<div class="face">' + faceSVG(0.5, 40) + '</div><div class="col">' +
       '<div class="row"><span class="lab">Switch to the Extra Task</span><button class="close" data-act="xcancel" title="Cancel">&#10005;</button></div>' +
       '<div class="row"><button class="x" data-act="xmeet" title="Start the Extra Task with the note &quot;Meeting&quot;">Meeting</button>' +
@@ -159,7 +168,7 @@
     root.id = "root";
     d.body.appendChild(root);
     root.addEventListener("mouseenter", () => { if (data.settings.floatHover !== false) { full = true; paint(); } });
-    root.addEventListener("mouseleave", () => { if (data.settings.floatHover !== false) { full = false; paint(); } });
+    root.addEventListener("mouseleave", () => { if (data.settings.floatHover !== false && !note.busy()) { full = false; paint(); } });
     // Moving: only Chrome's own top bar (the empty part, not the extension name
     // chip) drags a floating window - Chrome ignores moveBy from the page (tested).
     root.addEventListener("click", (e) => {
@@ -187,7 +196,8 @@
     if (!run) {
       const canResume = data.last && data.last.id;
       const extra = st.extraTask && st.extraTask.id;
-      root.innerHTML = '<div class="face">' + faceSVG("sleep", full ? 40 : 46) + '</div><div class="col">' +
+      root.dataset.key = "";
+      root.innerHTML = '<div class="face">' + faceSVG("sleep", full ? 40 : 50) + '</div><div class="col">' +
         '<div class="lab" style="color:var(--amber)">No timer running</div>' +
         (today ? '<div class="sub">' + esc(today) + "</div>" : "") +
         (full
@@ -209,23 +219,94 @@
     const time = p == null ? fmt(tracked) : over ? "+" + fmt(tracked - est) + " over" : fmt(tracked) + " / " + fmt(est);
     const label = moodLabel(p);
     const labColor = over && p > 1.07 ? "var(--red)" : p != null && p >= 0.93 ? "var(--green)" : "var(--text)";
-    const isExtra = !!(st.extraTask && String(st.extraTask.id) === String(run.taskId));
+    // The recurring Extra Task must never offer Done: completing it makes ClickUp
+    // create next week's copy early. Recognised by id AND by name (same rule as the
+    // popup), so a renamed/other occurrence is still protected.
+    const isExtra = !!((st.extraTask && String(st.extraTask.id) === String(run.taskId)) ||
+      /\bextra(?:\(s\)|s)?\s+task(?:\(s\)|s)?\b/i.test(String(run.taskName || "")));
     const bar = '<div class="row"><div class="trk"><b style="width:' + width.toFixed(1) + "%;background:" + barColor + (p == null ? ";opacity:.35" : "") + '"></b></div><span class="tm"' + (over ? ' style="color:var(--red)"' : "") + ">" + esc(time) + "</span></div>";
     if (full) {
-      root.innerHTML = '<div class="face">' + faceSVG(p, 40) + '</div><div class="col">' +
-        '<div class="row"><a class="nm" href="https://app.clickup.com/t/' + encodeURIComponent(run.taskId) + '" target="_blank" title="' + esc(run.taskName) + '">' + esc(run.taskName || "(task)") + "</a>" +
-        (!isExtra && st.extraTask && st.extraTask.id ? '<button class="x" data-act="xopen" title="Switch to the Extra Task now (meeting or a quick note)">&#8644; Extra</button>' : "") + "</div>" + bar +
-        '<div class="row"><span class="sub" style="font-size:11.5px">' + esc(today || label) + '</span><span class="btns"><button data-act="stop" title="Stop the timer">&#9632; Stop</button>' +
-        (isExtra ? "" : '<button data-act="complete" title="Mark the task complete (stops the timer)">&#10003; Done</button>') + "</span></div></div>";
+      // Built once per timer, then only the face / bar / numbers are updated, so
+      // the note being typed is never wiped by the every-second refresh.
+      const key = run.taskId + ":" + (run.startMs || "") + ":" + isExtra + ":" + !!(data.last && data.last.id);
+      if (root.dataset.key !== key) {
+        root.dataset.key = key;
+        if (note.key !== run.taskId + ":" + run.startMs) note.reset(run);
+        const client = clientOf(st, run.taskId);
+        root.innerHTML = '<div class="face" id="fFace"></div><div class="col">' +
+          '<div class="row"><a class="nm" href="https://app.clickup.com/t/' + encodeURIComponent(run.taskId) + '" target="_blank" title="' + esc(run.taskName) + '">' + esc(run.taskName || "(task)") + "</a>" +
+          (client ? '<span class="chip" title="Client">' + esc(client) + "</span>" : "") +
+          (!isExtra && st.extraTask && st.extraTask.id ? '<button class="x" data-act="xopen" title="Switch to the Extra Task now (meeting or a quick note)">&#8644; Extra</button>' : "") +
+          (isExtra && data.last && data.last.id ? '<button class="x pri" data-act="resume" title="Stop the Extra Task and go back to: ' + esc(data.last.name || "your task") + '">&#8617; Back to task</button>' : "") + "</div>" +
+          '<div class="row"><div class="trk"><b id="fBar"></b></div><span class="tm" id="fTime"></span></div>' +
+          '<div class="row"><input class="xin" id="fNote" maxlength="500" placeholder="Add a note to this time entry" title="Shows in the Description column of your ClickUp Timesheet. Enter to save; it\'s also saved when you press Stop or Done." /><span class="sub" id="fSaved"></span></div>' +
+          '<div class="row"><span class="sub" id="fToday" style="font-size:11.5px"></span><span class="btns"><button data-act="stop" title="Save the note and stop the timer">&#9632; Stop</button>' +
+          (isExtra ? "" : '<button data-act="complete" title="Save the note and mark the task complete (stops the timer)">&#10003; Done</button>') + "</span></div></div>";
+        note.bind(pip.document.getElementById("fNote"), pip.document.getElementById("fSaved"), run);
+      }
+      const d = pip.document;
+      d.getElementById("fFace").innerHTML = faceSVG(p, 40);
+      const b = d.getElementById("fBar");
+      b.style.width = width.toFixed(1) + "%";
+      b.style.background = barColor;
+      b.style.opacity = p == null ? ".35" : "";
+      const tm = d.getElementById("fTime");
+      tm.textContent = time;
+      tm.style.color = over ? "var(--red)" : "";
+      d.getElementById("fToday").textContent = today || label;
     } else {
-      root.innerHTML = '<div class="face">' + faceSVG(p, 46) + '</div><div class="col">' + bar +
+      root.dataset.key = "";
+      root.innerHTML = '<div class="face">' + faceSVG(p, 50) + '</div><div class="col">' + bar +
         '<div class="lab" style="color:' + labColor + '">' + esc(label) + "</div></div>";
     }
   }
+  // The running task's client, from the task lists already loaded.
+  function clientOf(st, id) {
+    for (const b of [st, st.todayFilter, st.thisWeek, st.nextWeek]) {
+      if (!b) continue;
+      for (const k of ["tasks", "deadlineTasks", "trackedTasks"]) {
+        const t = Array.isArray(b[k]) && b[k].find((x) => x && String(x.id != null ? x.id : x.taskId) === String(id));
+        if (t) return String(t.client || (t.container && t.container.listName) || "").trim();
+      }
+    }
+    return "";
+  }
+  // Note = the running time entry's Description in ClickUp (same as the popup's
+  // "Add a note to this time entry"). Saved on Enter, when the box loses focus,
+  // and before Stop / Done / switching tasks.
+  const note = {
+    key: "", value: "", saved: "", run: null, input: null, label: null, saving: null,
+    reset(run) { this.key = run.taskId + ":" + run.startMs; this.value = this.saved = run.description || ""; this.run = run; },
+    dirty() { return this.value.trim() !== this.saved.trim(); },
+    busy() { return !!(this.input && (pip.document.activeElement === this.input || this.dirty())); },
+    bind(input, label, run) {
+      this.input = input; this.label = label; this.run = run;
+      input.value = this.value;
+      input.oninput = () => { this.value = input.value; label.textContent = ""; };
+      input.onkeydown = (e) => { if (e.key === "Enter") { e.preventDefault(); this.commit(); } };
+      input.onblur = () => { this.commit(); };
+    },
+    async commit() {
+      if (!this.run || !this.dirty()) return this.saving || true;
+      const v = this.value.trim();
+      if (this.label) { this.label.style.color = ""; this.label.textContent = "Saving…"; }
+      this.saving = send({ type: "CLICKUP_SET_ENTRY_NOTE", entryId: this.run.id || null, taskId: String(this.run.taskId), description: v }).then((r) => {
+        this.saving = null;
+        if (r && r.ok) {
+          this.saved = v;
+          if (this.label) { this.label.textContent = "Saved ✓"; setTimeout(() => { if (this.label && this.label.textContent === "Saved ✓") this.label.textContent = ""; }, 1800); }
+          return true;
+        }
+        if (this.label) { this.label.style.color = "var(--red)"; this.label.textContent = "Not saved"; this.label.title = (r && (r.error || r.reason)) || ""; }
+        return false;
+      });
+      return this.saving;
+    },
+  };
   async function onAction(e) {
     const b = e.target.closest("button[data-act]");
     if (!b || busy) return;
-    if (b.dataset.act === "xopen") { openExtraPanel(); return; }
+    if (b.dataset.act === "xopen") { note.commit(); openExtraPanel(); return; }
     if (b.dataset.act === "xcancel") { xPanel = false; paint(); return; }
     if (b.dataset.act === "xmeet") { startExtra("Meeting"); return; }
     if (b.dataset.act === "xgo") { const i = pip.document.getElementById("xnote"); startExtra(i ? i.value.trim() : ""); return; }
@@ -236,10 +317,18 @@
     const run = st.running;
     const act = b.dataset.act;
     let r = null;
+    if (act === "stop" || act === "complete" || act === "resume") await note.commit(); // the note lands on this entry first
     if (act === "stop" && run) r = await send({ type: "CLICKUP_TASK_STOP", taskId: String(run.taskId) });
-    else if (act === "complete" && run) r = await send({ type: "CLICKUP_TASK_COMPLETE", taskId: String(run.taskId) });
+    else if (act === "complete" && run) {
+      const extraRun = (st.extraTask && String(st.extraTask.id) === String(run.taskId)) || /\bextra(?:\(s\)|s)?\s+task(?:\(s\)|s)?\b/i.test(String(run.taskName || ""));
+      if (extraRun) { busy = false; paint(); return; } // never complete the recurring Extra Task
+      r = await send({ type: "CLICKUP_TASK_COMPLETE", taskId: String(run.taskId) });
+    }
     else if (act === "extra" && st.extraTask) r = await send({ type: "CLICKUP_TASK_START", taskId: String(st.extraTask.id), force: true });
-    else if (act === "resume" && data.last) r = await send({ type: "CLICKUP_TASK_START", taskId: String(data.last.id), force: true });
+    else if (act === "resume" && data.last) {
+      r = await send({ type: "CLICKUP_TASK_START", taskId: String(data.last.id), force: true });
+      if (r && r.ok !== false) { try { await chrome.storage.local.set({ resumeTask: null }); } catch (e) {} }
+    }
     busy = false;
     await load();
     if (r && r.ok === false && pip) {
@@ -283,7 +372,7 @@
   async function openPip() {
     if (pip || !supported) return;
     try {
-      pip = await window.documentPictureInPicture.requestWindow({ width: 320, height: 96 });
+      pip = await window.documentPictureInPicture.requestWindow({ width: 340, height: 116 });
     } catch (e) {
       $("lead").textContent = "Chrome didn't open it (" + (e && e.message ? e.message : e) + "). Click again.";
       return;
@@ -308,7 +397,7 @@
   load().then(() => { theme(); hostState(supported ? "intro" : "unsupported"); });
   chrome.storage.onChanged.addListener((ch, area) => {
     if (area !== "local") return;
-    if (ch.clickupState || ch.runningProgress || ch.settings || ch.lastStoppedTask || ch.theme) load().then(() => { theme(); paint(); });
+    if (ch.clickupState || ch.runningProgress || ch.settings || ch.lastStoppedTask || ch.resumeTask || ch.theme) load().then(() => { theme(); paint(); });
   });
   setInterval(paint, 1000);
   // A timer started or stopped in ClickUp itself shows up within a minute.
