@@ -5668,7 +5668,7 @@ setInterval(() => { if (!document.hidden) syncClickupRunning(); }, 60000);
 // ---------- Sidebar navigation (tabbed layout) ----------
 // One section visible at a time; the choice is remembered (per browser) and can
 // be deep-linked with #dashboard / #clickup / #agent / #sites / #general.
-const OPT_TABS = ["dashboard", "clickup", "agent", "sites", "bulk", "admin", "general"];
+const OPT_TABS = ["dashboard", "clickup", "agent", "sites", "files", "bulk", "admin", "general"];
 function showOptTab(name) {
   if (!OPT_TABS.includes(name)) name = "dashboard";
   document.querySelectorAll("#sideNav [data-tab]").forEach((b) => b.classList.toggle("on", b.dataset.tab === name));
@@ -5998,7 +5998,7 @@ const ADMIN_FILES = [
   "manifest.json", "background.js", "popup.html", "popup.js", "options.html", "options.js",
   "offscreen.html", "offscreen.js", "update.html", "update.js", "wrapup.html", "wrapup.js",
   "notify-menu.js", "export-tasks.js", "lib-zip.js", "lib-unzip.js", "lib-automation.js",
-  "lib-availability.js", "lib-clickup.js", "lib-crypto.js", "lib-drive.js", "task-panel.js", "lib-updater.js", "offscreen-updater.js", "celebrate.js", "celebrate.html", "celebrate-window.js", "fx.js", "pcm-help.js", "tracker.html", "tracker.js", "bulk-edit.js", "pcm-search.js",
+  "lib-availability.js", "lib-clickup.js", "lib-crypto.js", "lib-drive.js", "task-panel.js", "lib-updater.js", "offscreen-updater.js", "celebrate.js", "celebrate.html", "celebrate-window.js", "fx.js", "pcm-help.js", "tracker.html", "tracker.js", "bulk-edit.js", "pcm-search.js", "lib-taskfiles.js", "task-files.js", "vendor/pdf.min.js", "vendor/pdf.worker.min.js", "vendor/pdfjs-LICENSE.txt",
   "icons/icon16.png", "icons/icon48.png", "icons/icon128.png", "icons/celebrate.png", "icons/sad.png",
   "sounds/notify.wav", "sounds/danger.mp3", "sounds/winner.wav",
   "README.md", "CHANGELOG.md",
@@ -6359,6 +6359,7 @@ const DRIVE_FILE_LABELS = {
   "daily-login-state.json": "Done / not-done status",
   "daily-login-accounts.json": "Accounts, settings, site list and ClickUp connection (credentials obfuscated)",
   "daily-login-key.json": "The key used to obfuscate them",
+  "pcm-task-files.json": "Task files (the text of your client files)",
 };
 if ($("driveWhere")) $("driveWhere").addEventListener("toggle", async () => {
   if (!$("driveWhere").open) return;
@@ -6375,6 +6376,15 @@ if ($("driveWhere")) $("driveWhere").addEventListener("toggle", async () => {
     ? r.files.length + " file(s) in the Drive of " + (r.account || "the signed-in Google account") + ":"
     : "Nothing saved yet - it's written on the next sync.";
   box.appendChild(head);
+  // How full the Drive is: a warning when little space is left.
+  if (r.quota && r.quota.limit) {
+    const gb = (n) => (n / 1073741824).toFixed(1) + " GB";
+    const left = r.quota.limit - r.quota.usage;
+    const q = document.createElement("div");
+    q.textContent = "Your Drive: " + gb(r.quota.usage) + " of " + gb(r.quota.limit) + " used" + (left < 500 * 1048576 ? " - almost full: free up space so sync keeps working." : ".");
+    if (left < 500 * 1048576) q.style.color = "var(--red)";
+    box.appendChild(q);
+  }
   for (const f of r.files) {
     const row = document.createElement("div");
     const kb = Math.max(1, Math.round((Number(f.size) || 0) / 1024));
@@ -6387,6 +6397,10 @@ if ($("driveSettingsBtn")) $("driveSettingsBtn").onclick = () => chrome.tabs.cre
 
 // ---- General: floating tracker (tracker.html) ----
 const FLOAT_KEYS = ["floatTracker", "floatHover", "floatToday"];
+if ($("floatSize")) {
+  chrome.storage.local.get("settings").then((g) => { $("floatSize").value = (g.settings && g.settings.floatSize) === "compact" ? "compact" : "normal"; }).catch(() => {});
+  $("floatSize").onchange = () => { send({ type: "SET_SETTINGS", patch: { floatSize: $("floatSize").value } }).catch(() => {}); };
+}
 (async () => {
   try { const g = await chrome.storage.local.get("settings"); const st = g.settings || {}; for (const k of FLOAT_KEYS) if ($(k)) $(k).checked = st[k] !== false; } catch (e) {}
 })();

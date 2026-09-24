@@ -21,3 +21,7 @@ Thumbs.db
 # Private handoff notes and local dev tools
 HANDOFF.md
 dev-tools/
+
+# Desktop tracker app: dependencies and build output
+desktop-tracker/node_modules/
+desktop-tracker/release/
