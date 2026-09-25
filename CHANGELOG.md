@@ -1,5 +1,10 @@
 # Changelog
 
+## v3.10.5
+- Fixed (admin): the Team hub users list showed an old version for people who had already updated (for example v3.10.3 for someone on v3.10.4), because each copy only reported its version once a day. Now a copy reports straight away after it updates, opening the popup or Options counts as being active (at most once an hour), and your own row is refreshed when you open the list. The list says when it was checked, has a ↻ Refresh button, keeps showing while it updates ("Updating…"), and pointing at a version shows when it was reported.
+- New: Duplicate a reminder. Each reminder in Options > Reminders has a Duplicate button next to Delete: it opens a copy with the same text, time, repeat, linked task and attachments, ready to change and save (a time that has passed moves to the next day). Handy for a similar reminder at another time.
+- New: pause notifications for as long as you need. The 🔔 bell menu now offers 30 min, 1 hour, 2 hours, until the next workday morning (your office start time, Monday on a Friday) or until a time you pick, instead of only 1 hour. Your own reminders still show while paused.
+
 ## v3.10.4
 - New: the search (🔍 or Ctrl+K) understands plain questions. Type something like "I want to change the due dates of many tasks, where can I do that?" or "can I organise my files by client?" and it shows a "How to" answer with the steps and a link that opens the right place. This works instantly, offline and on every computer. For unusual wordings, "✨ Ask AI" picks the best answer with Chrome's built-in AI, or the free online AI where that can't run (only your question is sent, after you agree once). It only chooses from the extension's own answers, so it can't make up a feature, and if nothing fits it says so and points to Help & issues.
 - Fixed: the tracked-time milestones (tracked halfway, almost there, "tracked target reached ✓") never showed on a day when the daily estimate had already been reached, which is most days. They now show whether or not the estimate is met. Also fixed: when two milestones came at the same time, one of them could show again later.
