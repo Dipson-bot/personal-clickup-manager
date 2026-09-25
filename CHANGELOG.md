@@ -1,5 +1,10 @@
 # Changelog
 
+## v3.10.4
+- New: the search (🔍 or Ctrl+K) understands plain questions. Type something like "I want to change the due dates of many tasks, where can I do that?" or "can I organise my files by client?" and it shows a "How to" answer with the steps and a link that opens the right place. This works instantly, offline and on every computer. For unusual wordings, "✨ Ask AI" picks the best answer with Chrome's built-in AI, or the free online AI where that can't run (only your question is sent, after you agree once). It only chooses from the extension's own answers, so it can't make up a feature, and if nothing fits it says so and points to Help & issues.
+- Fixed: the tracked-time milestones (tracked halfway, almost there, "tracked target reached ✓") never showed on a day when the daily estimate had already been reached, which is most days. They now show whether or not the estimate is met. Also fixed: when two milestones came at the same time, one of them could show again later.
+- Also includes everything in v3.10.3 below (it went to a few people first): Help & issues, Reminders, the Clients tab with files and notes, fewer update pop-ups, on-time estimate alerts, starting tasks with more than one assignee, and more.
+
 ## v3.10.3
 - Improved: fewer update pop-ups. If your automatic updates are set up and working, you no longer get an "Update available - Update now" pop-up at all: the new version installs by itself and you just see "Updated" afterwards. Everyone else still gets the pop-up (and "Check for updates" always shows it).
 - New (admin): publishing a new version no longer pops up a notice for everyone unless you tick "Notify users with a pop-up". Without it, automatic updates install it quietly and others see it in the popup's update banner. "Notify everyone now" is still there when you need it.
