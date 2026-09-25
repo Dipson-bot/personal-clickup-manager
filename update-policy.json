@@ -5,23 +5,13 @@
   "important": false,
   "holdUntil": 0,
   "notifyNonce": "59cd4f30",
-  "notifiedAllAt": 1790248650526,
+  "notifiedAllAt": 1790335031333,
   "sitesAt": 0,
-  "updatedAt": 1790327008385,
-  "latest": "3.10.2",
-  "zip": "https://github.com/Dipson-bot/personal-clickup-manager/releases/download/v3.10.2/personal-clickup-manager-v3.10.2.zip",
-  "url": "https://github.com/Dipson-bot/personal-clickup-manager/releases/tag/v3.10.2",
+  "updatedAt": 1790335031333,
+  "latest": "3.10.3",
+  "zip": "https://github.com/Dipson-bot/personal-clickup-manager/releases/download/v3.10.3/personal-clickup-manager-v3.10.3.zip",
+  "url": "https://github.com/Dipson-bot/personal-clickup-manager/releases/tag/v3.10.3",
   "hubUrl": "https://script.google.com/macros/s/AKfycbzdP7lz2TPLULw1-Om4zgzOLghUT5_YLrYWcCatIrPmY82gKmxR5w4PcUJPb920ebNW3Q/exec",
-  "quietFor": "",
-  "preview": {
-    "latest": "3.10.3",
-    "zip": "https://github.com/Dipson-bot/personal-clickup-manager/releases/download/v3.10.3/personal-clickup-manager-v3.10.3.zip",
-    "url": "https://github.com/Dipson-bot/personal-clickup-manager/releases/tag/v3.10.3",
-    "cuUserIds": [
-      "101440701"
-    ],
-    "notify": false,
-    "nonce": "mugqh4sh",
-    "at": 1790327008385
-  }
+  "quietFor": "3.10.3",
+  "preview": null
 }
