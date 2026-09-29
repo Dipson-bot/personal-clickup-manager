@@ -5,13 +5,33 @@
   "important": false,
   "holdUntil": 0,
   "notifyNonce": "59cd4f30",
-  "notifiedAllAt": 1790666668277,
+  "notifiedAllAt": 1790681263347,
   "sitesAt": 0,
-  "updatedAt": 1790666668277,
-  "latest": "3.10.6",
-  "zip": "https://github.com/Dipson-bot/personal-clickup-manager/releases/download/v3.10.6/personal-clickup-manager-v3.10.6.zip",
-  "url": "https://github.com/Dipson-bot/personal-clickup-manager/releases/tag/v3.10.6",
+  "updatedAt": 1790681263347,
+  "latest": "3.10.7",
+  "zip": "https://github.com/Dipson-bot/personal-clickup-manager/releases/download/v3.10.7/personal-clickup-manager-v3.10.7.zip",
+  "url": "https://github.com/Dipson-bot/personal-clickup-manager/releases/tag/v3.10.7",
   "hubUrl": "https://script.google.com/macros/s/AKfycbzdP7lz2TPLULw1-Om4zgzOLghUT5_YLrYWcCatIrPmY82gKmxR5w4PcUJPb920ebNW3Q/exec",
-  "quietFor": "3.10.6",
-  "preview": null
+  "quietFor": "3.10.7",
+  "preview": null,
+  "calendar": [
+    {
+      "from": "2026-10-12",
+      "to": "2026-11-13",
+      "kind": "wfh",
+      "title": "Work from home (Dashain & Tihar)"
+    },
+    {
+      "from": "2026-10-19",
+      "to": "2026-10-23",
+      "kind": "holiday",
+      "title": "Dashain holidays"
+    },
+    {
+      "from": "2026-11-09",
+      "to": "2026-11-12",
+      "kind": "holiday",
+      "title": "Tihar holidays"
+    }
+  ]
 }
