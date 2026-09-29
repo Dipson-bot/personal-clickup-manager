@@ -2450,8 +2450,9 @@ function renderOptionsWeekly(cu) {
               const spans = document.createElement("span");
               spans.className = "estpairs";
               const est = document.createElement("span");
-              est.className = "est zero";
-              est.textContent = "no est";
+              est.className = "est" + (t.estimateMs ? "" : " zero");
+              // the task's own estimate (shown only - not part of the period's total)
+              est.textContent = t.estimateMs ? fmtDurOpt(t.estimateMs) : "no est";
               spans.appendChild(est);
               if (Number(t.spentMs) > 0) {
                 const trk = document.createElement("span");
@@ -3034,8 +3035,9 @@ async function renderOptionsFilter() {
         const spans = document.createElement("span");
         spans.className = "estpairs";
         const estSpan = document.createElement("span");
-        estSpan.className = "est zero";
-        estSpan.textContent = "no est";
+        estSpan.className = "est" + (t.estimateMs ? "" : " zero");
+        // the task's own estimate (shown only - not part of the period's total)
+        estSpan.textContent = t.estimateMs ? fmtDurOpt(t.estimateMs) : "no est";
         spans.appendChild(estSpan);
         if (Number(t.spentMs) > 0) {
           const trk = document.createElement("span");
@@ -4420,8 +4422,9 @@ function renderClickupPreview(st) {
         const spans = document.createElement("span");
         spans.className = "estpairs";
         const est = document.createElement("span");
-        est.className = "est zero";
-        est.textContent = "no est";
+        est.className = "est" + (t.estimateMs ? "" : " zero");
+        // the task's own estimate (shown only - not part of the period's total)
+        est.textContent = t.estimateMs ? fmtDurOpt(t.estimateMs) : "no est";
         spans.appendChild(est);
         if (Number(t.spentMs) > 0) {
           const trk = document.createElement("span");
@@ -6247,7 +6250,7 @@ const ADMIN_FILES = [
   "manifest.json", "background.js", "popup.html", "popup.js", "options.html", "options.js",
   "offscreen.html", "offscreen.js", "update.html", "update.js", "wrapup.html", "wrapup.js",
   "notify-menu.js", "export-tasks.js", "lib-zip.js", "lib-unzip.js", "lib-automation.js",
-  "lib-availability.js", "lib-clickup.js", "lib-crypto.js", "lib-drive.js", "task-panel.js", "lib-updater.js", "offscreen-updater.js", "celebrate.js", "celebrate.html", "celebrate-window.js", "fx.js", "pcm-help.js", "tracker.html", "tracker.js", "bulk-edit.js", "pcm-search.js", "lib-taskfiles.js", "task-files.js", "reminders.js", "hub.js", "task-sort.js", "breakdown.js", "calendar.js", "team-hub.gs", "vendor/pdf.min.js", "vendor/pdf.worker.min.js", "vendor/pdfjs-LICENSE.txt",
+  "lib-availability.js", "lib-clickup.js", "lib-crypto.js", "lib-drive.js", "task-panel.js", "lib-updater.js", "offscreen-updater.js", "celebrate.js", "celebrate.html", "celebrate-window.js", "fx.js", "pcm-help.js", "tracker.html", "tracker.js", "bulk-edit.js", "pcm-search.js", "lib-taskfiles.js", "task-files.js", "reminders.js", "hub.js", "task-sort.js", "breakdown.js", "calendar.js", "notices.js", "team-hub.gs", "vendor/pdf.min.js", "vendor/pdf.worker.min.js", "vendor/pdfjs-LICENSE.txt",
   "icons/icon16.png", "icons/icon48.png", "icons/icon128.png", "icons/celebrate.png", "icons/sad.png",
   "sounds/notify.wav", "sounds/danger.mp3", "sounds/winner.wav",
   "README.md", "CHANGELOG.md",

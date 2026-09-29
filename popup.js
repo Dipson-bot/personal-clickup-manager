@@ -1133,8 +1133,9 @@ function appendFilterTaskRows(container, tasks, deadlineTasks, trackedTasks = []
       const spans = document.createElement("span");
       spans.className = "estpairs";
       const estSpan = document.createElement("span");
-      estSpan.className = "est zero";
-      estSpan.textContent = "no est";
+      estSpan.className = "est" + (t.estimateMs ? "" : " zero");
+      // the task's own estimate (shown only - not part of the period's total)
+      estSpan.textContent = t.estimateMs ? fmtDur(t.estimateMs) : "no est";
       estSpan.title = "Click to edit estimate";
       estSpan.style.cursor = "pointer";
       estSpan.addEventListener("click", (e) => { e.stopPropagation(); startEditEstimate(estSpan, t); });
@@ -1816,8 +1817,9 @@ function renderWeekDetail(w, agg) {
         const spans = document.createElement("span");
         spans.className = "estpairs";
         const est = document.createElement("span");
-        est.className = "est zero";
-        est.textContent = "no est";
+        est.className = "est" + (t.estimateMs ? "" : " zero");
+        // the task's own estimate (shown only - not part of the period's total)
+        est.textContent = t.estimateMs ? fmtDur(t.estimateMs) : "no est";
         spans.appendChild(est);
         if (Number(t.spentMs) > 0) {
           const trk = document.createElement("span");

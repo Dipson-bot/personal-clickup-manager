@@ -29,6 +29,8 @@ const SHEETS = {
   Users: ["install", "cuUserId", "name", "avatar", "color", "initials", "version", "firstSeen", "lastSeen", "status", "mutedUntil"],
   Threads: ["id", "title", "status", "pinned", "locked", "fixedIn", "byInstall", "byName", "byAvatar", "createdAt", "lastAt", "lastRole", "count", "metoo", "deleted"],
   Messages: ["id", "threadId", "install", "name", "avatar", "color", "initials", "role", "text", "at", "editedAt", "files", "diag", "deleted", "reactions", "replyTo"],
+  // Announcements from the admin (maintenance break, sudden holiday...), shown to everyone until "until".
+  Notices: ["id", "title", "text", "level", "createdAt", "until", "ended"],
 };
 const REACTIONS = ["👍", "❤️", "😂", "🎉", "😮", "🙏", "✅", "👀"];
 
@@ -113,12 +115,14 @@ function doPost(e) {
         case "metoo": return out(metoo(q));
         case "deleteOwn": return out(deleteOwn(q));
         case "react": return out(react(q));
+        case "notices": return out(notices());
       }
       if (!admin) return out({ ok: false, error: "admin only" });
       switch (q.action) {
         case "users": return out(users());
         case "mod": return out(mod(q));
         case "settings": return out(saveSettings(q));
+        case "notice": return out(notice(q));
       }
       return out({ ok: false, error: "unknown action" });
     } finally { lock.releaseLock(); }
@@ -372,6 +376,32 @@ function mod(q) {
   else return { ok: false, error: "unknown op" };
   writeRow("Threads", th);
   return { ok: true };
+}
+// ---------- notices ----------
+// Everyone: the notices still showing (newest first, at most 10).
+function notices() {
+  const t = now();
+  const list = readAll("Notices").filter((n) => !n.ended && Number(n.until) > t)
+    .sort((a, b) => Number(b.createdAt) - Number(a.createdAt)).slice(0, 10)
+    .map((n) => ({ id: String(n.id), title: String(n.title), text: String(n.text), level: String(n.level || "info"), createdAt: Number(n.createdAt) || 0, until: Number(n.until) || 0 }));
+  return { ok: true, notices: list };
+}
+// Admin: op "post" { title, text, level, until } or op "end" { id }.
+function notice(q) {
+  if (q.op === "end") {
+    const n = readAll("Notices").find((x) => String(x.id) === String(q.id || ""));
+    if (!n) return { ok: false, error: "notice not found" };
+    n.ended = now(); writeRow("Notices", n);
+    return notices();
+  }
+  const title = String(q.title || "").trim().slice(0, TITLE_MAX);
+  const text = String(q.text || "").trim().slice(0, MSG_MAX);
+  if (!title) return { ok: false, error: "Write a title for the notice." };
+  const level = ["info", "important", "urgent"].includes(q.level) ? q.level : "info";
+  const until = Math.min(Number(q.until) || 0, now() + 60 * 86400000);
+  if (!(until > now())) return { ok: false, error: "Pick when the notice should stop showing (a time in the future)." };
+  writeRow("Notices", { id: Utilities.getUuid().slice(0, 12), title, text, level, createdAt: now(), until, ended: "" });
+  return notices();
 }
 function saveSettings(q) {
   if (q.slowMin != null) props().setProperty("SLOW_MIN", String(Math.max(0, Math.min(120, Number(q.slowMin) || 0))));

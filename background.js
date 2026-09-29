@@ -4082,6 +4082,41 @@ async function hubHello(force, gapMs = HUB_HELLO_MS) {
   if (r && r.ok) await chrome.storage.local.set({ hubMe: { state: r.state, mutedUntil: r.mutedUntil || 0, settings: r.settings || {}, at: Date.now() } });
   return r;
 }
+// Notices from the admin (maintenance break, sudden holiday...): checked every
+// 10 minutes, kept in storage for the pages' banner (notices.js) and the Help &
+// issues tab, and each new one pops up once. Like your own reminders they show
+// while notifications are paused; only "All notifications off" silences them.
+const HUB_NOTICE_MS = 10 * 60000;
+async function hubPollNotices(force) {
+  const { hubNoticesAt, hubNoticesSeen } = await chrome.storage.local.get(["hubNoticesAt", "hubNoticesSeen"]);
+  if (!force && Date.now() - (Number(hubNoticesAt) || 0) < HUB_NOTICE_MS) return;
+  if (!(await hubUrl())) return;
+  await chrome.storage.local.set({ hubNoticesAt: Date.now() });
+  const r = await hubCall("notices", {});
+  if (!r || !r.ok || !Array.isArray(r.notices)) return; // an older hub script has no notices yet
+  await setHubNotices(r.notices, hubNoticesSeen);
+}
+async function setHubNotices(list, seenIn) {
+  const notices = (Array.isArray(list) ? list : []).slice(0, 10);
+  const seen = seenIn && typeof seenIn === "object" ? { ...seenIn } : ((await chrome.storage.local.get("hubNoticesSeen")).hubNoticesSeen || {});
+  const s = await getSettings();
+  for (const n of notices) {
+    if (seen[n.id]) continue;
+    seen[n.id] = Date.now();
+    if (s.notifyAll === false) continue;
+    const icon = n.level === "urgent" ? "\uD83D\uDEA8 " : n.level === "important" ? "\u26A0\uFE0F " : "\uD83D\uDCE2 ";
+    try {
+      await chrome.notifications.create("hub-notice-" + n.id, {
+        type: "basic", iconUrl: chrome.runtime.getURL("icons/icon128.png"),
+        title: icon + String(n.title || "Notice").slice(0, 120), message: String(n.text || "").slice(0, 300) || "From your admin",
+        priority: 2, requireInteraction: n.level !== "info",
+      });
+      notifTargetUrls.set("hub-notice-" + n.id, chrome.runtime.getURL("options.html#hub"));
+    } catch (e) {}
+    if (s.notifySound !== false) await playNotificationSound(true, n.level === "urgent" ? "danger" : null).catch(() => {});
+  }
+  await chrome.storage.local.set({ hubNotices: { at: Date.now(), list: notices }, hubNoticesSeen: seen });
+}
 // Admin replies / resolutions in threads you started, replied to or "me too"'d.
 async function hubPollReplies(force) {
   const { hubActive, hubPollAt, hubSeen } = await chrome.storage.local.get(["hubActive", "hubPollAt", "hubSeen"]);
@@ -4109,7 +4144,7 @@ async function hubPollReplies(force) {
 const UPDATE_POLICY_PATH = "update-policy.json";
 const UPDATE_POLICY_URL = "https://raw.githubusercontent.com/" + UPDATE_REPO + "/main/" + UPDATE_POLICY_PATH;
 const UPDATE_ALARM = "updateCheck";
-const UPDATE_POLICY_DEFAULTS = { checkEveryMinutes: 30, remindEveryHours: 24, important: false, holdUntil: 0, notifyNonce: "", autoInstallAfterHours: 1 };
+const UPDATE_POLICY_DEFAULTS = { checkEveryMinutes: 30, remindEveryHours: 24, important: false, holdUntil: 0, notifyNonce: "", autoInstallAfterHours: 0 };
 function normalizeUpdatePolicy(p) {
   const o = p && typeof p === "object" ? p : {};
   const num = (v, d, lo, hi) => { const n = Number(v); return Number.isFinite(n) ? Math.min(hi, Math.max(lo, Math.round(n))) : d; };
@@ -4118,7 +4153,7 @@ function normalizeUpdatePolicy(p) {
     remindEveryHours: num(o.remindEveryHours, 24, 1, 168),
     // Automatic installs wait this long after a release is announced, so a bad
     // one can be held back before it reaches everyone. 0 = straight away.
-    autoInstallAfterHours: num(o.autoInstallAfterHours, 1, 0, 168),
+    autoInstallAfterHours: num(o.autoInstallAfterHours, 0, 0, 168),
     important: !!o.important,
     holdUntil: Number(o.holdUntil) > 0 ? Number(o.holdUntil) : 0,
     notifyNonce: typeof o.notifyNonce === "string" ? o.notifyNonce.slice(0, 40) : "",
@@ -4381,6 +4416,7 @@ async function showUpdateNotification(info) {
 // minutes, and they're reopened afterwards. Failures back off; after repeated
 // failures for one version it stops and the normal update notice takes over.
 const AUTO_RETRY_MS = 30 * 60000;
+const AUTO_FORCE_AFTER_MS = 20 * 60000; // pages open: install anyway after 20 minutes
 const AUTO_MAX_FAILS = 4;
 async function maybeAutoUpdate() {
   const settings = await getSettings();
@@ -4391,10 +4427,11 @@ async function maybeAutoUpdate() {
   if (now < (Number(ui.autoAt) || 0)) return;
   const st = prevState && prevState.version === ui.latest ? prevState : { version: ui.latest, fails: 0 };
   if (st.fails >= AUTO_MAX_FAILS || (st.lastTry && now - st.lastTry < AUTO_RETRY_MS && st.reason)) return;
-  // Not while it's being used: popup open = wait. Open extension tabs and the
-  // side panel only when the user has been away 5+ minutes (tabs come back after
-  // the restart). The side panel used to block it completely, so people who keep
-  // it open all day never got an automatic install.
+  // Not while it's being used: popup open = wait. With extension tabs or the
+  // side panel open, a short pause (1 minute idle) is enough - and after 20
+  // minutes of waiting it installs anyway (the tabs come back after the restart).
+  // It used to need 5 idle minutes, which people who keep the dashboard or side
+  // panel open all day almost never had, so their update never came.
   let tabs = [];
   let panel = false;
   try {
@@ -4404,8 +4441,11 @@ async function maybeAutoUpdate() {
     tabs = ctx.filter((c) => c.contextType === "TAB").map((c) => c.documentUrl).filter(Boolean);
   } catch (e) {}
   if (tabs.length || panel) {
-    const idle = await new Promise((res) => { try { chrome.idle.queryState(300, res); } catch (e) { res("active"); } });
-    if (idle === "active") return;
+    const waited = now - (Number(ui.autoAt) || Number(ui.autoFirstSeen) || now);
+    if (waited < AUTO_FORCE_AFTER_MS) {
+      const idle = await new Promise((res) => { try { chrome.idle.queryState(60, res); } catch (e) { res("active"); } });
+      if (idle === "active") return;
+    }
   }
   st.lastTry = now;
   await ensureOffscreenDocument();
@@ -4862,6 +4902,7 @@ chrome.alarms.onAlarm.addListener(async (alarm) => {
     // Team hub: daily check-in, admin replies every 10 min (both no-ops when not set up).
     await hubHello().catch(() => {});
     await hubPollReplies().catch(() => {});
+    await hubPollNotices().catch(() => {});
   } else if (alarm.name === CLICKUP_ALARM) {
     refreshClickup({ viaAlarm: true }).catch(() => {});
   } else if (alarm.name === EST_ALARM_NEAR || alarm.name === EST_ALARM_MET) {
@@ -5511,6 +5552,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         // The admin's users list: check this copy in first so its own row is current.
         if (a === "users") await hubHello(true).catch(() => {});
         const r = await hubCall(a, p, !!msg.admin);
+        if (r && r.ok && (a === "notice" || a === "notices") && Array.isArray(r.notices)) await setHubNotices(r.notices).catch(() => {});
         if (r && r.ok && (a === "post" || a === "metoo")) {
           const { hubSeen } = await chrome.storage.local.get("hubSeen");
           await chrome.storage.local.set({ hubActive: true, hubSeen: hubSeen || {} });

@@ -1670,7 +1670,7 @@ export async function fetchWeeklySummary({ token, teamId, userId, taskUrls = [],
       if (Number(tt.startDateMs) || 0) continue;
       if (Number(tt.dueDateMs) || 0) continue;
       if (EXTRA_TASK_NAME_RE.test(tt.name || "")) continue;
-      trackedTasks.push({ id: tid, name: tt.name || "(untitled task)", url: tt.url || taskUrlFor(tid), estimateMs: 0, spentMs: mv, done: isTaskDone(tt), status: tt.status || "", priority: tt.priority || "", startDateMs: null, dueDateMs: null, type: "tracked", assignees: tt.assignees || [], container: tt.container });
+      trackedTasks.push({ id: tid, name: tt.name || "(untitled task)", url: tt.url || taskUrlFor(tid), estimateMs: Number(tt.estimateMs) || 0, spentMs: mv, done: isTaskDone(tt), status: tt.status || "", priority: tt.priority || "", startDateMs: null, dueDateMs: null, type: "tracked", assignees: tt.assignees || [], container: tt.container });
     }
     perDay.push({ ts, estimateMs: dayEst, spentMs: daySpent, tasks: dayRows, trackedTasks });
   }
@@ -2010,7 +2010,8 @@ export async function fetchTodayEstimate({ token, teamId, userId, targetHours = 
         id: tid,
         name: t.name || "(untitled task)",
         url: t.url || taskUrlFor(tid),
-        estimateMs: 0,
+        // Its own estimate, for the row only - not added to the day's total.
+        estimateMs: Number(t.estimateMs) || 0,
         spentMs: Number(ms) || 0,
         spentToday: true,
         done: isTaskDone(t),
@@ -2297,7 +2298,8 @@ export async function fetchDateRangeEstimate({ token, teamId, userId, fromTs, to
       id: tid,
       name: t.name || "(untitled task)",
       url: t.url || taskUrlFor(tid),
-      estimateMs: 0,
+      // Its own estimate, for the row only - not added to the range's total.
+      estimateMs: Number(t.estimateMs) || 0,
       spentMs: ms,
       done: isTaskDone(t),
       status: t.status || "",
