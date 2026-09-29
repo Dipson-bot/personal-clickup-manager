@@ -238,8 +238,9 @@
       const extra = st.extraTask && st.extraTask.id;
       // Suggest what to do next: today's open tasks, most urgent first.
       const nexts = nextTasks(st, compact() ? 1 : 2);
-      root.dataset.key = "";
-      root.innerHTML = '<div class="face">' + faceSVG("sleep", full || compact() ? 38 : 50) + '</div><div class="col">' +
+      // Built only when something changed: redrawing every second replaced the
+      // buttons between a press and its release, so clicks got lost.
+      const idleHtml = '<div class="face">' + faceSVG("sleep", full || compact() ? 38 : 50) + '</div><div class="col">' +
         '<div class="lab" style="color:var(--amber)">No timer running</div>' +
         (full
           ? nexts.map((t) => '<div class="row"><button class="x next" data-act="startid" data-id="' + esc(t.id) + '" title="Start: ' + esc(t.name) + '">&#9654; ' + esc(t.name) + "</button></div>").join("") +
@@ -248,6 +249,10 @@
           : (nexts.length ? '<div class="sub">Next: ' + esc(nexts[0].name) + "</div>" : "") +
             (today ? '<div class="sub">' + esc(today) + "</div>" : nexts.length ? "" : '<div class="sub">Point here to start a task</div>')) +
         "</div>";
+      if (root.dataset.key === "idle" && root._idleHtml === idleHtml) return;
+      root.dataset.key = "idle";
+      root._idleHtml = idleHtml;
+      root.innerHTML = idleHtml;
       return;
     }
     const rp = data.rp && String(data.rp.taskId) === String(run.taskId) ? data.rp : null;
@@ -457,7 +462,7 @@
       paint();
       if (r && r.ok === false && pip) {
         const col = pip.document.querySelector("#root .col");
-        if (col) { const m = pip.document.createElement("div"); m.className = "sub"; m.style.color = "var(--red)"; m.textContent = r.reason === "multi-assignee" ? "Shared task: start it from the popup" : "Couldn't start it"; col.appendChild(m); }
+        if (col) { const m = pip.document.createElement("div"); m.className = "sub"; m.style.color = "var(--red)"; m.textContent = "Couldn't start it"; col.appendChild(m); }
       }
       return;
     }
@@ -476,7 +481,7 @@
     if (b.dataset.act === "xgo") { const i = pip.document.getElementById("xnote"); startExtra(i ? i.value.trim() : ""); return; }
     busy = true;
     b.disabled = true;
-    b.textContent = "…";
+    b.textContent = { stop: "Stopping…", complete: "Completing…", resume: "Starting…", extra: "Starting…" }[b.dataset.act] || "Working…";
     const st = data.st || {};
     const run = st.running;
     const act = b.dataset.act;
@@ -501,7 +506,7 @@
       const msg = pip.document.createElement("div");
       msg.className = "sub";
       msg.style.color = "var(--red)";
-      msg.textContent = r.reason === "multi-assignee" ? "Shared task: start it from the popup" : "Didn't work - try from the popup";
+      msg.textContent = "Didn't work - try from the popup";
       root.querySelector(".col") && root.querySelector(".col").appendChild(msg);
       return;
     }

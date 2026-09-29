@@ -31,10 +31,12 @@ function drainQueue() {
   const playNext = () => {
     const item = q.shift();
     if (!item) { draining = false; return; }
+    const vol = Number.isFinite(item.volume) ? Math.max(0.05, Math.min(1, item.volume)) : 1;
     const builtIn = () => {
       const el = document.getElementById(item.id) || document.getElementById("chime");
       try {
         if (el) {
+          el.volume = vol;
           el.currentTime = 0;
           const p = el.play();
           if (p && typeof p.catch === "function") p.catch(() => {});
@@ -48,6 +50,7 @@ function drainQueue() {
       // clip if it can't be loaded or played.
       try {
         const a = new Audio(item.src);
+        a.volume = vol;
         a.onerror = builtIn;
         const p = a.play();
         if (p && typeof p.catch === "function") p.catch(builtIn);
@@ -67,7 +70,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     // Worker retry of a logical play we've already queued - don't double it.
   } else {
     lastNonce = msg.nonce;
-    q.push({ id: clipFor(msg.sound), src: typeof msg.src === "string" && msg.src ? msg.src : "" });
+    q.push({ id: clipFor(msg.sound), src: typeof msg.src === "string" && msg.src ? msg.src : "", volume: Number(msg.volume) });
     drainQueue();
   }
   // Always acknowledge so the worker stops retrying.

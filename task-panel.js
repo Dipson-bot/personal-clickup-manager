@@ -138,6 +138,7 @@
       "\n\nDescription:\n" + (d.description || "(no description)") +
       (files ? "\n\nFiles attached in ClickUp: " + files : "") +
       (cm ? "\n\nRecent comments:\n" + cm : "") +
+      (Array.isArray(d._notes) && d._notes.length ? "\n\nNotes the user keeps about this client:\n" + d._notes.map((n) => "- " + n.text).join("\n") : "") +
       auditText(d);
     if (body.length > MAX_AI_INPUT) body = body.slice(0, MAX_AI_INPUT) + "\n...(cut short)";
     return body;
@@ -225,13 +226,26 @@
   ];
   const TARGET_KEY = "pcm.aiTarget";
 
+  // Asked once per page and remembered: on some computers Chrome logs a warning
+  // ("…not an execution config available for the feature") each time it's asked,
+  // which filled the extension's Errors page. aiBroken = the built-in AI said it
+  // was there but then failed to start, so this page uses the online AI instead.
+  const aiStates = new Map();
+  let aiBroken = false;
   async function aiState(withImages) {
-    try {
-      if (typeof LanguageModel === "undefined") return "unsupported";
-      const inputs = [{ type: "text", languages: ["en"] }];
-      if (withImages) inputs.push({ type: "image" });
-      return await LanguageModel.availability({ expectedInputs: inputs, expectedOutputs: [{ type: "text", languages: ["en"] }] });
-    } catch (e) { return "unsupported"; }
+    if (aiBroken) return "unavailable";
+    const k = withImages ? "img" : "text";
+    if (!aiStates.has(k)) aiStates.set(k, (async () => {
+      try {
+        if (typeof LanguageModel === "undefined") return "unsupported";
+        const inputs = [{ type: "text", languages: ["en"] }];
+        if (withImages) inputs.push({ type: "image" });
+        return await LanguageModel.availability({ expectedInputs: inputs, expectedOutputs: [{ type: "text", languages: ["en"] }] });
+      } catch (e) { return "unsupported"; }
+    })());
+    const s = await aiStates.get(k);
+    if (s === "downloading") aiStates.delete(k); // ask again later, it will change
+    return s;
   }
 
   // ---------- reading attached files ----------
@@ -702,11 +716,17 @@
         else remember(dropped + text, "builtin");
       } catch (e) {
         if (e && e.name === "AbortError") out.appendChild(document.createTextNode((out.textContent ? "\n" : "") + "(stopped)"));
+        else if (!session) {
+          // Chrome said its AI was there but couldn't start it (seen on some
+          // computers): switch this page to the free online AI for the next click.
+          aiBroken = true; online = true;
+          out.textContent = "Chrome's built-in AI isn't working on this computer (" + (e && e.message ? e.message : e) + "). Click again to use the free online AI, or use \"Ask with\" or Copy.";
+        }
         else out.textContent = "The built-in AI couldn't answer: " + (e && e.message ? e.message : e) + ". Use \"Ask with\" or Copy instead.";
       } finally {
         try { session && session.destroy(); } catch (e) {}
         aiAbort = null; generating = false;
-        go.disabled = false; go.textContent = "✨ Explain again"; stop.hidden = true;
+        go.disabled = false; go.textContent = online ? "✨ Explain (free online AI)" : "✨ Explain again"; stop.hidden = true;
       }
     };
     stop.onclick = () => { if (aiAbort) aiAbort.abort(); };
@@ -885,11 +905,33 @@
     refresh.type = "button";
     refresh.onclick = () => load(p, d.id, true);
     meta.appendChild(refresh);
+    if (window.PcmReminders) {
+      const rem = el("button", "pcm-link", "⏰ Remind me");
+      rem.type = "button";
+      rem.title = "Set a reminder about this task";
+      rem.onclick = (e) => { e.stopPropagation(); window.PcmReminders.open({ task: { id: d.id, name: d.name, url: d.url } }, rem); };
+      meta.appendChild(rem);
+    }
     p.appendChild(meta);
 
     const ds = el("div");
     buildDescription(ds, d);
     p.appendChild(ds);
+
+    if (Array.isArray(d._notes) && d._notes.length) {
+      // What the user noted about this client (Options > Clients).
+      const ns = el("div");
+      ns.appendChild(el("div", "pcm-sec-h", "\uD83D\uDCDD Client notes"));
+      for (const n of d._notes.slice().sort((a, b) => b.at - a.at).slice(0, 6)) {
+        const row = el("div", "pcm-desc");
+        row.style.cssText = "max-height:none;border-left:3px solid var(--border);padding-left:8px;margin-bottom:6px;";
+        row.textContent = n.text;
+        const when = el("div", "pcm-note", new Date(n.at).toLocaleDateString([], { month: "short", day: "numeric" }));
+        row.appendChild(when);
+        ns.appendChild(row);
+      }
+      p.appendChild(ns);
+    }
 
     if ((d.attachments || []).length) {
       const fs = el("div");
@@ -921,6 +963,7 @@
     if (res && res.ok && res.data) {
       // A remembered audit for this client, if one was saved from the Export menu.
       if (window.pcmAudit && res.data.list) { try { res.data._audit = await window.pcmAudit.get(res.data.list); } catch (e) {} }
+      if (window.PcmFiles && window.PcmFiles.notesFor && res.data.list) { try { res.data._notes = await window.PcmFiles.notesFor(res.data.list); } catch (e) {} }
       if (p !== panel) return;
       fill(p, res.data);
       return;

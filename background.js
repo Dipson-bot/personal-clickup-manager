@@ -7,6 +7,8 @@
 import { encryptJSON, decryptJSON, encryptWithPassphrase, decryptWithPassphrase, generateTOTP, totpSecondsRemaining } from "./lib-crypto.js";
 import {
   getFileToken,
+  driveFolder,
+  uploadDriveFile,
   createGoogleFile,
   shareAnyoneWithLink,
   getValidToken,
@@ -22,8 +24,8 @@ import {
   pullTaskFiles,
   driveQuota,
 } from "./lib-drive.js";
-import { runAllAccounts, runAccountLogin, URLS, GITHUB_KEEP_COOKIES } from "./lib-automation.js";
-import { verifyToken, getTeams, fetchTodayEstimate, fetchWeeklySummary, fetchDateRangeEstimate, createTaskCache, fetchTeamMembers, fmtDuration, findExtraTaskByName, parseTaskIdFromUrl, getCurrentTimeEntry, getRunningTaskProgress, startTimer, stopTimer, getTaskById, setTaskStatus, taskUrlFor, clientLabelFromContainer, resolveSpaceNamesFor, taskContainer, cuPriorityName, isTaskDone, getSubtasksOfParent, getTaskTree, getTaskDetail, updateTimeEntry, setTaskDueDate, clearTaskTreeCache, listWorkspaceClients, cuRowAssignees, fetchDoneBetween, getTaskPanel, addTaskComment, setTaskDescription } from "./lib-clickup.js";
+import { runAllAccounts, runAccountLogin, readAgentRouterLogin, URLS, GITHUB_KEEP_COOKIES } from "./lib-automation.js";
+import { getUser, verifyToken, getTeams, fetchTodayEstimate, fetchWeeklySummary, fetchDateRangeEstimate, createTaskCache, fetchTeamMembers, fmtDuration, findExtraTaskByName, parseTaskIdFromUrl, getCurrentTimeEntry, getRunningTaskProgress, startTimer, stopTimer, getTaskById, setTaskStatus, taskUrlFor, clientLabelFromContainer, resolveSpaceNamesFor, taskContainer, cuPriorityName, isTaskDone, getSubtasksOfParent, getTaskTree, getTaskDetail, updateTimeEntry, setTaskDueDate, clearTaskTreeCache, listWorkspaceClients, cuRowAssignees, fetchDoneBetween, getTaskPanel, addTaskComment, setTaskDescription, getTaskCommentLinks } from "./lib-clickup.js";
 import { resolveRelayKey, pickProbeModel, probeRelay } from "./lib-availability.js";
 
 const CHECK_ALARM = "dailyLoginCheck";
@@ -227,6 +229,8 @@ function syncTaskFiles() {
 }
 // Google Drive (almost) full: one notification a day, whichever sync hit it.
 async function notifyDriveFull(q, what) {
+  // Off / paused in the bell menu: no pop-up (the Drive card still shows it).
+  if (notificationsMuted(await getSettings())) return;
   const { driveFullNotifiedAt = 0 } = await chrome.storage.local.get("driveFullNotifiedAt");
   if (Date.now() - driveFullNotifiedAt < 24 * 3600000) return;
   await chrome.storage.local.set({ driveFullNotifiedAt: Date.now() });
@@ -245,6 +249,179 @@ chrome.notifications.onButtonClicked.addListener((id) => {
 chrome.notifications.onClicked.addListener((id) => {
   if (id.startsWith("drive-full-")) { chrome.notifications.clear(id).catch(() => {}); chrome.tabs.create({ url: "https://drive.google.com/settings/storage" }).catch(() => {}); }
 });
+
+// ---------- personal reminders (Options > Reminders, the ⏰ button) ----------
+// Stored as `reminders` [{ id, text, at, repeat, taskId, taskName, taskUrl,
+// active, done, firedAt }] and backed up to Drive with the other extras. One
+// alarm per upcoming reminder; the every-minute check also fires anything
+// overdue (asleep / Chrome closed -> shown as "Missed reminder"). Reminders the
+// user set themselves still show during "Pause 1 hour"; "All notifications off"
+// still silences them. The sound follows the Sound switch and the volume.
+const REM_PREFIX = "rem-";
+async function remList() {
+  const { reminders } = await chrome.storage.local.get("reminders");
+  return Array.isArray(reminders) ? reminders : [];
+}
+// Next time a repeating reminder is due, after `now` (local time kept).
+function remNext(at, repeat, now) {
+  const t = new Date(at);
+  let guard = 0;
+  do {
+    t.setDate(t.getDate() + (repeat === "weekly" ? 7 : 1));
+    if (repeat === "weekdays") while (t.getDay() === 0 || t.getDay() === 6) t.setDate(t.getDate() + 1);
+  } while (t.getTime() <= now && ++guard < 800);
+  return t.getTime();
+}
+// Office reminders everyone starts with: check-in / check-out (the team uses
+// the Rigo app) and returning the kitchen cups before 2:15 PM. Ordinary weekday
+// reminders, each added once: they show in Options > Reminders, where they can
+// be edited, paused or deleted like any other; a deleted one isn't added back.
+// A new entry here reaches existing users too (tracked per id).
+const REM_DEFAULTS = [
+  { id: "default-checkin", text: "Check in? Rigo", h: 8, m: 10, sound: "danger" },
+  { id: "default-checkout", text: "Check out? Rigo", h: 17, m: 0, sound: "danger" },
+  { id: "default-cups", text: "Return your cup to the kitchen (before 2:15 PM)", h: 14, m: 0, sound: "normal" },
+];
+// The next weekday at h:m that's still ahead.
+function remNextWeekdayAt(h, m, now = Date.now()) {
+  const d = new Date(now);
+  d.setHours(h, m, 0, 0);
+  while (d.getTime() <= now || d.getDay() === 0 || d.getDay() === 6) d.setDate(d.getDate() + 1);
+  return d.getTime();
+}
+async function ensureDefaultReminders() {
+  // Which defaults were already added here (older copies kept one yes/no flag,
+  // which covered only the check-in / check-out pair).
+  const { remDefaultsSeeded, remDefaultsDone } = await chrome.storage.local.get(["remDefaultsSeeded", "remDefaultsDone"]);
+  const done = new Set(Array.isArray(remDefaultsDone) ? remDefaultsDone : remDefaultsSeeded ? ["default-checkin", "default-checkout"] : []);
+  if (REM_DEFAULTS.every((d) => done.has(d.id))) return false;
+  const list = await remList();
+  const have = new Set(list.map((r) => r && r.id).concat(list.map((r) => r && String(r.text || "").trim().toLowerCase())));
+  let added = 0;
+  for (const d of REM_DEFAULTS) {
+    if (done.has(d.id)) continue;
+    done.add(d.id);
+    const short = d.text.replace(/\s+Rigo$/, "").toLowerCase(); // an older copy said just "Check in?"
+    if (have.has(d.id) || have.has(d.text.toLowerCase()) || have.has(short)) continue; // already there (e.g. restored from Drive)
+    list.push({ id: d.id, text: d.text, at: remNextWeekdayAt(d.h, d.m), repeat: "weekdays", sound: d.sound || "normal", taskId: "", taskName: "", taskUrl: "", files: [], active: true, createdAt: Date.now() });
+    added++;
+  }
+  if (added) await chrome.storage.local.set({ reminders: list });
+  await chrome.storage.local.set({ remDefaultsDone: [...done], remDefaultsSeeded: Date.now() });
+  return added > 0;
+}
+async function scheduleReminders() {
+  const list = await remList();
+  const now = Date.now();
+  const alarms = await chrome.alarms.getAll().catch(() => []);
+  for (const a of alarms) if (a.name.startsWith(REM_PREFIX)) await chrome.alarms.clear(a.name).catch(() => {});
+  for (const r of list) {
+    if (!r || r.done || r.active === false || r.paused || !(Number(r.at) > 0)) continue;
+    chrome.alarms.create(REM_PREFIX + r.id, { when: Math.max(Number(r.at), now + 1000) });
+  }
+}
+// First attached image, shrunk to a small JPEG data URL for the notification.
+async function remImageUrl(r) {
+  const img = (Array.isArray(r.files) ? r.files : []).find((f) => /^image\//.test(f.type || ""));
+  if (!img) return "";
+  try {
+    const db = await new Promise((ok, bad) => { const rq = indexedDB.open("pcm-remfiles", 1); rq.onupgradeneeded = () => { if (!rq.result.objectStoreNames.contains("files")) rq.result.createObjectStore("files", { keyPath: "id" }); }; rq.onsuccess = () => ok(rq.result); rq.onerror = () => bad(rq.error); });
+    const rec = await new Promise((ok) => { const g = db.transaction("files").objectStore("files").get(img.id); g.onsuccess = () => ok(g.result); g.onerror = () => ok(null); });
+    db.close();
+    if (!rec || !rec.blob) return "";
+    const bmp = await createImageBitmap(rec.blob);
+    const scale = Math.min(1, 720 / bmp.width, 400 / bmp.height);
+    const c = new OffscreenCanvas(Math.max(1, Math.round(bmp.width * scale)), Math.max(1, Math.round(bmp.height * scale)));
+    c.getContext("2d").drawImage(bmp, 0, 0, c.width, c.height);
+    const out = await c.convertToBlob({ type: "image/jpeg", quality: 0.8 });
+    const u8 = new Uint8Array(await out.arrayBuffer());
+    let bin = ""; for (let i = 0; i < u8.length; i += 0x8000) bin += String.fromCharCode.apply(null, u8.subarray(i, i + 0x8000));
+    return "data:image/jpeg;base64," + btoa(bin);
+  } catch (e) { return ""; }
+}
+async function showReminder(r, missed) {
+  const s = await getSettings().catch(() => ({}));
+  if (s.notifyAll === false) return; // "All notifications off" silences reminders too (pause doesn't)
+  const nFiles = Array.isArray(r.files) ? r.files.length : 0;
+  const imageUrl = nFiles ? await remImageUrl(r) : "";
+  const when = new Date(Number(r.at)).toLocaleString([], { weekday: "short", hour: "numeric", minute: "2-digit" });
+  const id = REM_PREFIX + r.id + "-" + Date.now();
+  // With files, a click opens the reminder (files + task link); else the task.
+  if (r.taskUrl && !nFiles) notifTargetUrls.set(id, r.taskUrl);
+  const ctx = [r.taskName ? "Task: " + String(r.taskName).slice(0, 100) : "", nFiles ? "\uD83D\uDCCE " + nFiles + " file" + (nFiles === 1 ? "" : "s") : ""].filter(Boolean).join(" \u00b7 ");
+  try {
+    await chrome.notifications.create(id, {
+      type: imageUrl ? "image" : "basic",
+      ...(imageUrl ? { imageUrl } : {}),
+      iconUrl: chrome.runtime.getURL("icons/icon128.png"),
+      title: missed ? "Missed reminder (" + when + ")" : "\u23F0 Reminder",
+      message: String(r.text || "Reminder").slice(0, 300),
+      contextMessage: ctx || undefined,
+      priority: 2,
+      requireInteraction: true,
+      buttons: [{ title: "Snooze 10 min" }, { title: "Done" }],
+    });
+  } catch (e) {}
+  // The reminder's own sound: Normal chime (default), Alarm, Celebration or Silent.
+  const snd = r.sound === "danger" ? "danger" : r.sound === "winner" ? "winner" : null;
+  if (s.notifySound !== false && r.sound !== "none") await playNotificationSound(true, snd).catch(() => {});
+}
+// Fire every reminder that is due (alarm, the minute check, or Chrome start).
+let remBusy = Promise.resolve();
+function fireDueReminders() {
+  remBusy = remBusy.then(async () => {
+    const list = await remList();
+    const now = Date.now();
+    let changed = false, shown = 0;
+    for (const r of list) {
+      if (!r || r.done || r.active === false || r.paused || !(Number(r.at) > 0) || Number(r.at) > now + 15000) continue;
+      const missed = now - Number(r.at) > 5 * 60000;
+      if (shown < 5) { await showReminder(r, missed); shown++; }
+      r.firedAt = now;
+      if (r.repeat === "daily" || r.repeat === "weekdays" || r.repeat === "weekly") r.at = remNext(Number(r.at), r.repeat, now);
+      else r.active = false; // one-time: moves to "Past" in the list
+      changed = true;
+    }
+    if (changed) await chrome.storage.local.set({ reminders: list });
+  }).catch(() => {});
+  return remBusy;
+}
+async function remAct(notifId, btn) {
+  const rid = notifId.slice(REM_PREFIX.length, notifId.lastIndexOf("-"));
+  chrome.notifications.clear(notifId).catch(() => {});
+  const list = await remList();
+  const r = list.find((x) => x && x.id === rid);
+  if (!r) return;
+  if (btn === 0) {
+    // Snooze: a one-time reminder comes back in 10 minutes; a repeating one gets
+    // an extra one-time copy so its own schedule stays as it is.
+    const soon = Date.now() + 10 * 60000;
+    if (!r.repeat || r.repeat === "none") { r.at = soon; r.active = true; }
+    else list.push({ ...r, id: Date.now().toString(36) + Math.random().toString(36).slice(2, 7), repeat: "none", at: soon, active: true, snoozeOf: r.id });
+  } else if (!r.repeat || r.repeat === "none") {
+    r.done = true; r.active = false;
+  }
+  await chrome.storage.local.set({ reminders: list });
+}
+chrome.notifications.onButtonClicked.addListener((id, btn) => {
+  if (id.startsWith(REM_PREFIX)) remAct(id, btn).catch(() => {});
+});
+chrome.notifications.onClicked.addListener((id) => {
+  if (!id.startsWith(REM_PREFIX) || notifTargetUrls.has(id)) return; // a linked task opens via the shared handler
+  chrome.notifications.clear(id).catch(() => {});
+  // The in-memory link is gone after a worker restart: read it from the reminder.
+  remList().then((list) => {
+    const rid = id.slice(REM_PREFIX.length, id.lastIndexOf("-"));
+    const r = list.find((x) => x && x.id === rid);
+    const url = r && !(r.files && r.files.length) && /^https:\/\/app\.clickup\.com\//.test(String(r.taskUrl || "")) ? r.taskUrl
+      : chrome.runtime.getURL("options.html" + (r ? "?rem=" + encodeURIComponent(r.id) : "") + "#reminders");
+    chrome.tabs.create({ url }).catch(() => {});
+  }).catch(() => {});
+});
+chrome.storage.onChanged.addListener((ch, area) => {
+  if (area === "local" && ch.reminders) scheduleReminders().catch(() => {});
+});
+
 // Any Drive write refused because the Drive is full (lib-drive sets driveFullAt).
 chrome.storage.onChanged.addListener((ch, area) => {
   if (area === "local" && ch.driveFullAt && ch.driveFullAt.newValue) notifyDriveFull(null, "").catch(() => {});
@@ -368,10 +545,6 @@ async function shortcutToggleTimer() {
   if (!task && st.extraTask && st.extraTask.id) task = { id: st.extraTask.id, name: st.extraTask.name || "Extra Task" };
   if (!task) {
     await notify("cu-shortcut", "Nothing to start", "Start a task once from the popup; after that the shortcut starts and stops it.", null);
-    return;
-  }
-  if (task.assigneeCount > 1) {
-    await notify("cu-shortcut", "Can't start this task", "“" + (task.name || "This task") + "” has more than one person assigned. Start another task from the popup.", "danger");
     return;
   }
   const id = String(task.id);
@@ -632,9 +805,13 @@ const DEFAULT_SETTINGS = {
   targetUrl: URLS.agentRouterLogin,
   mode: "auto",
   slowNetwork: true,
+  // Agent Router: leave the GitHub accounts signed in (GitHub's account picker
+  // chooses the right one) instead of signing out of GitHub before each login.
+  ghKeepSignedIn: false,
   arCloseTabs: true, // close each Agent Router tab after a successful login (manual runs too)
   notify: true,
   notifySound: true, // play a chime when any notification/reminder pops up
+  notifyVolume: 100, // % loudness of every notification sound (5-100)
   // Bell menu (popup/panel/options): master switch + "Pause 1 hour" (lunch).
   notifyAll: true,
   notifyPausedUntil: 0, // ms timestamp; reminders stay silent until then
@@ -1297,7 +1474,7 @@ async function pushAllToDrive(tok, accounts) {
 // Each key carries its own "last changed" stamp (extrasStamps) so the newest copy
 // wins per key: a fresh install adopts the Drive copy, while a newer local edit is
 // never overwritten by an older remote one.
-const EXTRA_KEYS = ["siteMonitorConfig", "theme", "cuFilter", "cuFilterMode", "cuFilterDefault", "customSounds", "cuManualOrder", "siteDirSeen"];
+const EXTRA_KEYS = ["siteMonitorConfig", "theme", "cuFilter", "cuFilterMode", "cuFilterDefault", "customSounds", "cuManualOrder", "siteDirSeen", "reminders", "clientNotes"];
 const EXTRAS_MAX_SOUNDS = 1500000; // skip very large custom-sound files in the Drive copy
 async function collectExtras() {
   const got = await chrome.storage.local.get([...EXTRA_KEYS, "extrasStamps"]);
@@ -2493,8 +2670,15 @@ async function maybeNotifyClickup(state, { viaAlarm }) {
   // Office hours only - these were firing at 10:30pm on a Sunday before.
   if (!insideOfficeHours(settings)) return;
   const { clickupNotified } = await chrome.storage.local.get("clickupNotified");
-  const seen = clickupNotified && typeof clickupNotified === "object" ? clickupNotified : {};
+  const seen = clickupNotified && typeof clickupNotified === "object" ? { ...clickupNotified } : {};
   const today = todayString();
+  // One record for the whole check: each milestone marks itself and saves, so a
+  // second milestone in the same check can't erase the first one's mark.
+  const mark = async (key) => {
+    seen[key] = today;
+    const { clickupNotified: cur } = await chrome.storage.local.get("clickupNotified");
+    await chrome.storage.local.set({ clickupNotified: { ...(cur && typeof cur === "object" ? cur : {}), [key]: today } });
+  };
   const estMs = Number(state.estimateMs) || 0;
   const spentMs = Number(state.spentMs) || 0;
   const tgtMs = Number(state.targetMs) || 0;
@@ -2518,7 +2702,7 @@ async function maybeNotifyClickup(state, { viaAlarm }) {
     await notify("clickup-halfway-" + Date.now(), "ClickUp - halfway to your daily estimate ⏳",
       "Estimated " + estTxt + " (" + Math.round((estMs / tgtMs) * 100) + "% of " + tgtTxt + ")" +
       (spentMs > 0 ? " · tracked " + spentTxt : "") + ".", undefined, undefined, IMG_HAPPY);
-    await chrome.storage.local.set({ clickupNotified: { ...seen, halfway: today } });
+    await mark("halfway");
     celebrate("halfway", false, "happy", "Halfway there! \u23f3", "Estimated " + estTxt + " of " + tgtTxt);
   }
 
@@ -2528,9 +2712,39 @@ async function maybeNotifyClickup(state, { viaAlarm }) {
     await notify("clickup-almost-" + Date.now(), "ClickUp - almost at your daily estimate 🎯",
       "Just " + fmtDuration(Math.max(0, tgtMs - estMs)) + " to go (estimated " + estTxt + " of " + tgtTxt + ")" +
       (spentMs > 0 ? " · tracked " + spentTxt : "") + ".", undefined, undefined, IMG_HAPPY);
-    await chrome.storage.local.set({ clickupNotified: { ...seen, almost: today } });
+    await mark("almost");
     celebrate("almost", false, "happy", "Almost there! \ud83c\udfaf", "Just " + fmtDuration(Math.max(0, tgtMs - estMs)) + " to go");
   }
+
+  // --- Tracked-time milestones (independent of estimate; same thresholds) ---
+  // Checked before the "estimate met" return below: that return used to skip
+  // these, so tracked milestones never fired on days the estimate was reached.
+
+  if (spentMs >= halfLo && spentMs <= halfHi && seen.spentHalfway !== today) {
+    await notify("clickup-spent-half-" + Date.now(), "ClickUp - tracked halfway ⏳",
+      "Tracked " + spentTxt + " (" + Math.round((spentMs / tgtMs) * 100) + "% of " + tgtTxt + ")" +
+      " · estimated " + estTxt + ".", undefined, undefined, IMG_HAPPY);
+    await mark("spentHalfway");
+    celebrate("spentHalfway", false, "happy", "Halfway tracked! \u23f3", "Tracked " + spentTxt + " of " + tgtTxt);
+  }
+
+  if (spentMs >= almostMs && spentMs < tgtMs && seen.spentAlmost !== today) {
+    await notify("clickup-spent-almost-" + Date.now(), "ClickUp - almost there (tracked) 🎯",
+      "Tracked " + spentTxt + " of " + tgtTxt + " - just " + fmtDuration(Math.max(0, tgtMs - spentMs)) + " to go" +
+      " · estimated " + estTxt + ".", undefined, undefined, IMG_HAPPY);
+    await mark("spentAlmost");
+    celebrate("spentAlmost", false, "happy", "Almost there! \ud83c\udfaf", "Tracked " + spentTxt + " of " + tgtTxt);
+  }
+
+  if (spentMs >= tgtMs && seen.spentMet !== today) {
+    // Tracked time crossed the day's goal - same celebration as the estimate win.
+    await notify("clickup-spent-met-" + Date.now(), "ClickUp - tracked target reached ✓",
+      "Tracked " + spentTxt + " (target " + tgtTxt + ") · estimated " + estTxt + ".",
+      "winner", undefined, IMG_HAPPY);
+    await mark("spentMet");
+    celebrate("spentMet", true, "happy", "Tracked target reached! \ud83c\udf89", "Tracked " + spentTxt + " today");
+  }
+
 
   // Target reached (>= 100%) - the day's estimate goal is met, so celebrate.
   if (state.targetMet) {
@@ -2539,7 +2753,7 @@ async function maybeNotifyClickup(state, { viaAlarm }) {
         estTxt + " estimated for today (target " + tgtTxt + ")" +
         (spentMs > 0 ? " · tracked " + spentTxt : "") + ".",
         "winner", undefined, IMG_HAPPY);
-      await chrome.storage.local.set({ clickupNotified: { ...seen, met: today } });
+      await mark("met");
       celebrate("met", true, "happy", "Daily estimate reached! \ud83c\udf89", estTxt + " estimated for today");
     }
     // Estimate met, but TRACKED time still short at the end of the workday.
@@ -2549,38 +2763,11 @@ async function maybeNotifyClickup(state, { viaAlarm }) {
         const shortTxt = fmtDuration(Math.max(0, tgtMs - spentMs));
         await notify("clickup-spentshort-" + Date.now(), "ClickUp - tracked time short today \ud83d\udd54",
           "Tracked " + spentTxt + " of " + tgtTxt + " · " + shortTxt + " short (the estimate is met).", "danger", undefined, IMG_SAD);
-        await chrome.storage.local.set({ clickupNotified: { ...seen, spentShort: today } });
+        await mark("spentShort");
         celebrate("spentShort", true, "sad", "Tracked time is short today", shortTxt + " short of " + tgtTxt);
       }
     }
     return; // past target: no nudge / end-of-day nags
-  }
-
-  // --- Tracked-time milestones (independent of estimate; same thresholds) ---
-
-  if (spentMs >= halfLo && spentMs <= halfHi && seen.spentHalfway !== today) {
-    await notify("clickup-spent-half-" + Date.now(), "ClickUp - tracked halfway ⏳",
-      "Tracked " + spentTxt + " (" + Math.round((spentMs / tgtMs) * 100) + "% of " + tgtTxt + ")" +
-      " · estimated " + estTxt + ".", undefined, undefined, IMG_HAPPY);
-    await chrome.storage.local.set({ clickupNotified: { ...seen, spentHalfway: today } });
-    celebrate("spentHalfway", false, "happy", "Halfway tracked! \u23f3", "Tracked " + spentTxt + " of " + tgtTxt);
-  }
-
-  if (spentMs >= almostMs && spentMs < tgtMs && seen.spentAlmost !== today) {
-    await notify("clickup-spent-almost-" + Date.now(), "ClickUp - almost there (tracked) 🎯",
-      "Tracked " + spentTxt + " of " + tgtTxt + " - just " + fmtDuration(Math.max(0, tgtMs - spentMs)) + " to go" +
-      " · estimated " + estTxt + ".", undefined, undefined, IMG_HAPPY);
-    await chrome.storage.local.set({ clickupNotified: { ...seen, spentAlmost: today } });
-    celebrate("spentAlmost", false, "happy", "Almost there! \ud83c\udfaf", "Tracked " + spentTxt + " of " + tgtTxt);
-  }
-
-  if (spentMs >= tgtMs && seen.spentMet !== today) {
-    // Tracked time crossed the day's goal - same celebration as the estimate win.
-    await notify("clickup-spent-met-" + Date.now(), "ClickUp - tracked target reached ✓",
-      "Tracked " + spentTxt + " (target " + tgtTxt + ") · estimated " + estTxt + ".",
-      "winner", undefined, IMG_HAPPY);
-    await chrome.storage.local.set({ clickupNotified: { ...seen, spentMet: today } });
-    celebrate("spentMet", true, "happy", "Tracked target reached! \ud83c\udf89", "Tracked " + spentTxt + " today");
   }
 
   if (!viaAlarm) return; // don't nudge on manual refresh
@@ -2616,9 +2803,23 @@ async function maybeNotifyClickup(state, { viaAlarm }) {
 // minutes of that task's own time_estimate - e.g. "50 of 60 min tracked, wrap
 // up soon." Fires a separate one-time "reached" nudge once it's actually hit
 // or passed the estimate. Independent of the daily-aggregate nudges above.
-// Best-effort: this only runs on the 5-minute ClickUp poll, so a task whose
-// remaining time crosses the whole threshold window between two polls just
-// gets the "reached" notification instead of "almost up" - it still fires.
+// On time, not every 5 minutes: once the numbers are known (timer start + time
+// tracked before it + estimate), the exact moments the task gets "almost up"
+// and "reached" are just arithmetic, so local chrome.alarms are set for them
+// (see scheduleEstimateAlarms). No ClickUp requests while waiting; when one
+// fires, this runs once more to confirm with ClickUp and notify.
+const EST_ALARM_NEAR = "cu-est-near", EST_ALARM_MET = "cu-est-met";
+async function scheduleEstimateAlarms(entry, progress, settings, seenNear, seenMet) {
+  await chrome.alarms.clear(EST_ALARM_NEAR).catch(() => {});
+  await chrome.alarms.clear(EST_ALARM_MET).catch(() => {});
+  if (!entry || !progress || !(progress.estimateMs > 0) || settings.clickupRunningNotify === false) return;
+  const now = Date.now();
+  const crossAt = now + (progress.estimateMs - progress.trackedMs) + 3000; // a few seconds late, so ClickUp agrees it's crossed
+  const thresholdMs = Math.max(1, Number(settings.clickupRunningThresholdMin) || 10) * 60000;
+  const nearAt = crossAt - thresholdMs;
+  if (!seenNear && nearAt > now + 5000) chrome.alarms.create(EST_ALARM_NEAR, { when: nearAt });
+  if (!seenMet && crossAt > now + 5000) chrome.alarms.create(EST_ALARM_MET, { when: crossAt });
+}
 async function maybeNotifyRunningTask(cfg) {
   if (!cfg || !cfg.token || !cfg.teamId) return;
   const settings = await getSettings();
@@ -2628,7 +2829,7 @@ async function maybeNotifyRunningTask(cfg) {
   } catch (e) {
     return; // best-effort - don't let a failed lookup break the rest of the refresh
   }
-  if (!entry) { await chrome.storage.local.set({ runningProgress: null }); return; }
+  if (!entry) { await chrome.storage.local.set({ runningProgress: null }); await scheduleEstimateAlarms(null); return; }
   let progress;
   try {
     progress = await getRunningTaskProgress(cfg.token, cfg.teamId, entry.taskId, entry.startMs);
@@ -2643,14 +2844,15 @@ async function maybeNotifyRunningTask(cfg) {
     closedMs: progress ? Math.max(0, progress.trackedMs - Math.max(0, Date.now() - (entry.startMs || Date.now()))) : 0,
     at: Date.now(),
   } });
-  if (settings.clickupRunningNotify === false) return;
-  if (!progress) return; // task has no estimate set - nothing to compare against
   const { clickupNotified } = await chrome.storage.local.get("clickupNotified");
   const seen = clickupNotified && typeof clickupNotified === "object" ? clickupNotified : {};
   const runningNear = (seen.runningNear && typeof seen.runningNear === "object") ? seen.runningNear : {};
   const runningMet = (seen.runningMet && typeof seen.runningMet === "object") ? seen.runningMet : {};
   const today = todayString();
   const key = String(entry.taskId);
+  await scheduleEstimateAlarms(entry, progress, settings, runningNear[key] === today, runningMet[key] === today).catch(() => {});
+  if (settings.clickupRunningNotify === false) return;
+  if (!progress) return; // task has no estimate set - nothing to compare against
   const thresholdMs = Math.max(1, Number(settings.clickupRunningThresholdMin) || 10) * 60000;
   const remainingMs = progress.estimateMs - progress.trackedMs;
   const name = progress.taskName || entry.taskName || "this task";
@@ -3193,12 +3395,19 @@ async function ensureOffscreenDocument() {
 // (the Options "Test sound" button always previews). `sound` selects which clip
 // the offscreen document plays: "danger" = the urgent alarm, "winner" = the
 // celebration clip, else the default chime.
-async function playNotificationSound(force, sound) {
+// Bell menu: all notifications off, or paused (lunch / meeting).
+function notificationsMuted(s) {
+  return !!s && (s.notifyAll === false || Number(s.notifyPausedUntil) > Date.now());
+}
+async function playNotificationSound(force, sound, volumeOverride) {
   try {
-    if (!force) {
-      const s = await getSettings();
-      if (!s.notifySound) return;
-    }
+    const s = await getSettings();
+    // Muted means no sound from any path, including update notices.
+    if (!force && (!s.notifySound || notificationsMuted(s))) return;
+    // Loudness (Options > Notifications and sound). A test passes the slider's
+    // live value so the change can be heard before saving.
+    const pct = Number(volumeOverride != null ? volumeOverride : s.notifyVolume);
+    const volume = Math.max(0.05, Math.min(1, (Number.isFinite(pct) && pct > 0 ? pct : 100) / 100));
     await ensureOffscreenDocument();
     // A nonce tags THIS logical play (shared across retries so a lost ack isn't
     // re-queued, but distinct from any other notification even with the same clip).
@@ -3218,18 +3427,18 @@ async function playNotificationSound(force, sound) {
       if (c && typeof c.src === "string") src = c.src;
     } catch (e) {}
     for (let attempt = 0; attempt < 6; attempt++) {
-      const ok = await sendPlaySound(sound, nonce, src);
+      const ok = await sendPlaySound(sound, nonce, src, volume);
       if (ok) return;
       await new Promise((r) => setTimeout(r, 70));
     }
   } catch (e) {}
 }
 // One PLAY_SOUND round-trip. Resolves true only if the offscreen doc acked.
-function sendPlaySound(sound, nonce, src) {
+function sendPlaySound(sound, nonce, src, volume) {
   return new Promise((resolve) => {
     try {
       chrome.runtime.sendMessage(
-        { type: "PLAY_SOUND", target: "offscreen", sound: sound || "notify", nonce, src: src || "" },
+        { type: "PLAY_SOUND", target: "offscreen", sound: sound || "notify", nonce, src: src || "", volume },
         (resp) => {
           if (chrome.runtime.lastError) { resolve(false); return; }
           resolve(!!(resp && resp.ok));
@@ -3295,8 +3504,7 @@ async function celebrateMilestone({ kind, big, mood, title, sub, force }) {
 async function notify(id, title, message, sound, targetUrl, opts) {
   // Bell menu: everything off, or paused (e.g. lunch). Update notices don't use notify().
   try {
-    const ms = await getSettings();
-    if (ms.notifyAll === false || Number(ms.notifyPausedUntil) > Date.now()) return;
+    if (notificationsMuted(await getSettings())) return;
   } catch (e) {}
   if (targetUrl) {
     notifTargetUrls.set(id, targetUrl);
@@ -3450,11 +3658,25 @@ async function runAccounts(accountsToRun, { active, manual = false }) {
     // Successful logins close their Agent Router tab (auto runs always did; manual
     // runs now do too unless the user turned arCloseTabs off). Tabs that need the
     // user - CAPTCHA, 2FA, failures - are always left open.
-    { targetUrl: settings.targetUrl, active, keepTabs: manual && settings.arCloseTabs === false, timeoutScale, isCancelled: isCancelledFn },
-    async ({ accountId, phase, result, note, detected }) => {
+    { targetUrl: settings.targetUrl, active, keepTabs: manual && settings.arCloseTabs === false, timeoutScale, keepGithub: settings.ghKeepSignedIn === true, isCancelled: isCancelledFn },
+    async ({ accountId, phase, result, note, detected, tabId }) => {
       if (phase === "start") {
         setStatusFor(accountId, { lastRunAt: Date.now(), lastResult: "running", note: "" });
       } else if (phase === "done") {
+        await recordLoginResult(accountId, result, note, detected, settings);
+        // A tab left open for the person (passkey, CAPTCHA, Google...): notice
+        // when they finish the login there and record it like a normal run.
+        if (result === "needs-attention" && tabId) watchAttentionTab(tabId, accountId).catch(() => {});
+      }
+      chrome.runtime.sendMessage({ type: "RUN_PROGRESS", accountId, phase, result, note }).catch(() => {});
+    }
+  );
+  return results;
+}
+
+// Record one finished login (Run, or a login the person finished by hand in the
+// tab left open for them): the status line, and the earning checkpoint rules.
+async function recordLoginResult(accountId, result, note, detected, settings) {
         const patch = { lastRunAt: Date.now(), lastResult: result, note: note || "" };
         if (result === "success") {
           const status = await getStatus();
@@ -3519,17 +3741,58 @@ async function runAccounts(accountsToRun, { active, manual = false }) {
         if (result === "success" && detected && detected.balance == null) {
           patch.note = (patch.note || "Logged in.") + " (balance unreadable" + (detected.balanceErr ? ": " + detected.balanceErr : "") + ")";
         }
-        setStatusFor(accountId, patch);
+        await setStatusFor(accountId, patch);
         if (detected) applyDetected(accountId, detected).catch(() => {});
         // Balance rides in a separate local key (never mirrored to Drive).
         if (result === "success" && detected && detected.balance != null)
           setBalanceFor(accountId, detected.balance).catch(() => {});
-      }
-      chrome.runtime.sendMessage({ type: "RUN_PROGRESS", accountId, phase, result, note }).catch(() => {});
-    }
-  );
-  return results;
 }
+
+// ---------- logins finished by hand ----------
+// arAttnTabs = { [tabId]: { accountId, at } } for tabs a run left open for the
+// person. When such a tab reaches Agent Router's logged-in app, the login is
+// recorded (same rules as Run) and the red "needs you" message goes away.
+const ATTN_TTL_MS = 12 * 3600000;
+async function attnTabs() {
+  const { arAttnTabs } = await chrome.storage.local.get("arAttnTabs");
+  const m = arAttnTabs && typeof arAttnTabs === "object" ? arAttnTabs : {};
+  const now = Date.now();
+  for (const k of Object.keys(m)) if (!m[k] || now - (m[k].at || 0) > ATTN_TTL_MS) delete m[k];
+  return m;
+}
+async function watchAttentionTab(tabId, accountId) {
+  const m = await attnTabs();
+  m[String(tabId)] = { accountId, at: Date.now() };
+  await chrome.storage.local.set({ arAttnTabs: m });
+}
+const attnChecking = new Set();
+chrome.tabs.onUpdated.addListener((tabId, info, tab) => {
+  if (info.status !== "complete" || !/^https:\/\/([a-z0-9-]+\.)*agentrouter\.org\//i.test(String((tab && tab.url) || ""))) return;
+  if (/\/(login|oauth)/i.test(new URL(tab.url).pathname) || attnChecking.has(tabId)) return;
+  attnChecking.add(tabId);
+  (async () => {
+    const m = await attnTabs();
+    const w = m[String(tabId)];
+    if (!w) return;
+    await new Promise((r) => setTimeout(r, 1500)); // let the app save its session
+    const { loggedIn, detected } = await readAgentRouterLogin(tabId);
+    if (!loggedIn) return;
+    // Only when it's the same Agent Router account (never credit another one).
+    const acc = (await getAccounts()).find((a) => a.id === w.accountId);
+    if (!acc) return;
+    if (acc.detectedArUsername && detected.arUsername && acc.detectedArUsername !== detected.arUsername) {
+      await setStatusFor(w.accountId, { note: "That tab is logged in to a different Agent Router account (" + detected.arUsername + ")." });
+      return;
+    }
+    delete m[String(tabId)];
+    await chrome.storage.local.set({ arAttnTabs: m });
+    await recordLoginResult(w.accountId, "success", "Logged in (finished by you in the tab).", detected, await getSettings());
+    chrome.runtime.sendMessage({ type: "RUN_PROGRESS", accountId: w.accountId, phase: "done", result: "success" }).catch(() => {});
+  })().catch(() => {}).finally(() => attnChecking.delete(tabId));
+});
+chrome.tabs.onRemoved.addListener((tabId) => {
+  attnTabs().then((m) => { if (m[String(tabId)]) { delete m[String(tabId)]; return chrome.storage.local.set({ arAttnTabs: m }); } }).catch(() => {});
+});
 
 // The daily auto path: only touches accounts not already attempted today, so it
 // never re-opens tabs for an account that already succeeded or needs the user.
@@ -3607,6 +3870,109 @@ const UPDATE_REPO = "Dipson-bot/personal-clickup-manager";
 // edits. It is read from raw.githubusercontent.com (a plain file, not the rate-
 // limited GitHub API), so checking every 15-30 minutes costs nothing. Missing or
 // unreadable = these defaults.
+
+// ---------- team hub: Help & issues + active users (the admin's Apps Script) ----------
+// The hub address travels in update-policy.json (hubUrl), written from Admin >
+// Team hub, so no user sets anything up. Names and photos come ONLY from ClickUp
+// (/user, cached, refreshed at most weekly). Each copy checks in about once a
+// day; replies from the admin in threads you're part of show as notifications.
+const HUB_URL_RE = /^https:\/\/script\.google\.com\/macros\/s\/[A-Za-z0-9_-]{20,}\/exec$/;
+const HUB_HELLO_MS = 20 * 3600000;
+const HUB_ACTIVE_MS = 60 * 60000; // opening the popup / options counts as "active", at most hourly
+const HUB_POLL_MS = 10 * 60000;
+async function hubUrl() {
+  const { updatePolicy, hubUrlLocal } = await chrome.storage.local.get(["updatePolicy", "hubUrlLocal"]);
+  const u = (updatePolicy && updatePolicy.policy && updatePolicy.policy.hubUrl) || hubUrlLocal || "";
+  return HUB_URL_RE.test(u) ? u : "";
+}
+async function installId() {
+  let { installId: id } = await chrome.storage.local.get("installId");
+  if (!id) { id = crypto.randomUUID().replace(/-/g, ""); await chrome.storage.local.set({ installId: id }); }
+  return id;
+}
+async function hubProfile(force) {
+  const cfg = await getClickupConfig().catch(() => null);
+  if (!cfg || !cfg.token) return null;
+  let c = cfg;
+  if (force || !cfg.profileAt || Date.now() - cfg.profileAt > 7 * 86400000) {
+    try {
+      const u = await getUser(cfg.token);
+      c = await setClickupConfig({ username: u.username || cfg.username || "", avatar: u.profilePicture || "", color: u.color || "", initials: u.initials || "", profileAt: Date.now() });
+    } catch (e) {} // keep what we have; try again next time
+  }
+  return { cuUserId: String(c.userId || ""), name: c.username || "", avatar: c.avatar || "", color: c.color || "", initials: c.initials || "" };
+}
+async function hubAdminKey() {
+  const { adminHubEnc } = await chrome.storage.local.get("adminHubEnc");
+  const a = await decryptJSON(adminHubEnc, null);
+  return a && a.key ? String(a.key) : "";
+}
+async function hubPost(url, body) {
+  const ctl = new AbortController();
+  const timer = setTimeout(() => ctl.abort(), 60000);
+  try {
+    const res = await fetch(url, { method: "POST", body: JSON.stringify(body), signal: ctl.signal, cache: "no-store" });
+    const txt = await res.text();
+    let j = null;
+    try { j = JSON.parse(txt); } catch (e) {}
+    if (!j) return { ok: false, error: res.ok ? "The hub gave an unexpected answer - check the web app is deployed with access for \"Anyone\"." : "The hub said HTTP " + res.status + "." };
+    return j;
+  } catch (e) {
+    return { ok: false, error: e && e.name === "AbortError" ? "The hub didn't answer in time - try again." : "Couldn't reach the hub (" + ((e && e.message) || e) + ")." };
+  } finally { clearTimeout(timer); }
+}
+async function hubCall(action, payload, asAdmin) {
+  const url = await hubUrl();
+  if (!url) return { ok: false, reason: "not-set-up", error: "Help & issues isn't set up yet - ask your admin." };
+  const body = { ...(payload || {}), action, install: await installId() };
+  if (asAdmin) {
+    const key = await hubAdminKey();
+    if (!key) return { ok: false, error: "Save the admin key first (Admin > Team hub)." };
+    body.key = key;
+  }
+  return hubPost(url, body);
+}
+// Check in with the Team hub: name, photo, version, last active. At least daily
+// (gapMs), hourly when the popup / options is opened, and straight away when the
+// version changed since the last check-in (after an update), so the admin's
+// users list never shows a version this copy no longer runs.
+async function hubHello(force, gapMs = HUB_HELLO_MS) {
+  const { hubHelloAt, hubHelloVer } = await chrome.storage.local.get(["hubHelloAt", "hubHelloVer"]);
+  const version = chrome.runtime.getManifest().version;
+  if (!force && hubHelloVer === version && Date.now() - (Number(hubHelloAt) || 0) < gapMs) return null;
+  if (!(await hubUrl())) return null;
+  const p = await hubProfile();
+  if (!p) return null; // not connected to ClickUp: nothing to say who this is
+  await chrome.storage.local.set({ hubHelloAt: Date.now() });
+  const r = await hubCall("hello", { ...p, version });
+  if (r && r.ok) await chrome.storage.local.set({ hubHelloVer: version });
+  if (r && r.ok) await chrome.storage.local.set({ hubMe: { state: r.state, mutedUntil: r.mutedUntil || 0, settings: r.settings || {}, at: Date.now() } });
+  return r;
+}
+// Admin replies / resolutions in threads you started, replied to or "me too"'d.
+async function hubPollReplies(force) {
+  const { hubActive, hubPollAt, hubSeen } = await chrome.storage.local.get(["hubActive", "hubPollAt", "hubSeen"]);
+  if (!hubActive) return;
+  if (!force && Date.now() - (Number(hubPollAt) || 0) < HUB_POLL_MS) return;
+  await chrome.storage.local.set({ hubPollAt: Date.now() });
+  const r = await hubCall("threads", {});
+  if (!r || !r.ok || !Array.isArray(r.threads)) return;
+  const seen = hubSeen && typeof hubSeen === "object" ? { ...hubSeen } : {};
+  const first = !hubSeen;
+  for (const t of r.threads) {
+    if (!t.mine) continue;
+    const was = Number(seen[t.id]) || 0;
+    if (!first && t.lastAt > was && t.lastRole === "admin") {
+      const done = t.status === "resolved";
+      await notify("hub-" + t.id + "-" + t.lastAt, done ? "Resolved" + (t.fixedIn ? " in v" + t.fixedIn : "") + ": " + t.title : "Admin replied: " + t.title,
+        done ? "Your admin marked this issue resolved." + (t.fixedIn ? " Update to v" + t.fixedIn + " if you haven't." : "") : "Open Help & issues to read the reply.",
+        null, chrome.runtime.getURL("options.html?thread=" + encodeURIComponent(t.id) + "#hub"));
+    }
+    seen[t.id] = Math.max(was, Number(t.lastAt) || 0);
+  }
+  await chrome.storage.local.set({ hubSeen: seen });
+}
+
 const UPDATE_POLICY_PATH = "update-policy.json";
 const UPDATE_POLICY_URL = "https://raw.githubusercontent.com/" + UPDATE_REPO + "/main/" + UPDATE_POLICY_PATH;
 const UPDATE_ALARM = "updateCheck";
@@ -3632,7 +3998,41 @@ function normalizeUpdatePolicy(p) {
     latest: /^\d+(\.\d+){1,3}$/.test(String(o.latest || "")) ? String(o.latest) : "",
     zip: String(o.zip || "").startsWith("https://github.com/" + UPDATE_REPO + "/releases/download/") ? String(o.zip) : "",
     url: String(o.url || "").startsWith("https://github.com/" + UPDATE_REPO + "/releases") ? String(o.url) : "",
+    // The admin's team hub (Help & issues). Only a Google Apps Script web app.
+    hubUrl: HUB_URL_RE.test(String(o.hubUrl || "")) ? String(o.hubUrl) : "",
+    // Published without a pop-up: copies don't show "Update available" for this
+    // version (automatic updates still install it; Check for updates still shows it).
+    quietFor: /^\d+(\.\d+){1,3}$/.test(String(o.quietFor || "")) ? String(o.quietFor) : "",
+    // A release for some people only (a GitHub pre-release): only copies whose
+    // ClickUp user id is listed see it; everyone else keeps `latest`.
+    preview: normalizePreview(o.preview),
   };
+}
+function normalizePreview(p) {
+  if (!p || typeof p !== "object") return null;
+  const latest = /^\d+(\.\d+){1,3}$/.test(String(p.latest || "")) ? String(p.latest) : "";
+  const zip = String(p.zip || "").startsWith("https://github.com/" + UPDATE_REPO + "/releases/download/") ? String(p.zip) : "";
+  if (!latest || !zip) return null;
+  return {
+    latest, zip,
+    url: String(p.url || "").startsWith("https://github.com/" + UPDATE_REPO + "/releases") ? String(p.url) : "",
+    cuUserIds: (Array.isArray(p.cuUserIds) ? p.cuUserIds : []).map(String).filter((x) => /^\d{1,15}$/.test(x)).slice(0, 500),
+    notify: !!p.notify,
+    nonce: typeof p.nonce === "string" ? p.nonce.slice(0, 40) : "",
+    at: Number(p.at) || 0,
+  };
+}
+// This copy's view of the policy: a preview release replaces `latest` for the
+// people it was published to.
+async function effectivePolicy(policy) {
+  const pv = policy && policy.preview;
+  if (!pv || !pv.cuUserIds.length) return policy;
+  const cfg = await getClickupConfig().catch(() => null);
+  const me = cfg && cfg.userId != null ? String(cfg.userId) : "";
+  if (!me || !pv.cuUserIds.includes(me)) return policy;
+  if (policy.latest && cmpVersion(policy.latest, pv.latest) >= 0) return policy; // already released to everyone
+  return { ...policy, latest: pv.latest, zip: pv.zip, url: pv.url, quietFor: pv.notify ? "" : pv.latest,
+    notifyNonce: pv.notify && pv.nonce ? pv.nonce : policy.notifyNonce, notifiedAllAt: pv.at || policy.notifiedAllAt, previewForMe: true };
 }
 // Where the settings file is read from. jsDelivr (a free public mirror of GitHub
 // files, no request limits) is checked every minute; the Admin panel refreshes
@@ -3698,7 +4098,7 @@ async function checkForUpdate(force, forceNotify = false) {
   if (!/^[\w.-]+\/[\w.-]+$/.test(UPDATE_REPO) || UPDATE_REPO === "OWNER/REPO") return { ok: false, reason: "not-configured" };
   const current = chrome.runtime.getManifest().version;
   const { updateInfo: prev } = await chrome.storage.local.get("updateInfo");
-  const policy = await fetchUpdatePolicy();
+  const policy = await effectivePolicy(await fetchUpdatePolicy());
   scheduleUpdateAlarm();
   await maybeApplyTeamSites(policy).catch(() => {});
   // "Notify everyone now": a nonce this copy hasn't acted on yet skips the
@@ -3781,8 +4181,17 @@ async function checkForUpdate(force, forceNotify = false) {
   if (info.newer && (forceNotify || (due && !downloaded))) {
     info.notifiedFor = info.latest;
     info.notifiedAt = now;
+    // No "Update now" pop-up when the admin published it quietly, or when this
+    // copy's automatic updates are set up and working (it installs by itself and
+    // says "Updated" afterwards). "Check for updates" always shows it.
+    let quiet = "";
+    if (!forceNotify) {
+      if (policy.quietFor && policy.quietFor === info.latest && !nonceNew) quiet = "admin";
+      else if ((await getSettings()).autoUpdate !== false && (await autoUpdateReady())) quiet = "auto";
+    }
+    info.quiet = quiet;
     await chrome.storage.local.set({ updateInfo: info });
-    await showUpdateNotification(info);
+    if (!quiet) await showUpdateNotification(info);
   }
   await chrome.storage.local.set({ updateInfo: info });
   return apiError ? { ok: false, reason: apiError, ...info } : { ok: true, ...info };
@@ -3791,7 +4200,28 @@ async function checkForUpdate(force, forceNotify = false) {
 // Update notification: stays until dismissed; buttons = download / what's new.
 // Button + click targets are read back from storage (updateInfo), because the
 // service worker may have been restarted by the time the user clicks.
+// Would an automatic update work here right now? (Asked of the offscreen page,
+// which holds the folder permission; remembered for 30 minutes.)
+let autoReadyCache = null;
+async function autoUpdateReady() {
+  if (autoReadyCache && Date.now() - autoReadyCache.at < 30 * 60000) return autoReadyCache.ready;
+  let ready = false;
+  try {
+    await ensureOffscreenDocument();
+    for (let i = 0; i < 6; i++) {
+      const r = await chrome.runtime.sendMessage({ target: "offscreen", type: "AUTO_UPDATE_READY" }).catch(() => null);
+      if (r && typeof r.ready === "boolean") { ready = r.ready; break; }
+      await new Promise((res) => setTimeout(res, 200));
+    }
+  } catch (e) {}
+  autoReadyCache = { at: Date.now(), ready };
+  return ready;
+}
 async function showUpdateNotification(info) {
+  // Off / paused in the bell menu: stay quiet. A critical update still shows
+  // (silently - the sound player checks the same switch) so nobody is left
+  // on a broken version; the popup's update banner covers the rest.
+  if (notificationsMuted(await getSettings()) && !info.critical) return;
   try {
     await chrome.notifications.create("update-available-" + info.latest, {
       type: "basic",
@@ -3863,7 +4293,8 @@ async function maybeAutoUpdate() {
   if (!/^(no-folder|permission|moved)$/.test(st.reason)) {
     st.fails = (st.fails || 0) + 1;
     diagLog("automatic update", st.reason + (st.error ? ": " + st.error : ""));
-  } else if (st.setupNoticeFor !== ui.latest) {
+  } else if (st.setupNoticeFor !== ui.latest && !notificationsMuted(await getSettings())) {
+    // (Muted in the bell menu: not marked as shown, so it comes once they're back on.)
     // "Install updates automatically" is ticked, but the one-time folder setup
     // was never done (or Chrome was told "Allow this time"): it would otherwise
     // retry silently forever. Say so ONCE per version, with the way to fix it.
@@ -3976,6 +4407,8 @@ chrome.notifications.onButtonClicked.addListener((id, btn) => {
 });
 
 chrome.runtime.onStartup.addListener(() => {
+  // Reminders that came due while Chrome was closed show now as "Missed".
+  ensureDefaultReminders().catch(() => {}).then(() => fireDueReminders()).then(() => scheduleReminders()).catch(() => {});
   checkForUpdate().catch(() => {});
   checkAndMaybeRun().catch(() => {});
   updateBadge().catch(() => {});
@@ -3983,6 +4416,7 @@ chrome.runtime.onStartup.addListener(() => {
   autoSyncIfSignedIn();
   migrateAgentRouterQuotaTimes().then(() => scheduleAgentRouterAlarms()).catch(() => {});
   pollBalancesInBackground().catch(() => {});
+  hubHello().catch(() => {});
 });
 const AR_ALARM_PREFIX = "arQuota:";
 // Agent Router's live schedule: two daily quota batches (Beijing/UTC+8 wall clock).
@@ -4192,6 +4626,8 @@ async function notifyAgentRouterQuota() {
 }
 
 chrome.runtime.onInstalled.addListener((details) => {
+  // Alarms don't survive an update / reload: put the reminders' back.
+  ensureDefaultReminders().catch(() => {}).then(() => fireDueReminders()).then(() => scheduleReminders()).catch(() => {});
   // Brand-new install: offer one-click update setup while the folder is fresh in mind.
   if (details && details.reason === "install") openUpdater(true);
   // After a reload: confirm a downloaded update actually got installed, then
@@ -4201,6 +4637,8 @@ chrome.runtime.onInstalled.addListener((details) => {
   updateBadge().catch(() => {});
   autoSyncIfSignedIn();
   migrateAgentRouterQuotaTimes().then(() => scheduleAgentRouterAlarms()).catch(() => {});
+  // After an update: tell the Team hub the new version now, not tomorrow.
+  hubHello().catch(() => {});
 });
 
 
@@ -4282,8 +4720,22 @@ chrome.alarms.onAlarm.addListener(async (alarm) => {
     // Backstop for the wrap-up alarm (missed while asleep / Chrome closed).
     // Cheap: settings + one storage read, and it runs at most once a day.
     await maybeWrapUp().catch(() => {});
+    // Backstop for reminder alarms (asleep / missed).
+    await fireDueReminders();
+    // Team hub: daily check-in, admin replies every 10 min (both no-ops when not set up).
+    await hubHello().catch(() => {});
+    await hubPollReplies().catch(() => {});
   } else if (alarm.name === CLICKUP_ALARM) {
     refreshClickup({ viaAlarm: true }).catch(() => {});
+  } else if (alarm.name === EST_ALARM_NEAR || alarm.name === EST_ALARM_MET) {
+    // The running task's estimate is (almost) up: one check with ClickUp (is the
+    // timer still on, exact time) and the alert. Skipped while ClickUp is
+    // rate-limiting us; the 5-minute refresh still catches it then.
+    const st = (await getClickupState().catch(() => null)) || {};
+    if (!(st.rateLimitedUntil > Date.now())) {
+      const cfg = await getClickupConfig().catch(() => null);
+      await maybeNotifyRunningTask(cfg).catch(() => {});
+    }
   } else if (alarm.name === BALANCE_ALARM) {
     pollBalancesInBackground().catch(() => {});
   } else if (alarm.name === SYNC_ALARM) {
@@ -4294,6 +4746,8 @@ chrome.alarms.onAlarm.addListener(async (alarm) => {
     await checkSites().catch(() => {});
   } else if (alarm.name === WRAPUP_ALARM) {
     await onWrapUpAlarm().catch(() => {});
+  } else if (alarm.name.startsWith(REM_PREFIX)) {
+    await fireDueReminders();
   } else if (alarm.name.startsWith(AR_ALARM_PREFIX)) {
     // Awaited so the worker stays alive long enough to play the chime - unlike
     // the refresh branches above, this path has no in-flight fetch to hold it.
@@ -4348,6 +4802,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       if (TASK_MUTATIONS.has(msg && msg.type)) clearTaskTreeCache();
       switch (msg.type) {
       case "GET_STATE": {
+        hubHello(false, HUB_ACTIVE_MS).catch(() => {}); // popup / options opened = active (hourly at most)
         const settings = await getSettings();
         const accounts = (await getAccounts()).map((a) => publicAccount(a, settings));
         const status = await getStatus();
@@ -4902,6 +5357,108 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
           });
         break;
       }
+      case "HUB": {
+        // Help & issues: every call from the pages goes through here (the address,
+        // this install's id, the ClickUp name/photo and the admin key are added).
+        const a = String(msg.action || "");
+        const p = { ...(msg.payload || {}) };
+        if (a === "post" || a === "metoo") {
+          const prof = await hubProfile();
+          if (!prof) { sendResponse({ ok: false, error: "Connect ClickUp first - your name and photo come from it." }); break; }
+          p.name = prof.name;
+          if (p.diag === true) p.diag = await buildDiagReport("help").catch(() => "");
+          else delete p.diag;
+          // First post / me-too on this computer: make sure the hub knows who this is.
+          await hubHello(true).catch(() => {});
+        }
+        // The admin's users list: check this copy in first so its own row is current.
+        if (a === "users") await hubHello(true).catch(() => {});
+        const r = await hubCall(a, p, !!msg.admin);
+        if (r && r.ok && (a === "post" || a === "metoo")) {
+          const { hubSeen } = await chrome.storage.local.get("hubSeen");
+          await chrome.storage.local.set({ hubActive: true, hubSeen: hubSeen || {} });
+        }
+        sendResponse(r);
+        break;
+      }
+      case "HUB_INFO": {
+        const url = await hubUrl();
+        const { hubMe } = await chrome.storage.local.get("hubMe");
+        sendResponse({ ok: true, url: !!url, profile: await hubProfile().catch(() => null), me: hubMe || null, adminKey: !!(await hubAdminKey()), install: await installId() });
+        break;
+      }
+      case "HUB_SEEN": {
+        const { hubSeen } = await chrome.storage.local.get("hubSeen");
+        const seen = hubSeen && typeof hubSeen === "object" ? { ...hubSeen } : {};
+        seen[String(msg.id)] = Math.max(Number(seen[String(msg.id)]) || 0, Number(msg.lastAt) || Date.now());
+        await chrome.storage.local.set({ hubSeen: seen });
+        sendResponse({ ok: true });
+        break;
+      }
+      case "ADMIN_HUB_SAVE": {
+        // Admin > Team hub: test the address + key, keep the key (encrypted) on this
+        // computer, and publish the address in update-policy.json for everyone.
+        const url = String(msg.url || "").trim();
+        const key = String(msg.key || "").trim();
+        if (!HUB_URL_RE.test(url)) { sendResponse({ ok: false, error: "That isn't a Google Apps Script web app address (it ends in /exec)." }); break; }
+        const test = await hubPost(url, { action: "users", key, install: await installId() });
+        if (!test || !test.ok) { sendResponse({ ok: false, error: (test && test.error) || "The hub didn't answer." }); break; }
+        await chrome.storage.local.set({ adminHubEnc: await encryptJSON({ key }), hubUrlLocal: url });
+        let shared = false, shareError = "";
+        try {
+          const { adminEnc } = await chrome.storage.local.get("adminEnc");
+          const saved = await decryptJSON(adminEnc, null);
+          if (!saved || !saved.token) throw new Error("add your GitHub token (GitHub access, below) so everyone's copy gets the address");
+          const head = { Authorization: "Bearer " + saved.token, Accept: "application/vnd.github+json" };
+          const cur = await ghGetJsonFile(head, UPDATE_POLICY_PATH);
+          const next = normalizeUpdatePolicy({ ...(cur.data || UPDATE_POLICY_DEFAULTS), hubUrl: url });
+          next.updatedAt = Date.now();
+          await ghPutJsonFile(head, UPDATE_POLICY_PATH, next, cur.sha, "Set the team hub address");
+          await purgePolicyCdn();
+          await chrome.storage.local.set({ updatePolicy: { at: Date.now(), rawAt: Date.now(), policy: next } });
+          shared = true;
+        } catch (e) { shareError = String((e && e.message) || e); }
+        await hubHello(true).catch(() => {});
+        sendResponse({ ok: true, users: test.total || 0, shared, shareError });
+        break;
+      }
+      case "TF_DRIVE_COPY": {
+        // Clients > "Copy to Drive": the client's files (originals when kept) into
+        // My Drive > Personal ClickUp Manager > Clients > <client>. Files copied
+        // before aren't uploaded again. Asks for Drive access the first time.
+        try {
+          const ck = String(msg.client || "").toLowerCase().replace(/[^a-z0-9]+/g, "");
+          const name = String(msg.client || "Client").replace(/[\\/:*?"<>|]+/g, " ").trim().slice(0, 100) || "Client";
+          const recs = (await tfAll()).filter((r) => r.ck === ck);
+          if (!recs.length) { sendResponse({ ok: false, error: "This client has no files yet." }); break; }
+          const tok = await getFileToken(true);
+          if (!tok) { sendResponse({ ok: false, error: "Google Drive access wasn't given." }); break; }
+          const top = await driveFolder(tok, "Personal ClickUp Manager", "root");
+          const cl = await driveFolder(tok, "Clients", top);
+          const dir = await driveFolder(tok, name, cl);
+          const { tfDriveCopies } = await chrome.storage.local.get("tfDriveCopies");
+          const copies = tfDriveCopies && typeof tfDriveCopies === "object" ? { ...tfDriveCopies } : {};
+          let uploaded = 0, skipped = 0, textOnly = 0;
+          for (const r of recs) {
+            if (copies[r.id]) { skipped++; continue; }
+            let blob = r.blob, fname = r.name, type = r.type || (r.blob && r.blob.type) || "";
+            if (!blob && r.html) { blob = new Blob([r.html], { type: "text/html" }); type = "text/html"; }
+            if (!blob && r.text) { blob = new Blob([r.text], { type: "text/plain" }); type = "text/plain"; fname = String(r.name).replace(/\.[a-z0-9]+$/i, "") + " (text).txt"; textOnly++; }
+            if (!blob) continue;
+            copies[r.id] = await uploadDriveFile(tok, { name: fname, type, blob, parentId: dir });
+            uploaded++;
+            await chrome.storage.local.set({ tfDriveCopies: copies });
+          }
+          sendResponse({ ok: true, url: "https://drive.google.com/drive/folders/" + dir, uploaded, skipped, textOnly });
+        } catch (e) { sendResponse({ ok: false, error: String((e && e.message) || e) }); }
+        break;
+      }
+      case "DISMISS_NOTE": {
+        // Hide an account's "needs you" message (nothing else changes).
+        await setStatusFor(msg.id, { noteDismissedAt: Date.now() });
+        sendResponse({ ok: true });
+        break;
+      }
       case "MARK_DONE": {
         const now = Date.now();
         await setStatusFor(msg.id, { lastDone: todayString(), lastDoneAt: now, lastRunAt: now, lastResult: "success", note: "marked manually" });
@@ -4967,7 +5524,8 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
             const mt = teams.find((t) => t.id === teamId);
             if (mt) teamName = mt.name || null;
           }
-          await setClickupConfig({ token, userId: user.id, username: user.username, email: user.email, teamId, teamName });
+          await setClickupConfig({ token, userId: user.id, username: user.username, email: user.email, teamId, teamName,
+            avatar: user.profilePicture || "", color: user.color || "", initials: user.initials || "", profileAt: Date.now() });
           // Reply IMMEDIATELY after saving so the sender never waits on ClickUp's
           // network (a slow refresh + a service-worker restart used to drop the
           // reply entirely - options showed "No response" even though the token
@@ -5126,28 +5684,13 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         // timer. Only ONE task may be in progress at a time, so we first revert
         // whatever was active (the last task WE set + any task with a live timer)
         // back to "to do" and stop its timer. Tasks with more than one assignee
-        // are refused (a shared task shouldn't be individually started).
+        // start too - the list warns about them on hover before the click.
         const cfg = await getClickupConfig();
         if (!cfg || !cfg.token) { sendResponse({ ok: false, reason: "not-configured" }); break; }
         if (!cfg.teamId) { sendResponse({ ok: false, reason: "incomplete-setup" }); break; }
         const taskId = msg.taskId ? String(msg.taskId) : null;
         if (!taskId) { sendResponse({ ok: false, reason: "no-task" }); break; }
         try {
-          const task = await getTaskById(cfg.token, taskId);
-          if (task && task.assigneeCount > 1) {
-            const names = (task.assignees || []).map((a) => a.username).filter(Boolean);
-            await notify(
-              "cu-multi-assignee-" + taskId,
-              "Can't start this task",
-              "“" + (task.name || "This task") + "” has " + task.assigneeCount +
-                " people assigned" + (names.length ? " (" + names.join(", ") + ")" : "") +
-                ". Only single-assignee tasks can be started.",
-              "danger",
-              task.url || taskUrlFor(taskId)
-            );
-            sendResponse({ ok: false, reason: "multi-assignee", assignees: task.assignees || [], taskName: task.name || "" });
-            break;
-          }
           // Revert the previously-active task(s) back to "to do" + stop the timer.
           const st = (await getClickupState().catch(() => null)) || {};
           const cur = await getCurrentTimeEntry(cfg.token, cfg.teamId).catch(() => null);
@@ -5458,7 +6001,34 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
             } catch (e) { missed++; }
           }
         }
-        sendResponse({ ok: true, subtasks, parents, details, missed });
+        // Names of parents that aren't among these tasks (a subtask in the list
+        // whose task isn't), so the client report can show "Task | Sub task".
+        const parentNames = {};
+        const needNames = [...new Set(Object.values(parents).filter((p) => p && !details[String(p)]).map(String))].slice(0, 60);
+        for (const p of needNames) {
+          try { const d = await withRetry(() => getTaskDetail(cfg.token, p)); parentNames[p] = d.name || ""; details[p] = details[p] || d; } catch (e) {}
+        }
+        sendResponse({ ok: true, subtasks, parents, details, missed, parentNames });
+        break;
+      }
+      case "CLICKUP_EXPORT_COMMENT_LINKS": {
+        // Client report: the links in each task's comments (one request per task,
+        // one retry after a rate limit). A task whose comments can't be read is
+        // simply left out of the map.
+        const cfg = await getClickupConfig();
+        if (!cfg || !cfg.token) { sendResponse({ ok: false, reason: "not-configured" }); break; }
+        const ids = [...new Set((Array.isArray(msg.taskIds) ? msg.taskIds : []).map(String))].slice(0, 250);
+        const links = {};
+        for (const id of ids) {
+          try { links[id] = await getTaskCommentLinks(cfg.token, id); }
+          catch (e) {
+            if (e && e.status === 429) {
+              await new Promise((r) => setTimeout(r, Math.min(8000, Number(e.retryAfterMs) || 3000)));
+              try { links[id] = await getTaskCommentLinks(cfg.token, id); } catch (e2) {}
+            }
+          }
+        }
+        sendResponse({ ok: true, links });
         break;
       }
       case "EXPORT_TO_GOOGLE": {
@@ -5521,6 +6091,9 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         const version = String(msg.version || "").replace(/^v/, "").trim();
         if (!/^\d+\.\d+(\.\d+)?$/.test(version)) { sendResponse({ ok: false, error: "Version must look like 3.7.0." }); break; }
         const tag = "v" + version;
+        // Who gets it: [] = everyone; otherwise ClickUp user ids (people / departments).
+        const audience = (Array.isArray(msg.audience) ? msg.audience : []).map(String).filter((x) => /^\d{1,15}$/.test(x));
+        const notifyUsers = msg.notify === true;
         try {
           const head = { Authorization: "Bearer " + token, Accept: "application/vnd.github+json" };
           const exists = await fetch("https://api.github.com/repos/" + UPDATE_REPO + "/releases/tags/" + tag, { headers: head });
@@ -5552,7 +6125,8 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
           const create = await fetch("https://api.github.com/repos/" + UPDATE_REPO + "/releases", {
             method: "POST",
             headers: { ...head, "Content-Type": "application/json" },
-            body: JSON.stringify({ tag_name: tag, name: tag, body: msg.critical ? "[critical]\n\n" + body : body, draft: false, prerelease: false }),
+            // Some people only: a GitHub pre-release, which "latest release" ignores.
+            body: JSON.stringify({ tag_name: tag, name: tag, body: msg.critical ? "[critical]\n\n" + body : body, draft: false, prerelease: audience.length > 0 }),
           });
           if (!create.ok) {
             let why = "HTTP " + create.status;
@@ -5585,16 +6159,26 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
             const cur = await ghGetJsonFile(head, UPDATE_POLICY_PATH);
             // Always record the new release in the file; notify now unless a
             // "Don't notify before" time is set (then it's told at that time).
-            const pol = normalizeUpdatePolicy({ ...(cur.data || UPDATE_POLICY_DEFAULTS),
-              latest: version, zip: assetUrl, url: rel.html_url, important: !!msg.critical });
-            pol.updatedAt = Date.now();
-            if (pol.holdUntil > Date.now()) notified = "held";
-            else {
-              pol.notifyNonce = Date.now().toString(36);
-              pol.notifiedAllAt = Date.now();
-              notified = true;
+            let pol;
+            if (audience.length) {
+              // Some people only: `latest` stays as it is for everyone else.
+              pol = normalizeUpdatePolicy({ ...(cur.data || UPDATE_POLICY_DEFAULTS),
+                preview: { latest: version, zip: assetUrl, url: rel.html_url, cuUserIds: audience, notify: notifyUsers, nonce: Date.now().toString(36), at: Date.now() } });
+              notified = notifyUsers ? "some" : "quiet";
+            } else {
+              pol = normalizeUpdatePolicy({ ...(cur.data || UPDATE_POLICY_DEFAULTS),
+                latest: version, zip: assetUrl, url: rel.html_url, important: !!msg.critical, preview: null });
+              if (!notifyUsers) { pol.quietFor = version; pol.notifiedAllAt = Date.now(); notified = "quiet"; }
+              else if (pol.holdUntil > Date.now()) { pol.quietFor = ""; notified = "held"; }
+              else {
+                pol.quietFor = "";
+                pol.notifyNonce = Date.now().toString(36);
+                pol.notifiedAllAt = Date.now();
+                notified = true;
+              }
             }
-            await ghPutJsonFile(head, UPDATE_POLICY_PATH, pol, cur.sha, (notified === true ? "Notify everyone about " : "Record ") + tag);
+            pol.updatedAt = Date.now();
+            await ghPutJsonFile(head, UPDATE_POLICY_PATH, pol, cur.sha, (notified === true ? "Notify everyone about " : audience.length ? "Release to some people: " : "Record ") + tag);
             await purgePolicyCdn();
           } catch (e) { notified = false; }
           await chrome.storage.local.remove("updateInfo");
@@ -5603,6 +6187,50 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         } catch (e) {
           sendResponse({ ok: false, error: String(e && e.message ? e.message : e) });
         }
+        break;
+      }
+      case "ADMIN_RELEASE_ALL": {
+        // A release published to some people only: make it a normal release for
+        // everyone (msg.notify = with the "Update available" pop-up).
+        const { adminEnc } = await chrome.storage.local.get("adminEnc");
+        const saved = await decryptJSON(adminEnc, null);
+        if (!saved || !saved.token) { sendResponse({ ok: false, error: "No GitHub token saved." }); break; }
+        try {
+          const head = { Authorization: "Bearer " + saved.token, Accept: "application/vnd.github+json" };
+          const cur = await ghGetJsonFile(head, UPDATE_POLICY_PATH);
+          const pol = normalizeUpdatePolicy(cur.data || UPDATE_POLICY_DEFAULTS);
+          const pv = pol.preview;
+          if (!pv) { sendResponse({ ok: false, error: "There's no release waiting for everyone." }); break; }
+          const tag = "v" + pv.latest;
+          const rr = await fetch("https://api.github.com/repos/" + UPDATE_REPO + "/releases/tags/" + tag, { headers: head });
+          if (!rr.ok) throw new Error("Couldn't find " + tag + " on GitHub (HTTP " + rr.status + ")");
+          const rel = await rr.json();
+          const pr = await fetch("https://api.github.com/repos/" + UPDATE_REPO + "/releases/" + rel.id, {
+            method: "PATCH", headers: { ...head, "Content-Type": "application/json" }, body: JSON.stringify({ prerelease: false, make_latest: "true" }),
+          });
+          if (!pr.ok) throw new Error("GitHub said HTTP " + pr.status);
+          const next = normalizeUpdatePolicy({ ...pol, latest: pv.latest, zip: pv.zip, url: pv.url || rel.html_url, preview: null });
+          next.updatedAt = Date.now();
+          if (msg.notify) { next.quietFor = ""; next.notifyNonce = Date.now().toString(36); next.notifiedAllAt = Date.now(); }
+          else { next.quietFor = pv.latest; next.notifiedAllAt = Date.now(); }
+          await ghPutJsonFile(head, UPDATE_POLICY_PATH, next, cur.sha, "Release " + tag + " to everyone");
+          await purgePolicyCdn();
+          await chrome.storage.local.set({ updatePolicy: { at: Date.now(), rawAt: Date.now(), policy: next } });
+          sendResponse({ ok: true, version: pv.latest });
+        } catch (e) { sendResponse({ ok: false, error: String(e && e.message ? e.message : e) }); }
+        break;
+      }
+      case "ADMIN_RELEASE_INFO": {
+        // For the Admin publish card: departments + known people (ClickUp ids) and
+        // any release still limited to some people.
+        const settings = await getSettings();
+        const deps = Array.isArray(settings.clickupDepartments) ? settings.clickupDepartments : [];
+        const { updatePolicy } = await chrome.storage.local.get("updatePolicy");
+        const pol = normalizeUpdatePolicy((updatePolicy && updatePolicy.policy) || {});
+        let people = [];
+        const u = await hubCall("users", {}, true).catch(() => null);
+        if (u && u.ok) people = (u.users || []).filter((x) => x.cuUserId).map((x) => ({ id: String(x.cuUserId), name: x.name, version: x.version }));
+        sendResponse({ ok: true, departments: deps.map((d) => ({ id: d.id, name: d.name, users: (d.users || []).map((x) => ({ id: String(x.id), name: x.name })) })), people, preview: pol.preview });
         break;
       }
       case "FLOAT_TRACKER_OPEN": {
@@ -5766,9 +6394,12 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
           });
           if (!res.ok) throw new Error("GitHub said HTTP " + res.status);
           const list = (await res.json()) || [];
+          // A pre-release is a release for some people only: list it just for them.
+          const mine = await effectivePolicy(await fetchUpdatePolicy()).catch(() => null);
+          const myPreview = mine && mine.previewForMe ? "v" + mine.latest : "";
           sendResponse({
             ok: true,
-            releases: list.filter((r) => r && !r.draft).map((r) => {
+            releases: list.filter((r) => r && !r.draft && (!r.prerelease || r.tag_name === myPreview)).map((r) => {
               const zip = (r.assets || []).find((a) => /\.zip$/i.test(a.name || ""));
               return {
                 version: String(r.tag_name || "").replace(/^v/, ""),
@@ -6288,6 +6919,62 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         break;
       }
       case "DEBUG_GITHUB_LOGIN": {
+        // "All accounts": the same test login for each account in turn (e.g. to
+        // watch "Keep me signed in to GitHub" switch accounts). Like the single
+        // test it never writes the status / earning checkpoint, so an account
+        // whose 24h window is over is SKIPPED: logging it in now would earn the
+        // day's credit without recording it - the normal Run does that properly.
+        if (msg.id === "__all__") {
+          if (isRunning) { sendResponse({ ok: false, reason: "already running" }); break; }
+          const all = (await getAccounts()).filter((a) => a.enabled !== false);
+          const withTotp = all.filter((a) => a.totpSecret);
+          const list = withTotp.length ? withTotp : all;
+          if (!list.length) { sendResponse({ ok: false, reason: "no accounts" }); break; }
+          isRunning = true;
+          cancelRequested = false;
+          sendResponse({ ok: true, started: list.length });
+          const settings = await getSettings();
+          const status = await getStatus();
+          const say = (m) => chrome.runtime.sendMessage({ type: "DEBUG_PROGRESS", ...m }).catch(() => {});
+          (async () => {
+            for (let i = 0; i < list.length; i++) {
+              const acc = list[i];
+              const label = acc.label || acc.username || "account " + (i + 1);
+              const more = i < list.length - 1;
+              if (cancelRequested) { say({ done: true, ok: false, result: "needs-attention", note: "Stopped by user.", account: label, more: false }); break; }
+              if (!isDoneWithinWindow(status[acc.id])) {
+                say({ done: true, ok: false, result: "skipped", note: "its 24 hours are up, so logging in now would earn today's credit without recording it. Use Run for this one.", account: label, more });
+                continue;
+              }
+              say({ phase: "starting " + label, account: label });
+              let outcome;
+              try {
+                outcome = await runAccountLogin(acc, {
+                  targetUrl: settings.targetUrl,
+                  active: true,
+                  keepTabs: true,
+                  timeoutScale: settings.slowNetwork ? 2 : 1,
+                  keepGithub: settings.ghKeepSignedIn === true,
+                  isCancelled: isCancelledFn,
+                });
+              } catch (e) {
+                outcome = { result: "failed", note: String(e && e.message ? e.message : e) };
+              }
+              // Remember which GitHub handle this account is (identity only - never the checkpoint).
+              if (outcome.detected) applyDetected(acc.id, outcome.detected).catch(() => {});
+              say({ done: true, ok: outcome.result === "success", result: outcome.result, note: outcome.note, detected: outcome.detected || {}, account: label, more });
+              // Same as Run: close the tab once logged in (a tab that needs you
+              // stays open), then a short pause before the next account.
+              if (outcome.result === "success" && outcome.tabId) { try { await chrome.tabs.remove(outcome.tabId); } catch (e) {} }
+              if (more && !cancelRequested) await new Promise((r) => setTimeout(r, (settings.slowNetwork ? 2 : 1) * (1500 + Math.random() * 2000)));
+            }
+          })().finally(() => {
+            isRunning = false;
+            cancelRequested = false;
+            probeAvailabilityInBackground({}).catch(() => {});
+          });
+          break;
+        }
         // Manual "Test login" from the Debug section: run the full automation
         // flow for ONE account and stream step-by-step status back to the UI.
         const acc = (await getAccounts()).find((a) => a.id === msg.id);
@@ -6308,9 +6995,14 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
           active: true,
           keepTabs: true,
           timeoutScale: settings.slowNetwork ? 2 : 1,
+          keepGithub: settings.ghKeepSignedIn === true,
           isCancelled: isCancelledFn,
         })
           .then((outcome) => {
+            // Remember which GitHub handle this account is (identity only - never the checkpoint).
+            if (outcome.detected) applyDetected(acc.id, outcome.detected).catch(() => {});
+            // Same as Run: close the tab once logged in; a tab that needs you stays open.
+            if (outcome.result === "success" && outcome.tabId) chrome.tabs.remove(outcome.tabId).catch(() => {});
             chrome.runtime.sendMessage({
               type: "DEBUG_PROGRESS",
               ok: outcome.result === "success",
@@ -6378,7 +7070,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       case "PLAY_TEST_SOUND": {
         // Options "Test sound" / "Test danger sound" buttons - preview the clip
         // even if the toggle is off. msg.sound picks which one ("danger" or chime).
-        await playNotificationSound(true, msg.sound);
+        await playNotificationSound(true, msg.sound, msg.volume);
         sendResponse({ ok: true });
         break;
       }

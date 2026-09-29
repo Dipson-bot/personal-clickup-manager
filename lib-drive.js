@@ -120,6 +120,38 @@ export async function createGoogleFile(token, { name, html, csv, kind }) {
   return { id, url: (j && j.webViewLink) || (docs ? "https://docs.google.com/document/d/" : "https://docs.google.com/spreadsheets/d/") + id + "/edit" };
 }
 
+// ---- normal (visible) Drive folders + uploads, with the drive.file token ----
+// Only sees folders this extension created, which is all it needs.
+export async function driveFolder(token, name, parentId) {
+  const q = "name = '" + String(name).replace(/\\/g, "\\\\").replace(/'/g, "\\'") + "' and mimeType = 'application/vnd.google-apps.folder' and '" + parentId + "' in parents and trashed = false";
+  const res = await fetch("https://www.googleapis.com/drive/v3/files?fields=files(id)&q=" + encodeURIComponent(q), { headers: { Authorization: "Bearer " + token } });
+  if (res.status === 401) { await chrome.storage.local.remove("driveFileToken"); throw new Error("Google sign-in expired - try again."); }
+  if (!res.ok) throw new Error("Google Drive said HTTP " + res.status + ".");
+  const j = await res.json();
+  if (j.files && j.files[0]) return j.files[0].id;
+  const mk = await fetch("https://www.googleapis.com/drive/v3/files?fields=id", {
+    method: "POST", headers: { Authorization: "Bearer " + token, "Content-Type": "application/json" },
+    body: JSON.stringify({ name, mimeType: "application/vnd.google-apps.folder", parents: [parentId] }),
+  });
+  if (!mk.ok) throw new Error("Couldn't create the Drive folder (HTTP " + mk.status + ").");
+  return (await mk.json()).id;
+}
+export async function uploadDriveFile(token, { name, type, blob, parentId }) {
+  const boundary = "pcm" + Math.random().toString(36).slice(2);
+  const body = new Blob([
+    "--" + boundary + "\r\nContent-Type: application/json; charset=UTF-8\r\n\r\n" + JSON.stringify({ name, parents: [parentId] }) + "\r\n" +
+    "--" + boundary + "\r\nContent-Type: " + (type || "application/octet-stream") + "\r\n\r\n",
+    blob,
+    "\r\n--" + boundary + "--",
+  ]);
+  const res = await fetch("https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart&fields=id", {
+    method: "POST", headers: { Authorization: "Bearer " + token, "Content-Type": "multipart/related; boundary=" + boundary }, body,
+  });
+  if (res.status === 403 || res.status === 507) throw new Error("Google Drive is full or refused the file (HTTP " + res.status + ").");
+  if (!res.ok) throw new Error("Google Drive refused " + name + " (HTTP " + res.status + ").");
+  return (await res.json()).id;
+}
+
 // Cached token so we don't re-auth on every check.
 // Two-tier cache:
 //  1. In-memory (this service-worker session)

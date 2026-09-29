@@ -8,6 +8,24 @@ import { kvGet, isRunningFolder, installPackage } from "./lib-updater.js";
 
 let running = false;
 
+// "Would an automatic update work right now?" - the same checks as a real
+// install (folder chosen, Chrome still allows it, it's the running folder),
+// without installing anything. Lets the background skip the "Update now"
+// pop-up for people whose updates install by themselves.
+chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
+  if (!msg || msg.target !== "offscreen" || msg.type !== "AUTO_UPDATE_READY") return;
+  (async () => {
+    try {
+      const root = await kvGet("extDir").catch(() => null);
+      if (!root) return { ready: false, reason: "no-folder" };
+      if ((await root.queryPermission({ mode: "readwrite" })) !== "granted") return { ready: false, reason: "permission" };
+      if (!(await isRunningFolder(root))) return { ready: false, reason: "moved" };
+      return { ready: true };
+    } catch (e) { return { ready: false, reason: "failed" }; }
+  })().then((r) => { try { sendResponse(r); } catch (e) {} });
+  return true;
+});
+
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   if (!msg || msg.target !== "offscreen" || msg.type !== "AUTO_UPDATE") return;
   if (running) { sendResponse({ ok: false, reason: "busy" }); return; }

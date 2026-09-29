@@ -215,7 +215,8 @@ async function cuFetchTimeEntries(token, teamId, params, assigneeIds) {
 export async function getUser(token) {
   const j = await cuFetch(token, "/user");
   const u = (j && j.user) || {};
-  return { id: u.id, username: u.username || "", email: u.email || "" };
+  // Profile bits for the team hub (who posted what): taken from ClickUp only.
+  return { id: u.id, username: u.username || "", email: u.email || "", profilePicture: u.profilePicture || "", color: u.color || "", initials: u.initials || "" };
 }
 
 // Workspaces ("teams") the token can see. Most people have exactly one.
@@ -468,6 +469,17 @@ function commentText(c) {
   // Rich comments come as an array of pieces; keep their plain text.
   const parts = Array.isArray(c && c.comment) ? c.comment : [];
   return parts.map((p) => (p && (p.text || (p.type === "tag" && p.user && ("@" + p.user.username)))) || "").join("").trim();
+}
+// Every link in a task's comments (typed addresses and linked text), for the
+// client report's Reference column.
+export async function getTaskCommentLinks(token, taskId) {
+  const cj = await cuFetch(token, "/task/" + encodeURIComponent(String(taskId)) + "/comment");
+  const parts = [];
+  for (const c of Array.isArray(cj && cj.comments) ? cj.comments : []) {
+    parts.push(String((c && c.comment_text) || ""), commentText(c));
+    for (const p of Array.isArray(c && c.comment) ? c.comment : []) if (p && p.attributes && p.attributes.link) parts.push(" " + p.attributes.link + " ");
+  }
+  return extractTaskLinks(parts.join("\n"));
 }
 export async function getTaskPanel(token, taskId, force) {
   const key = String(taskId);
@@ -1758,8 +1770,8 @@ export async function fetchWeeklySummary({ token, teamId, userId, taskUrls = [],
 // (all assignees), not just this user's slice. For solo-assigned tasks (the
 // common case for "due today, assigned to me") this is exact.
 // Who a task is assigned to, kept small ({ id, username }) on every task row so
-// the list can mark multi-person tasks (▶ becomes a greyed 👥 - only single-
-// assignee tasks can be started from the extension). Same data ClickUp already
+// the list can mark multi-person tasks (▶ turns amber and warns on hover; it
+// still starts). Same data ClickUp already
 // sends with each task: no extra requests.
 export function cuRowAssignees(t) {
   return (Array.isArray(t && t.assignees) ? t.assignees : []).map((a) => ({

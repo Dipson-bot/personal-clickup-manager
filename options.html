@@ -304,9 +304,9 @@
   .cu-iconbtn:hover:not(:disabled) { filter: brightness(0.96); }
   .cu-iconbtn.start { color: #fff; background: var(--indigo); border-color: var(--indigo); }
   .cu-iconbtn.stop { color: #fff; background: var(--red); border-color: var(--red); }
-  /* Multi-person task: a dimmed, dashed ▶ - it can only be started in ClickUp. */
-  .cu-iconbtn.start.multi { cursor: help; background: var(--card); color: var(--muted); border-color: var(--border); border-style: dashed; }
-  .cu-iconbtn.start.multi:hover { color: var(--text); }
+  /* Multi-person task: an amber ▶ - still starts, the hover warns who else is on it. */
+  .cu-iconbtn.start.multi { background: #d97706; border-color: #d97706; color: #fff; }
+  .cu-iconbtn.start.multi:hover { background: #b45309; border-color: #b45309; }
   /* Assignee initials (see whoSlot): fixed-width slot on every row. */
   .cu-task .cu-who { flex: 0 0 auto; width: 30px; display: inline-flex; align-items: center; align-self: center; }
   .cu-who .av { width: 17px; height: 17px; border-radius: 50%; display: inline-flex; align-items: center; justify-content: center; font-size: 8px; font-weight: 700; line-height: 1; color: #fff; letter-spacing: -.02em; box-shadow: 0 0 0 1.5px var(--card); flex: none; cursor: default; }
@@ -328,6 +328,11 @@
   .cu-task.has-msg { flex-wrap: wrap; }
   .cu-rowmsg:not(.cu-rowconfirm) { display: flex; align-items: center; gap: 8px; padding: 3px 6px; border-radius: 6px; background: color-mix(in srgb, var(--amber) 10%, transparent); }
   .cu-rowmsg-txt { flex: 1; min-width: 0; }
+  .icon-btn.spin { animation: cu-spin .8s linear infinite; pointer-events: none; }
+  .cu-spin { display: inline-block; width: 9px; height: 9px; border: 2px solid currentColor; border-right-color: transparent; border-radius: 50%; animation: cu-spin .7s linear infinite; vertical-align: -1px; flex: none; }
+  @keyframes cu-spin { to { transform: rotate(360deg); } }
+  .cu-rowmsg.cu-rowbusy { color: var(--muted); background: color-mix(in srgb, var(--indigo) 8%, transparent); }
+  @media (prefers-reduced-motion: reduce) { .cu-spin { animation-duration: 2s; } }
   .cu-rowmsg a { color: var(--amber); text-decoration: underline; font-weight: 600; white-space: nowrap; }
   .cu-rowmsg-x { background: none; border: 0; color: var(--muted); cursor: pointer; font-size: 11px; line-height: 1; padding: 0 2px; width: auto; }
   .cu-rowmsg-x:hover { color: var(--text); }
@@ -799,6 +804,28 @@
   .cu-filter-menu input.cu-switch:checked::after { left: 15px; }
   .cu-filter-menu input.cu-switch:focus-visible { outline: 2px solid var(--indigo); outline-offset: 2px; }
   .ver-badge { font-size: 12px; font-weight: 600; color: var(--muted); margin-left: 8px; letter-spacing: .3px; white-space: nowrap; vertical-align: middle; }
+  .adm-who { margin-top: 8px; padding: 12px; border: 1px solid var(--border); border-radius: 12px; max-width: 720px; background: var(--card); }
+  .adm-who-top { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+  .adm-who-top input[type=search] { flex: 1; min-width: 200px; margin: 0; }
+  .adm-who-mini { font: inherit; font-size: 12px; padding: 5px 10px; border-radius: 8px; border: 1px solid var(--border); background: var(--bg2); color: var(--text); cursor: pointer; }
+  .adm-who-count { font-size: 12.5px; font-weight: 700; color: var(--indigo); margin-left: auto; }
+  .adm-who-label { font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: .05em; color: var(--muted); margin: 12px 0 6px; }
+  .adm-who-label .hint { text-transform: none; letter-spacing: 0; font-weight: 400; }
+  .adm-who-deps { display: flex; flex-wrap: wrap; gap: 6px; }
+  .adm-dep { font: inherit; font-size: 12.5px; padding: 4px 12px; border-radius: 99px; border: 1px solid var(--border); background: var(--bg2); color: var(--text); cursor: pointer; }
+  .adm-dep b { font-weight: 600; color: var(--muted); margin-left: 4px; }
+  .adm-dep.on { border-color: var(--indigo); background: var(--indigo); color: #fff; }
+  .adm-dep.on b { color: rgba(255,255,255,.8); }
+  .adm-dep.part { border-color: var(--indigo); color: var(--indigo); background: rgba(99,102,241,.12); }
+  .adm-who-people { max-height: 260px; overflow: auto; border: 1px solid var(--border); border-radius: 10px; }
+  .adm-person { display: grid; grid-template-columns: 22px 28px minmax(0,1fr) auto; gap: 10px; align-items: center; padding: 7px 10px; border-top: 1px solid var(--border); cursor: pointer; margin: 0; font-weight: 400; }
+  .adm-person:first-child { border-top: 0; }
+  .adm-person:hover { background: var(--bg2); }
+  .adm-person.on { background: rgba(99,102,241,.08); }
+  .adm-person .av { width: 26px; height: 26px; border-radius: 50%; display: grid; place-items: center; font: 700 10px sans-serif; color: #fff; background: #6366f1; }
+  .adm-person .nm { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13px; }
+  .adm-person .nm small { color: var(--muted); margin-left: 6px; }
+  .adm-person .ver { font-size: 11.5px; color: var(--muted); white-space: nowrap; }
 </style>
 </head>
 <body class="tabbed">
@@ -809,7 +836,7 @@
       <p class="sub">Track your daily ClickUp time estimate &mdash; and keep your Agent Router accounts logged in each day.</p>
     </div>
     <span class="hdr-tools">
-      <button id="optPanelBtn" class="hdr-pill" type="button" title="Open in Chrome's side panel (stays open while you browse)">⇥</button>
+      <button id="optPanelBtn" class="hdr-pill" type="button" title="Open in Chrome's side panel (stays open while you browse)" aria-label="Open in the side panel"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" style="display:block"><rect x="3" y="4" width="18" height="16" rx="2.5"/><path d="M15 4v16"/><path d="M18 8.5h.01M18 11.5h.01"/></svg></button>
       <button id="optWrapBtn" class="hdr-pill" type="button" title="Wrap up the day: move leftovers to tomorrow, copy your standup">📋</button>
       <button id="themeToggle" class="ghost themeBtn" title="Toggle dark mode">🌙 Dark</button>
     </span>
@@ -824,7 +851,9 @@
     <button type="button" data-tab="clickup"><svg class="nv-i" viewBox="0 0 24 24" aria-hidden="true"><path d="M9 11l3 3l8-8"/><path d="M20 12v6a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h9"/></svg><span>ClickUp setup</span></button>
     <button type="button" data-tab="agent"><svg class="nv-i" viewBox="0 0 24 24" aria-hidden="true"><circle cx="8" cy="15" r="4"/><path d="M10.85 12.15L19 4"/><path d="M18 5l2 2"/><path d="M15 8l2 2"/></svg><span>Agent Router</span></button>
     <button type="button" data-tab="sites"><svg class="nv-i" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M3.6 9h16.8M3.6 15h16.8"/><path d="M11.5 3a17 17 0 0 0 0 18M12.5 3a17 17 0 0 1 0 18"/></svg><span>Site monitor</span></button>
-    <button type="button" data-tab="files"><svg class="nv-i" viewBox="0 0 24 24" aria-hidden="true"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><path d="M9 13h6M12 10v6"/></svg><span>Task files</span></button>
+    <button type="button" data-tab="files"><svg class="nv-i" viewBox="0 0 24 24" aria-hidden="true"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><path d="M9 13h6M12 10v6"/></svg><span>Clients</span></button>
+    <button type="button" data-tab="reminders"><svg class="nv-i" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="13" r="8"/><path d="M12 9v4l2.5 2"/><path d="M5 3L2 6M19 3l3 3"/></svg><span>Reminders</span></button>
+    <button type="button" data-tab="hub"><svg class="nv-i" viewBox="0 0 24 24" aria-hidden="true"><path d="M21 12a8 8 0 0 1-11.6 7.1L4 20.5l1.4-4.6A8 8 0 1 1 21 12z"/><path d="M9.5 9.5a2.5 2.5 0 1 1 3.6 2.2c-.7.3-1.1 1-1.1 1.8M12 16.5v.01"/></svg><span>Help &amp; issues</span></button>
     <button type="button" data-tab="bulk"><svg class="nv-i" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 6h10M4 12h10M4 18h6"/><path d="M15 19l1.5-4.5L20 11l2 2-3.5 3.5z"/></svg><span>Bulk edit</span></button>
     <button type="button" data-tab="admin"><svg class="nv-i" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3l8 3v6c0 4.5-3.2 7.9-8 9-4.8-1.1-8-4.5-8-9V6z"/><path d="M9 12l2 2 4-4"/></svg><span>Admin</span></button>
     <button type="button" data-tab="general"><svg class="nv-i" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg><span>General</span></button>
@@ -1259,9 +1288,36 @@
   </section>
 
   <!-- ===================== Task files ===================== -->
+  <section class="panel" data-panel="hub">
+  <div class="card" id="hubCard">
+    <h2>Help &amp; issues</h2>
+    <div id="hubPanel"></div>
+  </div>
+  </section>
+
+  <section class="panel" data-panel="reminders">
+  <div class="card" id="remCard">
+    <h2>Reminders</h2>
+    <p class="hint" style="margin:0 0 6px;line-height:1.55;">Remind yourself about anything, at the time you pick.</p>
+    <details class="set-more" style="margin:0 0 12px;"><summary>How reminders work</summary><div>
+      <ul style="margin:6px 0 0;padding-left:18px;line-height:1.6;">
+        <li>It pops up with <b>Snooze 10 min</b> and <b>Done</b>, even while notifications are paused.</li>
+        <li>Repeat it every day, on weekdays or every week.</li>
+        <li>Link a task: clicking the reminder opens it.</li>
+        <li>Attach screenshots or files: &#128206; Attach, Ctrl+V, or drop them on the form (up to 10, 20 MB each). They stay on this computer.</li>
+        <li>Each saved reminder has <b>Duplicate</b> (make a similar one) and <b>Delete</b>.</li>
+        <li>Also add them with &#9200; next to the bell, or <b>Remind me</b> in a task's details.</li>
+        <li>Chrome must be open for it to pop up. One missed while Chrome was closed shows when it starts.</li>
+      </ul>
+    </div></details>
+    <div id="remForm" style="max-width:460px;"></div>
+    <div id="remList"></div>
+  </div>
+  </section>
+
   <section class="panel" data-panel="files">
   <div class="card" id="tfCard">
-    <h2>Task files</h2>
+    <h2>Clients - files &amp; notes</h2>
     <p class="hint" style="margin:0 0 12px;line-height:1.55;">Add each client's audit and reference files once. <b>Explain this task</b> then uses the parts of that client's files that are about the task (and says which file they came from), and the client report can use the client's HTML audit. Works with HTML, Word, Excel, PowerPoint, PDF, CSV, Markdown, text and screenshots. Old .doc / .xls files: save them as .docx / .xlsx first. Google Docs / Sheets: download them (File &gt; Download) and add the file.</p>
     <div class="tf-bar">
       <input type="search" id="tfSearch" placeholder="Search clients" />
@@ -1466,6 +1522,10 @@
       <input type="checkbox" id="slowNetwork" checked />
       <label for="slowNetwork" style="margin:0;font-weight:400;">Slow / unreliable connection <span class="hint">- wait longer on each step and add a buffer between logout and login</span></label>
     </div>
+    <div class="checkbox" title="For people with more than one GitHub account saved in GitHub's account switcher. On: your GitHub accounts stay signed in, and GitHub's own account picker is used to choose the right one for each Agent Router account (an account that isn't signed in yet is added with its password + 2FA). Off: the extension signs out of GitHub before each login and signs in fresh.">
+      <input type="checkbox" id="ghKeepSignedIn" />
+      <label for="ghKeepSignedIn" style="margin:0;font-weight:400;">Keep me signed in to GitHub <span class="hint">- don't sign out of GitHub between accounts; pick the right one from GitHub's account switcher</span></label>
+    </div>
     <div class="checkbox">
       <input type="checkbox" id="arCloseTabs" checked />
       <label for="arCloseTabs" style="margin:0;font-weight:400;">Close Agent Router tabs after a successful login <span class="hint">- manual Run / Run all too; tabs that need you (CAPTCHA, 2FA, errors) stay open</span></label>
@@ -1594,6 +1654,37 @@
         <label for="admCritical" style="margin:0;font-weight:400;">Mark as important <span class="hint">- everyone's update notification stays on screen until they act on it</span></label>
       </div>
 
+      <div class="checkbox" style="margin-top:10px;">
+        <input type="checkbox" id="admNotify" />
+        <label for="admNotify" style="margin:0;font-weight:400;">Notify users with a pop-up <span class="hint">- off: no "Update available" pop-up. People with automatic updates get it by itself and see "Updated" afterwards; everyone else sees it in the popup's update banner or with Check for updates. People whose automatic updates are set up never get the pop-up either way.</span></label>
+      </div>
+      <div style="margin-top:12px;">
+        <label style="margin-bottom:4px;">Who gets it</label>
+        <div style="display:flex;gap:16px;flex-wrap:wrap;font-size:13px;">
+          <label style="margin:0;font-weight:400;display:flex;gap:6px;align-items:center;"><input type="radio" name="admWho" value="all" checked /> Everyone</label>
+          <label style="margin:0;font-weight:400;display:flex;gap:6px;align-items:center;"><input type="radio" name="admWho" value="some" /> Only some people <span class="hint">(test it with them first; "Release to everyone" later)</span></label>
+        </div>
+        <div id="admWhoBox" hidden class="adm-who">
+          <div class="adm-who-top">
+            <input type="search" id="admWhoSearch" placeholder="Search people or departments…" />
+            <button type="button" class="adm-who-mini" id="admWhoAll">Select shown</button>
+            <button type="button" class="adm-who-mini" id="admWhoNone">Clear</button>
+            <span class="adm-who-count" id="admWhoCount"></span>
+          </div>
+          <div class="adm-who-label">Departments <span class="hint">- click one to tick all its people</span></div>
+          <div id="admWhoDeps" class="adm-who-deps"></div>
+          <div class="adm-who-label">People <span class="hint">- from your departments and Team hub (only people connected to ClickUp)</span></div>
+          <div id="admWhoPeople" class="adm-who-people"></div>
+        </div>
+      </div>
+      <div id="admPreviewBox" hidden style="margin-top:12px;padding:10px;border:1px solid var(--indigo);border-radius:10px;max-width:620px;font-size:13px;">
+        <span id="admPreviewText"></span>
+        <div class="btns" style="margin-top:8px;align-items:center;">
+          <button type="button" class="primary" id="admReleaseAll">Release to everyone</button>
+          <label style="margin:0;font-weight:400;display:flex;gap:6px;align-items:center;font-size:12.5px;"><input type="checkbox" id="admReleaseNotify" /> with the pop-up</label>
+        </div>
+      </div>
+
       <div class="btns" style="margin-top:12px;">
         <button class="primary" id="admPublish">Upload this new version</button>
         <button type="button" id="admGithub" title="Builds the package, saves it, and opens GitHub's new-release page with everything filled in">Open GitHub page instead</button>
@@ -1678,6 +1769,25 @@
         <span class="saved" id="admTokenMsg" style="display:none;"></span>
       </div>
     </div>
+    <div class="card" id="hubAdminCard">
+      <h2>Team hub - Help &amp; issues and users</h2>
+      <p class="hint" style="margin:0 0 10px;line-height:1.55;">Runs on a small Google Apps Script in <b>your</b> Google account: issues, replies, screenshots and the users list are kept in your Drive, and you get an email for each new issue. Set it up once:</p>
+      <ol class="hint" style="margin:0 0 12px 18px;line-height:1.7;padding:0;">
+        <li><button type="button" id="hubAdmCopy">Copy the script</button>, open <a href="https://script.google.com/home/projects/create" target="_blank" rel="noopener">script.google.com &rarr; New project</a>, replace everything with it, and Save.</li>
+        <li>Choose <b>setup</b> in the function list at the top, press <b>Run</b> and allow access (it's your own script). The log at the bottom shows your <b>admin key</b>.</li>
+        <li><b>Deploy &rarr; New deployment</b> &rarr; type <b>Web app</b>, Execute as <b>Me</b>, Who has access <b>Anyone</b> &rarr; Deploy. Copy the <b>Web app URL</b>.</li>
+        <li>Paste both below and press <b>Save &amp; test</b>. Everyone's extension gets the address by itself (your GitHub token, above, publishes it).</li>
+      </ol>
+      <label for="hubAdmUrl">Web app URL</label>
+      <input type="text" id="hubAdmUrl" placeholder="https://script.google.com/macros/s/.../exec" spellcheck="false" />
+      <label for="hubAdmKey" style="margin-top:8px;">Admin key</label>
+      <input type="password" id="hubAdmKey" placeholder="from the script's log" autocomplete="off" spellcheck="false" />
+      <div class="btns" style="margin-top:10px;">
+        <button class="primary" type="button" id="hubAdmSave">Save &amp; test</button>
+        <span class="saved" id="hubAdmMsg" style="display:none;"></span>
+      </div>
+      <div id="hubAdmUsers" style="margin-top:12px;"></div>
+    </div>
   </section>
 
   <section class="panel" data-panel="general">
@@ -1731,6 +1841,11 @@
       <label for="notifySound" style="margin:0;font-weight:400;">Play a sound when a notification/reminder pops up</label>
     </div>
     <div class="hint" style="margin:6px 0 0 24px;">The chime plays for every reminder. The <strong>danger</strong> alarm also sounds when a running task's tracked time crosses its own time estimate.</div>
+    <div style="margin:8px 0 0 24px;display:flex;align-items:center;gap:10px;flex-wrap:wrap;" title="How loud every notification sound is (the built-in ones and your own). 100% is your computer's normal volume; to go louder, raise the computer's volume.">
+      <label for="notifyVolume" style="margin:0;font-weight:400;">Volume</label>
+      <input type="range" id="notifyVolume" min="5" max="100" step="5" value="100" style="width:180px;" />
+      <span id="notifyVolumeVal" class="hint" style="min-width:36px;">100%</span>
+    </div>
     <div style="margin:6px 0 2px 24px;display:flex;gap:16px;flex-wrap:wrap;">
       <button type="button" class="ghost" id="notifySoundTest" style="padding:0;">Test sound</button>
       <button type="button" class="ghost" id="notifyDangerTest" style="padding:0;">Test danger sound</button>
@@ -1910,8 +2025,11 @@
 <script src="celebrate.js"></script>
 <script src="pcm-help.js"></script>
 <script src="pcm-search.js"></script>
+<script src="task-sort.js"></script>
 <script src="options.js"></script>
 <script src="bulk-edit.js"></script>
 <script src="task-files.js"></script>
+<script src="reminders.js"></script>
+<script src="hub.js"></script>
 </body>
 </html>

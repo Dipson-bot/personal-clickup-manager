@@ -61,6 +61,26 @@ let cuTimerMsg = "";
 // action in flight (so one busy row doesn't disable the others); msg is a
 // task-id -> transient message map shown inline on that row until the next action.
 const cuRowBusy = new Set();
+// What a row says while ClickUp answers (spinner + words), so a slow reply never
+// looks like a broken button. After 6 seconds it says ClickUp is slow.
+const cuRowBusyAct = {};
+function cuBusyLine(tid) {
+  const b = cuRowBusyAct[tid] || {};
+  const verb = { start: "Starting", stop: "Stopping", complete: "Completing" }[b.action] || "Working";
+  const line = document.createElement("div");
+  line.className = "cu-rowmsg cu-rowbusy";
+  const spin = document.createElement("span");
+  spin.className = "cu-spin";
+  const txt = document.createElement("span");
+  txt.className = "cu-rowmsg-txt";
+  txt.textContent = Date.now() - (b.at || Date.now()) > 6000
+    ? "ClickUp is slow to answer - still working\u2026"
+    : verb + "\u2026 waiting for ClickUp";
+  line.append(spin, txt);
+  return line;
+}
+function cuSpinIcon() { const s = document.createElement("span"); s.className = "cu-spin"; return s; }
+
 const cuRowMsg = {};
 // Toast notifications inside popup
 let toastTimeout = null;
@@ -260,7 +280,12 @@ function statusFor(acc) {
       sub: "Resets in " + fmtCountdown(nextAt - Date.now()) + " · " + fmtDayTime(nextAt),
     };
   }
-  if (st.lastResult && st.lastResult !== "success" && isToday(st.lastRunAt)) {
+  // A dismissed message stays hidden until the next attempt (a quiet line instead).
+  const dismissed = Number(st.noteDismissedAt) >= Number(st.lastRunAt);
+  if (st.lastResult && st.lastResult !== "success" && isToday(st.lastRunAt) && dismissed) {
+    return { cls: "pending", text: "Not logged in today", sub: "Tried " + fmtDayTime(st.lastRunAt) };
+  }
+  if (st.lastResult && st.lastResult !== "success" && isToday(st.lastRunAt) && !dismissed) {
     const label = st.lastResult === "failed" ? "Failed" : "Needs you";
     return {
       cls: "attention",
@@ -414,7 +439,8 @@ function appendTaskControls(row, t) {
     const stop = document.createElement("button");
     stop.className = "cu-iconbtn stop";
     stop.title = "Stop tracking · set to “to do”";
-    stop.textContent = busy ? "…" : "⏸";
+    stop.textContent = busy ? "" : "⏸";
+    if (busy) stop.appendChild(cuSpinIcon());
     stop.disabled = busy;
     stop.onclick = () => sendTaskAction(tid, "stop");
     actions.appendChild(stop);
@@ -422,19 +448,18 @@ function appendTaskControls(row, t) {
     const start = document.createElement("button");
     start.className = "cu-iconbtn start";
     start.title = "Start · set to “in progress” and start the timer";
-    start.textContent = busy ? "…" : "▶";
+    start.textContent = busy ? "" : "▶";
+    if (busy) start.appendChild(cuSpinIcon());
     start.disabled = busy;
     start.onclick = () => sendTaskAction(tid, "start");
-    // More than one assignee: only single-assignee tasks can be started from the
-    // extension. The initials beside the name show who; the ▶ is dimmed and its
-    // hover / click explain instead of sending a start ClickUp would refuse.
+    // More than one assignee: the ▶ turns amber and its hover warns who else is
+    // on it, but a click still starts it (in progress + your own timer).
     const who = Array.isArray(t.assignees) ? t.assignees : [];
     if (who.length > 1 && !busy) {
       const names = who.map((a) => a && a.username).filter(Boolean);
       start.className = "cu-iconbtn start multi";
-      start.setAttribute("aria-disabled", "true");
-      start.title = "Assigned to " + who.length + " people" + (names.length ? " (" + names.join(", ") + ")" : "") + " - start it in ClickUp";
-      start.onclick = (e) => { e.stopPropagation(); cuRowMsg[tid] = cuMultiAssigneeMsg(tid, who); render(); };
+      start.title = "⚠ Multiple users assigned: " + who.length + " people" + (names.length ? " (" + names.join(", ") + ")" : "") +
+        ".\nStarting sets it “in progress” for everyone and starts your own timer. Click to start anyway.";
     }
     actions.appendChild(start);
   }
@@ -495,6 +520,9 @@ function appendTaskControls(row, t) {
     btns.appendChild(no);
     warn.appendChild(btns);
     row.appendChild(warn);
+  } else if (busy) {
+    row.classList.add("has-msg");
+    row.appendChild(cuBusyLine(tid));
   } else if (cuRowMsg[tid]) {
     row.classList.add("has-msg");
     row.appendChild(cuRowNotice(cuRowMsg[tid], () => { delete cuRowMsg[tid]; render(); }));
@@ -528,12 +556,6 @@ function cuRowNotice(m, onDismiss) {
   box.appendChild(x);
   return box;
 }
-// The multi-assignee refusal, worded as what to do rather than a rule recital.
-function cuMultiAssigneeMsg(tid, assignees) {
-  const names = Array.isArray(assignees) ? assignees.map((a) => a && (a.username || a.id)).filter(Boolean) : [];
-  const who = names.length ? names.length + " assignees (" + names.join(", ") + ")" : "more than one assignee";
-  return { text: "Can't start here: " + who + ". Start it in ClickUp.", url: "https://app.clickup.com/t/" + encodeURIComponent(tid) };
-}
 
 // Fire a per-task Start/Stop/Complete action, then repaint. Modeled on
 // toggleExtraTimer: 20s timeout (the background does the ClickUp write THEN a
@@ -542,9 +564,11 @@ async function sendTaskAction(taskId, action, force) {
   const tid = String(taskId);
   if (cuRowBusy.has(tid)) return;
   cuRowBusy.add(tid);
+  cuRowBusyAct[tid] = { action, at: Date.now() };
   delete cuRowMsg[tid];
   delete cuRowConfirm[tid];
   render();
+  setTimeout(() => { if (cuRowBusy.has(tid)) render(); }, 6500); // switch to "ClickUp is slow"
   const typeMap = { start: "CLICKUP_TASK_START", stop: "CLICKUP_TASK_STOP", complete: "CLICKUP_TASK_COMPLETE" };
   try {
     const res = await send({ type: typeMap[action], taskId: tid, force: !!force }, 20000);
@@ -561,9 +585,7 @@ async function sendTaskAction(taskId, action, force) {
         render();
         return;
       }
-      if (res && res.reason === "multi-assignee") {
-        cuRowMsg[tid] = cuMultiAssigneeMsg(tid, res && res.assignees);
-      } else {
+      {
         const reason = res && res.reason;
         const map = { "not-configured": "connect ClickUp first", "incomplete-setup": "pick a workspace first", "no-task": "task id missing" };
         const verb = action === "complete" ? "complete" : action;
@@ -1098,7 +1120,8 @@ function appendFilterTaskRows(container, tasks, deadlineTasks, trackedTasks = []
   if (Array.isArray(trackedTasks) && trackedTasks.length) {
     const sec = document.createElement("div");
     sec.className = "cu-dhead";
-    sec.textContent = opts.trackedLabel || "Tracked · no dates";
+    sec.textContent = opts.trackedLabel || cuOtherTrackedLabel("range");
+    sec.title = CU_OTHER_TRACKED_TIP;
     container.appendChild(sec);
     for (const t of sortByPriority(trackedTasks, trackedOrder)) {
       const row = document.createElement("div");
@@ -1157,7 +1180,7 @@ function renderClickupTasks(tasks, deadlineTasks, trackedTasks, scope) {
   if (!hasTasks && !hasDeadline && !hasTracked) return;
   // In the Today scope the tracked section holds tasks worked today but not due
   // today; elsewhere it's date-less tasks. Label it accordingly.
-  const trackedLabel = scope === "today" ? "Tracked · not due today" : "Tracked · no dates";
+  const trackedLabel = cuOtherTrackedLabel(scope);
   appendFilterTaskRows(listEl, hasTasks ? tasks : [], hasDeadline ? deadlineTasks : [], hasTracked ? trackedTasks : [], { trackedLabel, scope, draggable: true });
 }
 
@@ -1391,7 +1414,7 @@ function renderClickupTasksByClient(tasks, deadlineTasks, trackedTasks, scope, s
   listEl.innerHTML = "";
   const clientOf = (t) => String((t && t.client) || "").trim();
   const order = (Array.isArray(selected) ? selected.filter(Boolean) : []).slice().sort((a, b) => a.localeCompare(b));
-  const trackedLabel = scope === "today" ? "Tracked · not due today" : "Tracked · no dates";
+  const trackedLabel = cuOtherTrackedLabel(scope);
   let any = false;
   for (const c of order) {
     const t1 = tasks.filter((t) => clientOf(t) === c);
@@ -1622,7 +1645,7 @@ async function renderFilter() {
     list.className = "cu-tasklist";
     // Live controls only when viewing your OWN tasks (no department/user scope).
     // In the Today preset the tracked section = worked today but not due today.
-    const trackedLabel = type === "today" ? "Tracked · not due today" : "Tracked · no dates";
+    const trackedLabel = cuOtherTrackedLabel(type === "today" ? "today" : "range");
     appendFilterTaskRows(list, shownTasks, shownDeadline, shownTracked, { controls: assigneeIds.length === 0, trackedLabel });
     box.appendChild(list);
   } catch (e) {
@@ -1780,7 +1803,8 @@ function renderWeekDetail(w, agg) {
     if (trackedRows.length) {
       const sec = document.createElement("div");
       sec.className = "cu-dhead";
-      sec.textContent = "Tracked · no dates";
+      sec.textContent = cuOtherTrackedLabel("range");
+      sec.title = CU_OTHER_TRACKED_TIP;
       box.appendChild(sec);
       for (const t of sortByPriority(trackedRows)) {
         const row = document.createElement("div");
@@ -1858,6 +1882,23 @@ function cuWeekRangeLabel(base, b) {
   if (!from || !to) return base;
   const f = (t) => new Date(t).toLocaleDateString(undefined, { month: "short", day: "numeric" });
   return base + " · " + f(from) + " – " + f(to);
+}
+// The date range the task list is showing (for exports), or null when the
+// filter has no date range (e.g. "Deadline crossed").
+function cuViewRange(st, f) {
+  st = st || {}; f = f || {};
+  const day = (ms) => { const a = new Date(ms); a.setHours(0, 0, 0, 0); const b = new Date(a); b.setHours(23, 59, 59, 999); return { fromTs: a.getTime(), toTs: b.getTime() }; };
+  const wk = (b) => (b && Number(b.fromTs) && Number(b.toTs) ? { fromTs: Number(b.fromTs), toTs: Number(b.toTs) } : null);
+  if (f.deadlineCrossed) return null;
+  if (f.dueCustom && f.customFrom) {
+    const a = new Date(f.customFrom + "T00:00:00"), b = new Date((f.customTo || f.customFrom) + "T23:59:59");
+    if (!isNaN(a) && !isNaN(b)) return { fromTs: a.getTime(), toTs: b.getTime() };
+  }
+  if (f.dueNextWeek) return wk(st.nextWeek);
+  if (f.dueWeek) return wk(st.thisWeek);
+  if (f.dueTomorrow) return day(Date.now() + 86400000);
+  if (f.dueToday) return day(Date.now());
+  return null;
 }
 function resolveCuFilterView(st, f) {
   st = st || {};
@@ -2101,6 +2142,13 @@ function cuAvailableFacets(st) {
   return { statuses: Array.from(statuses).sort(), priorities: CU_PRIORITY_ORDER.filter((p) => priorities.has(p)), clients: Array.from(clients).sort((a, b) => a.localeCompare(b)) };
 }
 
+// The section under the task list: time you tracked in the period on tasks
+// that aren't in the list (due another day, no due date, or someone else's).
+// It used to say "Tracked · no dates", which was wrong for most of them.
+const CU_OTHER_TRACKED_TIP = "Tasks you tracked time on in this period that aren't in the list above: due on another day, no due date, or assigned to someone else. Their time is already counted in your Tracked total.";
+function cuOtherTrackedLabel(scope) {
+  return "Other tasks you tracked " + ({ today: "today", extended: "today", tomorrow: "tomorrow", week: "this week", nextweek: "next week" }[scope] || "in this range");
+}
 const CU_SCOPE_LABEL = { today: "due today", tomorrow: "due tomorrow", week: "this week", nextweek: "due next week", extended: "active today" };
 function cuActiveFilterCount(f) {
   return CU_FILTER_KEYS.reduce((n, k) => n + (k !== "manualOrder" && f[k] ? 1 : 0), 0)
@@ -2391,6 +2439,7 @@ function renderClickup() {
 
   if (clientsSel.length) renderClickupTasksByClient(taskList, deadlineList, trackedList, view.scope, clientsSel);
   else renderClickupTasks(taskList, deadlineList, trackedList, view.scope);
+  cuExportData.range = cuViewRange(st, cuFilter); // exports keep to these dates
   renderCuFilterMenu();
   renderFilter();
   renderWeekly();
@@ -2484,7 +2533,7 @@ function renderNowTracking() {
   stop.title = "Stop the ClickUp timer";
   stop.onclick = async () => {
     stop.disabled = true;
-    stop.textContent = "\u2026";
+    stop.textContent = "Stopping\u2026";
     await commit(); // note first, so it lands on this entry
     sendTaskAction(String(run.taskId), "stop");
   };
@@ -2498,7 +2547,7 @@ function renderNowTracking() {
   done.onclick = async () => {
     done.disabled = true;
     stop.disabled = true;
-    done.textContent = "…";
+    done.textContent = "Completing…";
     await commit(); // note first, so it lands on this entry
     sendTaskAction(String(run.taskId), "complete");
   };
@@ -2612,7 +2661,7 @@ async function toggleExtraTimer(action) {
   cuTimerBusy = true;
   cuTimerMsg = "";
   const btn = $("cuTimerBtn");
-  if (btn) { btn.disabled = true; btn.textContent = "…"; }
+  if (btn) { btn.disabled = true; btn.textContent = action === "stop" ? "Stopping…" : "Starting…"; }
   try {
     const type = action === "stop" ? "CLICKUP_STOP_TIMER" : "CLICKUP_START_TIMER";
     const description = action === "stop" ? undefined : extraModeDescription();
@@ -2764,6 +2813,23 @@ function render() {
       meta.appendChild(avRow);
 
       meta.appendChild(stat);
+      if (s.attention) {
+        // Finished it by hand (passkey, Google, CAPTCHA...)? Say so, or just hide the message.
+        const fix = document.createElement("div");
+        fix.className = "attn-actions";
+        const mine = document.createElement("button");
+        mine.type = "button";
+        mine.textContent = "✓ I logged in";
+        mine.title = "You finished this login yourself: mark today's login as done (the next one is due 24 hours from now)";
+        mine.onclick = async () => { mine.disabled = true; mine.textContent = "Saving…"; await send({ type: "MARK_DONE", id: a.id }).catch(() => {}); await load(); };
+        const hide = document.createElement("button");
+        hide.type = "button";
+        hide.textContent = "Dismiss";
+        hide.title = "Hide this message (nothing else changes; it comes back only if the next login needs you again)";
+        hide.onclick = async () => { hide.disabled = true; await send({ type: "DISMISS_NOTE", id: a.id }).catch(() => {}); await load(); };
+        fix.append(mine, hide);
+        meta.appendChild(fix);
+      }
       if (s.sub) {
         const sub = document.createElement("div");
         sub.className = "substat";
@@ -2960,16 +3026,37 @@ $("resetAll").onclick = async () => {
 
 $("refresh").onclick = load;
 
+// Status next to a refresh button, so a click never looks like it did nothing.
+function refreshSay(btn) {
+  let s = btn.parentNode && btn.parentNode.querySelector(":scope > .refresh-msg");
+  if (!s) {
+    s = document.createElement("span");
+    s.className = "refresh-msg";
+    s.style.cssText = "font-size:11.5px;margin:0 6px;white-space:nowrap;";
+    btn.after(s);
+  }
+  clearTimeout(s._t);
+  return (text, kind) => {
+    s.textContent = text || "";
+    s.style.color = kind === "err" ? "var(--red, #dc2626)" : kind === "ok" ? "var(--green, #16a34a)" : "var(--muted)";
+    if (kind === "ok") s._t = setTimeout(() => { s.textContent = ""; }, 5000);
+  };
+}
 $("cuRefresh").onclick = async () => {
   const btn = $("cuRefresh");
   if (btn.classList.contains("spin")) return;
+  const say = refreshSay(btn);
   btn.classList.add("spin");
+  say("Refreshing…");
   try {
     // Explicit click: also recompute the due-this/next-week bundles (60-min TTL)
-    // so estimates edited in ClickUp itself show up now.
-    await send({ type: "CLICKUP_REFRESH", forceWeekly: true, forceWeeks: true });
+    // so estimates edited in ClickUp itself show up now. A full refresh can take
+    // a while, so wait up to 25 s instead of the default.
+    const res = await send({ type: "CLICKUP_REFRESH", forceWeekly: true, forceWeeks: true }, 25000);
     await load();
-  } catch (e) {}
+    if (res && res.ok) say("Updated " + new Date().toLocaleTimeString([], { hour: "numeric", minute: "2-digit" }) + " ✓", "ok");
+    else say("Couldn't refresh: " + ((res && (res.error || res.reason)) || "no answer"), "err");
+  } catch (e) { say("No answer - try again in a moment", "err"); }
   btn.classList.remove("spin");
 };
 $("cuSetupBtn").onclick = () => chrome.runtime.openOptionsPage();

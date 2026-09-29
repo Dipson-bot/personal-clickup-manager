@@ -575,6 +575,60 @@ function inj_clickGooglePasskey() {
   return { ok: true, clicked: true, label };
 }
 
+// "Keep me signed in to GitHub": with several GitHub accounts signed in, GitHub
+// shows an account picker (forced with prompt=select_account). Click the entry
+// for this account's handle; if it isn't listed, click "use a different
+// account" so the normal password + 2FA sign-in adds it. Never treats the
+// normal Authorize page or the login form as a picker. Self-contained.
+function inj_pickGithubAccount(handles) {
+  try {
+    const want = (handles || []).map((h) => String(h || "").toLowerCase().replace(/^@/, "")).filter(Boolean);
+    if (document.querySelector('button[name="authorize"], #js-oauth-authorize-btn, #login_field, input[name="otp"]')) return { ok: true, picker: false };
+    const text = (document.body && document.body.innerText) || "";
+    if (!/\b(select|choose|pick) an account\b|\bswitch accounts?\b|\bcontinue as\b|\b(use|add|sign in (with|to)) (a |an )?(different|another) account\b|\badd an account\b/i.test(text)) return { ok: true, picker: false };
+    const label = (el) => String(el.innerText || el.value || el.getAttribute("aria-label") || "").toLowerCase();
+    const esc = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    const isProfileLink = (el, w) => {
+      if (el.tagName !== "A") return false;
+      try { return new URL(el.getAttribute("href") || "", location.href).pathname.toLowerCase().replace(/\/$/, "") === "/" + w; } catch (e) { return false; }
+    };
+    const clickables = Array.from(document.querySelectorAll('button, input[type="submit"], [role="button"], label, a[href]'));
+    const hits = [];
+    for (const el of clickables) {
+      const t = label(el);
+      for (const w of want) {
+        if (new RegExp("(^|[^a-z0-9-])@?" + esc(w) + "($|[^a-z0-9-])").test(t) && !isProfileLink(el, w)) hits.push(el);
+      }
+    }
+    // The tightest match (the account entry itself, not a whole list wrapper).
+    hits.sort((a, b) => label(a).length - label(b).length);
+    if (hits[0]) { hits[0].click(); return { ok: true, picker: true, picked: true }; }
+    // GitHub's lists show the name as plain text with a separate "Select" /
+    // "Continue" button in the same row: find the name, click its row's button.
+    const buttonsIn = (el) => el.querySelectorAll('button, input[type="submit"], [role="button"]');
+    for (const el of Array.from(document.querySelectorAll("body *"))) {
+      if (el.children.length > 3) continue;
+      const own = String(el.innerText || "").trim().toLowerCase().replace(/^@/, "");
+      if (!want.includes(own)) continue;
+      let row = el.parentElement;
+      for (let k = 0; k < 6 && row && row !== document.body; k++, row = row.parentElement) {
+        const b = buttonsIn(row);
+        if (b.length === 1 && String(row.innerText || "").length < 240) { b[0].click(); return { ok: true, picker: true, picked: true, via: "row" }; }
+        if (b.length > 1) break; // reached the whole list: this name has no button of its own
+      }
+    }
+    // Not listed: add it (the normal password + 2FA sign-in follows). Only when
+    // we know which handle we want, otherwise we can't tell the right one.
+    if (want.length) {
+      const other = clickables.find((el) => /(use|add|sign in (with|to)) (a |an )?(different|another) account|add an account/i.test(label(el)));
+      if (other) { other.click(); return { ok: true, picker: true, picked: false, other: true }; }
+    }
+    return { ok: true, picker: true, picked: false, noHandle: !want.length };
+  } catch (e) {
+    return { ok: false, error: String(e) };
+  }
+}
+
 // Read which GitHub account is signed in on the current github.com page. The
 // login handle lives in a <meta> tag on every page; the email is usually private
 // so it's a best-effort bonus. Used to record which account actually logged in.
@@ -735,7 +789,7 @@ function inj_getGithubClientId() {
 // Fetch the GitHub OAuth state token from Agent Router's API and build the full
 // authorize URL, then navigate the current tab to it - bypassing the window.open
 // popup blocker. Returns { ok, url } or { ok: false, reason }.
-async function inj_getAndNavigateToGithubOAuth() {
+async function inj_getAndNavigateToGithubOAuth(pickLogin) {
   // A request that never answers must not freeze the whole login (10s limit).
   const fetchT = (url, init) => {
     const c = new AbortController();
@@ -788,7 +842,10 @@ async function inj_getAndNavigateToGithubOAuth() {
 
   const oauthUrl =
     "https://github.com/login/oauth/authorize?client_id=" + encodeURIComponent(clientId) +
-    "&state=" + encodeURIComponent(state) + "&scope=user:email";
+    "&state=" + encodeURIComponent(state) + "&scope=user:email" +
+    // "Keep me signed in to GitHub": always show GitHub's account picker (so
+    // the active account is never used by accident) and suggest this account.
+    (pickLogin != null ? "&prompt=select_account" : "");
   // Same-tab navigation - bypasses the popup blocker entirely.
   window.location.href = oauthUrl;
   return { ok: true, url: oauthUrl, navigated: true };
@@ -877,7 +934,16 @@ async function runAccountLoginInner(account, opts, isStopped) {
   // Fresh session: fully clear Agent Router, and clear GitHub's SESSION cookies
   // (so we log in as THIS account) while KEEPING its device-trust cookie - that
   // stops GitHub from emailing a new-device verification code on every switch.
-  await clearCookiesForDomains(["github.com", "agentrouter.org"], {
+  // "Keep me signed in to GitHub" leaves every saved GitHub account signed in:
+  // GitHub's account picker chooses the right one further down.
+  const keepGithub = opts.keepGithub === true;
+  const ghHandles = [...new Set([
+    account.username && !String(account.username).includes("@") ? account.username : "",
+    account.detectedLogin && !/^github_\d+$/i.test(account.detectedLogin) ? account.detectedLogin : "",
+    /^[a-z0-9](?:[a-z0-9-]{0,38})$/i.test(String(account.label || "").trim()) ? account.label : "",
+  ].map((h) => String(h || "").trim().toLowerCase().replace(/^@/, "")).filter(Boolean))];
+  const pickArg = keepGithub ? (ghHandles[0] || "") : null;
+  await clearCookiesForDomains(keepGithub ? ["agentrouter.org"] : ["github.com", "agentrouter.org"], {
     "github.com": GITHUB_KEEP_COOKIES,
   });
 
@@ -952,7 +1018,7 @@ async function runAccountLoginInner(account, opts, isStopped) {
     if (await isStopped()) return { ...stopped(), tabId };
     if (!(await getTab(tabId))) return { result: "failed", note: "Tab was closed during login." };
     // Try direct navigation to GitHub OAuth URL (bypasses popup blocker)
-    const directNav = await inject(tabId, inj_getAndNavigateToGithubOAuth);
+    const directNav = await inject(tabId, inj_getAndNavigateToGithubOAuth, [pickArg]);
     // The page did not answer at all (not "button missing" - frozen or stalled):
     // say so now rather than retrying a dead page for minutes.
     if (directNav && directNav.error === "the page didn't respond in time")
@@ -994,6 +1060,7 @@ async function runAccountLoginInner(account, opts, isStopped) {
   let forced2faApp = false;
   let passkeyAttempted = false;
   let googlePasskeyAttempted = false;
+  let pickTries = 0;
   for (let step = 0; step < MAX_STEPS; step++) {
     // Respect an external "stop" signal (Debug → Stop). Bails out of the loop so
     // a run never keeps going after the user asks it to stop.
@@ -1006,9 +1073,29 @@ async function runAccountLoginInner(account, opts, isStopped) {
     if (!t) return { result: "failed", note: "Tab was closed during login." };
     const cls = classifyUrl(t.url || "");
 
+    // GitHub's account picker (several accounts signed in): choose this one.
+    if (keepGithub && cls.startsWith("gh-") && cls !== "gh-2fa" && cls !== "gh-passkey" && pickTries < 4) {
+      const pk = await inject(tabId, inj_pickGithubAccount, [ghHandles]);
+      if (pk && pk.picker) {
+        pickTries++;
+        if (pk.picked || pk.other) {
+          const from = t.url || "";
+          await waitForTab(tabId, (u) => u !== from, T(15000));
+          continue;
+        }
+        return {
+          result: "needs-attention",
+          note: pk.noHandle
+            ? "GitHub asked which account to use, but this account's GitHub username isn't known (its saved username is an email). Pick it in the open tab once; after that the extension remembers it."
+            : "GitHub asked which account to use and " + ghHandles[0] + " isn't in its list - pick it (or 'Add a different account') in the open tab.",
+          tabId,
+        };
+      }
+    }
+
     if (cls === "ar-login") {
       // Bounced back to login: try direct navigation, then click GitHub once, else bail.
-      const directNav = await inject(tabId, inj_getAndNavigateToGithubOAuth);
+      const directNav = await inject(tabId, inj_getAndNavigateToGithubOAuth, [pickArg]);
       if (directNav && directNav.ok) continue;
       const c = await inject(tabId, inj_clickAgentRouterGitHub);
       if (!c || !c.ok)
@@ -1210,6 +1297,13 @@ async function runAccountLoginInner(account, opts, isStopped) {
     if (cls === "gh-authorize") {
       // On the authorize page we're signed into GitHub - grab which handle it is.
       await grabGithubIdentity();
+      // With other GitHub accounts kept signed in, never authorize the wrong one.
+      if (keepGithub && ghHandles.length && detected.githubLogin && !ghHandles.includes(detected.githubLogin.toLowerCase()))
+        return {
+          result: "needs-attention",
+          note: "GitHub is signed in as " + detected.githubLogin + " here, not " + ghHandles[0] + ". Switch to " + ghHandles[0] + " in the open tab, or turn off 'Keep me signed in to GitHub'.",
+          tabId,
+        };
       let ok = false;
       for (let i = 0; i < 6; i++) {
         const r = await inject(tabId, inj_clickAuthorize, [SELECTORS.githubAuthorize]);
@@ -1316,6 +1410,29 @@ async function runAccountLoginInner(account, opts, isStopped) {
   return { result: "needs-attention", note: "Login didn't complete in time - finish in the open tab.", tabId };
 }
 
+// Is this Agent Router tab logged in? Same checks as the end of a login run,
+// used when the person finished a login by hand in a tab we left open for them.
+// Returns { loggedIn, detected } (detected: arUsername / arEmail / balance...).
+export async function readAgentRouterLogin(tabId) {
+  const detected = {};
+  const check = await inject(tabId, inj_agentRouterLoggedIn);
+  if (!(check && (check.loggedIn || check.hasUser))) return { loggedIn: false, detected };
+  const arRes = await inject(tabId, inj_readAgentRouterUser);
+  if (arRes && arRes.ok && arRes.user) {
+    if (arRes.user.username) detected.arUsername = arRes.user.username;
+    if (arRes.user.email && arRes.user.email.includes("@")) detected.arEmail = arRes.user.email;
+    if (arRes.user.id != null) detected.arId = arRes.user.id;
+    if (arRes.user.accessToken) detected.arToken = arRes.user.accessToken;
+  }
+  const bal = await inject(tabId, inj_fetchAgentRouterBalance);
+  if (bal && bal.ok) {
+    if (bal.balance != null) detected.balance = bal.balance;
+    if (bal.username) detected.arUsername = bal.username;
+    if (bal.email && bal.email.includes("@")) detected.arEmail = bal.email;
+  } else detected.balanceErr = bal && bal.status ? "HTTP " + bal.status : "no response";
+  return { loggedIn: true, detected };
+}
+
 // Run several accounts back to back. onProgress({ accountId, phase, result }).
 export async function runAllAccounts(accounts, opts = {}, onProgress = () => {}) {
   const results = {};
@@ -1349,6 +1466,7 @@ export async function runAllAccounts(accounts, opts = {}, onProgress = () => {})
         result: outcome.result,
         note: outcome.note,
         detected: outcome.detected,
+        tabId: outcome.tabId, // the tab left open when it needs the person
       });
 
       // Close the tab right away on success; a tab that needs the user stays.

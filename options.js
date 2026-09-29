@@ -404,7 +404,13 @@ async function load() {
     $("targetUrl").value = (state.settings && state.settings.targetUrl) || "";
     $("notify").checked = !(state.settings && state.settings.notify === false);
     $("notifySound").checked = !(state.settings && state.settings.notifySound === false);
+    if ($("notifyVolume")) {
+      const v = Number(state.settings && state.settings.notifyVolume);
+      $("notifyVolume").value = String(Number.isFinite(v) && v > 0 ? v : 100);
+      $("notifyVolumeVal").textContent = $("notifyVolume").value + "%";
+    }
     $("slowNetwork").checked = !!(state.settings && state.settings.slowNetwork);
+    if ($("ghKeepSignedIn")) $("ghKeepSignedIn").checked = !!(state.settings && state.settings.ghKeepSignedIn);
     $("arCloseTabs").checked = !(state.settings && state.settings.arCloseTabs === false);
     $("cuClientLevel") && ($("cuClientLevel").value = (state.settings && state.settings.cuClientLevel) || "auto");
     {
@@ -551,9 +557,20 @@ $("cancelBtn").onclick = resetForm;
 // Preview the notification chime (plays even if the sound toggle is off).
 {
   const btn = $("notifySoundTest");
-  if (btn) btn.onclick = () => send({ type: "PLAY_TEST_SOUND" }).catch(() => {});
+  // Tests use the slider's current position, so a change is audible before Save.
+  const vol = () => Number(($("notifyVolume") || {}).value) || 100;
+  if (btn) btn.onclick = () => send({ type: "PLAY_TEST_SOUND", volume: vol() }).catch(() => {});
   const dbtn = $("notifyDangerTest");
-  if (dbtn) dbtn.onclick = () => send({ type: "PLAY_TEST_SOUND", sound: "danger" }).catch(() => {});
+  if (dbtn) dbtn.onclick = () => send({ type: "PLAY_TEST_SOUND", sound: "danger", volume: vol() }).catch(() => {});
+  const vs = $("notifyVolume");
+  if (vs) {
+    vs.oninput = () => { $("notifyVolumeVal").textContent = vs.value + "%"; };
+    // Letting go of the slider saves it and plays a short sample at that level.
+    vs.onchange = () => {
+      send({ type: "SET_SETTINGS", patch: { notifyVolume: Number(vs.value) } }).catch(() => {});
+      send({ type: "PLAY_TEST_SOUND", volume: Number(vs.value) }).catch(() => {});
+    };
+  }
 }
 
 $("saveSettings").onclick = async () => {
@@ -575,7 +592,9 @@ $("saveSettings").onclick = async () => {
         targetUrl: $("targetUrl").value.trim(),
         notify: $("notify").checked,
         notifySound: $("notifySound").checked,
+        ...($("notifyVolume") ? { notifyVolume: Number($("notifyVolume").value) || 100 } : {}),
         slowNetwork: $("slowNetwork").checked,
+        ghKeepSignedIn: !!($("ghKeepSignedIn") && $("ghKeepSignedIn").checked),
         arCloseTabs: $("arCloseTabs").checked,
         arQuotaNotify: $("arQuotaNotify").checked,
         arQuotaTimes: arTimes,
@@ -1718,6 +1737,26 @@ let cuTimerMsg = "";
 // in-flight guard + a transient inline message keyed by task id, so one busy row
 // doesn't disable the rest and a refusal reason survives the repaint.
 const cuRowBusyOpt = new Set();
+// What a row says while ClickUp answers (spinner + words), so a slow reply never
+// looks like a broken button. After 6 seconds it says ClickUp is slow.
+const cuRowBusyActOpt = {};
+function cuBusyLine(tid) {
+  const b = cuRowBusyActOpt[tid] || {};
+  const verb = { start: "Starting", stop: "Stopping", complete: "Completing" }[b.action] || "Working";
+  const line = document.createElement("div");
+  line.className = "cu-rowmsg cu-rowbusy";
+  const spin = document.createElement("span");
+  spin.className = "cu-spin";
+  const txt = document.createElement("span");
+  txt.className = "cu-rowmsg-txt";
+  txt.textContent = Date.now() - (b.at || Date.now()) > 6000
+    ? "ClickUp is slow to answer - still working\u2026"
+    : verb + "\u2026 waiting for ClickUp";
+  line.append(spin, txt);
+  return line;
+}
+function cuSpinIcon() { const s = document.createElement("span"); s.className = "cu-spin"; return s; }
+
 const cuRowMsgOpt = {};
 // task-id -> { activeTaskName, tracking } while a Start awaits switch confirmation.
 const cuRowConfirmOpt = {};
@@ -1807,7 +1846,7 @@ async function toggleExtraTimer(action) {
   cuTimerBusy = true;
   cuTimerMsg = "";
   const btn = $("cuTimerBtn");
-  if (btn) { btn.disabled = true; btn.textContent = "…"; }
+  if (btn) { btn.disabled = true; btn.textContent = action === "stop" ? "Stopping…" : "Starting…"; }
   try {
     const type = action === "stop" ? "CLICKUP_STOP_TIMER" : "CLICKUP_START_TIMER";
     // The background does start/stop THEN a today+tasks refresh before replying,
@@ -1865,7 +1904,8 @@ function appendTaskControlsOpt(row, t) {
     const stop = document.createElement("button");
     stop.className = "cu-iconbtn stop";
     stop.title = "Stop tracking · set to “to do”";
-    stop.textContent = busy ? "…" : "⏸";
+    stop.textContent = busy ? "" : "⏸";
+    if (busy) stop.appendChild(cuSpinIcon());
     stop.disabled = busy;
     stop.onclick = () => sendTaskActionOpt(tid, "stop");
     actions.appendChild(stop);
@@ -1873,19 +1913,18 @@ function appendTaskControlsOpt(row, t) {
     const start = document.createElement("button");
     start.className = "cu-iconbtn start";
     start.title = "Start · set to “in progress” and start the timer";
-    start.textContent = busy ? "…" : "▶";
+    start.textContent = busy ? "" : "▶";
+    if (busy) start.appendChild(cuSpinIcon());
     start.disabled = busy;
     start.onclick = () => sendTaskActionOpt(tid, "start");
-    // More than one assignee: only single-assignee tasks can be started from the
-    // extension. The initials beside the name show who; the ▶ is dimmed and its
-    // hover / click explain instead of sending a start ClickUp would refuse.
+    // More than one assignee: the ▶ turns amber and its hover warns who else is
+    // on it, but a click still starts it (in progress + your own timer).
     const who = Array.isArray(t.assignees) ? t.assignees : [];
     if (who.length > 1 && !busy) {
       const names = who.map((a) => a && a.username).filter(Boolean);
       start.className = "cu-iconbtn start multi";
-      start.setAttribute("aria-disabled", "true");
-      start.title = "Assigned to " + who.length + " people" + (names.length ? " (" + names.join(", ") + ")" : "") + " - start it in ClickUp";
-      start.onclick = (e) => { e.stopPropagation(); cuRowMsgOpt[tid] = cuMultiAssigneeMsg(tid, who); repaintCuTaskRows(); };
+      start.title = "⚠ Multiple users assigned: " + who.length + " people" + (names.length ? " (" + names.join(", ") + ")" : "") +
+        ".\nStarting sets it “in progress” for everyone and starts your own timer. Click to start anyway.";
     }
     actions.appendChild(start);
   }
@@ -1946,6 +1985,9 @@ function appendTaskControlsOpt(row, t) {
     btns.appendChild(no);
     warn.appendChild(btns);
     row.appendChild(warn);
+  } else if (busy) {
+    row.classList.add("has-msg");
+    row.appendChild(cuBusyLine(tid));
   } else if (cuRowMsgOpt[tid]) {
     row.classList.add("has-msg");
     row.appendChild(cuRowNotice(cuRowMsgOpt[tid], () => { delete cuRowMsgOpt[tid]; repaintCuTaskRows(); }));
@@ -1979,12 +2021,6 @@ function cuRowNotice(m, onDismiss) {
   box.appendChild(x);
   return box;
 }
-// The multi-assignee refusal, worded as what to do rather than a rule recital.
-function cuMultiAssigneeMsg(tid, assignees) {
-  const names = Array.isArray(assignees) ? assignees.map((a) => a && (a.username || a.id)).filter(Boolean) : [];
-  const who = names.length ? names.length + " assignees (" + names.join(", ") + ")" : "more than one assignee";
-  return { text: "Can't start here: " + who + ". Start it in ClickUp.", url: "https://app.clickup.com/t/" + encodeURIComponent(tid) };
-}
 
 // Fire a per-task Start/Stop/Complete action from the options page, then repaint.
 // 20s timeout (the background does the ClickUp write THEN a today+tasks refresh
@@ -1993,9 +2029,11 @@ async function sendTaskActionOpt(taskId, action, force) {
   const tid = String(taskId);
   if (cuRowBusyOpt.has(tid)) return;
   cuRowBusyOpt.add(tid);
+  cuRowBusyActOpt[tid] = { action, at: Date.now() };
   delete cuRowMsgOpt[tid];
   delete cuRowConfirmOpt[tid];
-  repaintCuTaskRows(); // repaint so the clicked row shows its busy "…" state
+  repaintCuTaskRows(); // repaint so the clicked row shows its "Starting… waiting for ClickUp" line
+  setTimeout(() => { if (cuRowBusyOpt.has(tid)) repaintCuTaskRows(); }, 6500); // switch to "ClickUp is slow"
   const typeMap = { start: "CLICKUP_TASK_START", stop: "CLICKUP_TASK_STOP", complete: "CLICKUP_TASK_COMPLETE" };
   try {
     const res = await send({ type: typeMap[action], taskId: tid, force: !!force }, 20000);
@@ -2011,9 +2049,7 @@ async function sendTaskActionOpt(taskId, action, force) {
         repaintCuTaskRows();
         return;
       }
-      if (res && res.reason === "multi-assignee") {
-        cuRowMsgOpt[tid] = cuMultiAssigneeMsg(tid, res && res.assignees);
-      } else {
+      {
         const reason = res && res.reason;
         const map = { "not-configured": "connect ClickUp first", "incomplete-setup": "pick a workspace first", "no-task": "task id missing" };
         const verb = action === "complete" ? "complete" : action;
@@ -2349,7 +2385,8 @@ function renderOptionsWeekly(cu) {
             sec.className = "flt-tot";
             sec.style.margin = "8px 0 2px";
             sec.style.fontSize = "11.5px";
-            sec.innerHTML = "<b>Tracked · no dates</b>";
+            sec.innerHTML = "<b>" + cuOtherTrackedLabel("range") + "</b>";
+            sec.title = CU_OTHER_TRACKED_TIP;
             tlist.appendChild(sec);
             for (const t of sortByPriority(trackedRows)) {
               const row = document.createElement("div");
@@ -2932,7 +2969,8 @@ async function renderOptionsFilter() {
       sec.className = "flt-tot";
       sec.style.margin = "8px 0 2px";
       sec.style.fontSize = "11.5px";
-      sec.innerHTML = type === "today" ? "<b>Tracked · not due today</b>" : "<b>Tracked · no dates</b>";
+      sec.innerHTML = "<b>" + cuOtherTrackedLabel(type === "today" ? "today" : "range") + "</b>";
+      sec.title = CU_OTHER_TRACKED_TIP;
       list.appendChild(sec);
       for (const t of sortByPriority(shownTracked)) {
         const row = document.createElement("div");
@@ -3307,6 +3345,13 @@ function initDeptCreator() {
 let cuFilter = { dueToday: true, dueTomorrow: false, dueWeek: false, dueNextWeek: false, dueCustom: false, missingDue: false, customFrom: "", customTo: "", missingEst: false, hasTracked: false, deadlineCrossed: false, waitingOthers: false, manualOrder: false, statuses: [], priorities: [], clients: [] };
 const CU_FILTER_KEYS = ["dueToday", "dueTomorrow", "dueWeek", "dueNextWeek", "dueCustom", "missingEst", "missingDue", "hasTracked", "deadlineCrossed", "waitingOthers", "groupSubtasks", "manualOrder"];
 const CU_PRIORITY_ORDER = ["urgent", "high", "normal", "low", "none"];
+// The section under the task list: time you tracked in the period on tasks
+// that aren't in the list (due another day, no due date, or someone else's).
+// It used to say "Tracked · no dates", which was wrong for most of them.
+const CU_OTHER_TRACKED_TIP = "Tasks you tracked time on in this period that aren't in the list above: due on another day, no due date, or assigned to someone else. Their time is already counted in your Tracked total.";
+function cuOtherTrackedLabel(scope) {
+  return "Other tasks you tracked " + ({ today: "today", extended: "today", tomorrow: "tomorrow", week: "this week", nextweek: "next week" }[scope] || "in this range");
+}
 const CU_SCOPE_LABEL = { today: "due today", tomorrow: "due tomorrow", week: "this week", nextweek: "due next week", extended: "active today" };
 
 function cuTodayEndMs() { const d = new Date(); d.setHours(23, 59, 59, 999); return d.getTime(); }
@@ -3350,6 +3395,23 @@ function cuWeekRangeLabel(base, b) {
   if (!from || !to) return base;
   const f = (t) => new Date(t).toLocaleDateString(undefined, { month: "short", day: "numeric" });
   return base + " · " + f(from) + " – " + f(to);
+}
+// The date range the task list is showing (for exports), or null when the
+// filter has no date range (e.g. "Deadline crossed").
+function cuViewRange(st, f) {
+  st = st || {}; f = f || {};
+  const day = (ms) => { const a = new Date(ms); a.setHours(0, 0, 0, 0); const b = new Date(a); b.setHours(23, 59, 59, 999); return { fromTs: a.getTime(), toTs: b.getTime() }; };
+  const wk = (b) => (b && Number(b.fromTs) && Number(b.toTs) ? { fromTs: Number(b.fromTs), toTs: Number(b.toTs) } : null);
+  if (f.deadlineCrossed) return null;
+  if (f.dueCustom && f.customFrom) {
+    const a = new Date(f.customFrom + "T00:00:00"), b = new Date((f.customTo || f.customFrom) + "T23:59:59");
+    if (!isNaN(a) && !isNaN(b)) return { fromTs: a.getTime(), toTs: b.getTime() };
+  }
+  if (f.dueNextWeek) return wk(st.nextWeek);
+  if (f.dueWeek) return wk(st.thisWeek);
+  if (f.dueTomorrow) return day(Date.now() + 86400000);
+  if (f.dueToday) return day(Date.now());
+  return null;
 }
 function resolveCuFilterView(st, f) {
   st = st || {};
@@ -3700,7 +3762,7 @@ function renderNowTracking() {
   stop.title = "Stop the ClickUp timer";
   stop.onclick = async () => {
     stop.disabled = true;
-    stop.textContent = "\u2026";
+    stop.textContent = "Stopping\u2026";
     await commit(); // note first, so it lands on this entry
     sendTaskActionOpt(String(run.taskId), "stop");
   };
@@ -3714,7 +3776,7 @@ function renderNowTracking() {
   done.onclick = async () => {
     done.disabled = true;
     stop.disabled = true;
-    done.textContent = "…";
+    done.textContent = "Completing…";
     await commit(); // note first, so it lands on this entry
     sendTaskActionOpt(String(run.taskId), "complete");
   };
@@ -3985,6 +4047,7 @@ function renderClickupPreview(st) {
   }
   cuExportDataOpt = cuExportRowsOpt(viewTasks, viewDeadline, viewTracked,
     (CU_SCOPE_LABEL[view.scope] || "tasks") + (clientsSel.length ? " - " + clientsSel.join(", ") : ""));
+  cuExportDataOpt.range = cuViewRange(st, cuFilter); // exports keep to these dates
   viewTasks = cuGroupSubtaskRowsOpt(viewTasks);
   const noEst = viewTasks.filter((t) => !Number(t.estimateMs)).length;
   const scopeLabel = (view.scope && view.scope !== "extended") ? (view.label || CU_SCOPE_LABEL[view.scope]) : "";
@@ -4232,7 +4295,8 @@ function renderClickupPreview(st) {
       listHead.className = "hint";
       listHead.style.marginTop = "8px";
       listHead.style.fontWeight = "700";
-      listHead.textContent = view.scope === "today" ? "Tracked · not due today" : "Tracked · no dates";
+      listHead.textContent = cuOtherTrackedLabel(view.scope);
+      listHead.title = CU_OTHER_TRACKED_TIP;
       lists.appendChild(listHead);
       const listEl = document.createElement("div");
       listEl.className = "cu-tasklist";
@@ -4627,6 +4691,12 @@ function renderDebugAccounts(accounts) {
     sel.appendChild(opt);
     return;
   }
+  if (list.length > 1) {
+    const all = document.createElement("option");
+    all.value = "__all__";
+    all.textContent = "All accounts (one after another)";
+    sel.appendChild(all);
+  }
   for (const a of list) {
     const opt = document.createElement("option");
     opt.value = a.id;
@@ -4649,7 +4719,9 @@ $("dbgLoginBtn").onclick = async () => {
   btn.disabled = true;
   const orig = btn.textContent;
   btn.textContent = "Testing login…";
-  dbgMsg("Starting GitHub login test…\n");
+  dbgMsg(id === "__all__"
+    ? "Testing every account one after another (accounts whose 24 hours are up are skipped, so no credit goes unrecorded)…\n"
+    : "Starting GitHub login test…\n");
   try {
     const res = await send({ type: "DEBUG_GITHUB_LOGIN", id });
     if (!res || res.ok === false) {
@@ -4732,16 +4804,21 @@ chrome.runtime.onMessage.addListener((msg) => {
 // Listen for live DEBUG_PROGRESS updates from the background.
 chrome.runtime.onMessage.addListener((msg) => {
   if (msg && msg.type === "DEBUG_PROGRESS") {
-    const btn = $("dbgLoginBtn");
-    if (btn) {
-      btn.disabled = false;
-      btn.textContent = "Test login";
+    // "All accounts" sends one result per account; the buttons reset after the last.
+    const finished = msg.done && !msg.more;
+    if (finished || !msg.account) {
+      const btn = $("dbgLoginBtn");
+      if (btn) {
+        btn.disabled = false;
+        btn.textContent = "Test login";
+      }
+      const stop = $("dbgStopBtn");
+      if (stop) stop.disabled = true;
     }
-    const stop = $("dbgStopBtn");
-    if (stop) stop.disabled = true;
     if (msg.done) {
       const ok = msg.ok;
       const lines = [];
+      if (msg.account) lines.push("— " + msg.account + " —");
       lines.push(ok ? "✓ Login succeeded." : (msg.result ? msg.result + " - " : "") + (msg.note || "Login did not complete."));
       if (msg.detected) {
         if (msg.detected.githubLogin) lines.push("GitHub handle: " + msg.detected.githubLogin);
@@ -5690,7 +5767,7 @@ setInterval(() => { if (!document.hidden) syncClickupRunning(); }, 60000);
 // ---------- Sidebar navigation (tabbed layout) ----------
 // One section visible at a time; the choice is remembered (per browser) and can
 // be deep-linked with #dashboard / #clickup / #agent / #sites / #general.
-const OPT_TABS = ["dashboard", "clickup", "agent", "sites", "files", "bulk", "admin", "general"];
+const OPT_TABS = ["dashboard", "clickup", "agent", "sites", "hub", "reminders", "files", "bulk", "admin", "general"];
 function showOptTab(name) {
   if (!OPT_TABS.includes(name)) name = "dashboard";
   document.querySelectorAll("#sideNav [data-tab]").forEach((b) => b.classList.toggle("on", b.dataset.tab === name));
@@ -5708,7 +5785,46 @@ if (document.body.classList.contains("tabbed")) {
 }
 
 // Dashboard refresh + General "Save" reuse the existing handlers.
-if ($("dashRefresh")) $("dashRefresh").onclick = () => { const b = $("cuRefreshNow"); if (b) b.click(); };
+// Status next to a refresh button, so a click never looks like it did nothing.
+function refreshSay(btn) {
+  let s = btn.parentNode && btn.parentNode.querySelector(":scope > .refresh-msg");
+  if (!s) {
+    s = document.createElement("span");
+    s.className = "refresh-msg";
+    s.style.cssText = "font-size:11.5px;margin:0 6px;white-space:nowrap;";
+    btn.after(s);
+  }
+  clearTimeout(s._t);
+  return (text, kind) => {
+    s.textContent = text || "";
+    s.style.color = kind === "err" ? "var(--red, #dc2626)" : kind === "ok" ? "var(--green, #16a34a)" : "var(--muted)";
+    if (kind === "ok") s._t = setTimeout(() => { s.textContent = ""; }, 5000);
+  };
+}
+// Dashboard ↻: refresh from ClickUp right here (it used to press the hidden
+// "Refresh now" button on the ClickUp setup tab, so nothing visible happened).
+if ($("dashRefresh")) $("dashRefresh").onclick = async () => {
+  const b = $("dashRefresh");
+  if (b.classList.contains("spin")) return;
+  const say = refreshSay(b);
+  b.classList.add("spin"); b.disabled = true;
+  say("Refreshing from ClickUp…");
+  try {
+    const res = await send({ type: "CLICKUP_REFRESH", includeTasks: true, forceWeekly: true, forceWeeks: true }, 25000);
+    if (res && res.ok && res.data) {
+      renderClickupPreview(res.data);
+      say("Updated " + new Date().toLocaleTimeString([], { hour: "numeric", minute: "2-digit" }) + " ✓", "ok");
+    } else {
+      await load();
+      say("Couldn't refresh: " + ((res && (res.error || res.reason)) || "no answer") + ". Showing the last numbers.", "err");
+    }
+  } catch (e) {
+    say("No answer from the extension - reloading this page…", "err");
+    setTimeout(() => location.reload(), 900);
+    return;
+  }
+  b.classList.remove("spin"); b.disabled = false;
+};
 if ($("saveSettings2")) $("saveSettings2").onclick = async () => {
   try { await $("saveSettings").onclick(); } catch (e) {}
   const m = $("settingsSaved2");
@@ -5996,8 +6112,9 @@ async function initSoundRows() {
     urlIn.onchange = saveUrl;
     play.onclick = async () => {
       const now = (await sndGetAll())[key];
-      if (now && now.src) { const a = new Audio(now.src); a.play().catch(() => say("Couldn't play it right now.", true)); }
-      else send({ type: "PLAY_TEST_SOUND", sound: key === "notify" ? undefined : key }).catch(() => {});
+      const v = Number(($("notifyVolume") || {}).value) || 100;
+      if (now && now.src) { const a = new Audio(now.src); a.volume = Math.max(0.05, Math.min(1, v / 100)); a.play().catch(() => say("Couldn't play it right now.", true)); }
+      else send({ type: "PLAY_TEST_SOUND", sound: key === "notify" ? undefined : key, volume: v }).catch(() => {});
     };
   });
 }
@@ -6020,7 +6137,7 @@ const ADMIN_FILES = [
   "manifest.json", "background.js", "popup.html", "popup.js", "options.html", "options.js",
   "offscreen.html", "offscreen.js", "update.html", "update.js", "wrapup.html", "wrapup.js",
   "notify-menu.js", "export-tasks.js", "lib-zip.js", "lib-unzip.js", "lib-automation.js",
-  "lib-availability.js", "lib-clickup.js", "lib-crypto.js", "lib-drive.js", "task-panel.js", "lib-updater.js", "offscreen-updater.js", "celebrate.js", "celebrate.html", "celebrate-window.js", "fx.js", "pcm-help.js", "tracker.html", "tracker.js", "bulk-edit.js", "pcm-search.js", "lib-taskfiles.js", "task-files.js", "vendor/pdf.min.js", "vendor/pdf.worker.min.js", "vendor/pdfjs-LICENSE.txt",
+  "lib-availability.js", "lib-clickup.js", "lib-crypto.js", "lib-drive.js", "task-panel.js", "lib-updater.js", "offscreen-updater.js", "celebrate.js", "celebrate.html", "celebrate-window.js", "fx.js", "pcm-help.js", "tracker.html", "tracker.js", "bulk-edit.js", "pcm-search.js", "lib-taskfiles.js", "task-files.js", "reminders.js", "hub.js", "task-sort.js", "team-hub.gs", "vendor/pdf.min.js", "vendor/pdf.worker.min.js", "vendor/pdfjs-LICENSE.txt",
   "icons/icon16.png", "icons/icon48.png", "icons/icon128.png", "icons/celebrate.png", "icons/sad.png",
   "sounds/notify.wav", "sounds/danger.mp3", "sounds/winner.wav",
   "README.md", "CHANGELOG.md",
@@ -6237,6 +6354,8 @@ if ($("admPublish")) $("admPublish").onclick = async () => {
     if (version !== z.version) {
       throw new Error("The running extension is v" + z.version + ", so that is what would be published. Press \"Set version & reload\" to make it v" + version + " first.");
     }
+    const someOnly = document.querySelector('input[name="admWho"][value="some"]');
+    if (someOnly && someOnly.checked && !admAudience().length) throw new Error("\"Only some people\" is chosen but nobody is ticked - pick departments or people (or choose Everyone).");
     admSay("Uploading v" + version + " to GitHub…");
     const res = await send({
       type: "ADMIN_PUBLISH",
@@ -6244,6 +6363,8 @@ if ($("admPublish")) $("admPublish").onclick = async () => {
       notes: $("admNotes").value || "",
       critical: !!($("admCritical") && $("admCritical").checked),
       commit: !($("admCommit") && !$("admCommit").checked),
+      notify: !!($("admNotify") && $("admNotify").checked),
+      audience: admAudience(),
       zipB64: await admB64(z.blob),
     }, 120000);
     if (!res || !res.ok) throw new Error((res && res.error) || "Publish failed.");
@@ -6251,7 +6372,12 @@ if ($("admPublish")) $("admPublish").onclick = async () => {
       ? " - everyone with Chrome open gets the update prompt within about 1-2 minutes; the rest when Chrome next starts."
       : res.notified === "held"
         ? " - a \"Don't notify before\" time is set, so people are told from then (or press Notify everyone now below)."
-        : " - but telling everyone automatically didn't work this time: press Notify everyone now below."), "ok");
+        : res.notified === "quiet"
+          ? (admAudience().length ? " - only for the people you picked, without a pop-up: it installs by itself for them (or they see it in the popup). Release it to everyone below when you're ready." : " - quietly: no pop-up. Automatic updates install it by itself; others see it in the popup or with Check for updates.")
+          : res.notified === "some"
+            ? " - only for the people you picked; they get the pop-up. Release it to everyone below when you're ready."
+            : " - but recording it for everyone didn't work this time: press Notify everyone now below."), "ok");
+    admLoadWho();
     if (res.repoUpdated) admSay("Repository updated: manifest.json and CHANGELOG.md now say " + res.tag + ".", "ok");
     else if (res.repoError) admSay("The release is live, but the repository wasn't updated: " + res.repoError, "err");
     const a = document.createElement("a");
@@ -6265,6 +6391,92 @@ if ($("admPublish")) $("admPublish").onclick = async () => {
   } catch (e) { admSay(String(e && e.message ? e.message : e), "err"); }
   admBusy(false);
 };
+// ---- Admin: who gets a release (everyone / some people) + "Release to everyone" ----
+// People are the single source of truth: a department just ticks / unticks its
+// people. Search filters both; "Select shown" ticks everyone currently listed.
+const admWho = { people: [], deps: [], picked: new Set() };
+function admAudience() {
+  const some = document.querySelector('input[name="admWho"][value="some"]');
+  if (!some || !some.checked) return [];
+  return [...admWho.picked];
+}
+function admWhoCount() {
+  const n = admWho.picked.size;
+  const box = $("admWhoCount");
+  if (box) box.textContent = n ? n + (n === 1 ? " person" : " people") + " selected" : "Nobody selected yet";
+}
+function admWhoInitials(name) { return String(name || "?").split(/\s+/).filter(Boolean).slice(0, 2).map((w) => w[0]).join("").toUpperCase() || "?"; }
+function admWhoPaint() {
+  const q = String(($("admWhoSearch") || {}).value || "").trim().toLowerCase();
+  const depsBox = $("admWhoDeps"), pplBox = $("admWhoPeople");
+  if (!depsBox || !pplBox) return;
+  // departments: on = all its people ticked, part = some
+  depsBox.textContent = "";
+  const deps = admWho.deps.filter((d) => !q || d.name.toLowerCase().includes(q) || d.users.some((u) => String(u.name).toLowerCase().includes(q)));
+  if (!admWho.deps.length) depsBox.appendChild(Object.assign(document.createElement("span"), { className: "hint", textContent: "No departments yet (ClickUp setup > Departments)." }));
+  for (const d of deps) {
+    const ids = d.users.map((u) => u.id);
+    const n = ids.filter((id) => admWho.picked.has(id)).length;
+    const b = document.createElement("button");
+    b.type = "button";
+    b.className = "adm-dep" + (n && n === ids.length ? " on" : n ? " part" : "");
+    b.innerHTML = "";
+    b.append(d.name);
+    const c = document.createElement("b"); c.textContent = (n && n < ids.length ? n + "/" : "") + ids.length; b.appendChild(c);
+    b.title = d.users.map((u) => u.name).join(", ");
+    b.onclick = () => { const all = ids.length && n === ids.length; for (const id of ids) { if (all) admWho.picked.delete(id); else admWho.picked.add(id); } admWhoPaint(); };
+    depsBox.appendChild(b);
+  }
+  // people
+  pplBox.textContent = "";
+  const shown = admWho.people.filter((p) => !q || String(p.name).toLowerCase().includes(q) || p.deps.some((d) => d.toLowerCase().includes(q)));
+  if (!shown.length) pplBox.appendChild(Object.assign(document.createElement("div"), { className: "hint", textContent: q ? "Nobody matches that search." : "Nobody to pick yet.", style: "padding:10px;" }));
+  for (const p of shown) {
+    const row = document.createElement("label");
+    row.className = "adm-person" + (admWho.picked.has(p.id) ? " on" : "");
+    const cb = document.createElement("input"); cb.type = "checkbox"; cb.checked = admWho.picked.has(p.id);
+    cb.onchange = () => { if (cb.checked) admWho.picked.add(p.id); else admWho.picked.delete(p.id); admWhoPaint(); };
+    const av = document.createElement("span"); av.className = "av"; av.textContent = admWhoInitials(p.name);
+    const nm = document.createElement("span"); nm.className = "nm"; nm.textContent = p.name;
+    if (p.deps.length) { const s = document.createElement("small"); s.textContent = p.deps.join(" \u00b7 "); nm.appendChild(s); }
+    const ver = document.createElement("span"); ver.className = "ver"; ver.textContent = p.version ? "v" + p.version : "";
+    row.append(cb, av, nm, ver);
+    pplBox.appendChild(row);
+  }
+  admWho.shown = shown;
+  admWhoCount();
+}
+async function admLoadWho() {
+  const r = await send({ type: "ADMIN_RELEASE_INFO" }).catch(() => null);
+  if (!r || !r.ok) return;
+  admWho.deps = (r.departments || []).map((d) => ({ name: d.name, users: (d.users || []).filter((u) => u.id) }));
+  const people = new Map();
+  for (const p of r.people || []) people.set(p.id, { id: p.id, name: p.name, version: p.version || "", deps: [] });
+  for (const d of admWho.deps) for (const u of d.users) {
+    if (!people.has(u.id)) people.set(u.id, { id: u.id, name: u.name, version: "", deps: [] });
+    people.get(u.id).deps.push(d.name);
+  }
+  admWho.people = [...people.values()].sort((a, b) => String(a.name).localeCompare(String(b.name)));
+  admWhoPaint();
+  const pb = $("admPreviewBox");
+  if (pb) {
+    pb.hidden = !r.preview;
+    if (r.preview) $("admPreviewText").textContent = "v" + r.preview.latest + " is out to " + r.preview.cuUserIds.length + (r.preview.cuUserIds.length === 1 ? " person" : " people") + " only.";
+  }
+}
+if ($("admWhoSearch")) $("admWhoSearch").oninput = admWhoPaint;
+if ($("admWhoAll")) $("admWhoAll").onclick = () => { for (const p of admWho.shown || []) admWho.picked.add(p.id); admWhoPaint(); };
+if ($("admWhoNone")) $("admWhoNone").onclick = () => { admWho.picked.clear(); admWhoPaint(); };
+document.querySelectorAll('input[name="admWho"]').forEach((r) => { r.onchange = () => { const box = $("admWhoBox"); if (box) box.hidden = !(document.querySelector('input[name="admWho"][value="some"]') || {}).checked; admWhoCount(); }; });
+if ($("admReleaseAll")) $("admReleaseAll").onclick = async () => {
+  const b = $("admReleaseAll");
+  b.disabled = true; b.textContent = "Releasing\u2026";
+  const r = await send({ type: "ADMIN_RELEASE_ALL", notify: !!($("admReleaseNotify") && $("admReleaseNotify").checked) }, 60000);
+  b.disabled = false; b.textContent = "Release to everyone";
+  if (r && r.ok) { admSay("v" + r.version + " is now out to everyone \u2713", "ok"); admLoadWho(); }
+  else admSay("Couldn't release it to everyone: " + ((r && r.error) || "no answer"), "err");
+};
+if ($("admWhoBox")) admLoadWho();
 if ($("admSaveToken")) $("admSaveToken").onclick = async () => {
   const btn = $("admSaveToken");
   btn.disabled = true;
