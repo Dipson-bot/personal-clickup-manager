@@ -277,6 +277,9 @@ function remNext(at, repeat, now) {
 // reminders, each added once: they show in Options > Reminders, where they can
 // be edited, paused or deleted like any other; a deleted one isn't added back.
 // A new entry here reaches existing users too (tracked per id).
+// Office reminders stay quiet on company days off: check-in/out on holidays
+// (work from home still checks in), the cup reminder on holidays and WFH days.
+const REM_SKIP = { "default-checkin": ["holiday"], "default-checkout": ["holiday"], "default-cups": ["holiday", "wfh"] };
 const REM_DEFAULTS = [
   { id: "default-checkin", text: "Check in? Rigo", h: 8, m: 10, sound: "danger" },
   { id: "default-checkout", text: "Check out? Rigo", h: 17, m: 0, sound: "danger" },
@@ -376,7 +379,8 @@ function fireDueReminders() {
     for (const r of list) {
       if (!r || r.done || r.active === false || r.paused || !(Number(r.at) > 0) || Number(r.at) > now + 15000) continue;
       const missed = now - Number(r.at) > 5 * 60000;
-      if (shown < 5) { await showReminder(r, missed); shown++; }
+      const offToday = (REM_SKIP[r.id] || []).some((k) => (k === "holiday" ? isCompanyHoliday : isCompanyWfh)(Number(r.at)));
+      if (shown < 5 && !offToday) { await showReminder(r, missed); shown++; }
       r.firedAt = now;
       if (r.repeat === "daily" || r.repeat === "weekdays" || r.repeat === "weekly") r.at = remNext(Number(r.at), r.repeat, now);
       else r.active = false; // one-time: moves to "Past" in the list
@@ -1775,6 +1779,70 @@ function mergeExtraTaskUrl(deadlineTaskUrls, extraTask) {
 //  - Scope = selected users (department / single member / all) else signed-in.
 //  - Personal configured URLs count only when the viewer is IN the scope.
 //  - Every user in scope contributes their OWN auto-detected "Extra(s) Task(s)".
+// One date range as the card shows it (tomorrow, a custom range, a day picked
+// in the weekly chart): tasks DUE in the range, configured tasks' share, the
+// range's full tracked time, and the tasks worked on there but not due there.
+// Built once here and kept in state, so the dashboard, side panel, popup and the
+// toolbar badge all show the same numbers at the same moment.
+async function buildRangeBundle(cfg, settings, fromTs, toTs) {
+  const d = await computeFilterData(cfg, settings, [], fromTs, toTs);
+  cacheFilterResult(filterKey([], fromTs, toTs), d); // Explore / exports get it free
+  const inRange = (t) => { const x = Number(t && t.dueDateMs) || 0; return x >= fromTs && x <= toTs; };
+  const tasks = (Array.isArray(d.tasks) ? d.tasks : []).filter(inRange);
+  const deadlineTasks = Array.isArray(d.deadlineTasks) ? d.deadlineTasks : []; // already this range's share
+  const sum = (a, k) => a.reduce((n, t) => n + (Number(t && t[k]) || 0), 0);
+  const keep = new Set(tasks.map((t) => String(t && t.id)));
+  const other = [], seen = new Set();
+  for (const t of (Array.isArray(d.tasks) ? d.tasks : []).concat(Array.isArray(d.trackedTasks) ? d.trackedTasks : [])) {
+    const id = String(t && t.id);
+    if (!t || keep.has(id) || seen.has(id) || !(Number(t.spentMs) > 0)) continue;
+    seen.add(id); other.push(t);
+  }
+  return {
+    estimateMs: sum(tasks, "estimateMs") + sum(deadlineTasks, "dayEstimateMs"),
+    spentMs: Math.max(Number(d.spentMs) || 0, sum(tasks, "spentMs") + sum(deadlineTasks, "spentMs")),
+    fromTs, toTs, tasks, deadlineTasks, trackedTasks: other,
+    taskCount: tasks.length + deadlineTasks.length,
+    noEstimateCount: tasks.filter((t) => !Number(t.estimateMs)).length,
+    at: Date.now(),
+  };
+}
+// The saved filter's custom range (the Filter menu's own dates or a chart day).
+function cuFilterCustomRange(f) {
+  if (!f || !f.dueCustom) return null;
+  const p = (s) => { const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(s || "")); return m ? new Date(+m[1], +m[2] - 1, +m[3]).getTime() : 0; };
+  let a = p(f.customFrom);
+  if (!a) return null;
+  let b = p(f.customTo) || a;
+  if (b < a) { const x = a; a = b; b = x; }
+  const end = new Date(b); end.setHours(23, 59, 59, 999);
+  return { fromTs: a, toTs: end.getTime() };
+}
+// Build the custom-range bundle now (the filter just changed) and put it in state.
+let customBuild = null;
+async function refreshCustomBundle() {
+  if (customBuild) return customBuild;
+  customBuild = (async () => {
+    const stop = startKeepAlive();
+    try {
+      const { cuFilter } = await chrome.storage.local.get("cuFilter");
+      const r = cuFilterCustomRange(cuFilter);
+      if (!r) return;
+      const cfg = await getClickupConfig();
+      if (!cfg || !cfg.token || !cfg.teamId || cfg.userId == null) return;
+      const prev = (await getClickupState()) || {};
+      if (prev.custom && prev.custom.fromTs === r.fromTs && prev.custom.toTs === r.toTs && Date.now() - (prev.custom.at || 0) < 5 * 60000) return;
+      const custom = await buildRangeBundle(cfg, await getSettings(), r.fromTs, r.toTs);
+      const cur = (await getClickupState()) || {};
+      await setClickupState({ ...cur, custom });
+      await updateBadge().catch(() => {});
+    } catch (e) {} finally { stop(); customBuild = null; }
+  })();
+  return customBuild;
+}
+chrome.storage.onChanged.addListener((ch, area) => {
+  if (area === "local" && ch.cuFilter) { refreshCustomBundle().catch(() => {}); updateBadge().catch(() => {}); }
+});
 async function computeFilterData(cfg, settings, assigneeIds, fromTs, toTs) {
   const myId = String(cfg.userId);
   const scopeIds = assigneeIds.length ? assigneeIds : [myId];
@@ -2457,6 +2525,7 @@ async function refreshClickupImpl({ includeTasks = false, viaAlarm = false, forc
     let thisWorkweek = null;
     let nextWeek = null;
     let tomorrow = null;
+    let custom = null;
     try {
       const weekMode = settings.clickupWeekMode || "sun-sat";
       const thisB = cuWeekBounds(weekMode, 0);
@@ -2521,27 +2590,17 @@ async function refreshClickupImpl({ includeTasks = false, viaAlarm = false, forc
       const buildDay = async (prev, fromTs, toTs) => {
         const rangeChanged = !prev || prev.fromTs !== fromTs || prev.toTs !== toTs;
         if (!rangeChanged && prev && prev.at && Date.now() - prev.at < forceFloor(forceWeeks, WEEK_TTL)) return prev;
-        const d = await computeFilterData(cfg, settings, [], fromTs, toTs);
-        // Seed the shared filter cache so a page asking for this exact range
-        // (Explore, an export) gets it for free instead of refetching.
-        cacheFilterResult(filterKey([], fromTs, toTs), d);
-        const inDay = (t) => { const x = Number(t && t.dueDateMs) || 0; return x >= fromTs && x <= toTs; };
-        const tasks = (Array.isArray(d.tasks) ? d.tasks : []).filter(inDay);
-        // Configured tasks already hold THIS day's share - never due-filter them.
-        const deadlineTasks = Array.isArray(d.deadlineTasks) ? d.deadlineTasks : [];
-        const sum = (a, k) => a.reduce((n, t) => n + (Number(t && t[k]) || 0), 0);
-        return {
-          estimateMs: sum(tasks, "estimateMs") + sum(deadlineTasks, "dayEstimateMs"),
-          spentMs: sum(tasks, "spentMs") + sum(deadlineTasks, "spentMs"),
-          fromTs, toTs, tasks, deadlineTasks, trackedTasks: [],
-          taskCount: tasks.length + deadlineTasks.length,
-          noEstimateCount: tasks.filter((t) => !Number(t.estimateMs)).length,
-          at: Date.now(),
-        };
+        return buildRangeBundle(cfg, settings, fromTs, toTs);
       };
       const tomStart = new Date(); tomStart.setDate(tomStart.getDate() + 1); tomStart.setHours(0, 0, 0, 0);
       const tomEnd = new Date(tomStart); tomEnd.setHours(23, 59, 59, 999);
       tomorrow = await buildDay((prevSt && prevSt.tomorrow) || null, tomStart.getTime(), tomEnd.getTime());
+      // The saved filter's custom range / chart day, shared by every page + the badge.
+      try {
+        const { cuFilter: savedFilter } = await chrome.storage.local.get("cuFilter");
+        const cr = cuFilterCustomRange(savedFilter);
+        custom = cr ? await buildDay((prevSt && prevSt.custom) || null, cr.fromTs, cr.toTs) : null;
+      } catch (e) { custom = (prevSt && prevSt.custom) || null; }
       // "Due Mon-Fri" = the current week's workday slice. Subset of thisWeek
       // (Sun→Sat): filter its rows by dueDateMs in [Mon 00:00, Fri 23:59] purely
       // in-memory, so it never triggers another ClickUp fetch and rides thisWeek's
@@ -2600,6 +2659,7 @@ async function refreshClickupImpl({ includeTasks = false, viaAlarm = false, forc
       thisWorkweek, // this Mon→Fri "due Mon-Fri" bundle (in-memory subset of thisWeek)
       nextWeek, // next Sun→Sat "due next week" bundle (own ~60-min TTL)
       tomorrow, // tomorrow's one-day bundle (see buildDay) - popup AND badge read this
+      custom, // the saved filter's custom range / chart day (buildRangeBundle) - every page + badge
       extraTask: extraTask || null, // auto-detected "Extra(s) Task(s)"
       running: running || null, // live timer (taskId/taskName/startMs) or null
       at: data.at,
@@ -2646,9 +2706,74 @@ function officeHourBounds(settings) {
   const e = Number(settings && settings.clickupIdleEndHour);
   return { startHour: Number.isFinite(s) ? s : 8, endHour: Number.isFinite(e) ? e : 17 };
 }
+// ---- Company calendar: holidays and work-from-home days ----
+// Shared through the settings file (update-policy.json "calendar"), so every copy
+// has the same list and the admin can change it without a new version. The dates
+// below are the built-in fallback until the file has a list.
+const DEFAULT_COMPANY_CAL = [
+  { from: "2026-10-12", to: "2026-11-13", kind: "wfh", title: "Work from home (Dashain & Tihar)" },
+  { from: "2026-10-19", to: "2026-10-23", kind: "holiday", title: "Dashain holidays" },
+  { from: "2026-11-09", to: "2026-11-12", kind: "holiday", title: "Tihar holidays" },
+];
+function normalizeCompanyCal(list) {
+  const ok = /^\d{4}-\d{2}-\d{2}$/;
+  return (Array.isArray(list) ? list : []).filter((e) => e && ok.test(String(e.from || ""))).slice(0, 200).map((e) => ({
+    from: String(e.from), to: ok.test(String(e.to || "")) && String(e.to) >= String(e.from) ? String(e.to) : String(e.from),
+    kind: ["holiday", "wfh", "event"].includes(e.kind) ? e.kind : "event",
+    title: String(e.title || (e.kind === "holiday" ? "Holiday" : e.kind === "wfh" ? "Work from home" : "Event")).slice(0, 80),
+  }));
+}
+let companyCal = DEFAULT_COMPANY_CAL.slice();
+const calYmd = (ts) => { const d = new Date(ts); return d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0") + "-" + String(d.getDate()).padStart(2, "0"); };
+const companyOn = (ts) => { const k = calYmd(ts); return companyCal.filter((e) => k >= e.from && k <= e.to); };
+const isCompanyHoliday = (ts) => companyOn(ts).some((e) => e.kind === "holiday");
+const isCompanyWfh = (ts) => companyOn(ts).some((e) => e.kind === "wfh");
+// Keep storage (read by the pages' calendar) and memory in step.
+async function loadCompanyCal() {
+  const { companyCalendar } = await chrome.storage.local.get("companyCalendar");
+  if (Array.isArray(companyCalendar)) companyCal = normalizeCompanyCal(companyCalendar);
+  else await chrome.storage.local.set({ companyCalendar: companyCal });
+}
+loadCompanyCal().catch(() => {});
+chrome.storage.onChanged.addListener((ch, area) => { if (area === "local" && ch.companyCalendar) companyCal = normalizeCompanyCal(ch.companyCalendar.newValue); });
+// From the settings file: replace the list when it has one.
+async function applyCompanyCal(policy) {
+  if (!policy || !Array.isArray(policy.calendar)) return;
+  const next = normalizeCompanyCal(policy.calendar);
+  const { companyCalendar } = await chrome.storage.local.get("companyCalendar");
+  if (JSON.stringify(companyCalendar || []) !== JSON.stringify(next)) await chrome.storage.local.set({ companyCalendar: next });
+}
+// On the last working day before a holiday or work-from-home period starts, one
+// heads-up (after office start): "Dashain holidays start Monday (Oct 19)".
+async function maybeCompanyHeadsUp() {
+  const now = new Date();
+  const settings = await getSettings();
+  if (!insideOfficeHours(settings, now)) return;
+  const { companyNotified } = await chrome.storage.local.get("companyNotified");
+  const seen = companyNotified && typeof companyNotified === "object" ? { ...companyNotified } : {};
+  for (const e of companyCal) {
+    if (e.kind === "event") continue;
+    const start = new Date(e.from + "T00:00:00");
+    if (start.getTime() <= now.getTime()) continue;
+    // the working day before it (skip weekends and holidays)
+    const prev = new Date(start); prev.setDate(prev.getDate() - 1);
+    for (let i = 0; i < 10 && (prev.getDay() === 0 || prev.getDay() === 6 || isCompanyHoliday(prev.getTime())); i++) prev.setDate(prev.getDate() - 1);
+    if (calYmd(prev.getTime()) !== calYmd(now.getTime())) continue;
+    const key = e.kind + ":" + e.from;
+    if (seen[key]) continue;
+    const days = Math.round((start - new Date(now.getFullYear(), now.getMonth(), now.getDate())) / 86400000);
+    const when = days === 1 ? "tomorrow" : start.toLocaleDateString(undefined, { weekday: "long" });
+    const range = start.toLocaleDateString(undefined, { month: "short", day: "numeric" }) + (e.to !== e.from ? " - " + new Date(e.to + "T00:00:00").toLocaleDateString(undefined, { month: "short", day: "numeric" }) : "");
+    await notify("company-" + key, (e.kind === "holiday" ? "\uD83C\uDF89 " : "\uD83C\uDFE0 ") + e.title + " from " + when,
+      range + (e.kind === "wfh" ? " - check in and out and track your ClickUp tasks as usual." : " - enjoy the break."), null);
+    seen[key] = Date.now();
+    await chrome.storage.local.set({ companyNotified: seen });
+  }
+}
 function insideOfficeHours(settings, when = new Date()) {
   const weekday = when.getDay() !== 0 && when.getDay() !== 6;
   if (!weekday) return false;
+  if (isCompanyHoliday(when.getTime())) return false; // company holiday: no work nudges
   const { startHour, endHour } = officeHourBounds(settings);
   if (!(startHour < endHour)) return false;
   const hour = when.getHours();
@@ -3106,6 +3231,7 @@ async function maybeWrapUp() {
   if (s.clickupWrapUp === false) return;
   const now = new Date();
   if (now.getDay() === 0 || now.getDay() === 6) return;
+  if (isCompanyHoliday(now.getTime())) return; // company holiday
   const [h, m] = parseHM(s.clickupWrapUpTime, [16, 45]);
   const at = new Date(now);
   at.setHours(h, m, 0, 0);
@@ -3239,6 +3365,13 @@ function cuScopeEstimateMs(st, f) {
     return 0; // no bundle yet - better blank than a number the page contradicts
   }
   if (f.dueToday) return Number(st.estimateMs) || 0;
+  // Custom range / chart day: the shared bundle (the same number the pages show);
+  // until it's built, today's due estimate rather than the "active today" total.
+  if (f.dueCustom) {
+    const r = cuFilterCustomRange(f);
+    if (r && st.custom && st.custom.fromTs === r.fromTs && st.custom.toTs === r.toTs) return Number(st.custom.estimateMs) || 0;
+    return Number(st.estimateMs) || 0;
+  }
   const tf = st.todayFilter || st;
   return Number(tf.estimateMs) || 0;
 }
@@ -4006,6 +4139,8 @@ function normalizeUpdatePolicy(p) {
     // A release for some people only (a GitHub pre-release): only copies whose
     // ClickUp user id is listed see it; everyone else keeps `latest`.
     preview: normalizePreview(o.preview),
+    // Company holidays / work-from-home days (see DEFAULT_COMPANY_CAL).
+    calendar: Array.isArray(o.calendar) ? o.calendar : undefined,
   };
 }
 function normalizePreview(p) {
@@ -4101,6 +4236,7 @@ async function checkForUpdate(force, forceNotify = false) {
   const policy = await effectivePolicy(await fetchUpdatePolicy());
   scheduleUpdateAlarm();
   await maybeApplyTeamSites(policy).catch(() => {});
+  await applyCompanyCal(policy).catch(() => {});
   // "Notify everyone now": a nonce this copy hasn't acted on yet skips the
   // reminder gap and any hold.
   const nonceNew = !!policy.notifyNonce && policy.notifyNonce !== (prev && prev.nonceSeen);
@@ -4722,6 +4858,7 @@ chrome.alarms.onAlarm.addListener(async (alarm) => {
     await maybeWrapUp().catch(() => {});
     // Backstop for reminder alarms (asleep / missed).
     await fireDueReminders();
+    await maybeCompanyHeadsUp().catch(() => {});
     // Team hub: daily check-in, admin replies every 10 min (both no-ops when not set up).
     await hubHello().catch(() => {});
     await hubPollReplies().catch(() => {});

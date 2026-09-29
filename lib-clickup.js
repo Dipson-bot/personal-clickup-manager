@@ -1049,8 +1049,9 @@ export async function stopTimer(token, teamId) {
   return (j && j.data) || null;
 }
 
-// How close a currently-running task is to ITS OWN time_estimate: today's
-// already-closed entries on that task, plus the live segment (now - startMs).
+// How close a currently-running task is to ITS OWN time_estimate: the task's
+// already-closed entries (the last 365 days, so time from an earlier day or
+// before a stop / complete and restart counts), plus the live segment.
 // Separate from the daily-aggregate estimate/tracked numbers used elsewhere in
 // this file. Returns null if the task has no estimate set (nothing to compare
 // against).
@@ -1059,11 +1060,17 @@ export async function getRunningTaskProgress(token, teamId, taskId, startMs, now
   if (!task || !task.hasEstimate) return null;
   const { start, end } = localDayBounds(now);
   const params = [
-    ["start_date", String(start)],
+    ["start_date", String(start - 365 * 86400000)],
     ["end_date", String(end)],
     ["task_id", String(taskId)],
   ];
-  const j = await cuFetchTimeEntries(token, teamId, params, null);
+  let j;
+  try { j = await cuFetchTimeEntries(token, teamId, params, null); }
+  catch (e) {
+    if (e && (e.status === 401 || e.status === 429)) throw e;
+    // Fall back to today only if ClickUp refuses the long window.
+    j = await cuFetchTimeEntries(token, teamId, [["start_date", String(start)], ["end_date", String(end)], ["task_id", String(taskId)]], null);
+  }
   const entries = (j && Array.isArray(j.data)) ? j.data : [];
   let closedMs = 0;
   for (const e of entries) {

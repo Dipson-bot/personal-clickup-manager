@@ -328,6 +328,11 @@
   .cu-task.has-msg { flex-wrap: wrap; }
   .cu-rowmsg:not(.cu-rowconfirm) { display: flex; align-items: center; gap: 8px; padding: 3px 6px; border-radius: 6px; background: color-mix(in srgb, var(--amber) 10%, transparent); }
   .cu-rowmsg-txt { flex: 1; min-width: 0; }
+  .wk-day.sel .wk-lab { color: var(--indigo); font-weight: 700; }
+  .wk-day.sel .wk-bars { outline: 2px solid var(--indigo); outline-offset: 3px; border-radius: 4px; }
+  .cu-chartday { display: flex; align-items: center; flex-wrap: wrap; gap: 8px 10px; margin: 6px 0 4px; padding: 6px 10px; border-radius: 8px; background: rgba(99,102,241,.1); font-size: 12.5px; }
+  .cu-chartday button:first-of-type { margin-left: auto; }
+  .cu-chartday button { margin-left: 0; font: inherit; font-size: 12px; padding: 3px 10px; border-radius: 7px; border: 1px solid var(--border); background: var(--card); color: var(--text); cursor: pointer; }
   .icon-btn.spin { animation: cu-spin .8s linear infinite; pointer-events: none; }
   .cu-spin { display: inline-block; width: 9px; height: 9px; border: 2px solid currentColor; border-right-color: transparent; border-radius: 50%; animation: cu-spin .7s linear infinite; vertical-align: -1px; flex: none; }
   @keyframes cu-spin { to { transform: rotate(360deg); } }
@@ -594,6 +599,9 @@
   body.tabbed .wrap { max-width: 1440px; }
   body.tabbed .sub { margin-bottom: 14px; }
   .status-strip { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin: 0 0 20px; min-height: 26px; }
+  .status-row { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; margin: 0 0 20px; }
+  .status-row .status-strip { margin: 0; }
+  #pcmCalChip { margin-left: auto; min-width: 0; }
   .st-chip { margin: 0; line-height: 1.3; display: inline-flex; align-items: center; gap: 7px; font-size: 12px; font-weight: 600; padding: 4px 11px; border-radius: 999px; border: 1px solid var(--border); background: var(--card); color: var(--muted); cursor: pointer; }
   .st-chip:hover { border-color: var(--indigo); color: var(--text); background: var(--card); }
   .st-chip .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--muted); flex: none; }
@@ -843,7 +851,7 @@
   </div>
 
   <!-- Status strip: one glance at every integration (filled by options.js). -->
-  <div class="status-strip" id="statusStrip"></div>
+  <div class="status-row"><div class="status-strip" id="statusStrip"></div><div id="pcmCalChip"></div></div>
 
   <div class="shell">
   <nav class="sidenav" id="sideNav" aria-label="Sections">
@@ -2026,6 +2034,8 @@
 <script src="pcm-help.js"></script>
 <script src="pcm-search.js"></script>
 <script src="task-sort.js"></script>
+<script src="breakdown.js"></script>
+<script src="calendar.js"></script>
 <script src="options.js"></script>
 <script src="bulk-edit.js"></script>
 <script src="task-files.js"></script>

@@ -2203,6 +2203,55 @@ function renderClickupSettings(cu) {
 // Mon-Fri mini chart in the This week card: estimated (amber) vs tracked (blue)
 // per day, a dashed line at the daily target, today highlighted. Uses the
 // cached weekly.perDay - no extra ClickUp calls.
+// Clicking a day in the weekly chart shows that day's tasks in the Tasks card
+// (a one-day custom date filter, saved like any filter so the popup, side panel
+// and badge follow), with a bar to go back to the previous filter.
+let cuChartPrev = null, cuChartDay = "", cuChartSrc = "chart";
+const cuYmd = (ts) => { const d = new Date(ts); return d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0") + "-" + String(d.getDate()).padStart(2, "0"); };
+function cuShowChartDay(ts, src) {
+  const ymd = cuYmd(ts);
+  cuChartSrc = src || "chart";
+  if (!cuChartPrev) cuChartPrev = cuSnapshotFilter();
+  const snap = cuSnapshotFilter();
+  for (const k of ["dueToday", "dueTomorrow", "dueWeek", "dueNextWeek", "deadlineCrossed"]) snap[k] = false;
+  snap.dueCustom = true; snap.customFrom = ymd; snap.customTo = ymd;
+  cuChartDay = ymd;
+  document.querySelectorAll("#optWeekChart .wk-day").forEach((c) => c.classList.remove("sel"));
+  cuApplyFilterSnapshot(snap); // saved, so the popup, side panel and badge follow too
+  document.querySelectorAll("#optWeekChart .wk-day[data-ymd=\"" + ymd + "\"]").forEach((c) => c.classList.add("sel"));
+  const card = $("dashTasksCard");
+  if (card) card.scrollIntoView({ behavior: "smooth", block: "start" });
+}
+function cuPaintChartBanner() {
+  const card = $("dashTasksCard");
+  if (!card) return;
+  let bar = $("cuChartDayBar");
+  const active = !!cuChartPrev && cuFilter.dueCustom && cuFilter.customFrom === cuChartDay && (cuFilter.customTo || cuChartDay) === cuChartDay;
+  if (!active) {
+    if (bar) bar.remove();
+    cuChartPrev = null; cuChartDay = "";
+    document.querySelectorAll("#optWeekChart .wk-day.sel").forEach((c) => c.classList.remove("sel"));
+    return;
+  }
+  if (!bar) {
+    bar = document.createElement("div");
+    bar.id = "cuChartDayBar";
+    bar.className = "cu-chartday";
+    const head = card.querySelector(".dash-h");
+    if (head) head.after(bar); else card.prepend(bar);
+  }
+  bar.textContent = "";
+  const d = new Date(cuChartDay + "T12:00:00");
+  bar.append("\uD83D\uDCC5 Showing " + d.toLocaleDateString(undefined, { weekday: "short", month: "short", day: "numeric" }) + " (picked in the " + cuChartSrc + ")");
+  bar.title = "The popup, side panel and toolbar badge show this day too. Back to my filter returns everywhere.";
+  const back = document.createElement("button");
+  back.type = "button";
+  back.textContent = "\u2715 Back to my filter";
+  back.onclick = () => { const prev = cuChartPrev; cuChartPrev = null; cuChartDay = ""; if (prev) cuApplyFilterSnapshot(prev); };
+  bar.appendChild(back);
+}
+// Calendar (calendar.js): clicking a day lists that day's tasks, like the chart.
+window.pcmPickDay = (ts) => cuShowChartDay(ts, "calendar");
 function renderWeekChartOpt(w, targetMs) {
   const box = $("optWeekChart");
   if (!box) return;
@@ -2234,6 +2283,10 @@ function renderWeekChartOpt(w, targetMs) {
     tipLine("var(--blue, #4d8ef7)", "Tracked", trk);
     col.appendChild(tip);
     col.style.setProperty("--i", days.indexOf(d));
+    col.dataset.ymd = cuYmd(d.ts);
+    col.classList.toggle("sel", cuChartDay === col.dataset.ymd);
+    col.style.cursor = "pointer";
+    col.onclick = () => cuShowChartDay(d.ts);
     const bars = document.createElement("div");
     bars.className = "wk-bars";
     if (targetMs > 0) {
@@ -3413,11 +3466,49 @@ function cuViewRange(st, f) {
   if (f.dueToday) return day(Date.now());
   return null;
 }
+// The target for the dates the list shows: the daily target times the working
+// days (Mon-Fri) in the filter's range - "Due this week" = 5 x 7h = 35h. One day
+// (today, tomorrow) or no date range keeps the daily target.
+function cuScopeTargetMs(dailyMs, st, f) {
+  const r = cuViewRange(st, f);
+  if (!dailyMs || !r) return dailyMs;
+  let days = 0;
+  const d = new Date(r.fromTs); d.setHours(12, 0, 0, 0);
+  const end = new Date(r.toTs); end.setHours(12, 0, 0, 0);
+  const holiday = (x) => !!(window.PcmCalendar && window.PcmCalendar.isHoliday(x.getTime()));
+  let weekdays = 0;
+  for (let i = 0; d <= end && i < 400; i++, d.setDate(d.getDate() + 1)) if (d.getDay() !== 0 && d.getDay() !== 6) { weekdays++; if (!holiday(d)) days++; }
+  if (weekdays <= 1) return dailyMs; // today / tomorrow: the daily target
+  return dailyMs * days; // company holidays don't count (a whole holiday week = no target)
+}
+// The running task's time from before this timer started (its earlier time
+// entries, kept by the background in runningProgress), so "Tracking now" goes
+// on from 30m instead of starting at 0m after a stop / complete and restart.
+let cuRunPrior = { key: "", ms: 0 };
+function cuLoadRunPrior() {
+  try {
+    chrome.storage.local.get("runningProgress").then(({ runningProgress: rp }) => {
+      cuRunPrior = rp && rp.taskId ? { key: String(rp.taskId) + ":" + String(rp.startMs || ""), ms: Math.max(0, Number(rp.closedMs) || 0) } : { key: "", ms: 0 };
+    }).catch(() => {});
+  } catch (e) {}
+}
+cuLoadRunPrior();
+try { chrome.storage.onChanged.addListener((ch, area) => { if (area === "local" && ch.runningProgress) cuLoadRunPrior(); }); } catch (e) {}
+// Tasks tracked in the dates but not due there (for "Other tasks you tracked"):
+// rows the range query returned outside the due filter, plus its own list.
+function cuOtherTracked(d, dueRows) {
+  const keep = new Set((dueRows || []).map((t) => String(t && t.id)));
+  const out = [], seen = new Set();
+  const add = (t) => { const id = String(t && t.id); if (!t || keep.has(id) || seen.has(id) || !(Number(t.spentMs) > 0)) return; seen.add(id); out.push(t); };
+  (Array.isArray(d && d.tasks) ? d.tasks : []).forEach(add);
+  (Array.isArray(d && d.trackedTasks) ? d.trackedTasks : []).forEach(add);
+  return out;
+}
 function resolveCuFilterView(st, f) {
   st = st || {};
   // Deadline crossed looks at ALL dates, so it takes over the date scope.
   if (f.deadlineCrossed) return cuOverdueView();
-  if (f.dueCustom) { const cv = cuCustomView(f); if (cv) return cv; }
+  if (f.dueCustom) { const cv = cuCustomView(f, st); if (cv) return cv; }
   const wk = st.weekly || null;
   if (f.dueNextWeek && st.nextWeek) {
     const nw = st.nextWeek;
@@ -3550,8 +3641,8 @@ async function cuFetchTomorrow(r, key) {
   const sum = (a, k) => a.reduce((n, t) => n + (Number(t && t[k]) || 0), 0);
   cuTomorrowCache = { key, status: "ready", at: Date.now(), data: {
     estimateMs: sum(tasks, "estimateMs") + sum(deadlineTasks, "dayEstimateMs"),
-    spentMs: sum(tasks, "spentMs") + sum(deadlineTasks, "spentMs"),
-    tasks, deadlineTasks, trackedTasks: [],
+    spentMs: Math.max(Number(d.spentMs) || 0, sum(tasks, "spentMs") + sum(deadlineTasks, "spentMs")),
+    tasks, deadlineTasks, trackedTasks: cuOtherTracked(d, tasks),
   } };
   cuCustomOnReady();
 }
@@ -3581,9 +3672,13 @@ function cuTomorrowView(st) {
     label: "due tomorrow" + (c.status === "error" ? " (couldn't load)" : " (loading…)"), loading: c.status !== "error" };
 }
 
-function cuCustomView(f) {
+function cuCustomView(f, state) {
   const r = cuCustomRange(f);
   if (!r) return null;
+  // Built once by the background for the saved filter (every page + the badge
+  // read the same bundle, so they fill in together).
+  const sb = state && state.custom;
+  if (sb && sb.fromTs === r.fromTs && sb.toTs === r.toTs) return { ...sb, scope: "custom", label: cuCustomLabel(r) };
   const key = r.fromTs + "-" + r.toTs;
   const label = cuCustomLabel(r);
   const c = cuCustomCache;
@@ -3619,8 +3714,8 @@ async function cuFetchCustom(r, key) {
   const sum = (a, k) => a.reduce((n, t) => n + (Number(t && t[k]) || 0), 0);
   cuCustomCache = { key, status: "ready", at: Date.now(), data: {
     estimateMs: sum(tasks, "estimateMs") + sum(deadlineTasks, "dayEstimateMs"),
-    spentMs: sum(tasks, "spentMs") + sum(deadlineTasks, "spentMs"),
-    tasks, deadlineTasks, trackedTasks: [],
+    spentMs: Math.max(Number(d.spentMs) || 0, sum(tasks, "spentMs") + sum(deadlineTasks, "spentMs")),
+    tasks, deadlineTasks, trackedTasks: cuOtherTracked(d, tasks),
   } };
   cuCustomOnReady();
 }
@@ -3715,7 +3810,13 @@ function renderNowTracking() {
   nm.rel = "noopener";
   const time = document.createElement("span");
   time.className = "cu-now-time";
-  const tick = () => { time.textContent = run.startMs ? fmtDurOpt(Math.max(0, Date.now() - run.startMs)) : ""; };
+  const tick = () => {
+    if (!run.startMs) { time.textContent = ""; return; }
+    const live = Math.max(0, Date.now() - run.startMs);
+    const prior = cuRunPrior.key === key ? cuRunPrior.ms : 0;
+    time.textContent = fmtDurOpt(prior + live);
+    time.title = prior ? "This session " + fmtDurOpt(live) + " · earlier " + fmtDurOpt(prior) + " (total on this task)" : "This session";
+  };
   tick();
   cuNowTimer = setInterval(tick, 15000);
 
@@ -3990,7 +4091,7 @@ function renderClickupPreview(st) {
   // The custom-order layer is keyed by the active date scope, so a drag in
   // "due today" is remembered separately from "due next week".
   cuActiveScopeOpt = view.scope || "extended";
-  const targetMs = Number(st.targetMs) || 0;
+  const targetMs = cuScopeTargetMs(Number(st.targetMs) || 0, st, cuFilter);
   let estMs = Number(view.estimateMs) || 0;
   let met = targetMs > 0 && estMs >= targetMs;
   let spentTot = Number(view.spentMs) || 0;
@@ -4096,6 +4197,12 @@ function renderClickupPreview(st) {
   trkVal.textContent = fmtDurOpt(spentTot) + (targetMs > 0 ? " of " + fmtDurOpt(targetMs) : "");
   trkLabel.appendChild(trkName);
   trkLabel.appendChild(trkVal);
+  // Click either number: the tasks behind it and why the two differ.
+  if (window.PcmBreakdown) {
+    const bd = () => ({ label: scopeLabel || "today", estMs, spentMs: spentTot, tasks: viewTasks, cfg: viewDeadline, other: viewTracked, fmt: fmtDurOpt });
+    PcmBreakdown.attach(estVal, "est", bd);
+    PcmBreakdown.attach(trkVal, "trk", bd);
+  }
 
   const trkBar = document.createElement("div");
   trkBar.className = "cu-bar2 trk";
@@ -4992,12 +5099,14 @@ function cuSnapshotFilter() {
   for (const k of CU_FILTER_EXTRAS) out[k] = Array.isArray(cuFilter[k]) ? cuFilter[k].slice() : (cuFilter[k] || "");
   return out;
 }
-function cuApplyFilterSnapshot(snap) {
+// opts.persist === false: this page only (a day picked in the weekly chart) - the
+// popup, side panel and toolbar badge share the saved filter and must not follow.
+function cuApplyFilterSnapshot(snap, opts) {
   if (!snap || typeof snap !== "object") return false;
   for (const k of CU_FILTER_KEYS) cuFilter[k] = !!snap[k];
   for (const k of CU_FILTER_EXTRAS) cuFilter[k] = Array.isArray(snap[k]) ? snap[k].slice() : (snap[k] || "");
   cuFilterSingle = snap.mode === "single";
-  chrome.storage.local.set({ cuFilter, cuFilterMode: snap.mode === "single" ? "single" : "multi" }).catch(() => {});
+  if (!(opts && opts.persist === false)) chrome.storage.local.set({ cuFilter, cuFilterMode: snap.mode === "single" ? "single" : "multi" }).catch(() => {});
   optRenderCuFilterMenu();
   optCuFilterBtnLabel();
   optRepaintCuPreview();
@@ -5063,6 +5172,7 @@ function optOpenCuFilterMenu(open) {
 }
 function optRepaintCuPreview() {
   if (optClickup && optClickup.state) renderClickupPreview(optClickup.state);
+  cuPaintChartBanner();
 }
 (async function initOptCuFilter() {
   const btn = $("optCuFilterBtn");
@@ -6137,7 +6247,7 @@ const ADMIN_FILES = [
   "manifest.json", "background.js", "popup.html", "popup.js", "options.html", "options.js",
   "offscreen.html", "offscreen.js", "update.html", "update.js", "wrapup.html", "wrapup.js",
   "notify-menu.js", "export-tasks.js", "lib-zip.js", "lib-unzip.js", "lib-automation.js",
-  "lib-availability.js", "lib-clickup.js", "lib-crypto.js", "lib-drive.js", "task-panel.js", "lib-updater.js", "offscreen-updater.js", "celebrate.js", "celebrate.html", "celebrate-window.js", "fx.js", "pcm-help.js", "tracker.html", "tracker.js", "bulk-edit.js", "pcm-search.js", "lib-taskfiles.js", "task-files.js", "reminders.js", "hub.js", "task-sort.js", "team-hub.gs", "vendor/pdf.min.js", "vendor/pdf.worker.min.js", "vendor/pdfjs-LICENSE.txt",
+  "lib-availability.js", "lib-clickup.js", "lib-crypto.js", "lib-drive.js", "task-panel.js", "lib-updater.js", "offscreen-updater.js", "celebrate.js", "celebrate.html", "celebrate-window.js", "fx.js", "pcm-help.js", "tracker.html", "tracker.js", "bulk-edit.js", "pcm-search.js", "lib-taskfiles.js", "task-files.js", "reminders.js", "hub.js", "task-sort.js", "breakdown.js", "calendar.js", "team-hub.gs", "vendor/pdf.min.js", "vendor/pdf.worker.min.js", "vendor/pdfjs-LICENSE.txt",
   "icons/icon16.png", "icons/icon48.png", "icons/icon128.png", "icons/celebrate.png", "icons/sad.png",
   "sounds/notify.wav", "sounds/danger.mp3", "sounds/winner.wav",
   "README.md", "CHANGELOG.md",
