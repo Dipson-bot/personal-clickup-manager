@@ -15,6 +15,26 @@ Write-Host "Releasing $tag"
 if (git status --porcelain) { throw "Uncommitted changes - commit (and push) first." }
 if (git tag --list $tag) { throw "Tag $tag already exists - bump the version in manifest.json." }
 
+# Any git or gh step that fails must stop the script. Without this the tag and
+# the Release were still created after `git push` was REJECTED, so the script
+# printed "Published" while the code had never reached the branch - a release
+# that exists but that nobody is told about, and that cannot be rebuilt.
+function Invoke-Step([string]$exe, [string[]]$stepArgs, [string]$what) {
+  & $exe @stepArgs
+  if ($LASTEXITCODE -ne 0) { throw "$exe $($stepArgs -join ' ') failed ($what) - stopped before the next step." }
+}
+
+# The remote being ahead is the case that bites: another machine, or another
+# session working the same folder, can commit and push while this copy is stale.
+# `git push` is then rejected outright. Catch it BEFORE building anything, so
+# the fix is a pull and a re-run rather than a half-published release.
+$branch = (git rev-parse --abbrev-ref HEAD)
+Invoke-Step "git" @("fetch", "origin", "--quiet") "cannot reach GitHub"
+$behind = [int](git rev-list --count "HEAD..origin/$branch")
+if ($behind -gt 0) { throw "origin/$branch is $behind commit(s) ahead of this copy - pull or rebase first, then re-run." }
+$ahead = [int](git rev-list --count "origin/$branch..HEAD")
+if ($ahead -gt 0) { Write-Host "$ahead commit(s) to push" }
+
 # Syntax check every script that ships.
 $js = @("background.js", "popup.js", "options.js", "phone-timer.js", "offscreen.js", "update.js", "wrapup.js", "notify-menu.js", "export-tasks.js", "lib-zip.js", "lib-unzip.js", "lib-automation.js", "lib-availability.js", "lib-clickup.js", "lib-crypto.js", "lib-tidy.js", "lib-drive.js", "task-panel.js", "lib-updater.js", "offscreen-updater.js", "celebrate.js", "celebrate-window.js", "fx.js", "pcm-help.js", "tracker.js", "bulk-edit.js", "pcm-search.js", "task-sort.js", "breakdown.js", "calendar.js", "notices.js", "lib-taskfiles.js", "task-files.js", "reminders.js", "hub.js")
 foreach ($f in $js) { node --check $f; if ($LASTEXITCODE -ne 0) { throw "Syntax error in $f" } }
@@ -35,8 +55,8 @@ $start = ($lines | Select-String -Pattern ("^## " + [regex]::Escape($tag) + "(\s
 if (-not $start) { throw "CHANGELOG.md has no ## $tag section - add one first." }
 $section = @(); for ($i = $start; $i -lt $lines.Count; $i++) { if ($lines[$i] -match "^## ") { break }; $section += $lines[$i] }
 $section -join "`n" | Set-Content -Encoding utf8 $notes
-git push
-git tag $tag
-git push origin $tag
-gh release create $tag $zip --title "$tag" --notes-file $notes
+Invoke-Step "git" @("push") "the branch is not on GitHub"
+Invoke-Step "git" @("tag", $tag) "could not tag"
+Invoke-Step "git" @("push", "origin", $tag) "the tag is not on GitHub"
+Invoke-Step "gh" @("release", "create", $tag, $zip, "--title", "$tag", "--notes-file", $notes) "the Release page was not created"
 Write-Host "Published $tag - installed copies will see it within ~12 hours."
