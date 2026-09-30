@@ -238,16 +238,66 @@ export async function getTeams(token) {
 // already use elsewhere: GET /team/{id}/task returns the `assignees` array on
 // every accessible task, carrying id + username + email. We probe the cheap roster
 // shapes first, then always enrich with a task-assignee scan.
-export async function fetchTeamMembers(token, teamId) {
+// ---- workspace tags (the "By tag" dropdown) ----
+// Normalise whatever ClickUp calls a tag into a clean, de-duplicated, sorted list
+// of NAMES. PURE and exported so the spelling rules are pinned down by a test:
+// ClickUp matches tag names EXACTLY, so the name we send must be the name
+// ClickUp gave us - never lower-cased, never trimmed of interior spaces. Only
+// duplicates that differ by case collapse, and then the FIRST spelling wins,
+// which is ClickUp's own.
+export function cuTagNames(list) {
+  const out = [];
+  const seen = new Set();
+  for (const raw of Array.isArray(list) ? list : []) {
+    // Only a string or a {name} object is a tag. Anything else (a number, a
+    // boolean, null) would otherwise be stringified into a tag called "false"
+    // or "0" and offered to the user as if ClickUp had said so.
+    let v = null;
+    if (typeof raw === "string") v = raw;
+    else if (raw && typeof raw === "object") v = raw.name != null ? raw.name : (raw.tag && raw.tag.name);
+    if (typeof v !== "string") continue;
+    const name = v.replace(/\s+/g, " ").trim();
+    if (!name) continue;
+    const key = name.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(name);
+  }
+  return out.sort((a, b) => a.localeCompare(b, undefined, { sensitivity: "base" }));
+}
+
+// Every tag in the workspace, for the Bulk edit "By tag" dropdown: one cheap call,
+// no paging in practice, and the names come straight from ClickUp so a typo in a
+// tag name is impossible. Members can read their own workspace's tags; if a plan
+// refuses the call the caller falls back to the tags seen on real tasks.
+export async function fetchWorkspaceTags(token, teamId) {
+  const j = await cuFetch(token, "/team/" + teamId + "/tag");
+  const list = Array.isArray(j) ? j : (j && (j.tags || j.tag_names)) || [];
+  return { tags: cuTagNames(list) };
+}
+
+// The workspace member directory. `adminToken` is optional and only ever used to
+// make the list MORE complete: a workspace-wide list needs workspace-level
+// access, so a personal member token can be refused (or come back with only the
+// team they happen to be in) while an Admin API token sees everybody, guests
+// included. Pass it and the two results are merged, so a partial answer from one
+// token is topped up by the other instead of being thrown away.
+export async function fetchTeamMembers(token, teamId, adminToken) {
   const map = new Map();
   await probeDirectRoster(token, teamId, map);
+  const wide = typeof adminToken === "string" && adminToken.trim() ? adminToken.trim() : "";
+  const isWide = wide && wide !== String(token || "").trim();
+  if (isWide) await probeDirectRoster(wide, teamId, map);
+  // Scan tasks with the widest token we have, since it is the only one guaranteed
+  // to see another person's work - a member's personal token simply cannot.
+  const scanToken = isWide ? wide : token;
   const anyRealName = [...map.values()].some((m) => !/^User \d+$/.test(m.name));
   if (!anyRealName) {
     // Roster endpoints gave nothing (or ids without names): the task scan is the
     // one source guaranteed to carry usernames - run it fully.
-    await harvestAssigneesFromTasks(token, teamId, map, ROSTER_SCAN_PAGES);
+    await harvestAssigneesFromTasks(scanToken, teamId, map, ROSTER_SCAN_PAGES);
   } else {
-    await harvestAssigneesFromTasks(token, teamId, map, 4); // light enrichment only
+    await harvestAssigneesFromTasks(scanToken, teamId, map, 4); // light enrichment only
   }
   return [...map.values()].sort((a, b) => (a.name || a.email || "").localeCompare(b.name || b.email || ""));
 }
@@ -257,24 +307,55 @@ function addRosterEntry(map, user) {
   const id = String(user.id);
   const name = String(user.username || user.name || user.email || ("User " + id)).trim() || ("User " + id);
   const email = typeof user.email === "string" ? user.email.trim() : "";
+  // Workspace role, when the roster endpoint gave one: 1 = owner, 2 = admin,
+  // 3 = member, 4 = guest. Some responses send a number, some {id, name}, and the
+  // task-assignee scan (the name source) carries none at all - so this stays
+  // null when ClickUp didn't say, and callers must not read "unknown" as "member".
+  const role = cuRoleId(user.role);
   const prev = map.get(id);
   if (!prev) {
-    map.set(id, { id, name, email });
+    map.set(id, { id, name, email, role });
   } else {
     if (/^User \d+$/.test(prev.name) && !/^User \d+$/.test(name)) prev.name = name;
     if (email && !prev.email) prev.email = email;
+    if (role != null) prev.role = role;
   }
 }
 
-// A member-directory response (if the workspace honors one) arrives with entries
-// wrapped as {user:{...}}, plus a `guests` array of the same shape.
-function entriesFromMemberJson(j) {
+// Role -> the numeric id ClickUp uses (1 owner, 2 admin, 3 member, 4 guest),
+// accepting either a number or an {id, name} object. null = not stated.
+function cuRoleId(role) {
+  const n = role && typeof role === "object" ? role.id : role;
+  const byName = { owner: 1, admin: 2, member: 3, guest: 4 };
+  if (typeof n === "number" && Number.isFinite(n)) return n;
+  if (typeof n === "string" && /^\d+$/.test(n.trim())) return Number(n.trim());
+  const name = role && typeof role === "object" ? String(role.name || "") : String(role || "");
+  const key = name.trim().toLowerCase();
+  return byName[key] != null ? byName[key] : null;
+}
+
+// A member-directory response arrives in two shapes: wrapped as {user:{...}}
+// (workspace details, Authorized Teams) or as a bare user object, and the wrapper
+// is where ClickUp puts `role`. Flatten both into bare users and KEEP the role -
+// dropping it is how a real workspace owner ends up reading as a plain member,
+// which is how the "Whose tasks" picker used to stay hidden from an admin.
+function rosterEntries(list) {
   const out = [];
-  for (const r of ["members", "guests"]) {
-    for (const e of Array.isArray(j && j[r]) ? j[r] : []) {
-      out.push(e && e.user ? e.user : e);
+  for (const e of Array.isArray(list) ? list : []) {
+    if (e && typeof e === "object" && e.user && typeof e.user === "object") {
+      const u = e.user;
+      out.push(u.role == null && e.role != null ? { ...u, role: e.role } : u);
+    } else if (e && typeof e === "object") {
+      out.push(e);
     }
   }
+  return out;
+}
+
+// ...including the separate `guests` array some responses use for the same people.
+function entriesFromMemberJson(j) {
+  const out = [];
+  for (const r of ["members", "guests"]) out.push(...rosterEntries(j && j[r]));
   return out;
 }
 
@@ -283,7 +364,27 @@ function addUids(map, entries) {
 }
 
 async function probeDirectRoster(token, teamId, map) {
-  // 1) The Authorized Teams response (GET /team) carries each team's members
+  // 1) GET WORKSPACE DETAILS (GET /team/{id}) - the documented workspace-wide
+  //    member list, and the one shape that carries EVERY user with their role,
+  //    guests included. This is the source that stops a colleague being "missing"
+  //    from the picker: a team roster only knows the team, and a task scan only
+  //    knows whoever has recent tasks. Read a few pages, because a big workspace
+  //    is paginated and stopping at one page is the same bug in a smaller hat.
+  for (let page = 0; page < 6; page++) {
+    let batch = [];
+    try {
+      const j = await cuFetch(token, "/team/" + teamId, page ? [["page", String(page)]] : []);
+      batch = entriesFromMemberJson(j);
+      addUids(map, batch);
+    } catch (e) {
+      // 403 on a member token, 404, or an enterprise-only shape -> the other
+      // probes below still get a turn.
+      if (page === 0) console.warn("[ClickUp] workspace member list unavailable:", e && e.message ? e.message : e);
+      break;
+    }
+    if (batch.length < 100) break; // a full-ish page means there may be more
+  }
+  // 2) The Authorized Teams response (GET /team) carries each team's members
   //    array ({user:{...}} wrappers) - a single cheap call, no pagination. It can
   //    come back name-less ({id, role}), so don't treat it as final.
   try {
@@ -291,13 +392,13 @@ async function probeDirectRoster(token, teamId, map) {
     const teams = Array.isArray(j && j.teams) ? j.teams : [];
     for (const t of teams) {
       if (String(t && t.id) !== String(teamId)) continue;
-      addUids(map, Array.isArray(t && t.members) ? t.members : []);
+      addUids(map, rosterEntries(t && t.members));
       break;
     }
   } catch (e) {
     /* fall through to the per-team shapes below */
   }
-  // 2) Legacy per-team roster shapes (also used by some docs/examples).
+  // 3) Legacy per-team roster shapes (also used by some docs/examples).
   for (const path of ["/team/" + teamId + "/user", "/team/" + teamId + "/member"]) {
     try {
       const j = await cuFetch(token, path);
@@ -333,6 +434,47 @@ async function harvestAssigneesFromTasks(token, teamId, map, maxPages) {
     }
     if (tasks.length < 100 || lastPage) break;
   }
+}
+
+// Look for people by NAME, for when the roster is incomplete. Scans tasks and
+// keeps any assignee whose name or email contains the query. The point is that
+// someone in ClickUp but absent from every directory we can read is still
+// reachable: their own tasks name them, and a task's assignee is a real user id
+// from ClickUp, never a guess built out of the typed text.
+export async function harvestAssigneeMatches(token, teamId, query, seenMap, maxPages) {
+  const q = String(query || "").trim().toLowerCase();
+  if (!q) return [];
+  const found = new Map();
+  for (let page = 0; page < (maxPages || 4); page++) {
+    let tasks = [];
+    let lastPage = false;
+    try {
+      const j = await cuFetch(token, "/team/" + teamId + "/task", [
+        ["include_closed", "true"],
+        ["subtasks", "true"],
+        ["page", String(page)],
+      ]);
+      tasks = Array.isArray(j && j.tasks) ? j.tasks : [];
+      lastPage = j.last_page === true;
+    } catch (e) {
+      if (page === 0) console.warn("[ClickUp] name search task-scan failed:", e && e.message ? e.message : e);
+      break;
+    }
+    for (const t of tasks) {
+      for (const a of Array.isArray(t && t.assignees) ? t.assignees : []) {
+        if (!a || a.id == null) continue;
+        const id = String(a.id);
+        if (seenMap && seenMap.has(id)) continue; // already in the roster
+        const name = String((a && (a.username || a.name)) || "").toLowerCase();
+        const mail = String((a && a.email) || "").toLowerCase();
+        if (name.indexOf(q) < 0 && mail.indexOf(q) < 0) continue;
+        const u = { id: a.id, name: a.username || a.name || a.email || "", email: a.email || "", role: null };
+        found.set(id, u);
+      }
+    }
+    if (tasks.length < 100 || lastPage) break;
+  }
+  return [...found.values()];
 }
 
 // Verify a freshly-entered token and hand back everything the options page needs
@@ -517,10 +659,15 @@ export async function getTaskPanel(token, taskId, force) {
   panelCache.set(key, { at: Date.now(), data });
   return data;
 }
+// The comment itself, no re-read: the Bulk edit tab comments on a whole batch,
+// where fetching each task's panel back would be pure rate-limit pressure.
+export async function postTaskComment(token, taskId, text) {
+  // notify_all false: ClickUp still notifies assignees / watchers as usual.
+  await cuPost(token, "/task/" + encodeURIComponent(String(taskId)) + "/comment", { comment_text: String(text).slice(0, 5000), notify_all: false });
+}
 export async function addTaskComment(token, taskId, text) {
   const key = String(taskId);
-  // notify_all false: ClickUp still notifies assignees / watchers as usual.
-  await cuPost(token, "/task/" + encodeURIComponent(key) + "/comment", { comment_text: String(text), notify_all: false });
+  await postTaskComment(token, key, text);
   panelCache.delete(key);
   return getTaskPanel(token, key, true);
 }
@@ -2110,10 +2257,20 @@ export async function fetchDateRangeEstimate({ token, teamId, userId, fromTs, to
   //    estimate divided per day.
   const collected = new Set();
   const out = [];
+  // Reading the TASKS in scope, and the same token for every read that follows
+  // (the queries below and the deadline-task detail lookups). A personal token
+  // can only answer for other people when that person is an owner/admin; a
+  // member who saved a workspace Admin token needs it here, or the range comes
+  // back empty. Self-only scopes keep the personal token untouched, which is the
+  // accurate source for the signed-in user's own hours.
+  const meId = userId != null ? String(userId) : "";
+  const scopeIsOther = !!adminToken && scope.some((id) => String(id) !== meId);
+  const taskToken = scopeIsOther ? String(adminToken).trim() : token;
+
   const collectTasks = async (params) => {
     for (let page = 0; page < MAX_PAGES; page++) {
       const p = params.concat([["page", String(page)]]);
-      const j = await cuFetch(token, "/team/" + teamId + "/task", p);
+      const j = await cuFetch(taskToken, "/team/" + teamId + "/task", p);
       const tasks = Array.isArray(j && j.tasks) ? j.tasks : [];
       for (const t of tasks) {
         if (!t || t.id == null || collected.has(t.id)) continue;
@@ -2233,7 +2390,7 @@ export async function fetchDateRangeEstimate({ token, teamId, userId, fromTs, to
       const taskId = parseTaskIdFromUrl(url);
       if (!taskId) continue;
       let task;
-      try { task = await getTaskCached(token, taskId, taskCache); } catch (e) { continue; }
+      try { task = await getTaskCached(taskToken, taskId, taskCache); } catch (e) { continue; }
       if (!task) continue;
       if (seen.has(task.id)) continue; // already counted as a range task
       const cStart = Number(task.startDateMs) || 0;
@@ -2245,8 +2402,8 @@ export async function fetchDateRangeEstimate({ token, teamId, userId, fromTs, to
       if (weekdaySet.size) {
         for (const ts of weekdaySet) {
           const r = scaled
-            ? await fetchExtendedTaskEstimate({ token, teamId, taskUrl: url, todayByTask: null, byDayTracked: rangeByDay, now: ts, mode: extendedMode, taskCache })
-            : await fetchDeadlineTaskEstimate({ token, teamId, taskUrl: url, todayByTask: null, now: ts, taskCache });
+            ? await fetchExtendedTaskEstimate({ token: taskToken, teamId, taskUrl: url, todayByTask: null, byDayTracked: rangeByDay, now: ts, mode: extendedMode, taskCache })
+            : await fetchDeadlineTaskEstimate({ token: taskToken, teamId, taskUrl: url, todayByTask: null, now: ts, taskCache });
           let add = (r && !r.error) ? (r.dayEstimateMs || 0) : 0;
           if (!add) add = extraTaskWeekdayShare(task, ts);
           dayEst += add;

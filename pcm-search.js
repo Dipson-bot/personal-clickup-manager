@@ -8,7 +8,7 @@
 (() => {
   "use strict";
   const isOptions = !!document.querySelector('.panel[data-panel="dashboard"]');
-  const TAB_NAMES = { dashboard: "Dashboard", clickup: "ClickUp setup", agent: "Agent Router", sites: "Site monitor", files: "Clients", reminders: "Reminders", hub: "Help & issues", bulk: "Bulk edit", admin: "Admin", general: "General" };
+  const TAB_NAMES = { dashboard: "Dashboard", insights: "Insights", clickup: "ClickUp setup", agent: "Agent Router", sites: "Site monitor", files: "Clients", reminders: "Reminders", hub: "Help & issues", bulk: "Bulk edit", admin: "Admin", general: "General" };
   const optUrl = (q, tab) => chrome.runtime.getURL("options.html") + (q ? "?find=" + encodeURIComponent(q) : "") + "#" + tab;
   const esc = (s) => String(s == null ? "" : s).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
   const norm = (s) => String(s || "").toLowerCase().replace(/\s+/g, " ").trim();
@@ -89,8 +89,8 @@
   // here: true = it's on the popup too (the popup just closes the search).
   const GUIDES = [
     { id: "bulk", title: "Change due dates (or status, priority, estimate) of many tasks at once", tab: "bulk", card: "Bulk edit tasks",
-      keys: "multiple several all today tasks reschedule postpone move deadline status priority estimate missing dates batch",
-      a: "Open Bulk edit, pick the tasks (search, or tick them), choose what to change - due date, status, priority or estimate - and apply it to all of them in one go. It can also fill in missing dates." },
+      keys: "multiple several all today tasks reschedule postpone move deadline status priority estimate missing dates batch tag tagged label comment note reason why teammate someone else's others assignee owner admin workspace search find people person name",
+      a: "Open Bulk edit, pick the tasks (search, or tick them), choose what to change - due date, status, priority or estimate - and apply it to all of them in one go. It can also fill in missing dates. The filters are off until you use them: \"Filter missing\" is unticked to start with, so a range lists every task in it, and you only narrow it to the tasks with no due date, no start date or no estimate when you tick it and say which. Pick \"By tag\" to load every open task carrying a tag, chosen from a list of all the tags in your ClickUp workspace (so the spelling always matches), tick only the ones you want, and give a reason (e.g. \"the client asked to push it a week\"): the same comment is then added to every task you change, and \"Select none\" clears the ticks. \"Whose tasks\" switches the whole card to a colleague: type part of a name (or an email) in the search box, click the person, and every range and the tag filter then list only their tasks, the confirmation says whose they are, and the comment starts with who made the change. It appears for workspace Owners and Admins (a plain member sees a note instead); if your own role is member-level, save a workspace Owner or Admin token in ClickUp setup to unlock it. If a colleague is not in the list at all, keep typing their name - the extension asks ClickUp who that is and offers them if any of their tasks name them; anyone they add stays in the list, so you can keep searching for other people afterwards. While it is asking, the box says \"Asking ClickUp for ...\" rather than claiming nobody matches, and a name that matches nobody still shows you the people who are there. The list is never emptied by a search or by a re-read: if ClickUp is slow, refuses the request or is still building the list, the names you already had are kept and a note beside the search box says so. The ↻ next to the search box re-reads the whole member list." },
     { id: "clientfiles", title: "Keep files and attachments organised by client", tab: "files", card: "Clients - files & notes",
       keys: "organize sort folder documents audit pdf screenshot upload store client name list drive copy",
       a: "Open Clients: every client (its ClickUp List name) has its own card. Add files there (audits, PDFs, screenshots). Each file has Open and Show in folder (saves a copy to Downloads › Personal ClickUp Manager › Clients › client), and ☁ Copy to Drive puts a client's files in My Drive › Personal ClickUp Manager › Clients." },
@@ -130,9 +130,18 @@
     { id: "breakdown", title: "See which tasks make up the estimated or tracked time", tab: "dashboard", here: true,
       keys: "why tracked different estimate difference breakdown which tasks missing time explain numbers where did time go",
       a: "Click the Estimated or Tracked number on the Today card: it lists the tasks behind it and explains the difference (time on tasks not due in these dates, over the estimate, no estimate, nothing tracked yet)." },
+    { id: "trktoday", title: "See how much of the tracked time is from today", tab: "dashboard", here: true,
+      keys: "today tracked today only cumulative all time how much tracked today bar chip share of bar daily total earlier days",
+      a: "When your filter reaches further than today (This week, Due tomorrow, a custom range, or Deadline crossed, which counts all the time ever tracked on those tasks), the Tracked Time bar says how much of that total is from today: a small \"31m today\" chip sits next to the label, and the light part at the start of the bar is today's share. The darker part is the rest of the filter. On Due today there is no chip, because that bar is already today only." },
     { id: "chartday", title: "See one day's tasks from the weekly chart", tab: "dashboard",
       keys: "chart bar graph day monday click tasks completed that day",
       a: "On the dashboard, click a day in the This week chart: the Tasks card below lists that day's tasks. Use Back to my filter to return." },
+    { id: "insights", title: "See overdue, unestimated, blocked and upcoming work (Insights)", tab: "insights",
+      keys: "insights overview health overdue missing estimate no due date blocked waiting subtasks dependency workload outlook by client problem clients analytics performance",
+      a: "Open the Insights tab in Options: it shows how many of your tasks are overdue, due this week, missing an estimate or a due date, or blocked and waiting, plus a workload outlook for the coming weeks and a by-client table. Click any number to list the exact tasks behind it. Tasks blocked by their own open subtasks are flagged too, and the Dashboard shows a short health strip when you have overdue or blocked work." },
+    { id: "tidyreminder", title: "Get a daily reminder of overdue, unestimated or blocked tasks", tab: "clickup", card: "Reminders",
+      keys: "tidy needs tidying daily reminder summary overdue unestimated no estimate no due date blocked dependency resolved remind 2pm nudge notify",
+      a: "In Options > ClickUp setup > Reminders, tick \"Daily 'needs tidying' summary at\" and pick the time (2:00 PM by default), the days (weekdays by default) and which of the four lists to mention - overdue, no estimate, no due date, blocked. \"Name up to\" caps how many tasks each line lists, and you can also be told when a dependency was resolved so a blocked task can be finished. It sends one short summary a day, opens the Insights tab when clicked, stays quiet when there's nothing to tidy, and can be switched off from the bell menu too. Use Preview now to see it before it arrives." },
     { id: "calendar", title: "Calendar with Nepali dates, holidays and work-from-home days", tab: "dashboard", here: true,
       keys: "calendar nepali date bikram sambat bs holiday dashain tihar festival wfh work from home office leave month",
       a: "Click the date chip (dashboard: next to the status chips; popup and side panel: under the header). It shows the month in English and Nepali dates, company holidays (red), work-from-home days (blue) and how many tasks are due each day. Click a day to list its tasks. Use Today or pick a date at the top to jump to any day; days with your reminders show a ⏰." },
@@ -181,6 +190,9 @@
     { id: "connect", title: "Connect ClickUp or change the workspace", tab: "clickup", card: "ClickUp connection",
       keys: "connect clickup token workspace sign login",
       a: "ClickUp setup › ClickUp connection." },
+    { id: "phonetimer", title: "Start or stop the timer from my phone", tab: "clickup", card: "Start or stop the timer from your phone",
+      keys: "phone mobile shortcut home screen iphone ios android shortcuts macrodroid http shortcuts timer start stop extra task token api key clickup direct home screen icon widget",
+      a: "ClickUp setup › Start or stop the timer from your phone. The card shows your workspace id and the Extra Task id and gives you two ready-to-paste sets of steps: \"Copy iPhone steps\" builds a start and a stop shortcut in Apple's Shortcuts app, \"Copy Android steps\" builds the same two in the free HTTP Shortcuts app. The phone sends the request to ClickUp itself, so nothing has to be open on your computer, and the extension picks the change up on its next sync (or as soon as you open the popup). \"Copy my token\" puts your ClickUp token on the clipboard for the Authorization header, and \"Test the connection\" checks the token and workspace against ClickUp before you build anything. The phone shortcuts only start and stop the timer, so the task's ClickUp status is not changed: the keyboard shortcut Alt+Shift+1 does that too." },
     { id: "theme", title: "Switch between light and dark mode", tab: "dashboard", here: true,
       keys: "theme dark light mode colour color",
       a: "Press the Light / Dark button at the top right." },

@@ -155,6 +155,12 @@
   .cu-fill.met { background: var(--green); }
   .cu-fill.trk { background: var(--blue); }
   .cu-fill.trk.met { background: var(--green); }
+  /* Today's own tracked time, shown next to a bar whose scope is wider than
+     today (week, tomorrow, a custom range, Deadline crossed), plus its share of
+     the fill drawn inside the bar. */
+  .trk-today { display: inline-block; margin-left: 5px; padding: 0 5px; border-radius: 999px; background: var(--blue); color: #fff; font-size: 9.5px; font-weight: 700; letter-spacing: .01em; vertical-align: 1px; }
+  .trk-today[hidden] { display: none; }
+  .cu-today-seg { height: 100%; width: 0; background: rgba(255, 255, 255, .5); border-radius: 999px; }
   .cu-sub { font-size: 10.5px; color: var(--muted); margin-top: 6px; line-height: 1.45; }
   .cu-sub.err { color: var(--red); }
 
@@ -547,7 +553,7 @@
       <div class="stats-total"><span id="cuTotal">-</span> <span class="target" id="cuTarget"></span></div>
       <div class="bar-label"><span>Estimated Time</span><span class="val" id="cuEstVal"></span></div>
       <div class="cu-bar"><div class="cu-fill" id="cuFill"></div></div>
-      <div class="bar-label"><span>Tracked Time</span><span class="val" id="cuTrkVal"></span></div>
+      <div class="bar-label"><span>Tracked Time<span class="trk-today" id="cuTrkToday" hidden></span></span><span class="val" id="cuTrkVal"></span></div>
       <div class="cu-bar"><div class="cu-fill trk" id="cuFillTrk"></div></div>
       <div class="cu-sub" id="cuSub"></div>
       <div class="cu-timer" id="cuTimerRow" style="display:none;">

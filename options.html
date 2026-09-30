@@ -207,6 +207,20 @@
   .cu-fill2.met { background: var(--green); }
   .cu-fill2.trk { background: var(--blue); }
   .cu-fill2.trk.met { background: var(--green); }
+  /* Today's own tracked time, shown next to a bar whose scope is wider than
+     today (week, tomorrow, a custom range, Deadline crossed), plus its share of
+     the fill drawn inside the bar. */
+  .trk-today { display: inline-block; margin-left: 6px; padding: 1px 6px; border-radius: 999px; background: var(--blue); color: #fff; font-size: 10.5px; font-weight: 700; vertical-align: 1px; }
+  .cu-today-seg { height: 100%; width: 0; background: rgba(255, 255, 255, .5); border-radius: 999px; }
+  /* Phone shortcut card: the two values the shortcut needs, then the actions. */
+  .pt-vals { display: flex; flex-wrap: wrap; gap: 10px; margin-bottom: 12px; }
+  .pt-val { flex: 1 1 260px; display: flex; align-items: center; gap: 8px; flex-wrap: wrap; padding: 9px 11px; border: 1px solid var(--border); border-radius: 10px; }
+  .pt-val .l { font-size: 12px; font-weight: 700; color: var(--muted); }
+  .pt-val .l .hint { display: block; font-weight: 600; }
+  .pt-val code { flex: 1 1 auto; min-width: 90px; font-size: 12.5px; overflow: hidden; text-overflow: ellipsis; }
+  .pt-val a { font-size: 12px; }
+  .pt-acts { display: flex; flex-wrap: wrap; gap: 8px; }
+  .pt-pre { margin: 6px 0 0; padding: 10px; border: 1px solid var(--border); border-radius: 8px; background: var(--bg, rgba(127, 127, 127, .07)); font-size: 12px; line-height: 1.45; white-space: pre-wrap; word-break: break-word; }
   .cu-tasklist { margin-top: 10px; max-height: 340px; overflow: auto; padding-right: 4px; }
   .cu-task { display: flex; flex-wrap: wrap; gap: 10px; padding: 5px 0; border-bottom: 1px dashed var(--border); font-size: 12.5px; align-items: baseline; }
   .cu-task.cu-sub { padding-left: 14px; }
@@ -426,6 +440,24 @@
   .bk-filters select, .bk-filters input[type="date"] { width: auto; padding: 5px 8px; font-weight: 400; }
   .bk-filters input[type="search"] { flex: 1; min-width: 160px; padding: 6px 10px; }
   .bk-filters #bkReload { width: auto; padding: 5px 10px; }
+  .bk-filters select.off { color: var(--mut); }
+  .bk-filters label.bk-missing { display: inline-flex; align-items: center; gap: 5px; }
+  .bk-filters label.bk-missing > span { font-weight: 600; }
+  .bk-who .bk-warn, #bkWhoWarn.bk-warn { display: block; color: var(--warn, #b45309); font-size: 12px; font-weight: 400; }
+  /* "Whose tasks": a search box with a results list under it. A plain <select>
+     stops being usable at a few dozen names, and a workspace has hundreds. */
+  .bk-who { display: inline-flex; align-items: center; gap: 6px; margin: 0; font-size: 13px; font-weight: 600; }
+  .bk-who > label { margin: 0; }
+  .bk-who input[type="search"] { width: 210px; padding: 5px 9px; font-weight: 400; }
+  .bk-whobox { position: relative; display: inline-block; }
+  .bk-wholist { position: absolute; z-index: 40; top: 100%; left: 0; right: 0; margin-top: 3px; max-height: 260px; overflow: auto; background: var(--bg); border: 1px solid var(--border); border-radius: 10px; box-shadow: 0 10px 28px rgba(0, 0, 0, .22); padding: 4px; }
+  .bk-wholist .bk-wrow { display: flex; justify-content: space-between; gap: 10px; align-items: baseline; padding: 6px 8px; border-radius: 7px; cursor: pointer; font-weight: 400; font-size: 13px; }
+  .bk-wholist .bk-wrow:hover, .bk-wholist .bk-wrow.sel { background: var(--bg2); }
+  .bk-wholist .bk-wrow.cur { background: var(--indigo); color: #fff; }
+  .bk-wholist .bk-wrow .bk-wmail { color: var(--mut); font-size: 12px; }
+  .bk-wholist .bk-wrow.cur .bk-wmail, .bk-wholist .bk-wrow:hover .bk-wmail { color: inherit; opacity: .8; }
+  .bk-wholist .bk-wnone { padding: 6px 8px; font-weight: 400; font-size: 12px; color: var(--mut); }
+  .bk-wholist .bk-wmore { padding: 4px 8px; font-weight: 400; font-size: 12px; color: var(--mut); border-top: 1px solid var(--border); margin-top: 3px; }
   .bk-listhead { display: flex; align-items: center; justify-content: space-between; padding: 6px 10px; border: 1px solid var(--border); border-bottom: 0; border-radius: 10px 10px 0 0; background: var(--bg2); }
   .bk-listhead label { margin: 0; font-weight: 600; font-size: 13px; display: inline-flex; gap: 6px; align-items: center; }
   .bk-list { max-height: 420px; overflow: auto; border: 1px solid var(--border); border-radius: 0 0 10px 10px; }
@@ -450,6 +482,13 @@
   .bk-actrow select, .bk-actrow input[type="date"] { width: auto; padding: 5px 8px; font-weight: 400; }
   .bk-actrow .spacer { flex: 1; }
   .bk-actrow #bkApply { width: auto; }
+  .bk-listhead button.lnk, .bk-actrow button.lnk { background: none; border: 0; padding: 0; color: var(--indigo); font: inherit; font-size: 13px; font-weight: 600; cursor: pointer; text-decoration: none; white-space: nowrap; }
+  .bk-listhead button.lnk:hover, .bk-actrow button.lnk:hover { text-decoration: underline; }
+  #bkCommentWhy, #bkCommentOwn { flex: 1; min-width: 200px; padding: 5px 8px; font-weight: 400; }
+  #bkCommentOwn { min-height: 44px; font-family: inherit; resize: vertical; }
+  #bkCommentRow { margin-top: 2px; }
+  #bkCommentPreviewRow { color: var(--muted); align-items: baseline; }
+  #bkCommentPreview { color: var(--text); font-weight: 500; }
   .bk-confirm, .bk-result { margin-top: 10px; font-size: 13px; display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
   .bk-confirm button, .bk-result button { width: auto; }
   .bk-confirm[hidden], .bk-result[hidden] { display: none; }
@@ -834,6 +873,109 @@
   .adm-person .nm { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13px; }
   .adm-person .nm small { color: var(--muted); margin-left: 6px; }
   .adm-person .ver { font-size: 11.5px; color: var(--muted); white-space: nowrap; }
+
+  /* ===================== Insights tab ===================== */
+  /* Scoped under #insView so the generic class names (.kpi, .banner, table.hot,
+     details/summary...) never leak into the rest of the options page. Reuses the
+     same CSS variables as everything else, so dark mode is automatic. */
+  .nv-new { margin-left: auto; font-size: 9px; font-weight: 700; letter-spacing: .03em; background: var(--indigo); color: #fff; padding: 1px 5px; border-radius: 999px; }
+  #insView { min-height: 40px; }
+  #insView .ins-sub { color: var(--muted); margin: 0 0 18px; font-size: 13px; line-height: 1.5; }
+  #insView .banner { display: flex; align-items: center; gap: 12px; border-radius: 14px; padding: 14px 18px; margin-bottom: 18px; border: 1px solid var(--border); }
+  #insView .banner.warn { background: rgba(217,119,6,0.10); border-color: rgba(217,119,6,0.35); }
+  #insView .banner.good { background: rgba(22,163,74,0.10); border-color: rgba(22,163,74,0.35); }
+  #insView .banner .big { font-size: 22px; line-height: 1; }
+  #insView .banner b { font-size: 14px; }
+  #insView .banner .b-sub { color: var(--muted); font-size: 12px; }
+  #insView .banner .chips { margin-left: auto; display: flex; gap: 8px; flex-wrap: wrap; }
+  #insView .mini { font-size: 11px; padding: 2px 9px; border-radius: 999px; white-space: nowrap; font-weight: 600; }
+  #insView .mini.red { color: var(--red); background: rgba(220,38,38,0.13); }
+  #insView .mini.amber { color: var(--amber); background: rgba(217,119,6,0.14); }
+  html[data-theme="dark"] #insView .mini.amber { background: rgba(251,191,36,0.14); }
+  #insView .mini.blue { color: var(--blue); background: rgba(59,130,246,0.14); }
+  #insView .kpis { display: grid; grid-template-columns: repeat(6,1fr); gap: 12px; }
+  @media (max-width: 900px) { #insView .kpis { grid-template-columns: repeat(3,1fr); } }
+  #insView .kpi { background: var(--card); border: 1px solid var(--border); border-radius: 12px; padding: 13px 14px; position: relative; text-align: left; font: inherit; color: inherit; }
+  #insView button.kpi { cursor: pointer; transition: transform .08s, border-color .12s; }
+  #insView button.kpi:hover { transform: translateY(-1px); border-color: var(--indigo); }
+  #insView .kpi .n { font-size: 26px; font-weight: 700; line-height: 1.1; }
+  #insView .kpi .l { font-size: 11.5px; color: var(--muted); margin-top: 3px; }
+  #insView .kpi .go { position: absolute; top: 11px; right: 12px; font-size: 11px; color: var(--muted); opacity: 0; }
+  #insView button.kpi:hover .go { opacity: 1; }
+  #insView .kpi.red .n { color: var(--red); }
+  #insView .kpi.amber .n { color: var(--amber); }
+  #insView .kpi.blue .n { color: var(--blue); }
+  #insView .kpi.green .n { color: var(--green); }
+  #insView .kpi .bar { height: 3px; border-radius: 999px; background: var(--bg2); margin-top: 9px; overflow: hidden; }
+  #insView .kpi .bar i { display: block; height: 100%; border-radius: 999px; }
+  #insView .cols { display: grid; grid-template-columns: 1.3fr 1fr; gap: 18px; margin-top: 18px; }
+  @media (max-width: 820px) { #insView .cols { grid-template-columns: 1fr; } }
+  #insView .cols > .card { margin: 0; }
+  #insView .wk-chart { display: grid; grid-template-columns: repeat(5,1fr); gap: 12px; margin-top: 6px; align-items: end; }
+  #insView .wk-day { display: flex; flex-direction: column; align-items: center; gap: 6px; min-width: 0; }
+  #insView .wk-bars { position: relative; width: 100%; max-width: 52px; height: 120px; display: flex; align-items: flex-end; justify-content: center; border-bottom: 1px solid var(--border); }
+  #insView .wk-bar { width: 60%; border-radius: 4px 4px 0 0; min-height: 3px; transition: height .5s cubic-bezier(.2,.8,.2,1); }
+  #insView .wk-bar.est { background: color-mix(in srgb, var(--amber) 82%, transparent); }
+  #insView .wk-day.od .wk-bar.est { background: color-mix(in srgb, var(--red) 78%, transparent); }
+  #insView .wk-day.nd .wk-bar.est { background: var(--muted); opacity: .5; }
+  #insView .wk-lab { font-size: 11.5px; font-weight: 600; color: var(--muted); }
+  #insView .wk-day.od .wk-lab { color: var(--red); }
+  #insView .wk-val { font-size: 11px; color: var(--muted); }
+  #insView .wk-cnt { font-size: 10px; color: var(--muted); }
+  #insView .legend { display: flex; gap: 16px; margin-top: 14px; flex-wrap: wrap; font-size: 11.5px; color: var(--muted); }
+  #insView .legend i { width: 9px; height: 9px; border-radius: 2px; display: inline-block; margin-right: 5px; vertical-align: middle; }
+  #insView .hy-row { display: flex; align-items: center; gap: 10px; padding: 9px 0; border-top: 1px solid var(--border); }
+  #insView .hy-row:first-child { border-top: 0; }
+  #insView .hy-row .n { font-weight: 700; font-size: 16px; width: 30px; text-align: center; }
+  #insView .hy-row .l { flex: 1; min-width: 0; }
+  #insView .hy-row .l small { display: block; color: var(--muted); font-size: 11px; }
+  #insView .hy-row.red .n { color: var(--red); }
+  #insView .hy-row.amber .n { color: var(--amber); }
+  #insView .hy-row.muted .n { color: var(--muted); }
+  #insView .lnk { color: var(--indigo); font-size: 11.5px; text-decoration: none; font-weight: 600; background: none; border: 0; cursor: pointer; font-family: inherit; padding: 0; white-space: nowrap; }
+  #insView .lnk:hover { text-decoration: underline; }
+  #insView table.hot { width: 100%; border-collapse: collapse; font-size: 13px; }
+  #insView table.hot th { text-align: left; font-size: 11px; color: var(--muted); font-weight: 600; padding: 0 10px 8px; border-bottom: 1px solid var(--border); }
+  #insView table.hot th.num, #insView table.hot td.num { text-align: center; width: 62px; }
+  #insView table.hot td { padding: 9px 10px; border-bottom: 1px solid var(--border); }
+  #insView table.hot tr:last-child td { border-bottom: 0; }
+  #insView .client { display: flex; align-items: center; gap: 8px; min-width: 0; }
+  #insView .client .dot { width: 8px; height: 8px; border-radius: 999px; background: var(--indigo); flex: 0 0 auto; }
+  #insView .client .nm { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  #insView .cell-bar { height: 6px; border-radius: 999px; background: var(--bg2); overflow: hidden; min-width: 70px; }
+  #insView .cell-bar i { display: block; height: 100%; background: var(--blue); }
+  #insView .badge { font-size: 11px; font-weight: 700; padding: 1px 7px; border-radius: 999px; }
+  #insView .badge.red { color: var(--red); background: rgba(220,38,38,0.13); }
+  #insView .badge.amber { color: var(--amber); background: rgba(217,119,6,0.14); }
+  html[data-theme="dark"] #insView .badge.amber { background: rgba(251,191,36,0.14); }
+  #insView .badge.zero { color: var(--muted); background: transparent; }
+  #insView details.ins-det { border: 1px solid var(--border); border-radius: 12px; margin-top: 12px; background: var(--card); overflow: hidden; }
+  #insView details.ins-det summary { cursor: pointer; padding: 12px 16px; font-weight: 600; font-size: 13px; list-style: none; display: flex; align-items: center; gap: 10px; }
+  #insView details.ins-det summary::-webkit-details-marker { display: none; }
+  #insView details.ins-det summary .caret { transition: transform .15s; color: var(--muted); }
+  #insView details.ins-det[open] summary .caret { transform: rotate(90deg); }
+  #insView details.ins-det summary .count { color: var(--muted); font-weight: 500; }
+  #insView .det-body { padding: 2px 16px 14px; }
+  #insView .trow { display: flex; align-items: center; gap: 10px; padding: 8px 0; border-top: 1px solid var(--border); font-size: 13px; }
+  #insView .trow:first-child { border-top: 0; }
+  #insView .trow .ttl { flex: 1; min-width: 0; }
+  #insView .trow .ttl b { font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; display: block; }
+  #insView .trow .ttl small { display: block; color: var(--muted); font-size: 11px; }
+  #insView .det-more { padding: 8px 0 2px; text-align: center; color: var(--muted); font-size: 12px; }
+  #insView .ins-empty { padding: 30px 0; text-align: center; color: var(--muted); font-size: 13px; }
+
+  /* --- Dashboard health strip (lives in the Dashboard panel) --- */
+  .pcm-dash-strip { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; padding: 11px 16px; border: 1px solid rgba(217,119,6,0.35); background: rgba(217,119,6,0.10); border-radius: 12px; margin-bottom: 16px; }
+  .pcm-dash-strip.good { border-color: rgba(22,163,74,0.35); background: rgba(22,163,74,0.10); }
+  .pcm-dash-strip .lead { font-weight: 600; font-size: 13px; display: flex; align-items: center; gap: 8px; }
+  .pcm-dash-strip .mini { font-size: 11px; padding: 2px 9px; border-radius: 999px; white-space: nowrap; font-weight: 600; }
+  .pcm-dash-strip .mini.red { color: var(--red); background: rgba(220,38,38,0.13); }
+  .pcm-dash-strip .mini.amber { color: var(--amber); background: rgba(217,119,6,0.14); }
+  html[data-theme="dark"] .pcm-dash-strip .mini.amber { background: rgba(251,191,36,0.14); }
+  .pcm-dash-strip .mini.blue { color: var(--blue); background: rgba(59,130,246,0.14); }
+  .pcm-dash-strip .grow { margin-left: auto; display: flex; gap: 10px; align-items: center; }
+  .pcm-dash-strip .pds-go { color: var(--indigo); font-size: 12px; text-decoration: none; font-weight: 700; background: none; border: 0; cursor: pointer; font-family: inherit; }
+  .pcm-dash-strip .pds-go:hover { text-decoration: underline; }
 </style>
 </head>
 <body class="tabbed">
@@ -856,6 +998,7 @@
   <div class="shell">
   <nav class="sidenav" id="sideNav" aria-label="Sections">
     <button type="button" data-tab="dashboard"><svg class="nv-i" viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="3" width="7" height="9" rx="1.5"/><rect x="14" y="3" width="7" height="5" rx="1.5"/><rect x="14" y="12" width="7" height="9" rx="1.5"/><rect x="3" y="16" width="7" height="5" rx="1.5"/></svg><span>Dashboard</span></button>
+    <button type="button" data-tab="insights"><svg class="nv-i" viewBox="0 0 24 24" aria-hidden="true"><path d="M3 3v18h18"/><path d="M7 14l3-4 3 3 5-7"/></svg><span>Insights</span><span class="nv-new">NEW</span></button>
     <button type="button" data-tab="clickup"><svg class="nv-i" viewBox="0 0 24 24" aria-hidden="true"><path d="M9 11l3 3l8-8"/><path d="M20 12v6a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h9"/></svg><span>ClickUp setup</span></button>
     <button type="button" data-tab="agent"><svg class="nv-i" viewBox="0 0 24 24" aria-hidden="true"><circle cx="8" cy="15" r="4"/><path d="M10.85 12.15L19 4"/><path d="M18 5l2 2"/><path d="M15 8l2 2"/></svg><span>Agent Router</span></button>
     <button type="button" data-tab="sites"><svg class="nv-i" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M3.6 9h16.8M3.6 15h16.8"/><path d="M11.5 3a17 17 0 0 0 0 18M12.5 3a17 17 0 0 1 0 18"/></svg><span>Site monitor</span></button>
@@ -877,6 +1020,11 @@
       <p class="hint" style="margin:0 0 12px;line-height:1.5;">Today's estimate, tracked time, this week's totals and your task list appear here once ClickUp is connected.</p>
       <button type="button" class="primary" data-goto="clickup">Open ClickUp setup</button>
     </div>
+
+    <!-- Health strip: a quiet one-line nudge of things easy to miss (overdue,
+         no estimate, blocked...). Filled by renderDashStrip() in options.js from
+         state already loaded - no extra ClickUp calls. Hidden when all is well. -->
+    <div class="pcm-dash-strip" id="pcmDashStrip" style="display:none;"></div>
 
     <div class="dash-top">
       <div class="card dash-card" id="cuTodayWrap" style="display:none;">
@@ -1090,6 +1238,15 @@
     </div>
   </section>
 
+  <!-- ===================== Insights ===================== -->
+  <!-- A weekly health check of everything assigned to me: overdue, missing
+       estimates/due dates, blocked/sub-blocked, workload outlook, by client.
+       Painted entirely by renderInsights() in options.js from one broad open-tasks
+       fetch (CLICKUP_OPEN_TASKS, cached) plus the already-loaded ClickUp state. -->
+  <section class="panel" data-panel="insights">
+    <div id="insView"></div>
+  </section>
+
   <!-- ===================== ClickUp setup ===================== -->
   <section class="panel" data-panel="clickup">
   <div class="card" id="clickupCard">
@@ -1174,6 +1331,24 @@
           <div class="set-line"><input type="checkbox" id="cuAwayNotify" /><label for="cuAwayNotify">Offer to remove time when I've been away for</label><input type="text" id="cuAwayMin" inputmode="numeric" placeholder="15" /><span>minutes or more</span></div>
           <div class="set-line"><input type="checkbox" id="cuWrapUp" /><label for="cuWrapUp">End-of-day wrap-up at</label><input type="time" id="cuWrapUpTime" /><a href="wrapup.html" target="_blank" rel="noopener">Open now</a>
             <p class="hint">Move leftover tasks to tomorrow and copy a standup for Slack.</p></div>
+          <div class="set-line"><input type="checkbox" id="cuTidyNotify" /><label for="cuTidyNotify">Daily "needs tidying" summary at</label><input type="time" id="cuTidyTime" /></div>
+          <div class="set-line indent" id="cuTidyDaysRow"><span class="grow">On</span>
+            <select id="cuTidyDays">
+              <option value="weekdays">weekdays</option>
+              <option value="every">every day</option>
+              <option value="1,3,5">Mon, Wed, Fri</option>
+              <option value="0,6">weekends only</option>
+            </select>
+            <span>and name up to</span><input type="text" id="cuTidyMax" inputmode="numeric" placeholder="3" /><span>tasks per line</span></div>
+          <div class="set-line indent" id="cuTidyCatsRow">
+            <span class="grow">Mention</span>
+            <label><input type="checkbox" id="cuTidyCatOverdue" /> overdue</label>
+            <label><input type="checkbox" id="cuTidyCatNoEst" /> no estimate</label>
+            <label><input type="checkbox" id="cuTidyCatNoDue" /> no due date</label>
+            <label><input type="checkbox" id="cuTidyCatBlocked" /> blocked</label>
+            <label><input type="checkbox" id="cuTidyResolved" /> a dependency that got resolved</label></div>
+          <div class="set-line indent"><p class="hint" style="margin:0">One short summary of what the <a href="#" id="cuTidyGoInsights">Insights tab</a> flags, and nothing at all when there's nothing to tidy.
+            <button type="button" class="lnk" id="cuTidyPreview">Preview now</button></p></div>
         </div>
       </div>
 
@@ -1258,6 +1433,44 @@
       </div>
       </div><!-- /cuAdvBody: end collapsible Settings -->
     </div>
+  </div>
+
+  <div class="card cu-needs-config" id="ptCard" style="display:none;">
+    <h2>Start or stop the timer from your phone</h2>
+    <p class="hint" style="margin:0 0 14px;line-height:1.5;">
+      A shortcut on your home screen that starts your ClickUp timer, and one that stops it. The phone talks to ClickUp
+      straight away, so nothing has to be open on this computer - the extension picks the change up on its next sync
+      (5 minutes by default, or straight away if you open the popup), then "Tracking now", the tracked totals and the
+      badge follow on their own. <b>Alt+Shift+1</b> on your keyboard does the same thing here, and also moves the task to
+      In progress / To do; the phone shortcuts only start and stop the timer, so the ClickUp status stays as you left it.
+    </p>
+
+    <div class="pt-vals">
+      <div class="pt-val">
+        <span class="l">Workspace ID</span>
+        <code id="ptWs">-</code>
+        <button type="button" id="ptCopyWs">Copy</button>
+      </div>
+      <div class="pt-val">
+        <span class="l">Extra Task ID <span class="hint" id="ptTaskName"></span></span>
+        <code id="ptTask">-</code>
+        <a id="ptTaskLink" href="#" target="_blank" rel="noreferrer noopener" style="display:none;">Open task</a>
+        <button type="button" id="ptCopyTask">Copy ID</button>
+      </div>
+    </div>
+
+    <div class="pt-acts">
+      <button type="button" class="primary" id="ptCopyIos">Copy iPhone steps</button>
+      <button type="button" id="ptCopyAndroid">Copy Android steps</button>
+      <button type="button" id="ptCopyToken">Copy my token</button>
+      <button type="button" id="ptTest">Test the connection</button>
+    </div>
+    <p class="hint" id="ptMsg" style="margin:12px 0 0;min-height:1.2em;"></p>
+    <p class="hint" style="margin:8px 0 0;">
+      Your token is a full-access key for your ClickUp account, and it is kept in the shortcut on your phone (iCloud-synced
+      on iPhone). Don't share the shortcut, and revoke the token in ClickUp under Apps &gt; API if you ever do.
+    </p>
+    <details class="set-more" style="margin-top:12px;"><summary>What are the three requests?</summary><div id="ptMore"></div></details>
   </div>
 
   <div class="card" id="deptCard" style="display:none;">
@@ -1354,18 +1567,24 @@
         <option value="nextweek">Next week</option>
         <option value="custom">Custom dates</option>
         <option value="any">Any date (all open tasks)</option>
+        <option value="tag">By tag</option>
       </select></label>
       <span id="bkCustom" hidden><input type="date" id="bkFrom" /> to <input type="date" id="bkTo" /></span>
+      <span id="bkTagWrap" hidden><label>Tag <select id="bkTag" title="Every tag in your ClickUp workspace. ClickUp matches tag names exactly, so these are the exact names."><option value="">Any tag</option></select></label><button type="button" id="bkTagGo" title="Load again, and re-read the tag list from ClickUp">Load</button></span>
+      <span id="bkWhoWarn" hidden class="bk-warn"></span>
+      <span id="bkWhoWrap" hidden class="bk-who"><label for="bkWhoSearch">Whose tasks</label><span class="bk-whobox"><input type="search" id="bkWhoSearch" placeholder="Search people" autocomplete="off" role="combobox" aria-expanded="false" aria-controls="bkWhoList" aria-autocomplete="list" title="Search by name or email. Only a workspace Owner or Admin can load another person's tasks." /><div id="bkWhoList" class="bk-wholist" role="listbox" hidden></div></span><button type="button" id="bkWhoReload" title="Re-read the workspace member list from ClickUp">&#8635;</button></span>
       <label>Client <select id="bkClient"><option value="">All clients</option></select></label>
-      <label>Missing <select id="bkMissing" title="Show only tasks that are missing this"><option value="">Anything</option><option value="due">No due date</option><option value="start">No start date</option><option value="est">No estimate</option></select></label>
+      <label class="bk-missing"><input type="checkbox" id="bkMissingOn" title="Tick to hide tasks that DO have this. Unticked, nothing is filtered out at all - a range lists every task in it." /> <span>Filter missing</span> <select id="bkMissing" disabled title="Unticked: no missing filter. Tick 'Filter missing' to keep ONLY the tasks that have no due date, no start date or no estimate."><option value="due">No due date</option><option value="start">No start date</option><option value="est">No estimate</option></select></label>
       <label>Status <select id="bkStatus"><option value="open">All not done</option><option value="">Any status</option></select></label>
       <input type="search" id="bkSearch" placeholder="Search task names" />
       <button type="button" id="bkReload" title="Load again from ClickUp">&#8635;</button>
     </div>
     <div class="bk-listhead">
       <label><input type="checkbox" id="bkAll" /> Select all shown</label>
+      <button type="button" id="bkNone" class="lnk">Select none</button>
       <span class="hint" id="bkCount"></span>
     </div>
+    <p class="hint" id="bkScopeNote" hidden style="margin:0 0 6px;"></p>
     <div class="bk-list" id="bkList"><div class="hint" style="padding:14px;">Loading…</div></div>
 
     <div class="bk-action">
@@ -1394,6 +1613,16 @@
         <span class="spacer"></span>
         <button type="button" class="primary" id="bkApply" disabled>Apply to 0 tasks</button>
       </div>
+      <div class="bk-actrow" id="bkCommentRow">
+        <label><input type="checkbox" id="bkCommentOn" checked /> Add the same comment to every changed task:</label>
+        <input type="text" id="bkCommentWhy" placeholder="why - e.g. the client asked to push it a week" />
+        <textarea id="bkCommentOwn" hidden rows="2" placeholder="Write the comment yourself"></textarea>
+        <button type="button" class="lnk" id="bkCommentEdit" title="Write the comment yourself instead of giving a reason">Edit text</button>
+      </div>
+      <div class="bk-actrow" id="bkCommentPreviewRow">
+        <span>Posted on each task: <b id="bkCommentPreview"></b></span>
+      </div>
+      <p class="hint" style="margin:0" id="bkCommentNote">A change with no reason is a mystery two weeks later, so a comment is added to every task you change. Untick to change without commenting. Comments can't be undone.</p>
       <div id="bkConfirm" class="bk-confirm" hidden></div>
       <div id="bkResult" class="bk-result" hidden></div>
     </div>
@@ -1807,11 +2036,13 @@
     <p class="hint" id="versionLine" style="margin:0 0 10px;line-height:1.5;">Checking…</p>
     <div class="checkbox" style="margin:0 0 4px;">
       <input type="checkbox" id="autoUpdate" />
-      <label for="autoUpdate" style="margin:0;">Install updates automatically <span class="hint">- in the background, when you're not using the extension</span></label>
+      <label for="autoUpdate" style="margin:0;">Install updates automatically <span class="hint">- in the background, within a minute or two of a new version being published</span></label>
     </div>
     <p class="hint" id="autoUpdateLine" style="margin:0 0 10px;line-height:1.5;"></p>
-    <p class="hint" style="margin:0 0 10px;line-height:1.5;">New versions are published as GitHub Releases. When one is out you get a
-      notification with an <b>Update now</b> button and an "Update available" chip at the top of this page.
+    <p class="hint" style="margin:0 0 10px;line-height:1.5;">New versions are published as GitHub Releases. When one is out, a copy that is set up for
+      automatic updates installs it by itself within a minute or two - the side panel or popup closes while it restarts, and any
+      page you had open comes back on its own. Anyone not set up yet gets a notification with an <b>Update now</b> button and an
+      "Update available" chip at the top of this page.
       <b>One-click updates:</b> choose this extension's folder once (<i>One-click updates…</i>); after that each
       update is <b>Update now → Install</b>. Your accounts and settings are kept.</p>
     <div class="btns">
@@ -2039,6 +2270,7 @@
 <script src="calendar.js"></script>
 <script src="notices.js"></script>
 <script src="options.js"></script>
+<script src="phone-timer.js"></script>
 <script src="bulk-edit.js"></script>
 <script src="task-files.js"></script>
 <script src="reminders.js"></script>

@@ -700,24 +700,52 @@ function waitSlot(t) {
   const span = document.createElement("span");
   span.className = "cu-wait";
   const w = cuWaitFor(t);
-  if (!w || !Array.isArray(w.blockers) || !w.blockers.length) return span;
-  const b = w.blockers;
-  const late = b.some((x) => x.overdue);
-  const people = Array.from(new Set(b.map((x) => String(x.who || "someone").split(/\s+/)[0])));
-  span.classList.add("on", late ? "late" : "waiting");
-  const icon = document.createElement("span");
-  icon.className = "wi";
-  icon.textContent = "\u23F3";
-  const label = document.createElement("span");
-  label.className = "wl";
-  label.textContent = (late ? "Blocked: " : "Waiting: ") + people[0] + (people.length > 1 ? " +" + (people.length - 1) : "") + (late ? " late" : "");
-  span.appendChild(icon);
-  span.appendChild(label);
+  if (!w) return span;
+  const b = Array.isArray(w.blockers) ? w.blockers : [];
   const fmt = (ms) => new Date(ms).toLocaleDateString(undefined, { month: "short", day: "numeric" });
-  span.title = (late ? "Blocked by someone else's overdue subtask" : "Your part is done - waiting on someone else") + ":\n" +
-    b.map((x) => "\u2022 " + x.name + " \u00B7 " + x.who + (x.due ? " \u00B7 due " + fmt(x.due) : "") + (x.overdue ? " (overdue)" : "")).join("\n") +
-    "\nClick to open it in ClickUp.";
-  span.addEventListener("click", (e) => { e.preventDefault(); e.stopPropagation(); window.open(b[0].url, "_blank", "noopener"); });
+  if (b.length) {
+    const late = b.some((x) => x.overdue);
+    const people = Array.from(new Set(b.map((x) => String(x.who || "someone").split(/\s+/)[0])));
+    span.classList.add("on", late ? "late" : "waiting");
+    const icon = document.createElement("span");
+    icon.className = "wi";
+    icon.textContent = "\u23F3";
+    const label = document.createElement("span");
+    label.className = "wl";
+    label.textContent = (late ? "Blocked: " : "Waiting: ") + people[0] + (people.length > 1 ? " +" + (people.length - 1) : "") + (late ? " late" : "");
+    span.appendChild(icon);
+    span.appendChild(label);
+    span.title = (late ? "Blocked by someone else's overdue subtask" : "Your part is done - waiting on someone else") + ":\n" +
+      b.map((x) => "\u2022 " + x.name + " \u00B7 " + x.who + (x.due ? " \u00B7 due " + fmt(x.due) : "") + (x.overdue ? " (overdue)" : "")).join("\n") +
+      "\nClick to open it in ClickUp.";
+    span.addEventListener("click", (e) => { e.preventDefault(); e.stopPropagation(); window.open(b[0].url, "_blank", "noopener"); });
+    return span;
+  }
+  // Idea A - the task's OWN open subtasks keep it from closing: they're due after
+  // this task's due date, or the task is already past due with open subtasks left.
+  const sb = w.selfBlock;
+  if (sb && (sb.later || sb.parentOverdue)) {
+    const late = !!sb.parentOverdue;
+    span.classList.add("on", late ? "late" : "waiting");
+    const icon = document.createElement("span");
+    icon.className = "wi";
+    icon.textContent = "\u23F3";
+    const label = document.createElement("span");
+    label.className = "wl";
+    label.textContent = late ? "Blocked: subtasks open" : (sb.latestDueMs ? "Subtasks to " + fmt(sb.latestDueMs) : "Subtasks open");
+    span.appendChild(icon);
+    span.appendChild(label);
+    span.title = (late
+      ? "This task is past its due date but still has open subtasks"
+      : "This task can't close yet - it has open subtasks due after its own due date") + ":\n" +
+      "\u2022 " + sb.open + " open subtask" + (sb.open > 1 ? "s" : "") +
+      (sb.later ? ", " + sb.later + " due after this task" : "") +
+      (sb.latestDueMs ? "\n\u2022 latest subtask due " + fmt(sb.latestDueMs) : "") +
+      "\nOpen the task in ClickUp to see them.";
+    const url = t && t.url;
+    if (url) span.addEventListener("click", (e) => { e.preventDefault(); e.stopPropagation(); window.open(url, "_blank", "noopener"); });
+    return span;
+  }
   return span;
 }
 // Time cell: "tracked / est". Tracked turns red past the estimate; a running
@@ -1917,6 +1945,23 @@ function cuScopeTargetMs(dailyMs, st, f) {
   if (weekdays <= 1) return dailyMs; // today / tomorrow: the daily target
   return dailyMs * days; // company holidays don't count (a whole holiday week = no target)
 }
+// Today's own tracked time, for the Tracked bar when the active scope is NOT
+// today. The bar's own number is only today's when the scope is: "Deadline
+// crossed" sums ClickUp's all-time time_spent per task (so it can read 4h 13m
+// against a 7h daily target), and a week / tomorrow / custom range counts that
+// whole period. st.spentMs is today's time entries (fetchTodayEstimate), the same
+// figure the Today card shows. Its rows only carry spentToday when the
+// time-entries source was actually used, so a ClickUp fallback to the cumulative
+// field returns 0 and the chip stays hidden instead of showing a wrong number.
+const CU_TODAY_TIP = "Time you tracked today, across all your tasks. The bar shows this filter's own total, which for this filter is not today only. Point at the light part of the bar for today's share of it.";
+function cuTodayTracked(st, view) {
+  st = st || {}; view = view || {};
+  if (view.scope === "today" || view.scope === "extended") return 0; // the bar IS today
+  const rows = (Array.isArray(st.tasks) ? st.tasks : []).concat(Array.isArray(st.trackedTasks) ? st.trackedTasks : []);
+  if (!rows.some((t) => t && t.spentToday === true)) return 0;
+  const ms = Math.max(0, Number(st.spentMs) || 0);
+  return ms > 0 ? ms : 0;
+}
 // The running task's time from before this timer started (its earlier time
 // entries, kept by the background in runningProgress), so "Tracking now" goes
 // on from 30m instead of starting at 0m after a stop / complete and restart.
@@ -2395,6 +2440,28 @@ function renderClickup() {
   const trkMet = targetMs > 0 && spentTot >= targetMs;
   trk.className = "cu-fill trk" + (trkMet ? " met" : "");
   $("cuTrkVal").textContent = st ? fmtDur(spentTot) + (targetMs > 0 ? " / " + fmtDur(targetMs) : "") : "-";
+  // Wider-than-today scopes get today's own figure too, so a cumulative-looking
+  // bar (Deadline crossed) can't be read as today's work. The Today card's bar is
+  // already today's, so the chip stays hidden there.
+  const todayTrkMs = cuTodayTracked(st, view);
+  const trkChip = $("cuTrkToday");
+  if (trkChip) {
+    trkChip.hidden = !(todayTrkMs > 0);
+    trkChip.textContent = todayTrkMs > 0 ? fmtDur(todayTrkMs) + " today" : "";
+    trkChip.title = CU_TODAY_TIP;
+  }
+  trk.innerHTML = "";
+  if (todayTrkMs > 0 && todayTrkMs <= spentTot) {
+    // Today's share of the fill, drawn inside the bar. Only when today is part of
+    // the bar's own total (a due-tomorrow or custom-range filter can be disjoint).
+    const seg = document.createElement("div");
+    seg.className = "cu-today-seg";
+    seg.style.width = Math.min(100, Math.round((todayTrkMs / spentTot) * 100)) + "%";
+    seg.title = CU_TODAY_TIP;
+    trk.appendChild(seg);
+  }
+  const trkBar = trk.parentElement;
+  if (trkBar) trkBar.title = todayTrkMs > 0 ? CU_TODAY_TIP : "";
 
   const sub = $("cuSub");
   if (!st) {

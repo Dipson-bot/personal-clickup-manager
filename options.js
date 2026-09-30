@@ -439,6 +439,7 @@ async function load() {
     }
     optClickup = state.clickup || {};
     renderClickupSettings(optClickup);
+    try { renderDashStrip(); } catch (e) {}
     if (optClickup && optClickup.configured && !cuTeams.length) refreshCuTeams().catch(() => {});
     // Department Creator + the filter's Department/User pickers.
     if (optClickup && optClickup.configured) {
@@ -1344,24 +1345,52 @@ function waitSlot(t) {
   const span = document.createElement("span");
   span.className = "cu-wait";
   const w = cuWaitFor(t);
-  if (!w || !Array.isArray(w.blockers) || !w.blockers.length) return span;
-  const b = w.blockers;
-  const late = b.some((x) => x.overdue);
-  const people = Array.from(new Set(b.map((x) => String(x.who || "someone").split(/\s+/)[0])));
-  span.classList.add("on", late ? "late" : "waiting");
-  const icon = document.createElement("span");
-  icon.className = "wi";
-  icon.textContent = "\u23F3";
-  const label = document.createElement("span");
-  label.className = "wl";
-  label.textContent = (late ? "Blocked: " : "Waiting: ") + people[0] + (people.length > 1 ? " +" + (people.length - 1) : "") + (late ? " late" : "");
-  span.appendChild(icon);
-  span.appendChild(label);
+  if (!w) return span;
+  const b = Array.isArray(w.blockers) ? w.blockers : [];
   const fmt = (ms) => new Date(ms).toLocaleDateString(undefined, { month: "short", day: "numeric" });
-  span.title = (late ? "Blocked by someone else's overdue subtask" : "Your part is done - waiting on someone else") + ":\n" +
-    b.map((x) => "\u2022 " + x.name + " \u00B7 " + x.who + (x.due ? " \u00B7 due " + fmt(x.due) : "") + (x.overdue ? " (overdue)" : "")).join("\n") +
-    "\nClick to open it in ClickUp.";
-  span.addEventListener("click", (e) => { e.preventDefault(); e.stopPropagation(); window.open(b[0].url, "_blank", "noopener"); });
+  if (b.length) {
+    const late = b.some((x) => x.overdue);
+    const people = Array.from(new Set(b.map((x) => String(x.who || "someone").split(/\s+/)[0])));
+    span.classList.add("on", late ? "late" : "waiting");
+    const icon = document.createElement("span");
+    icon.className = "wi";
+    icon.textContent = "\u23F3";
+    const label = document.createElement("span");
+    label.className = "wl";
+    label.textContent = (late ? "Blocked: " : "Waiting: ") + people[0] + (people.length > 1 ? " +" + (people.length - 1) : "") + (late ? " late" : "");
+    span.appendChild(icon);
+    span.appendChild(label);
+    span.title = (late ? "Blocked by someone else's overdue subtask" : "Your part is done - waiting on someone else") + ":\n" +
+      b.map((x) => "\u2022 " + x.name + " \u00B7 " + x.who + (x.due ? " \u00B7 due " + fmt(x.due) : "") + (x.overdue ? " (overdue)" : "")).join("\n") +
+      "\nClick to open it in ClickUp.";
+    span.addEventListener("click", (e) => { e.preventDefault(); e.stopPropagation(); window.open(b[0].url, "_blank", "noopener"); });
+    return span;
+  }
+  // Idea A - the task's OWN open subtasks keep it from closing: they're due after
+  // this task's due date, or the task is already past due with open subtasks left.
+  const sb = w.selfBlock;
+  if (sb && (sb.later || sb.parentOverdue)) {
+    const late = !!sb.parentOverdue;
+    span.classList.add("on", late ? "late" : "waiting");
+    const icon = document.createElement("span");
+    icon.className = "wi";
+    icon.textContent = "\u23F3";
+    const label = document.createElement("span");
+    label.className = "wl";
+    label.textContent = late ? "Blocked: subtasks open" : (sb.latestDueMs ? "Subtasks to " + fmt(sb.latestDueMs) : "Subtasks open");
+    span.appendChild(icon);
+    span.appendChild(label);
+    span.title = (late
+      ? "This task is past its due date but still has open subtasks"
+      : "This task can't close yet - it has open subtasks due after its own due date") + ":\n" +
+      "\u2022 " + sb.open + " open subtask" + (sb.open > 1 ? "s" : "") +
+      (sb.later ? ", " + sb.later + " due after this task" : "") +
+      (sb.latestDueMs ? "\n\u2022 latest subtask due " + fmt(sb.latestDueMs) : "") +
+      "\nOpen the task in ClickUp to see them.";
+    const url = t && t.url;
+    if (url) span.addEventListener("click", (e) => { e.preventDefault(); e.stopPropagation(); window.open(url, "_blank", "noopener"); });
+    return span;
+  }
   return span;
 }
 // Time cell: "tracked / est". Tracked turns red past the estimate; a running
@@ -2187,6 +2216,18 @@ function renderClickupSettings(cu) {
   $("cuAwayMin").value = cu.awayMin != null ? String(cu.awayMin) : "15";
   $("cuWrapUp").checked = cu.wrapUp !== false;
   $("cuWrapUpTime").value = cu.wrapUpTime || "16:45";
+  $("cuTidyNotify").checked = cu.tidyNotify !== false;
+  $("cuTidyTime").value = cu.tidyTime || "14:00";
+  $("cuTidyDays").value = cu.tidyDays || "weekdays";
+  $("cuTidyMax").value = cu.tidyMax != null ? String(cu.tidyMax) : "3";
+  $("cuTidyResolved").checked = cu.tidyResolved !== false;
+  var tc = cu.tidyCats || {};
+  $("cuTidyCatOverdue").checked = tc.overdue !== false;
+  $("cuTidyCatNoEst").checked = tc.noEst !== false;
+  $("cuTidyCatNoDue").checked = tc.noDue !== false;
+  $("cuTidyCatBlocked").checked = tc.blocked !== false;
+  if ($("cuTidyDaysRow")) $("cuTidyDaysRow").style.display = cu.tidyNotify === false ? "none" : "";
+  if ($("cuTidyCatsRow")) $("cuTidyCatsRow").style.display = cu.tidyNotify === false ? "none" : "";
   if (configured) {
     populateTeams(cuTeams, cu.teamId, cu.teamName || cuTeamName || "");
     // Configured but the first refresh hasn't landed yet -> show a spinner so the
@@ -3483,6 +3524,23 @@ function cuScopeTargetMs(dailyMs, st, f) {
   if (weekdays <= 1) return dailyMs; // today / tomorrow: the daily target
   return dailyMs * days; // company holidays don't count (a whole holiday week = no target)
 }
+// Today's own tracked time, for the Tracked bar when the active scope is NOT
+// today. The bar's own number is only today's when the scope is: "Deadline
+// crossed" sums ClickUp's all-time time_spent per task (so it can read 4h 13m
+// against a 7h daily target), and a week / tomorrow / custom range counts that
+// whole period. st.spentMs is today's time entries (fetchTodayEstimate), the same
+// figure the Today card shows. Its rows only carry spentToday when the
+// time-entries source was actually used, so a ClickUp fallback to the cumulative
+// field returns 0 and the chip stays hidden instead of showing a wrong number.
+const CU_TODAY_TIP = "Time you tracked today, across all your tasks. The bar shows this filter's own total, which for this filter is not today only. Point at the light part of the bar for today's share of it.";
+function cuTodayTracked(st, view) {
+  st = st || {}; view = view || {};
+  if (view.scope === "today" || view.scope === "extended") return 0; // the bar IS today
+  const rows = (Array.isArray(st.tasks) ? st.tasks : []).concat(Array.isArray(st.trackedTasks) ? st.trackedTasks : []);
+  if (!rows.some((t) => t && t.spentToday === true)) return 0;
+  const ms = Math.max(0, Number(st.spentMs) || 0);
+  return ms > 0 ? ms : 0;
+}
 // The running task's time from before this timer started (its earlier time
 // entries, kept by the background in runningProgress), so "Tracking now" goes
 // on from 30m instead of starting at 0m after a stop / complete and restart.
@@ -4194,6 +4252,17 @@ function renderClickupPreview(st) {
   trkLabel.className = "bar-label";
   const trkName = document.createElement("span");
   trkName.textContent = "Tracked Time";
+  // When the filter's scope is wider than today, say how much of it is today, so
+  // a cumulative-looking bar (Deadline crossed) can't be read as today's work.
+  const todayTrkMs = cuTodayTracked(st, view);
+  if (todayTrkMs > 0) {
+    const chip = document.createElement("span");
+    chip.className = "trk-today";
+    chip.textContent = fmtDurOpt(todayTrkMs) + " today";
+    chip.title = CU_TODAY_TIP;
+    trkName.appendChild(document.createTextNode(" "));
+    trkName.appendChild(chip);
+  }
   const trkVal = document.createElement("span");
   trkVal.className = "val";
   trkVal.textContent = fmtDurOpt(spentTot) + (targetMs > 0 ? " of " + fmtDurOpt(targetMs) : "");
@@ -4212,7 +4281,17 @@ function renderClickupPreview(st) {
   trkFill.className = "cu-fill2 trk" + (spentTot >= targetMs && targetMs > 0 ? " met" : "");
   const trkPct = targetMs > 0 ? Math.min(100, Math.round((spentTot / targetMs) * 100)) : 0;
   trkFill.style.width = trkPct + "%";
+  // Today's share of the fill, drawn inside the bar. Only when today is part of
+  // the bar's own total (a due-tomorrow or custom-range filter can be disjoint).
+  if (todayTrkMs > 0 && todayTrkMs <= spentTot) {
+    const seg = document.createElement("div");
+    seg.className = "cu-today-seg";
+    seg.style.width = Math.min(100, Math.round((todayTrkMs / spentTot) * 100)) + "%";
+    seg.title = CU_TODAY_TIP;
+    trkFill.appendChild(seg);
+  }
   trkBar.appendChild(trkFill);
+  trkBar.title = todayTrkMs > 0 ? CU_TODAY_TIP : "";
   barWrap.appendChild(trkLabel);
   barWrap.appendChild(trkBar);
   box.appendChild(barWrap);
@@ -4600,6 +4679,39 @@ $("cuSaveAdminToken").onclick = async () => {
   }
 };
 
+// Daily "needs tidying" reminder: hide its details while it's switched off, and
+// wire the two buttons. The preview posts the real summary without spending
+// today's one-shot, so you can check the wording and the timing settings.
+(function () {
+  const box = $("cuTidyNotify");
+  if (!box) return;
+  const rows = [$("cuTidyDaysRow"), $("cuTidyCatsRow")];
+  const paint = () => rows.forEach((r) => { if (r) r.style.display = box.checked ? "" : "none"; });
+  box.addEventListener("change", paint);
+  paint();
+  const go = $("cuTidyGoInsights");
+  if (go) go.onclick = (e) => { e.preventDefault(); showOptTab("insights"); window.scrollTo({ top: 0 }); };
+  const pv = $("cuTidyPreview");
+  if (pv) pv.onclick = async () => {
+    pv.disabled = true;
+    const was = pv.textContent;
+    pv.textContent = "Building…";
+    try {
+      const r = await send({ type: "CLICKUP_TIDY_PREVIEW", fresh: true }, 30000);
+      if (r && r.ok) {
+        cuMsg("cuSaveMsg", r.sample ? "Sample sent - your board is clean right now ✓" : "Preview sent ✓", true);
+      } else {
+        const why = (r && (r.error || r.reason)) || "unknown error";
+        cuMsg("cuSaveMsg", r && r.reason === "not-connected" ? "Connect ClickUp first." : "Couldn't build a preview: " + why, false);
+      }
+    } catch (e) {
+      cuMsg("cuSaveMsg", "Couldn't build a preview: " + (e && e.message ? e.message : e), false);
+    }
+    pv.disabled = false;
+    pv.textContent = was;
+  };
+})();
+
 // Save target hours / nudge hour / badge / notify / deadline URLs / workday end.
 // Validates the numbers here so a stray letter can't blank the target; the
 // background re-validates too.
@@ -4656,6 +4768,16 @@ $("cuSave").onclick = async () => {
     return;
   }
   const wrapUpTime = $("cuWrapUpTime").value || "16:45";
+  const tidyTime = $("cuTidyTime").value || "14:00";
+  if (!/^\d{1,2}:\d{2}$/.test(tidyTime) || Number(tidyTime.split(":")[0]) > 23 || Number(tidyTime.split(":")[1]) > 59) {
+    cuMsg("cuSaveMsg", "The \"needs tidying\" time must be a time of day, like 14:00.", false);
+    return;
+  }
+  const tidyMax = parseInt($("cuTidyMax").value.trim(), 10) || 3;
+  if (!Number.isInteger(tidyMax) || tidyMax < 1 || tidyMax > 6) {
+    cuMsg("cuSaveMsg", "\"Name up to\" must be a whole number of tasks from 1 to 6.", false);
+    return;
+  }
   const deadlineUrls = $("cuDeadlineUrls").value.split("\n").map((s) => s.trim()).filter(Boolean);
   try {
     await send({
@@ -4682,6 +4804,15 @@ $("cuSave").onclick = async () => {
         clickupAwayMin: awayMin,
         clickupWrapUp: $("cuWrapUp").checked,
         clickupWrapUpTime: wrapUpTime,
+        clickupTidyNotify: $("cuTidyNotify").checked,
+        clickupTidyTime: tidyTime,
+        clickupTidyDays: $("cuTidyDays").value || "weekdays",
+        clickupTidyMax: tidyMax,
+        clickupTidyResolved: $("cuTidyResolved").checked,
+        clickupTidyCats: {
+          overdue: $("cuTidyCatOverdue").checked, noEst: $("cuTidyCatNoEst").checked,
+          noDue: $("cuTidyCatNoDue").checked, blocked: $("cuTidyCatBlocked").checked,
+        },
         clickupDeadlineTaskUrls: deadlineUrls,
       },
     });
@@ -5176,6 +5307,373 @@ function optOpenCuFilterMenu(open) {
 function optRepaintCuPreview() {
   if (optClickup && optClickup.state) renderClickupPreview(optClickup.state);
   cuPaintChartBanner();
+  try { renderDashStrip(); } catch (e) {}
+  try { if (insTabActive()) renderInsights(); } catch (e) {}
+}
+
+/* ============================ Insights ============================ */
+/* Phase 1 - a weekly health check surfaced two ways:
+   (1) renderDashStrip()  - a quiet one-line strip on the Dashboard. State-only, so
+       ZERO extra ClickUp calls; it just reads counts already in optClickup.state
+       (this week's "no estimate" and the "waiting"/sub-blocked map), and, only if
+       the Insights tab happens to have already loaded the open-task list, enriches
+       itself with overdue / no-due counts from that same in-memory cache.
+   (2) renderInsights()   - the full Insights tab, built from ONE broad open-tasks
+       fetch (CLICKUP_OPEN_TASKS - cached ~3 min in the background and shared with
+       Bulk edit) aggregated on the page, plus the already-loaded state.
+   All markup reuses existing CSS variables, so light/dark is automatic. */
+
+var insCache = null;      // { status:"ok"|"err", data:[rows], error, at }
+var insLoading = false;   // a CLICKUP_OPEN_TASKS fetch is in flight
+var INS_TTL = 5 * 60000;  // consider the open-task cache stale after this
+
+function insTabActive() {
+  var p = document.querySelector('.panel[data-panel="insights"]');
+  return !!(p && p.classList.contains("on"));
+}
+function insConnected() { return !!(optClickup && (optClickup.configured || optClickup.state)); }
+function insTaskUrl(id) { return "https://app.clickup.com/t/" + id; }
+function insHrs(ms) {
+  ms = Number(ms) || 0;
+  if (ms <= 0) return "0h";
+  var m = Math.round(ms / 60000), h = Math.floor(m / 60);
+  m = m % 60;
+  if (!h) return m + "m";
+  return m ? h + "h " + m + "m" : h + "h";
+}
+function insEsc(s) {
+  return String(s == null ? "" : s).replace(/[&<>"]/g, function (c) {
+    return c === "&" ? "&amp;" : c === "<" ? "&lt;" : c === ">" ? "&gt;" : "&quot;";
+  });
+}
+function insDateShort(ms) {
+  if (!ms) return "";
+  try { return new Date(ms).toLocaleDateString(undefined, { month: "short", day: "numeric" }); } catch (e) { return ""; }
+}
+function insDaysAgo(ms, todayStart) {
+  return Math.round((todayStart - new Date(Number(ms)).setHours(0, 0, 0, 0)) / 86400000);
+}
+function insWhen(at) {
+  var s = Math.round((Date.now() - at) / 1000);
+  if (s < 45) return "just now";
+  if (s < 90) return "a minute ago";
+  if (s < 3600) return Math.round(s / 60) + " minutes ago";
+  try { return new Date(at).toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" }); } catch (e) { return "recently"; }
+}
+
+// Tasks that can't move: someone else's subtask is still open (person-blocked) OR
+// their own subtasks run past their due date / they're overdue with open subtasks
+// (Idea A). Same state.waiting the task rows use for the "waiting" chip - no fetch.
+function insBlockedCount(st) {
+  var w = st && st.waiting;
+  if (!w) return 0;
+  var n = 0;
+  for (var k in w) {
+    if (!Object.prototype.hasOwnProperty.call(w, k)) continue;
+    var e = w[k];
+    if (!e) continue;
+    if ((e.blockers && e.blockers.length) || (e.selfBlock && (e.selfBlock.later || e.selfBlock.parentOverdue))) n++;
+  }
+  return n;
+}
+
+function insWeekBounds(st) {
+  var twTo = (st && st.thisWeek && Number(st.thisWeek.toTs)) || 0;
+  var nwTo = (st && st.nextWeek && Number(st.nextWeek.toTs)) || 0;
+  if (!twTo) {
+    var e = new Date(); e.setHours(23, 59, 59, 999);
+    e.setDate(e.getDate() + ((7 - e.getDay()) % 7)); // end of this week (Sun)
+    twTo = e.getTime();
+  }
+  if (!nwTo || nwTo <= twTo) nwTo = twTo + 7 * 86400000;
+  return { twTo: twTo, nwTo: nwTo, todayStart: new Date().setHours(0, 0, 0, 0) };
+}
+
+// Aggregate the open-task rows + state into everything the tab and strip need.
+function insBuildModel(rows, st) {
+  var b = insWeekBounds(st), todayStart = b.todayStart, twTo = b.twTo, nwTo = b.nwTo;
+  var list = [], hasKids = Object.create(null), i, r;
+  for (i = 0; i < rows.length; i++) {
+    r = rows[i];
+    if (!r || r.done) continue;
+    if (r.parentId) hasKids[r.parentId] = true;
+    list.push({
+      id: r.id, name: r.name || "(untitled task)", url: r.url || insTaskUrl(r.id),
+      due: Number(r.dueDateMs) || 0, est: Number(r.estimateMs) || 0,
+      client: (r.client && String(r.client)) || "(no client)",
+      isSubtask: !!r.isSubtask, parentId: r.parentId || null,
+    });
+  }
+  function mk() { return { n: 0, est: 0 }; }
+  var buckets = { overdue: mk(), thisWeek: mk(), nextWeek: mk(), later: mk(), noDate: mk() };
+  var overdueList = [], noEstList = [], noDueList = [], byClient = Object.create(null);
+  var kOverdue = 0, kWeek = 0, kNoEst = 0, kNoDue = 0, openTotal = 0;
+  for (i = 0; i < list.length; i++) {
+    r = list[i];
+    var umbrella = !!hasKids[r.id]; // a parent whose subtasks are in this list
+    openTotal++;
+    var c = byClient[r.client] || (byClient[r.client] = { name: r.client, open: 0, overdue: 0, noEst: 0, weekEst: 0 });
+    c.open++;
+    var bk;
+    if (!r.due) bk = "noDate";
+    else if (r.due < todayStart) bk = "overdue";
+    else if (r.due <= twTo) bk = "thisWeek";
+    else if (r.due <= nwTo) bk = "nextWeek";
+    else bk = "later";
+    buckets[bk].n++;
+    if (!umbrella) buckets[bk].est += r.est; // don't double-count umbrella hours
+    if (bk === "overdue") { kOverdue++; c.overdue++; overdueList.push(r); }
+    if (bk === "thisWeek") { kWeek++; if (!umbrella) c.weekEst += r.est; }
+    if (!umbrella && r.est <= 0) { kNoEst++; c.noEst++; noEstList.push(r); }
+    if (!umbrella && !r.due) { kNoDue++; noDueList.push(r); }
+  }
+  var byId = Object.create(null);
+  for (i = 0; i < list.length; i++) byId[list[i].id] = list[i];
+  var blockedList = [], w = (st && st.waiting) || {};
+  for (var key in w) {
+    if (!Object.prototype.hasOwnProperty.call(w, key)) continue;
+    var e2 = w[key];
+    if (!e2) continue;
+    var personBlock = e2.blockers && e2.blockers.length, sb = e2.selfBlock;
+    var subBlock = sb && (sb.later || sb.parentOverdue);
+    if (!personBlock && !subBlock) continue;
+    var row = byId[key], reason;
+    if (personBlock) {
+      var uniq = [];
+      e2.blockers.forEach(function (x) { var nm = x.who || x.name; if (nm && uniq.indexOf(nm) < 0) uniq.push(nm); });
+      reason = "Waiting on " + (uniq.slice(0, 2).join(", ") || "someone") + (uniq.length > 2 ? " +" + (uniq.length - 2) : "");
+    } else if (sb.parentOverdue) {
+      reason = "Overdue · " + sb.open + " subtask" + (sb.open === 1 ? "" : "s") + " still open";
+    } else {
+      reason = sb.later + " subtask" + (sb.later === 1 ? "" : "s") + " due after it" + (sb.latestDueMs ? " (to " + insDateShort(sb.latestDueMs) + ")" : "");
+    }
+    blockedList.push({ id: key, name: row ? row.name : "(task " + key + ")", url: row ? row.url : insTaskUrl(key), client: row ? row.client : "", reason: reason });
+  }
+  overdueList.sort(function (a, z) { return a.due - z.due; });
+  var clients = Object.keys(byClient).map(function (kk) { return byClient[kk]; });
+  clients.sort(function (a, z) { return (z.overdue - a.overdue) || (z.open - a.open); });
+  return {
+    k: { overdue: kOverdue, week: kWeek, noEst: kNoEst, noDue: kNoDue, blocked: blockedList.length, open: openTotal },
+    buckets: buckets, clients: clients, todayStart: todayStart,
+    overdueList: overdueList, noEstList: noEstList, noDueList: noDueList, blockedList: blockedList,
+  };
+}
+
+// ---- Dashboard health strip (state-only, zero API) ----
+function insStateCounts(st) {
+  var blocked = insBlockedCount(st);
+  var noEst = (st.thisWeek && Number(st.thisWeek.noEstimateCount)) || 0;
+  var overdue = 0, noDue = 0;
+  if (insCache && insCache.status === "ok" && Array.isArray(insCache.data)) {
+    var m = insBuildModel(insCache.data, st);
+    overdue = m.k.overdue; noEst = m.k.noEst; noDue = m.k.noDue; blocked = m.k.blocked;
+  }
+  return { overdue: overdue, blocked: blocked, noEst: noEst, noDue: noDue, total: overdue + blocked + noEst + noDue };
+}
+function renderDashStrip() {
+  var el = document.getElementById("pcmDashStrip");
+  if (!el) return;
+  var st = optClickup && optClickup.state;
+  if (!insConnected() || !st) { el.style.display = "none"; return; }
+  var c = insStateCounts(st);
+  if (!c.total) { el.style.display = "none"; return; } // don't nag when all is well
+  var chips = [];
+  if (c.overdue) chips.push('<span class="mini red">' + c.overdue + " overdue</span>");
+  if (c.blocked) chips.push('<span class="mini red">' + c.blocked + " blocked</span>");
+  if (c.noEst) chips.push('<span class="mini amber">' + c.noEst + " no estimate</span>");
+  if (c.noDue) chips.push('<span class="mini amber">' + c.noDue + " no due date</span>");
+  el.className = "pcm-dash-strip";
+  el.innerHTML =
+    '<span class="lead"><span style="color:var(--amber)">⚠️</span> Worth a look:</span>' +
+    chips.join("") +
+    '<span class="grow"><button type="button" class="pds-go" id="pcmDashStripGo">See all insights →</button></span>';
+  el.style.display = "flex";
+  var go = document.getElementById("pcmDashStripGo");
+  if (go) go.onclick = function () { showOptTab("insights"); window.scrollTo({ top: 0 }); };
+}
+
+// ---- Full Insights tab ----
+function insShell(inner) {
+  return '<div class="page-h" style="margin:0 0 4px;"><h2 style="margin:0;font-size:18px;">Insights</h2></div>' +
+    '<p class="ins-sub">A weekly health check of everything assigned to you.</p>' + inner;
+}
+function renderInsights() {
+  var view = document.getElementById("insView");
+  if (!view) return;
+  var st = (optClickup && optClickup.state) || {};
+  if (!insConnected()) {
+    view.innerHTML = insShell('<div class="ins-empty">Connect ClickUp first &mdash; open <b>ClickUp setup</b> to sign in. Insights then shows a health check of everything assigned to you.</div>');
+    return;
+  }
+  var fresh = insCache && insCache.status === "ok" && (Date.now() - insCache.at < INS_TTL);
+  if (!fresh && !insLoading) insFetchOpen(false);
+  if (insCache && insCache.status === "ok") {
+    var meta = "Updated " + insWhen(insCache.at) + " · one ClickUp fetch, then cached" + (insLoading ? " · refreshing…" : "");
+    view.innerHTML = insPaint(insBuildModel(insCache.data, st), st, meta);
+    insWire(view);
+  } else if (insCache && insCache.status === "err") {
+    view.innerHTML = insShell('<div class="ins-empty">Couldn’t load your tasks: ' + insEsc(insCache.error || "unknown error") +
+      '<br><br><button type="button" class="lnk" id="insRetry">Try again</button></div>');
+    var rt = document.getElementById("insRetry"); if (rt) rt.onclick = function () { insFetchOpen(true); };
+  } else {
+    view.innerHTML = insShell('<div class="ins-empty">Loading a health check of your tasks…</div>');
+  }
+}
+function insFetchOpen(force) {
+  if (insLoading) return;
+  insLoading = true;
+  if (insTabActive()) { try { renderInsights(); } catch (e) {} }
+  send({ type: "CLICKUP_OPEN_TASKS", force: !!force }, 30000).then(function (r) {
+    insLoading = false;
+    if (r && r.ok && r.data && Array.isArray(r.data.tasks)) insCache = { status: "ok", data: r.data.tasks, at: Date.now() };
+    else insCache = { status: "err", error: (r && (r.error || r.reason)) || "No tasks returned", at: Date.now() };
+    if (insTabActive()) { try { renderInsights(); } catch (e) {} }
+    try { renderDashStrip(); } catch (e) {}
+  }).catch(function (e) {
+    insLoading = false;
+    insCache = { status: "err", error: String(e && e.message ? e.message : e), at: Date.now() };
+    if (insTabActive()) { try { renderInsights(); } catch (e2) {} }
+  });
+}
+function insPaint(m, st, meta) {
+  var k = m.k, problems = k.overdue + k.noEst + k.noDue + k.blocked, html = "";
+  html += '<div class="page-h" style="display:flex;align-items:center;gap:10px;margin:0 0 4px;"><h2 style="margin:0;font-size:18px;">Insights</h2></div>';
+  html += '<p class="ins-sub">A weekly health check of everything assigned to you — the things that are easy to miss until it’s too late. Every number is a shortcut into the details.</p>';
+  if (problems) {
+    var bchips = [];
+    if (k.overdue) bchips.push('<span class="mini red">' + k.overdue + " overdue</span>");
+    if (k.blocked) bchips.push('<span class="mini red">' + k.blocked + " blocked</span>");
+    if (k.noEst) bchips.push('<span class="mini amber">' + k.noEst + " missing an estimate</span>");
+    if (k.noDue) bchips.push('<span class="mini amber">' + k.noDue + " missing a due date</span>");
+    html += '<div class="banner warn"><span class="big">⚠️</span><div><b>' + problems +
+      " thing" + (problems === 1 ? "" : "s") + ' could use your attention</b><br><span class="b-sub">' +
+      insEsc(meta) + '</span></div><div class="chips">' + bchips.join("") + "</div></div>";
+  } else {
+    html += '<div class="banner good"><span class="big">✓</span><div><b>All caught up</b><br><span class="b-sub">' +
+      "Nothing overdue, everything estimated and dated. " + insEsc(meta) + "</span></div></div>";
+  }
+  function barCol(cls) { return cls === "red" ? "var(--red)" : cls === "amber" ? "var(--amber)" : cls === "blue" ? "var(--blue)" : "var(--green)"; }
+  function barPct(n) { return Math.max(6, Math.min(100, Math.round((n / Math.max(1, k.open)) * 100))); }
+  function kpi(cls, n, label, drill, title) {
+    var tag = drill ? "button" : "div", attr = drill ? ' type="button" data-drill="' + drill + '"' : "";
+    return "<" + tag + ' class="kpi ' + cls + '"' + attr + ' title="' + insEsc(title || "") + '">' +
+      (drill ? '<span class="go">details →</span>' : "") +
+      '<div class="n">' + n + '</div><div class="l">' + label + '</div>' +
+      '<div class="bar"><i style="width:' + barPct(n) + "%;background:" + barCol(cls) + '"></i></div></' + tag + ">";
+  }
+  html += '<div class="kpis">' +
+    kpi("red", k.overdue, "Overdue", k.overdue ? "overdue" : "", "Past their due date and not done") +
+    kpi("blue", k.week, "Due this week", "", "Due between today and the end of this week") +
+    kpi("amber", k.noEst, "No estimate", k.noEst ? "noest" : "", "Open tasks with no time estimate") +
+    kpi("amber", k.noDue, "No due date", k.noDue ? "nodue" : "", "Open tasks with no due date") +
+    kpi("red", k.blocked, "Blocked / waiting", k.blocked ? "blocked" : "", "Waiting on someone, or held by their own open subtasks") +
+    kpi("green", k.open, "Open total", "", "All open tasks assigned to you") +
+    "</div>";
+  html += '<div class="cols">' + insWorkloadCard(m) + insHygieneCard(m) + "</div>";
+  html += insClientCard(m);
+  html += insDrillsHtml(m);
+  return html;
+}
+function insWorkloadCard(m) {
+  var order = [
+    { key: "overdue", lab: "Overdue", cls: "od" },
+    { key: "thisWeek", lab: "This week", cls: "" },
+    { key: "nextWeek", lab: "Next week", cls: "" },
+    { key: "later", lab: "Later", cls: "" },
+    { key: "noDate", lab: "No date", cls: "nd" },
+  ];
+  var max = 0, i;
+  for (i = 0; i < order.length; i++) max = Math.max(max, m.buckets[order[i].key].est);
+  var bars = "";
+  for (i = 0; i < order.length; i++) {
+    var o = order[i], bk = m.buckets[o.key];
+    var pct = max > 0 ? Math.max(bk.est > 0 ? 6 : 0, Math.round((bk.est / max) * 100)) : 0;
+    var val = o.key === "noDate" ? "—" : (bk.est > 0 ? insHrs(bk.est) : "—");
+    bars += '<div class="wk-day ' + o.cls + '"><div class="wk-cnt">' + bk.n + (bk.n === 1 ? " task" : " tasks") + "</div>" +
+      '<div class="wk-bars"><div class="wk-bar est" style="height:' + pct + '%"></div></div>' +
+      '<div class="wk-lab">' + o.lab + '</div><div class="wk-val">' + val + "</div></div>";
+  }
+  return '<div class="card"><div class="dash-h"><div><h3>Workload outlook</h3><p class="hint">Estimated hours waiting for you, by when it’s due</p></div></div>' +
+    '<div class="wk-chart">' + bars + "</div>" +
+    '<div class="legend"><span><i style="background:color-mix(in srgb,var(--amber) 82%,transparent)"></i>Estimated hours</span>' +
+    '<span><i style="background:color-mix(in srgb,var(--red) 78%,transparent)"></i>Overdue</span>' +
+    '<span><i style="background:var(--muted);opacity:.5"></i>No due date</span></div></div>';
+}
+function insHygieneCard(m) {
+  var k = m.k;
+  function row(cls, n, title, sub, drill) {
+    var lnk = (drill && n) ? '<button type="button" class="lnk" data-drill="' + drill + '">Review →</button>' : '<span class="lnk" style="opacity:.4">—</span>';
+    return '<div class="hy-row ' + (n ? cls : "muted") + '"><div class="n">' + n + '</div><div class="l">' + title + "<small>" + sub + "</small></div>" + lnk + "</div>";
+  }
+  var oldest = "None past due";
+  if (m.overdueList.length) {
+    var d = insDaysAgo(m.overdueList[0].due, m.todayStart);
+    oldest = d > 0 ? ("Oldest: " + d + " day" + (d === 1 ? "" : "s") + " past due") : "Due today or just passed";
+  }
+  return '<div class="card"><div class="dash-h"><div><h3>Needs tidying</h3><p class="hint">Tasks that will skew your day plan</p></div></div>' +
+    row("amber", k.noEst, "Missing a time estimate", "Not counted in your daily target", "noest") +
+    row("amber", k.noDue, "Missing a due date", "Won’t show in any day / week view", "nodue") +
+    row("red", k.overdue, "Overdue and not done", oldest, "overdue") +
+    row("red", k.blocked, "Blocked / waiting", "Held by someone else or their own open subtasks", "blocked") + "</div>";
+}
+function insClientCard(m) {
+  if (!m.clients.length) return "";
+  function badge(n, cls) { return '<span class="badge ' + (n ? cls : "zero") + '">' + n + "</span>"; }
+  var maxWeek = 0, i, top = m.clients.slice(0, 8), rows = "";
+  for (i = 0; i < top.length; i++) maxWeek = Math.max(maxWeek, top[i].weekEst);
+  for (i = 0; i < top.length; i++) {
+    var c = top[i];
+    var dot = c.overdue ? "var(--red)" : (c.noEst ? "var(--amber)" : "var(--indigo)");
+    var wpct = maxWeek > 0 ? Math.round((c.weekEst / maxWeek) * 100) : 0;
+    rows += "<tr><td><div class=\"client\"><span class=\"dot\" style=\"background:" + dot + "\"></span><span class=\"nm\">" + insEsc(c.name) + "</span></div></td>" +
+      '<td class="num">' + c.open + "</td>" +
+      '<td class="num">' + badge(c.overdue, "red") + "</td>" +
+      '<td class="num">' + badge(c.noEst, "amber") + "</td>" +
+      '<td><div class="cell-bar"><i style="width:' + wpct + '%"></i></div></td></tr>';
+  }
+  var note = m.clients.length > 8 ? '<span class="hint">top 8 of ' + m.clients.length + "</span>" : '<span class="hint">sorted by overdue</span>';
+  return '<div class="card" style="margin-top:18px"><div class="dash-h"><div><h3>By client</h3><p class="hint">Where the open work and overdue items are piling up</p></div><span class="spacer"></span>' + note + "</div>" +
+    '<table class="hot"><thead><tr><th>Client</th><th class="num">Open</th><th class="num">Overdue</th><th class="num">No est.</th><th>This week’s load</th></tr></thead><tbody>' + rows + "</tbody></table></div>";
+}
+function insDrillsHtml(m) {
+  var out = "";
+  out += insDrill("overdue", "Overdue tasks", m.overdueList, function (r) {
+    var d = insDaysAgo(r.due, m.todayStart);
+    return { badge: '<span class="badge red">' + (d > 0 ? d + "d" : "due") + "</span>", sub: (r.client ? insEsc(r.client) + " · " : "") + "due " + insDateShort(r.due) + (r.est ? " · " + insHrs(r.est) : " · no est"), action: "Open" };
+  });
+  out += insDrill("blocked", "Blocked / waiting", m.blockedList, function (r) {
+    return { badge: '<span class="badge red">held</span>', sub: (r.client ? insEsc(r.client) + " · " : "") + insEsc(r.reason), action: "Open" };
+  });
+  out += insDrill("noest", "Missing an estimate", m.noEstList, function (r) {
+    return { badge: '<span class="badge amber">no est</span>', sub: (r.client ? insEsc(r.client) + " · " : "") + (r.due ? "due " + insDateShort(r.due) : "no due date"), action: "Add estimate" };
+  });
+  out += insDrill("nodue", "Missing a due date", m.noDueList, function (r) {
+    return { badge: '<span class="badge amber">no date</span>', sub: (r.client ? insEsc(r.client) + " · " : "") + (r.est ? insHrs(r.est) : "no estimate"), action: "Set due date" };
+  });
+  return out;
+}
+function insDrill(id, label, listArr, fmt) {
+  var n = listArr.length, cap = 60, body = "", i;
+  for (i = 0; i < Math.min(n, cap); i++) {
+    var r = listArr[i], f = fmt(r);
+    body += '<div class="trow">' + f.badge + '<div class="ttl"><b>' + insEsc(r.name) + "</b><small>" + f.sub + "</small></div>" +
+      '<a class="lnk" href="' + insEsc(r.url) + '" target="_blank" rel="noopener">' + f.action + "</a></div>";
+  }
+  if (n > cap) body += '<div class="det-more">+ ' + (n - cap) + " more</div>";
+  if (!n) body += '<div class="det-more">Nothing here — nice.</div>';
+  return '<details class="ins-det" data-drill="' + id + '"><summary><span class="caret">▸</span> ' + label + ' <span class="count">(' + n + ")</span></summary><div class=\"det-body\">" + body + "</div></details>";
+}
+function insWire(view) {
+  view.querySelectorAll("[data-drill]").forEach(function (el) {
+    if (el.tagName === "DETAILS") return; // native <details> toggles itself
+    el.onclick = function () { insOpenDrill(el.getAttribute("data-drill")); };
+  });
+}
+function insOpenDrill(drill) {
+  var d = document.querySelector('#insView details.ins-det[data-drill="' + drill + '"]');
+  if (!d) return;
+  d.open = true;
+  try { d.scrollIntoView({ behavior: "smooth", block: "center" }); } catch (e) { d.scrollIntoView(); }
 }
 (async function initOptCuFilter() {
   const btn = $("optCuFilterBtn");
@@ -5315,7 +5813,7 @@ function scheduleClickupUiRefresh(delay) {
     if (_isEditingField()) { scheduleClickupUiRefresh(1500); return; }
     try {
       const st = await send({ type: "GET_STATE" });
-      if (st) { optClickup = st.clickup || {}; renderClickupSettings(optClickup); }
+      if (st) { optClickup = st.clickup || {}; renderClickupSettings(optClickup); try { renderDashStrip(); } catch (e) {} try { if (insTabActive()) renderInsights(); } catch (e) {} }
     } catch (e) {}
   }, delay == null ? 300 : delay);
 }
@@ -5880,11 +6378,13 @@ setInterval(() => { if (!document.hidden) syncClickupRunning(); }, 60000);
 // ---------- Sidebar navigation (tabbed layout) ----------
 // One section visible at a time; the choice is remembered (per browser) and can
 // be deep-linked with #dashboard / #clickup / #agent / #sites / #general.
-const OPT_TABS = ["dashboard", "clickup", "agent", "sites", "hub", "reminders", "files", "bulk", "admin", "general"];
+const OPT_TABS = ["dashboard", "insights", "clickup", "agent", "sites", "hub", "reminders", "files", "bulk", "admin", "general"];
 function showOptTab(name) {
   if (!OPT_TABS.includes(name)) name = "dashboard";
   document.querySelectorAll("#sideNav [data-tab]").forEach((b) => b.classList.toggle("on", b.dataset.tab === name));
   document.querySelectorAll(".panel[data-panel]").forEach((p) => p.classList.toggle("on", p.dataset.panel === name));
+  try { renderDashStrip(); } catch (e) {}
+  if (name === "insights") { try { renderInsights(); } catch (e) {} }
   try { localStorage.setItem("optTab", name); } catch (e) {}
   if (location.hash !== "#" + name) history.replaceState(null, "", "#" + name);
 }
@@ -6072,15 +6572,15 @@ async function renderAutoUpdate() {
   const ui = got.updateInfo, st = got.autoUpdateState;
   const when = (t) => new Date(t).toLocaleString([], { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" });
   if (ui && ui.newer) {
-    if (st && st.version === ui.latest && st.fails >= 4) {
-      line.textContent = "Couldn't install v" + ui.latest + " automatically" + (st.error ? " (" + st.error + ")" : "") + ". Use Update now instead.";
+    if (st && st.version === ui.latest && st.reason && !/^(no-folder|permission|moved)$/.test(st.reason)) {
+      line.textContent = "Still trying to install v" + ui.latest + " for you (" + st.reason + (st.error ? ": " + st.error : "") + "). It keeps retrying; Update now also works.";
     } else if (Number(ui.autoAt) > Date.now()) {
-      line.textContent = "On. v" + ui.latest + " installs automatically after " + when(ui.autoAt) + ", at a moment you're not using the extension.";
+      line.textContent = "On. v" + ui.latest + " installs automatically after " + when(ui.autoAt) + ".";
     } else {
-      line.textContent = "On. v" + ui.latest + " installs at the next quiet moment (popup and side panel closed, or you're away for a few minutes).";
+      line.textContent = "On. v" + ui.latest + " installs by itself within a minute or two - the side panel closes and your pages come back.";
     }
   } else {
-    line.textContent = "On. New versions install by themselves; you're up to date.";
+    line.textContent = "On. New versions install by themselves within a minute or two; you're up to date.";
   }
 }
 if ($("autoUpdate")) $("autoUpdate").onchange = async () => {
@@ -6247,10 +6747,10 @@ function arVisible(st) {
 // publishes it as a GitHub release, so a new version can go out without leaving
 // the browser. The GitHub token lives encrypted in the background, never here.
 const ADMIN_FILES = [
-  "manifest.json", "background.js", "popup.html", "popup.js", "options.html", "options.js",
+  "manifest.json", "background.js", "popup.html", "popup.js", "options.html", "options.js", "phone-timer.js",
   "offscreen.html", "offscreen.js", "update.html", "update.js", "wrapup.html", "wrapup.js",
   "notify-menu.js", "export-tasks.js", "lib-zip.js", "lib-unzip.js", "lib-automation.js",
-  "lib-availability.js", "lib-clickup.js", "lib-crypto.js", "lib-drive.js", "task-panel.js", "lib-updater.js", "offscreen-updater.js", "celebrate.js", "celebrate.html", "celebrate-window.js", "fx.js", "pcm-help.js", "tracker.html", "tracker.js", "bulk-edit.js", "pcm-search.js", "lib-taskfiles.js", "task-files.js", "reminders.js", "hub.js", "task-sort.js", "breakdown.js", "calendar.js", "notices.js", "team-hub.gs", "vendor/pdf.min.js", "vendor/pdf.worker.min.js", "vendor/pdfjs-LICENSE.txt",
+  "lib-availability.js", "lib-clickup.js", "lib-crypto.js", "lib-tidy.js", "lib-drive.js", "task-panel.js", "lib-updater.js", "offscreen-updater.js", "celebrate.js", "celebrate.html", "celebrate-window.js", "fx.js", "pcm-help.js", "tracker.html", "tracker.js", "bulk-edit.js", "pcm-search.js", "lib-taskfiles.js", "task-files.js", "reminders.js", "hub.js", "task-sort.js", "breakdown.js", "calendar.js", "notices.js", "team-hub.gs", "vendor/pdf.min.js", "vendor/pdf.worker.min.js", "vendor/pdfjs-LICENSE.txt",
   "icons/icon16.png", "icons/icon48.png", "icons/icon128.png", "icons/celebrate.png", "icons/sad.png",
   "sounds/notify.wav", "sounds/danger.mp3", "sounds/winner.wav",
   "README.md", "CHANGELOG.md",

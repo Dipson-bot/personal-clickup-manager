@@ -11,6 +11,7 @@
     ["clickupNotify", "Daily target progress", "Halfway, almost there, target reached, behind"],
     ["clickupRunningNotify", "Estimate almost up", "A running task nears its estimate"],
     ["clickupWrapUp", "End-of-day wrap-up", "Weekday reminder to wrap up"],
+    ["clickupTidyNotify", "Needs-tidying summary", "Daily list of overdue / blocked tasks"],
     ["notifySound", "Sound", "Chime with each notification"],
   ];
   let settings = {};

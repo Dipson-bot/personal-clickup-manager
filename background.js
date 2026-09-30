@@ -25,8 +25,9 @@ import {
   driveQuota,
 } from "./lib-drive.js";
 import { runAllAccounts, runAccountLogin, readAgentRouterLogin, URLS, GITHUB_KEEP_COOKIES } from "./lib-automation.js";
-import { getUser, verifyToken, getTeams, fetchTodayEstimate, fetchWeeklySummary, fetchDateRangeEstimate, createTaskCache, fetchTeamMembers, fmtDuration, findExtraTaskByName, parseTaskIdFromUrl, getCurrentTimeEntry, getRunningTaskProgress, startTimer, stopTimer, getTaskById, setTaskStatus, taskUrlFor, clientLabelFromContainer, resolveSpaceNamesFor, taskContainer, cuPriorityName, isTaskDone, getSubtasksOfParent, getTaskTree, getTaskDetail, updateTimeEntry, setTaskDueDate, clearTaskTreeCache, listWorkspaceClients, cuRowAssignees, fetchDoneBetween, getTaskPanel, addTaskComment, setTaskDescription, getTaskCommentLinks } from "./lib-clickup.js";
+import { getUser, verifyToken, getTeams, fetchTodayEstimate, fetchWeeklySummary, fetchDateRangeEstimate, createTaskCache, fetchTeamMembers, fetchWorkspaceTags, cuTagNames, fmtDuration, findExtraTaskByName, parseTaskIdFromUrl, getCurrentTimeEntry, getRunningTaskProgress, startTimer, stopTimer, getTaskById, setTaskStatus, taskUrlFor, clientLabelFromContainer, resolveSpaceNamesFor, taskContainer, cuPriorityName, isTaskDone, getSubtasksOfParent, getTaskTree, getTaskDetail, updateTimeEntry, setTaskDueDate, clearTaskTreeCache, listWorkspaceClients, cuRowAssignees, fetchDoneBetween, getTaskPanel, addTaskComment, postTaskComment, setTaskDescription, getTaskCommentLinks } from "./lib-clickup.js";
 import { resolveRelayKey, pickProbeModel, probeRelay } from "./lib-availability.js";
+import { tidyCollect, tidyLines, tidyResolved, tidyDayOk, tidyUrgent } from "./lib-tidy.js";
 
 const CHECK_ALARM = "dailyLoginCheck";
 const CLICKUP_ALARM = "clickupRefresh";
@@ -706,6 +707,8 @@ let teamsCache = { at: 0, teams: null };
 let rosterBuildPromise = null;
 const MEMBERS_TTL = 3600000; // 1 hour
 const EMPTY_MEMBERS_TTL = 2 * 60 * 1000; // retry soon when the roster was empty
+const TAG_LIST_STORE_KEY = "cuTagList"; // workspace tag names for the By-tag dropdown
+const TAG_LIST_TTL = 24 * 3600 * 1000; // a day: tags change rarely, reads are cheap but not free
 // Auto-detected "Extra(s) Task(s)" per user, cached 1h so filtered department /
 // all-user views don't re-scan every render. userId (string) -> { at, task }.
 const EXTRA_TASK_CACHE_MS = 3600000;
@@ -770,24 +773,205 @@ async function persistFilterCache() {
 // "Deadline crossed" source: every task assigned to me that is past its due
 // date and not complete, across ALL dates (see CLICKUP_OVERDUE). 5-min cache.
 let overdueCache = null;
+// Same question, asked about SOMEONE ELSE: the Bulk edit tab's "Whose tasks".
+// Keyed by user id, and deliberately separate from overdueCache so the
+// dashboard's own "mine" answer is never replaced by a teammate's.
+const overdueScopeCache = new Map();
+// Overdue tasks for one person (empty scope = me). The "me" scope keeps filling
+// the single-slot overdueCache, because that is what the dashboard's "Deadline
+// crossed" reads; a teammate's list goes in the per-user map instead.
+async function getOverdueTasks(cfg, force, assignee) {
+  const whoKey = cuScopeKey(cfg.userId, assignee);
+  const isMe = whoKey === String(cfg.userId == null ? "" : cfg.userId);
+  // Same token rule as getOpenTasks / computeFilterData: another person's tasks
+  // need the optional workspace Admin token, not your personal one.
+  const token = cuScopeToken(cfg, cfg.userId, assignee);
+  const cached = isMe ? overdueCache : overdueScopeCache.get(whoKey);
+  if (!force && cached && Date.now() - cached.at < 5 * 60000) return { ok: true, data: cached.data };
+  const todayStart = new Date().setHours(0, 0, 0, 0);
+  const raw = [];
+  for (let page = 0; page < 6; page++) {
+    const url = cuOverdueUrl(cfg.teamId, { page, assignee: whoKey, before: todayStart });
+    const res = await fetch(url, { headers: { Authorization: token } });
+    if (res.status === 429) { if (page === 0) throw new Error("ClickUp rate limit - try again in a minute"); break; }
+    if (!res.ok) { if (page === 0) throw new Error("ClickUp HTTP " + res.status); break; }
+    const j = await res.json().catch(() => null);
+    const batch = j && Array.isArray(j.tasks) ? j.tasks : [];
+    raw.push(...batch);
+    if (batch.length < 100 || j.last_page === true) break;
+  }
+  const tasks = raw
+    .filter((t) => {
+      const due = Number(t.due_date) || 0;
+      return due && new Date(due).setHours(0, 0, 0, 0) < todayStart && !isTaskDone(t);
+    })
+    .map((t) => {
+      const est = Number(t.time_estimate) || 0;
+      return {
+        id: t.id, name: t.name || "(untitled task)", url: taskUrlFor(t.id),
+        estimateMs: est, totalEstimateMs: est, spentMs: Number(t.time_spent) || 0,
+        startDateMs: Number(t.start_date) || null, dueDateMs: Number(t.due_date) || null,
+        status: (t.status && t.status.status) || "", priority: cuPriorityName(t),
+        done: false, hasEstimate: est > 0, container: taskContainer(t),
+        isSubtask: !!t.parent, parentId: t.parent || undefined,
+        assignees: cuRowAssignees(t), tags: [], assignee: cuTaskAssigneeName(t),
+      };
+    });
+  const data = { tasks, deadlineTasks: [], trackedTasks: [],
+    estimateMs: tasks.reduce((n, t) => n + t.estimateMs, 0), spentMs: tasks.reduce((n, t) => n + t.spentMs, 0) };
+  const settings = await getSettings();
+  await annotateClients(token, data, settings.cuClientLevel || "auto");
+  if (isMe) overdueCache = { at: Date.now(), data };
+  else {
+    overdueScopeCache.set(whoKey, { at: Date.now(), data });
+    if (overdueScopeCache.size > 8) overdueScopeCache.delete(overdueScopeCache.keys().next().value);
+  }
+  return { ok: true, data };
+}
+// The overdue query, as a pure URL builder (see cuOpenTasksUrl).
+function cuOverdueUrl(teamId, { page = 0, assignee, before } = {}) {
+  return "https://api.clickup.com/api/v2/team/" + encodeURIComponent(teamId) + "/task?page=" + encodeURIComponent(page) +
+    "&subtasks=true&include_closed=false&assignees[]=" + encodeURIComponent(assignee || "") +
+    "&due_date_lt=" + encodeURIComponent(before == null ? "" : before);
+}
 let openTasksCache = null; // Bulk edit "Any date" (CLICKUP_OPEN_TASKS)
+// Every open task assigned to me, with or without dates, so the Insights tab
+// can find missing estimates / due dates and the daily "needs tidying" reminder
+// has something to talk about. Up to 6 pages, cached 3 minutes (the reminder
+// asks for a fresh copy, since it only runs once a day).
+// `tag` narrows it to one tag name (Bulk edit > "By tag"); ClickUp's own
+// `tags[]` filter does that server-side, and matches names exactly.
+// `assignee` narrows it to one person's tasks (empty = me). Scoping by user is
+// the same `assignees[]` the Filter card already uses, so an Owner/Admin token
+// can reach a teammate's tasks and a plain member simply gets their own.
+async function getOpenTasks(cfg, force, tag, assignee) {
+  const tagKey = String(tag || "").trim().toLowerCase();
+  const whoKey = cuScopeKey(cfg.userId, assignee);
+  const isMe = whoKey === String(cfg.userId == null ? "" : cfg.userId);
+  // Reading someone else's tasks needs a token that can see them. The SAME rule
+  // the Filter card already follows (computeFilterData): the personal token for
+  // your own scope, the optional workspace Admin token for anybody else's - a
+  // plain member's personal token simply won't return them, which is correct.
+  const token = cuScopeToken(cfg, cfg.userId, assignee);
+  if (!force && openTasksCache && openTasksCache.tag === tagKey && openTasksCache.who === whoKey && Date.now() - openTasksCache.at < 3 * 60000) {
+    return { ok: true, data: openTasksCache.data };
+  }
+  const raw = [];
+  for (let page = 0; page < 6; page++) {
+    const url = cuOpenTasksUrl(cfg.teamId, { page, assignee: whoKey, tag: tagKey });
+    const res = await fetch(url, { headers: { Authorization: token } });
+    if (res.status === 429) { if (page === 0) throw new Error("ClickUp rate limit - try again in a minute"); break; }
+    if (!res.ok) { if (page === 0) throw new Error("ClickUp HTTP " + res.status); break; }
+    const j = await res.json().catch(() => null);
+    const batch = j && Array.isArray(j.tasks) ? j.tasks : [];
+    raw.push(...batch);
+    if (batch.length < 100 || j.last_page === true) break;
+  }
+  const settings = await getSettings().catch(() => ({}));
+  const tasks = raw.filter((t) => !isTaskDone(t)).map((t) => {
+    const est = Number(t.time_estimate) || 0;
+    return {
+      id: t.id, name: t.name || "(untitled task)", url: taskUrlFor(t.id),
+      estimateMs: est, spentMs: Number(t.time_spent) || 0,
+      startDateMs: Number(t.start_date) || null, dueDateMs: Number(t.due_date) || null,
+      status: (t.status && t.status.status) || "", priority: cuPriorityName(t),
+      done: false, container: taskContainer(t), isSubtask: !!t.parent, parentId: t.parent || undefined,
+      // Tag names, so the Bulk edit tab can suggest the tags in play and the
+      // rows can show which one matched.
+      tags: (Array.isArray(t.tags) ? t.tags : []).map((x) => String((x && (x.name || x)) || "").trim()).filter(Boolean),
+      // Who owns it, so a batch on someone else's work can say so out loud.
+      assignee: cuTaskAssigneeName(t),
+    };
+  });
+  const data = { tasks, deadlineTasks: [], trackedTasks: [] };
+  await annotateClients(token, data, settings.cuClientLevel || "auto").catch(() => {});
+  openTasksCache = { at: Date.now(), data, tag: tagKey, who: whoKey };
+  return { ok: true, data };
+}
+// The open-task query, as a pure URL builder so the scope (whose tasks) and the
+// tag filter are pinned down by a test instead of by reading string concatenation.
+function cuOpenTasksUrl(teamId, { page = 0, assignee, tag } = {}) {
+  return "https://api.clickup.com/api/v2/team/" + encodeURIComponent(teamId) + "/task?page=" + encodeURIComponent(page) +
+    "&subtasks=true&include_closed=false&assignees[]=" + encodeURIComponent(assignee || "") +
+    (tag ? "&tags[]=" + encodeURIComponent(tag) : "");
+}
+// "Whose tasks" scope key: empty / missing means ME. Returns the user id to ask
+// ClickUp for, so "me" and an explicit own-id are the same query.
+function cuScopeKey(myId, assignee) {
+  const want = String(assignee == null ? "" : assignee).trim();
+  if (!want || want === "__all__") return String(myId == null ? "" : myId);
+  return want;
+}
+// A task's first assignee, as a name ("" when it has none). Cheap: the task
+// object already carries the assignees.
+function cuTaskAssigneeName(t) {
+  const a = Array.isArray(t && t.assignees) ? t.assignees[0] : null;
+  return String((a && (a.username || a.email || a.name)) || "").trim();
+}
+// Can this token look at OTHER people's tasks? ClickUp's own rule is workspace
+// role, and the roster carries it when the endpoint said (1 owner, 2 admin,
+// 3 member, 4 guest). Only those two privileged roles grant it. Returns true
+// (owner/admin), false (a role that is definitely not privileged), or null when
+// ClickUp didn't say - and null must NOT be read as "no": we then offer the
+// picker and let ClickUp answer, because guessing would hide a feature from an
+// admin whose roster came back without roles.
+function cuCanScopeOthers(members, myId) {
+  const me = String(myId == null ? "" : myId);
+  const entry = (Array.isArray(members) ? members : []).find((m) => m && String(m.id) === me);
+  if (!entry || entry.role == null || entry.role === "") return null;
+  const n = Number(typeof entry.role === "object" ? entry.role.id : entry.role);
+  if (!Number.isFinite(n)) return null; // unreadable, so unknown - never a silent yes
+  return n === 1 || n === 2;
+}
+// ...and the picker's gate, as ONE pure decision. A saved Admin API token is the
+// owner telling us they have workspace-level access, so it unlocks the picker
+// even when the roster's role for them reads as a plain member (the role probe
+// can silently fall back to team visibility and say "member"). No token, no
+// override: the role stands, and "unknown" stays unknown.
+function cuScopeGate(roleVerdict, adminToken) {
+  if (typeof adminToken === "string" && adminToken.trim()) return true;
+  return roleVerdict;
+}
+// Which token does a scope need? MY tasks always use the personal token.
+// Somebody else's need the optional workspace Admin token - a personal token
+// cannot read or edit another person's task - falling back to the personal one,
+// which already works when that person is an owner/admin. ONE place, because
+// this choice used to be written out by hand in three spots and the write path
+// kept using the personal token after the read path had moved. No token value
+// ever leaves the background.
+function cuScopeToken(cfg, myId, assignee) {
+  const me = String(myId == null ? "" : myId);
+  const admin = cfg && typeof cfg.adminToken === "string" ? cfg.adminToken.trim() : "";
+  return cuScopeKey(me, assignee) !== me && admin ? admin : String((cfg && cfg.token) || "");
+}
 let doneTodayCache = null; // wrap-up's "closed today" list, kept one minute
 function clearFilterCache() {
   filterCache.clear();
   overdueCache = null;
+  overdueScopeCache.clear();
   openTasksCache = null;
   chrome.storage.local.set({ [FILTER_STORE_KEY]: {} }).catch(() => {});
 }
 hydrateFilterCache();
 async function buildRoster(cfg) {
   try {
-    const members = await fetchTeamMembers(cfg.token, cfg.teamId);
+    const members = await fetchTeamMembers(cfg.token, cfg.teamId, cfg.adminToken);
+    const prev = (await getClickupState()) || {};
+    const before = Array.isArray(prev.members) ? prev.members.length : 0;
     const note = members && members.length ? null : "No users found in this workspace's accessible tasks.";
-    console.log("[ClickUp] member roster:", members ? members.length : 0, "users" + (note ? " - " + note : ""));
+    console.log("[ClickUp] member roster:", members ? members.length : 0, " users" + (note ? " - " + note : "") +
+      (members && members.length > before ? " (+" + (members.length - before) + " since the last build)" : ""));
     const st = (await getClickupState()) || {};
+    // A rebuild that finds FEWER people than we already had is suspicious - a
+    // source that was refused usually returns a short list, not the whole
+    // workspace. Say so instead of quietly shrinking the picker, because a
+    // colleague disappearing is exactly the bug this roster is meant to fix.
+    const shrunk = before > 0 && members && members.length < before;
     st.members = members || [];
     st.membersAt = Date.now();
     st.membersNote = note;
+    if (shrunk) st.membersWarn = "This read found only " + st.members.length + " of the " + before + " people last time - a ClickUp source was probably refused. Press ↻ to try again.";
+    else st.membersWarn = null;
     await setClickupState(st);
   } catch (e) {
     const reason = "Couldn't load the member list: " + String(e && e.message ? e.message : e);
@@ -875,6 +1059,17 @@ const DEFAULT_SETTINGS = {
   // ---- End-of-day wrap-up ----
   // Weekday notification that opens wrapup.html (leftovers -> tomorrow, standup copy).
   clickupWrapUp: true,
+  // ---- Daily "needs tidying" reminder ----
+  // One short, actionable summary a day of what the Insights tab flags:
+  // overdue, no estimate, no due date, blocked - plus a "dependency resolved,
+  // carry on and close it" line. Silent when there's nothing to say, so a clean
+  // board never nags.
+  clickupTidyNotify: true,
+  clickupTidyTime: "14:00", // local "HH:MM"
+  clickupTidyDays: "weekdays", // "weekdays" | "every" | "0,3,5" (0 = Sunday)
+  clickupTidyMax: 3, // tasks named per line, 1-6
+  clickupTidyResolved: true, // "a dependency cleared, this can move again"
+  clickupTidyCats: { overdue: true, noEst: true, noDue: true, blocked: true },
   // ---- Updates ----
   // Install new versions automatically in the background (needs the one-time
   // folder choice on the update page, with Chrome's "Allow on every visit").
@@ -1689,6 +1884,13 @@ async function clickupPublic() {
     awayMin: Number(settings.clickupAwayMin) || 15,
     wrapUp: settings.clickupWrapUp !== false,
     wrapUpTime: settings.clickupWrapUpTime || "16:45",
+    // Daily "needs tidying" reminder (see maybeTidyNotify / lib-tidy.js).
+    tidyNotify: settings.clickupTidyNotify !== false,
+    tidyTime: settings.clickupTidyTime || "14:00",
+    tidyDays: settings.clickupTidyDays || "weekdays",
+    tidyMax: Math.max(1, Math.min(6, Number(settings.clickupTidyMax) || 3)),
+    tidyResolved: settings.clickupTidyResolved !== false,
+    tidyCats: tidySettings(settings).cats,
     syncMin: syncMinutes(settings),
     weekMode: settings.clickupWeekMode || "sun-sat",
     adminSyncToken: settings.adminSyncToken !== false,
@@ -2290,10 +2492,16 @@ async function refreshWaitingInfo() {
     if (!st) return;
     // Candidate parents: my top-level, not-done rows in every bundle the UI shows.
     const ids = new Set();
+    const parentDue = {}; // parentId -> its own due date (ms), for the selfBlock pass below
     const collect = (arr) => {
       for (const t of Array.isArray(arr) ? arr : []) {
         const id = t && (t.id != null ? t.id : t.taskId);
-        if (id != null && !t.isSubtask && !t.done) ids.add(String(id));
+        if (id != null && !t.isSubtask && !t.done) {
+          const key = String(id);
+          ids.add(key);
+          const d = Number(t.dueDateMs) || 0;
+          if (d && !parentDue[key]) parentDue[key] = d;
+        }
       }
     };
     collect(st.tasks); collect(st.deadlineTasks);
@@ -2343,6 +2551,24 @@ async function refreshWaitingInfo() {
           overdue: !!x.due && new Date(x.due).setHours(0, 0, 0, 0) < todayStart,
         })),
       };
+    }
+    // Idea A - "sub-blocked": a parent that cannot realistically be closed because
+    // its OWN subtasks are still open and run PAST the parent's due date (e.g. a
+    // task due today whose subtasks are due weeks out). Independent of assignee, so
+    // it complements the person-based "waiting on others" above. Same cache, no fetch.
+    for (const id of ids) {
+      const c = cache[id];
+      if (!c || !c.subs || !c.subs.length) continue;
+      const pDue = parentDue[id] || 0;
+      const open = c.subs.filter((x) => !x.done);
+      if (!open.length) continue;
+      const later = pDue ? open.filter((x) => x.due && x.due > pDue) : [];
+      const parentOverdue = !!pDue && pDue < todayStart;
+      if (!later.length && !(parentOverdue && open.length)) continue;
+      const latestDueMs = open.reduce((m, x) => (x.due && x.due > m ? x.due : m), 0) || null;
+      const entry = waiting[id] || {};
+      entry.selfBlock = { open: open.length, later: later.length, latestDueMs, parentOverdue };
+      waiting[id] = entry;
     }
     const st2 = await getClickupState();
     if (st2 && JSON.stringify(st2.waiting || {}) !== JSON.stringify(waiting)) {
@@ -3254,6 +3480,82 @@ async function maybeWrapUp() {
       (open ? open + " task" + (open === 1 ? "" : "s") + " due today still open." : "Everything due today is done ✓") +
       " Click to review and copy your standup.",
     undefined, chrome.runtime.getURL("wrapup.html"));
+}
+// ---------- Daily "needs tidying" reminder ----------
+// One summary a day of what the Insights tab flags: overdue, no estimate, no
+// due date, blocked, plus a "dependency resolved, carry on and close it" line
+// for tasks that were blocked yesterday and are free now. Silent when there's
+// nothing to say. It rides the every-minute update alarm (no alarm of its own),
+// with a late window so a laptop that was asleep at the time still gets it.
+const TIDY_LATE_MS = 4 * 3600000;
+function tidySettings(s) {
+  return {
+    cats: (s && s.clickupTidyCats) || {},
+    max: Number(s && s.clickupTidyMax) || 3,
+    resolved: !s || s.clickupTidyResolved !== false,
+  };
+}
+// Gather everything the notification needs. Shared by the scheduled nudge and
+// the Options "Preview now" button, so what you preview is what you get.
+async function tidyReminderPayload(opts = {}) {
+  const s = opts.settings || await getSettings();
+  const cfg = await getClickupConfig();
+  if (!cfg || !cfg.token || !cfg.teamId || cfg.userId == null) return { ok: false, reason: "not-configured" };
+  const st = await getClickupState().catch(() => null);
+  if (!st) return { ok: false, reason: "no-state" };
+  const res = await getOpenTasks(cfg, opts.fresh !== false).catch((e) => ({ ok: false, error: String(e && e.message ? e.message : e) }));
+  if (!res || !res.ok || !res.data || !Array.isArray(res.data.tasks)) {
+    return { ok: false, reason: "no-tasks", error: res && res.error };
+  }
+  const todayStart = new Date().setHours(0, 0, 0, 0);
+  const model = tidyCollect(res.data.tasks, st.waiting, todayStart);
+  // Yesterday's blocked list, so we can spot what has been freed up since.
+  const { cuTidyBlocked } = await chrome.storage.local.get("cuTidyBlocked");
+  const snap = cuTidyBlocked && typeof cuTidyBlocked === "object" ? cuTidyBlocked : {};
+  const t = tidySettings(s);
+  const resolved = t.resolved && snap.day && snap.day !== todayString()
+    ? tidyResolved(snap.ids || [], model, res.data.tasks) : [];
+  const say = tidyLines(model, { cats: t.cats, max: t.max, resolved });
+  return { ok: true, model, resolved, say, urgent: tidyUrgent(model, resolved), blockedIds: model.blockedIds };
+}
+async function openInsightsPage() {
+  const url = chrome.runtime.getURL("options.html#insights");
+  try {
+    const tabs = await chrome.tabs.query({ url: chrome.runtime.getURL("options.html") + "*" });
+    if (tabs && tabs.length) {
+      await chrome.tabs.update(tabs[0].id, { active: true, url });
+      if (tabs[0].windowId != null) await chrome.windows.update(tabs[0].windowId, { focused: true }).catch(() => {});
+      return;
+    }
+  } catch (e) {}
+  await chrome.tabs.create({ url }).catch(() => {});
+}
+async function maybeTidyNotify() {
+  const s = await getSettings();
+  if (s.clickupTidyNotify === false) return;
+  const now = new Date();
+  if (!tidyDayOk(s.clickupTidyDays, now)) return;
+  if (isCompanyHoliday(now.getTime())) return; // company holiday: nobody wants a nudge
+  const [h, m] = parseHM(s.clickupTidyTime, [14, 0]);
+  const at = new Date(now);
+  at.setHours(h, m, 0, 0);
+  if (now.getTime() < at.getTime() - 5000) return; // not time yet today
+  if (now.getTime() > at.getTime() + TIDY_LATE_MS) return; // too late to be useful
+  const { cuTidyShown } = await chrome.storage.local.get("cuTidyShown");
+  if (cuTidyShown === todayString()) return; // once a day, never twice
+  const p = await tidyReminderPayload({ settings: s }).catch(() => null);
+  if (!p || !p.ok) return; // not connected / ClickUp unhappy: stay quiet, try tomorrow
+  // Mark the day before saying anything, so a second wake in the same minute
+  // can't post the same summary twice, and remember what was blocked so
+  // tomorrow can spot a dependency that got resolved.
+  await chrome.storage.local.set({
+    cuTidyShown: todayString(),
+    cuTidyBlocked: { day: todayString(), ids: p.blockedIds || [] },
+  });
+  if (p.say.empty) return; // clean board: no notification at all
+  await notify("cu-tidy-" + Date.now(), p.say.title, p.say.message, p.urgent ? "danger" : undefined,
+    chrome.runtime.getURL("options.html#insights"),
+    { contextMessage: p.say.context, buttons: [{ title: "Open Insights" }] });
 }
 // Keep a task's time of day when moving its due date to another day.
 function shiftDueToDay(oldDueMs, dayMs) {
@@ -4409,44 +4711,45 @@ async function showUpdateNotification(info) {
 // Runs on every install/reload. If the user downloaded an update, tell them
 // plainly whether it is now installed, or exactly what is still missing.
 // ---------- automatic background updates ----------
-// Every minute (after the update check): when a newer version's install time
-// has come, install it through the offscreen page with the folder the user chose
-// once, then restart on the new version. Never while the popup or side panel is
-// open; extension tabs (options etc.) only when the user has been away 5+
-// minutes, and they're reopened afterwards. Failures back off; after repeated
-// failures for one version it stops and the normal update notice takes over.
-const AUTO_RETRY_MS = 30 * 60000;
-const AUTO_FORCE_AFTER_MS = 20 * 60000; // pages open: install anyway after 20 minutes
-const AUTO_MAX_FAILS = 4;
+// A new version installs as soon as this copy notices it - there is no "quiet
+// moment" any more. The old rule (popup or side panel closed, user idle, and
+// after 20 minutes install anyway) meant people who keep the dashboard or the
+// side panel open all day stayed on the old version for days, which is what
+// "it says there is an update but never installs" turned out to be.
+// The price of installing straight away: the reload closes an open popup or
+// side panel. Extension TABS are reopened by the handler near the end of this
+// file, so a dashboard left open comes back on its own.
+const AUTO_FAST_RETRY_MS = 45 * 1000; // first tries: again almost at once
+const AUTO_FAST_TRIES = 3;
+const AUTO_RETRY_MS = 30 * 60000; // after that: every 30 minutes, for as long as it takes
+// Pure: should this copy install right now? ("off" = the user turned it off,
+// "up-to-date" = nothing newer, "scheduled" = the admin's rollout time hasn't
+// come, "retry-wait" = a recent try failed and the next one isn't due.)
+function autoUpdateWhen(st, ui, autoOn, now) {
+  if (autoOn === false) return { go: false, why: "off" };
+  if (!ui || !ui.newer || !ui.zip || !ui.latest) return { go: false, why: "up-to-date" };
+  if (now < (Number(ui.autoAt) || 0)) return { go: false, why: "scheduled" };
+  const lastTry = Number(st && st.lastTry) || 0;
+  if (lastTry) {
+    const fails = (st && st.fails) || 0;
+    const wait = fails < AUTO_FAST_TRIES ? AUTO_FAST_RETRY_MS : AUTO_RETRY_MS;
+    if (now - lastTry < wait) return { go: false, why: "retry-wait" };
+  }
+  return { go: true, why: "" };
+}
 async function maybeAutoUpdate() {
   const settings = await getSettings();
-  if (settings.autoUpdate === false) return;
   const { updateInfo: ui, autoUpdateState: prevState } = await chrome.storage.local.get(["updateInfo", "autoUpdateState"]);
-  if (!ui || !ui.newer || !ui.zip || !ui.latest) return;
   const now = Date.now();
-  if (now < (Number(ui.autoAt) || 0)) return;
-  const st = prevState && prevState.version === ui.latest ? prevState : { version: ui.latest, fails: 0 };
-  if (st.fails >= AUTO_MAX_FAILS || (st.lastTry && now - st.lastTry < AUTO_RETRY_MS && st.reason)) return;
-  // Not while it's being used: popup open = wait. With extension tabs or the
-  // side panel open, a short pause (1 minute idle) is enough - and after 20
-  // minutes of waiting it installs anyway (the tabs come back after the restart).
-  // It used to need 5 idle minutes, which people who keep the dashboard or side
-  // panel open all day almost never had, so their update never came.
+  const st = prevState && ui && prevState.version === ui.latest ? prevState : { version: (ui && ui.latest) || "", fails: 0 };
+  if (!autoUpdateWhen(st, ui, settings.autoUpdate, now).go) return;
+  // Extension pages to bring back after the reload. The popup and the side
+  // panel are not in here: Chrome only opens those from a click, so they close.
   let tabs = [];
-  let panel = false;
   try {
-    const ctx = await chrome.runtime.getContexts({ contextTypes: ["POPUP", "SIDE_PANEL", "TAB"] });
-    if (ctx.some((c) => c.contextType === "POPUP")) return;
-    panel = ctx.some((c) => c.contextType === "SIDE_PANEL");
-    tabs = ctx.filter((c) => c.contextType === "TAB").map((c) => c.documentUrl).filter(Boolean);
+    const ctx = await chrome.runtime.getContexts({ contextTypes: ["TAB"] });
+    tabs = ctx.map((c) => c.documentUrl).filter((u) => u && String(u).startsWith(chrome.runtime.getURL("")));
   } catch (e) {}
-  if (tabs.length || panel) {
-    const waited = now - (Number(ui.autoAt) || Number(ui.autoFirstSeen) || now);
-    if (waited < AUTO_FORCE_AFTER_MS) {
-      const idle = await new Promise((res) => { try { chrome.idle.queryState(60, res); } catch (e) { res("active"); } });
-      if (idle === "active") return;
-    }
-  }
   st.lastTry = now;
   await ensureOffscreenDocument();
   let r = null;
@@ -4573,6 +4876,10 @@ chrome.notifications.onButtonClicked.addListener((id, btn) => {
       chrome.notifications.clear(id).catch(() => {});
       const { cuNudgeTask: t } = await chrome.storage.local.get("cuNudgeTask");
       if (t && t.id) await startTaskFromNudge(t.id);
+    } else if (id.startsWith("cu-tidy-")) {
+      // "needs tidying" summary: straight to the Insights tab that produced it.
+      chrome.notifications.clear(id).catch(() => {});
+      await openInsightsPage();
     } else if (id === "update-downloaded" || (id === "update-pending" && btn === 0)) {
       chrome.runtime.reload(); // picks up the unzipped files
     } else if (id === "update-pending" && btn === 1) {
@@ -4896,6 +5203,9 @@ chrome.alarms.onAlarm.addListener(async (alarm) => {
     // Backstop for the wrap-up alarm (missed while asleep / Chrome closed).
     // Cheap: settings + one storage read, and it runs at most once a day.
     await maybeWrapUp().catch(() => {});
+    // The daily "needs tidying" summary, same deal: it self-gates on the time
+    // of day, so checking every minute is free and a missed alarm still lands.
+    await maybeTidyNotify().catch(() => {});
     // Backstop for reminder alarms (asleep / missed).
     await fireDueReminders();
     await maybeCompanyHeadsUp().catch(() => {});
@@ -5058,41 +5368,43 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       case "CLICKUP_OPEN_TASKS": {
         // Bulk edit "Any date": every open task assigned to me, with or without
         // dates (so missing due / start dates and estimates can be found). Up to
-        // 6 pages, cached 3 minutes.
+        // 6 pages, cached 3 minutes. Also what the daily "needs tidying" reminder
+        // reads, so the notification and the Insights tab always agree. With
+        // msg.tag it is narrowed to that one tag (Bulk edit > "By tag"), and with
+        // msg.assignee to one person's tasks (Bulk edit > "Whose tasks").
         const cfg = await getClickupConfig();
         if (!cfg || !cfg.token || !cfg.teamId || cfg.userId == null) { sendResponse({ ok: false, reason: "not-configured" }); break; }
-        if (!msg.force && openTasksCache && Date.now() - openTasksCache.at < 3 * 60000) { sendResponse({ ok: true, data: openTasksCache.data }); break; }
         try {
-          const raw = [];
-          for (let page = 0; page < 6; page++) {
-            const url = "https://api.clickup.com/api/v2/team/" + encodeURIComponent(cfg.teamId) + "/task?page=" + page +
-              "&subtasks=true&include_closed=false&assignees[]=" + encodeURIComponent(cfg.userId);
-            const res = await fetch(url, { headers: { Authorization: cfg.token } });
-            if (res.status === 429) { if (page === 0) throw new Error("ClickUp rate limit - try again in a minute"); break; }
-            if (!res.ok) { if (page === 0) throw new Error("ClickUp HTTP " + res.status); break; }
-            const j = await res.json().catch(() => null);
-            const batch = j && Array.isArray(j.tasks) ? j.tasks : [];
-            raw.push(...batch);
-            if (batch.length < 100 || j.last_page === true) break;
-          }
-          const settings = await getSettings().catch(() => ({}));
-          const tasks = raw.filter((t) => !isTaskDone(t)).map((t) => {
-            const est = Number(t.time_estimate) || 0;
-            return {
-              id: t.id, name: t.name || "(untitled task)", url: taskUrlFor(t.id),
-              estimateMs: est, spentMs: Number(t.time_spent) || 0,
-              startDateMs: Number(t.start_date) || null, dueDateMs: Number(t.due_date) || null,
-              status: (t.status && t.status.status) || "", priority: cuPriorityName(t),
-              done: false, container: taskContainer(t), isSubtask: !!t.parent, parentId: t.parent || undefined,
-            };
-          });
-          const data = { tasks, deadlineTasks: [], trackedTasks: [] };
-          await annotateClients(cfg.token, data, settings.cuClientLevel || "auto").catch(() => {});
-          openTasksCache = { at: Date.now(), data };
-          sendResponse({ ok: true, data });
+          sendResponse(await getOpenTasks(cfg, !!msg.force, msg.tag, msg.assignee));
         } catch (e) {
           sendResponse({ ok: false, error: String(e && e.message ? e.message : e) });
         }
+        break;
+      }
+      case "CLICKUP_TIDY_PREVIEW": {
+        // Options > "Preview now": post the real summary without spending today's
+        // one-shot, so the user can see exactly what lands at their chosen time.
+        // Nothing to say? Show a labelled sample instead of staying silent, so
+        // the button always shows the shape of the notification.
+        const p = await tidyReminderPayload({ fresh: !!msg.fresh }).catch(() => null);
+        if (!p || !p.ok) {
+          sendResponse({ ok: false, reason: (p && p.reason) || "not-connected", error: p && p.error });
+          break;
+        }
+        let say = p.say;
+        if (say.empty) {
+          const day = 86400000, today = new Date().setHours(0, 0, 0, 0);
+          say = tidyLines(tidyCollect([
+            { id: "p1", name: "Fix the redirect rule", estimateMs: 3600000, dueDateMs: today - 3 * day },
+            { id: "p2", name: "Q4 audit report", estimateMs: 0, dueDateMs: null },
+            { id: "p3", name: "Website redesign", estimateMs: 7200000, dueDateMs: today + 2 * day },
+          ], { p3: { blockers: [{ who: "Rigo" }] } }, today), { cats: {}, max: 3 });
+          say.sample = true;
+        }
+        await notify("cu-tidy-preview-" + Date.now(), say.title, say.message, undefined,
+          chrome.runtime.getURL("options.html#insights"),
+          { contextMessage: (say.sample ? "Sample - nothing to tidy right now · " : "") + (say.context || "Insights › Needs tidying"), buttons: [{ title: "Open Insights" }] });
+        sendResponse({ ok: true, k: p.model.k, sample: !!say.sample, lines: p.say.lines });
         break;
       }
       case "CLICKUP_TASK_COMMENT": {
@@ -5858,6 +6170,34 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         }
         break;
       }
+      case "CLICKUP_PHONE_SETUP": {
+        // What a phone shortcut needs to start/stop the timer: the workspace id
+        // and the auto-discovered Extra Task id. NO secret in this reply - the
+        // token is only ever handed out by CLICKUP_PHONE_TOKEN, on a click.
+        const cfg = await getClickupConfig();
+        if (!cfg || !cfg.token) { sendResponse({ ok: false, reason: "not-configured" }); break; }
+        const st = (await getClickupState().catch(() => null)) || {};
+        const ex = st.extraTask || null;
+        sendResponse({
+          ok: true,
+          workspaceId: cfg.teamId ? String(cfg.teamId) : "",
+          username: cfg.username || cfg.email || "",
+          extraTaskId: ex && ex.id ? String(ex.id) : "",
+          extraTaskName: (ex && ex.name) || "",
+          extraTaskUrl: (ex && ex.url) || "",
+          dailyTargetMs: Math.max(0, Number(st.targetMs) || 0),
+        });
+        break;
+      }
+      case "CLICKUP_PHONE_TOKEN": {
+        // Reveals the personal token so the owner can paste it into a phone
+        // shortcut. Deliberately its own message: nothing else in the extension
+        // can ask for it, and it is never written to storage or logged.
+        const cfg = await getClickupConfig();
+        if (!cfg || !cfg.token) { sendResponse({ ok: false, reason: "not-configured" }); break; }
+        sendResponse({ ok: true, token: String(cfg.token) });
+        break;
+      }
       case "CLICKUP_TASK_START": {
         // Per-task Start: set the task "in progress" in ClickUp AND start its
         // timer. Only ONE task may be in progress at a time, so we first revert
@@ -6039,6 +6379,30 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         if (p.clickupWrapUpTime !== undefined && parseHM(p.clickupWrapUpTime, null)) {
           const [h, m] = parseHM(p.clickupWrapUpTime, null);
           patch.clickupWrapUpTime = String(h).padStart(2, "0") + ":" + String(m).padStart(2, "0");
+        }
+        if (p.clickupTidyNotify !== undefined) patch.clickupTidyNotify = !!p.clickupTidyNotify;
+        if (p.clickupTidyTime !== undefined && parseHM(p.clickupTidyTime, null)) {
+          const [h, m] = parseHM(p.clickupTidyTime, null);
+          patch.clickupTidyTime = String(h).padStart(2, "0") + ":" + String(m).padStart(2, "0");
+        }
+        if (p.clickupTidyDays !== undefined) {
+          const d = String(p.clickupTidyDays).toLowerCase().trim();
+          // "weekdays" / "every" / a comma list of 0-6 (0 = Sunday)
+          if (d === "weekdays" || d === "every" || d.split(",").map((x) => parseInt(x, 10)).every((n) => Number.isInteger(n) && n >= 0 && n <= 6) && d) {
+            patch.clickupTidyDays = d;
+          }
+        }
+        if (p.clickupTidyMax !== undefined) {
+          const n = Number(p.clickupTidyMax);
+          if (Number.isFinite(n) && n >= 1 && n <= 6) patch.clickupTidyMax = Math.floor(n);
+        }
+        if (p.clickupTidyResolved !== undefined) patch.clickupTidyResolved = !!p.clickupTidyResolved;
+        if (p.clickupTidyCats !== undefined && p.clickupTidyCats && typeof p.clickupTidyCats === "object") {
+          const c = p.clickupTidyCats;
+          patch.clickupTidyCats = {
+            overdue: c.overdue !== false, noEst: c.noEst !== false,
+            noDue: c.noDue !== false, blocked: c.blocked !== false,
+          };
         }
         if (p.clickupWorkdayEndHour !== undefined) {
           const n = Number(p.clickupWorkdayEndHour);
@@ -6600,17 +6964,28 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         // msg.change = { kind: "due", mode: "set"|"shift"|"clear", dayMs, days }
         //            | { kind: "status", value } | { kind: "priority", value: "urgent|high|normal|low|none" }
         //            | { kind: "estimate", ms } | { kind: "restore", before }.
+        // msg.assignee (optional): whose tasks this batch is on. Empty = mine. When
+        // it is somebody else's, the optional workspace Admin token does the read
+        // and the write, because a personal token cannot edit another person's task.
+        // msg.comment (optional): the SAME line posted as a ClickUp comment on
+        // this task, so a batch change is explained in one place - "Due date
+        // changed because ...". Added AFTER the change, so a task is never
+        // commented on when its change failed, and a comment that fails never
+        // loses the change.
         // No refresh here: the tab asks for one refresh when the batch is done.
         const cfg = await getClickupConfig();
         if (!cfg || !cfg.token) { sendResponse({ ok: false, reason: "not-configured" }); break; }
         const taskId = msg.taskId ? String(msg.taskId) : null;
         const ch = msg.change || {};
         if (!taskId) { sendResponse({ ok: false, reason: "no-task" }); break; }
+        const scopeId = cuScopeKey(cfg.userId, msg.assignee);
+        const otherScope = scopeId !== String(cfg.userId == null ? "" : cfg.userId);
+        const token = cuScopeToken(cfg, cfg.userId, msg.assignee);
         const PRIO = { urgent: 1, high: 2, normal: 3, low: 4, none: null };
         const put = async (body) => {
           for (let attempt = 0; attempt < 3; attempt++) {
             const res = await fetch("https://api.clickup.com/api/v2/task/" + encodeURIComponent(taskId), {
-              method: "PUT", headers: { Authorization: cfg.token, "Content-Type": "application/json" }, body: JSON.stringify(body),
+              method: "PUT", headers: { Authorization: token, "Content-Type": "application/json" }, body: JSON.stringify(body),
             });
             if (res.status === 429) {
               const wait = Math.min(60, Number(res.headers.get("Retry-After")) || 20);
@@ -6627,7 +7002,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
           throw new Error("ClickUp is busy (rate limit) - try again in a minute");
         };
         try {
-          const task = await getTaskById(cfg.token, taskId);
+          const task = await getTaskById(token, taskId);
           if (!task) throw new Error("task not found");
           const before = {
             dueDateMs: task.dueDateMs || null, dueDateHasTime: task.dueDateHasTime != null ? !!task.dueDateHasTime : null,
@@ -6661,7 +7036,25 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
           }
           if (!body) throw new Error("nothing to change");
           await put(body);
-          sendResponse({ ok: true, before });
+          let comment = null, commentError = null;
+          const cText = String(msg.comment || "").replace(/\s+/g, " ").trim().slice(0, 5000);
+          if (cText) {
+            for (let attempt = 0; attempt < 3; attempt++) {
+              try { await postTaskComment(token, taskId, cText); comment = "ok"; break; }
+              catch (ce) {
+                // ClickUp is per-token rate limited, and a batch of N tasks makes
+                // 2N calls; wait it out rather than losing the comment.
+                if (ce && ce.status === 429 && attempt < 2) {
+                  await new Promise((z) => setTimeout(z, Math.min(60000, Number(ce.retryAfterMs) || 20000)));
+                  continue;
+                }
+                comment = "no";
+                commentError = String(ce && ce.message ? ce.message : ce).slice(0, 200);
+                break;
+              }
+            }
+          }
+          sendResponse({ ok: true, before, comment, commentError, otherScope });
         } catch (e) {
           sendResponse({ ok: false, error: String(e && e.message ? e.message : e) });
         }
@@ -6796,46 +7189,11 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         // (isTaskDone: closed/done type or complete/completed/done/closed/resolved/
         // shipped/approved). Not limited to the Due selection: overdue tasks are,
         // by definition, never "due today", so they need their own query.
+        // msg.assignee narrows it to one person's tasks (Bulk edit > "Whose tasks").
         const cfg = await getClickupConfig();
         if (!cfg || !cfg.token || !cfg.teamId || cfg.userId == null) { sendResponse({ ok: false, reason: "not-configured" }); break; }
-        if (!msg.force && overdueCache && Date.now() - overdueCache.at < 5 * 60000) { sendResponse({ ok: true, data: overdueCache.data }); break; }
         try {
-          const todayStart = new Date().setHours(0, 0, 0, 0);
-          const raw = [];
-          for (let page = 0; page < 6; page++) {
-            const url = "https://api.clickup.com/api/v2/team/" + encodeURIComponent(cfg.teamId) + "/task?page=" + page +
-              "&subtasks=true&include_closed=false&assignees[]=" + encodeURIComponent(cfg.userId) + "&due_date_lt=" + todayStart;
-            const res = await fetch(url, { headers: { Authorization: cfg.token } });
-            if (res.status === 429) { if (page === 0) throw new Error("ClickUp rate limit - try again in a minute"); break; }
-            if (!res.ok) { if (page === 0) throw new Error("ClickUp HTTP " + res.status); break; }
-            const j = await res.json().catch(() => null);
-            const batch = j && Array.isArray(j.tasks) ? j.tasks : [];
-            raw.push(...batch);
-            if (batch.length < 100 || j.last_page === true) break;
-          }
-          const tasks = raw
-            .filter((t) => {
-              const due = Number(t.due_date) || 0;
-              return due && new Date(due).setHours(0, 0, 0, 0) < todayStart && !isTaskDone(t);
-            })
-            .map((t) => {
-              const est = Number(t.time_estimate) || 0;
-              return {
-                id: t.id, name: t.name || "(untitled task)", url: taskUrlFor(t.id),
-                estimateMs: est, totalEstimateMs: est, spentMs: Number(t.time_spent) || 0,
-                startDateMs: Number(t.start_date) || null, dueDateMs: Number(t.due_date) || null,
-                status: (t.status && t.status.status) || "", priority: cuPriorityName(t),
-                done: false, hasEstimate: est > 0, container: taskContainer(t),
-                isSubtask: !!t.parent, parentId: t.parent || undefined,
-                assignees: cuRowAssignees(t),
-              };
-            });
-          const data = { tasks, deadlineTasks: [], trackedTasks: [],
-            estimateMs: tasks.reduce((n, t) => n + t.estimateMs, 0), spentMs: tasks.reduce((n, t) => n + t.spentMs, 0) };
-          const settings = await getSettings();
-          await annotateClients(cfg.token, data, settings.cuClientLevel || "auto");
-          overdueCache = { at: Date.now(), data };
-          sendResponse({ ok: true, data });
+          sendResponse(await getOverdueTasks(cfg, !!msg.force, msg.assignee));
         } catch (e) {
           sendResponse({ ok: false, reason: String(e && e.message ? e.message : e) });
         }
@@ -6859,17 +7217,126 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         const stale = members && members.length
           ? Date.now() - membersAt > MEMBERS_TTL
           : Date.now() - membersAt > EMPTY_MEMBERS_TTL;
+        // A rebuild is started when the cache is missing, stale, or when the tab
+        // explicitly asked (the ↻ next to "Whose tasks").
         if ((msg.force || !members || stale) && !rosterBuildPromise) {
           rosterBuildPromise = buildRoster(cfg);
+        }
+        // msg.wait = the tab is asking BECAUSE the roster was empty or short, so
+        // it wants the NEW list, not the cache it already saw. This is the whole
+        // reason a colleague could be "missing" with a perfectly good probe in
+        // place: the build ran in the background, the reply went out with the old
+        // (partial) list, the tab rendered that, and nothing ever asked again - so
+        // pressing ↻ looked like it did nothing either. Wait for the build, then
+        // answer with what it actually found. Only when the tab asks, because a
+        // background rebuild must not hold the service worker open by itself.
+        let fresh = null;
+        if (msg.wait && rosterBuildPromise) {
+          try { await rosterBuildPromise; } catch (e) { /* buildRoster records its own error */ }
+          const st2 = (await getClickupState()) || {};
+          if (Array.isArray(st2.members)) { members = st2.members; note = st2.membersNote || null; }
         }
         sendResponse({
           ok: true,
           members: members || [],
           note: note || undefined,
+          warn: ((st && st.membersWarn) || null) || undefined,
           building: !!rosterBuildPromise,
           departments: Array.isArray(settings.clickupDepartments) ? settings.clickupDepartments : [],
           userId: cfg.userId != null ? String(cfg.userId) : null,
+          // My own display name, so a bulk comment on somebody else's task can
+          // say who made the change. Never a token.
+          meName: String(cfg.username || cfg.email || "").trim(),
+          // Can this token reach OTHER people's tasks? true = owner/admin,
+          // false = a known plain member, null = ClickUp didn't say (offer it and
+          // let ClickUp answer). Bulk edit's "Whose tasks" uses this to decide
+          // whether to show the picker at all.
+          canScope: cuScopeGate(cuCanScopeOthers(members || [], cfg.userId), cfg.adminToken),
         });
+        break;
+      }
+      case "CLICKUP_FIND_USER": {
+        // Find a colleague by NAME, for the case the roster is incomplete. A task
+        // query is the search: /team/{id}/task takes assignees[] but the reliable
+        // way to turn a name into a user id is ClickUp's own user search, and any
+        // user object it returns (id, username, email) is enough to filter by.
+        // So: read the workspace's people, keep the ones whose name matches, and
+        // let the caller show them - the id is never invented from the text.
+        const cfg = await getClickupConfig();
+        if (!cfg || !cfg.token || !cfg.teamId) { sendResponse({ ok: false, reason: "not-configured" }); break; }
+        try {
+          const q = String(msg.name || "").trim().toLowerCase();
+          if (!q) { sendResponse({ ok: true, members: [] }); break; }
+          const pool = [];
+          const map = new Map();
+          try {
+            const j = await import("./lib-clickup.js");
+            const members = await j.fetchTeamMembers(cfg.token, cfg.teamId, cfg.adminToken);
+            for (const m of (Array.isArray(members) ? members : [])) map.set(String(m.id), m);
+          } catch (e) { /* fall through to the task-assignee scan below */ }
+          for (const m of map.values()) {
+            const name = String(m.name || "").toLowerCase(), mail = String(m.email || "").toLowerCase();
+            if (name.indexOf(q) >= 0 || mail.indexOf(q) >= 0) pool.push(m);
+          }
+          // Not in any roster? Their tasks still name them: scan open tasks and
+          // collect every assignee we have not seen. This is what finds a
+          // colleague who is in ClickUp but missing from every directory we can
+          // read - the "I can't find Subina Khadka" case.
+          try {
+            const j = await import("./lib-clickup.js");
+            const extra = await j.harvestAssigneeMatches(cfg.token, cfg.teamId, q, map, 6);
+            for (const m of extra) if (m && m.id != null) map.set(String(m.id), m);
+          } catch (e) { /* a refused scan is not fatal: the roster answer stands */ }
+          for (const m of map.values()) {
+            const name = String(m.name || "").toLowerCase(), mail = String(m.email || "").toLowerCase();
+            if (name.indexOf(q) >= 0 || mail.indexOf(q) >= 0) pool.push(m);
+          }
+          const uniq = [];
+          const seen = new Set();
+          for (const m of pool) { const k = String(m.id); if (!seen.has(k)) { seen.add(k); uniq.push(m); } }
+          sendResponse({ ok: true, members: uniq });
+        } catch (e) {
+          sendResponse({ ok: false, reason: String(e && e.message ? e.message : e) });
+        }
+        break;
+      }
+      case "CLICKUP_TAG_LIST": {
+        // Every tag in the workspace, for the Bulk edit "By tag" DROPDOWN. The
+        // names come from ClickUp itself, so a misspelt tag is impossible - which
+        // was the whole point of asking for a list instead of a text box. Cached
+        // for a day: tags change rarely, and this must not cost a call per
+        // render or per keystroke. Pass force to re-read (the ↻ next to the
+        // dropdown), which is also the escape hatch after adding tags in ClickUp.
+        const cfg = await getClickupConfig();
+        if (!cfg || !cfg.token || !cfg.teamId) { sendResponse({ ok: false, reason: "not-configured" }); break; }
+        try {
+          const stored = (await chrome.storage.local.get(TAG_LIST_STORE_KEY)) || {};
+          const saved = stored[TAG_LIST_STORE_KEY];
+          if (!msg.force && saved && Array.isArray(saved.tags) && saved.tags.length && Date.now() - (saved.at || 0) < TAG_LIST_TTL) {
+            sendResponse({ ok: true, tags: saved.tags, cached: true, at: saved.at });
+            break;
+          }
+          let tags = [];
+          let source = "workspace";
+          try { tags = (await fetchWorkspaceTags(cfg.token, cfg.teamId)).tags; } catch (e) { source = "tasks"; }
+          if (!tags.length) {
+            // Some plans/roles refuse the workspace tag list. Fall back to the
+            // tags ClickUp just sent on real tasks, so the dropdown is still
+            // useful instead of mysteriously empty.
+            const fromTasks = [];
+            for (const t of (openTasksCache && openTasksCache.data && openTasksCache.data.tasks) || []) {
+              for (const g of (Array.isArray(t && t.tags) ? t.tags : [])) fromTasks.push(g);
+            }
+            tags = cuTagNames(fromTasks);
+            source = tags.length ? "tasks" : "none";
+          }
+          // Only a good answer is cached: an empty list must be retried, not
+          // remembered for a day.
+          if (tags.length) await chrome.storage.local.set({ [TAG_LIST_STORE_KEY]: { at: Date.now(), tags } }).catch(() => {});
+          sendResponse({ ok: true, tags, source, cached: false });
+        } catch (e) {
+          sendResponse({ ok: false, reason: String(e && e.message ? e.message : e) });
+        }
         break;
       }
       case "CLICKUP_DEPARTMENTS_SAVE": {
