@@ -1098,6 +1098,29 @@ const DEFAULT_SETTINGS = {
 const RESET_HOURS = 24;
 const RESET_MS = RESET_HOURS * 60 * 60 * 1000;
 const RETRY_COOLDOWN_MS = 60 * 60 * 1000; // after a failed/attention attempt, wait before retrying
+// Escalating backoff per account: 1st failure 1h, then 6h, 24h, and 72h as the
+// cap. A flat hour meant a broken account re-attempted the GitHub login every
+// 1-1.5h for the life of the install (the scheduler alarm is 30 min), and GitHub
+// flags rapid repeated failed sign-ins - it can then reject even a correctly
+// typed 2FA code. That is the same risk the 250ms guard before the 2FA submit in
+// lib-automation.js exists for. The first rung stays at RETRY_COOLDOWN_MS so a
+// genuinely transient failure still recovers as quickly as it always did.
+const RETRY_BACKOFF_MS = [RETRY_COOLDOWN_MS, 6 * 60 * 60 * 1000, 24 * 60 * 60 * 1000, 72 * 60 * 60 * 1000];
+// Notes that mean the stored credentials or config are WRONG, so no amount of
+// retrying can help: stop the automatic attempts and wait for a person (a manual
+// Run and the "I logged in" button both clear it). Everything else - a closed tab, a
+// timeout, a CAPTCHA, an unresponsive page - is transient and keeps retrying on
+// the ladder above. Matched as a lowercased SUBSTRING because several of these
+// notes are built by template string ("GitHub rejected the credentials: " +
+// err.text), so full-string equality would miss them. To add one, put its most
+// stable fragment here; nothing else needs to change.
+const PERMANENT_FAILURE_NOTES = [
+  "github rejected the credentials",
+  "2fa code was not accepted",
+  "no totp secret saved",
+  "totp secret looks invalid",
+  "missing its username or password",
+];
 
 // ---------- date helpers ----------
 function todayString(ts) {
@@ -1121,6 +1144,45 @@ function isDoneWithinWindow(st) {
   const at = effectiveDoneAt(st);
   return at > 0 && Date.now() < at + RESET_MS;
 }
+// ---------- Agent Router retry policy (pure helpers) ----------
+// How long to wait after the nth consecutive failure (n is 1-based). Anything
+// past the end of the ladder stays at the cap; a missing/junk count is treated
+// as the first failure, so the wait can never come out as 0.
+function retryDelayForFails(n) {
+  const i = Math.min(Math.max(1, Math.floor(Number(n) || 0)), RETRY_BACKOFF_MS.length) - 1;
+  return RETRY_BACKOFF_MS[i];
+}
+// Does this note mean the stored sign-in itself is wrong? See
+// PERMANENT_FAILURE_NOTES - substring match, because notes are concatenated.
+function isPermanentFailure(note) {
+  const s = String(note || "").toLowerCase();
+  return s !== "" && PERMANENT_FAILURE_NOTES.some((frag) => s.includes(frag));
+}
+// Earliest moment the daily runner may attempt this account again (0 = no wait).
+// Prefers the stamp recordLoginResult wrote; the loginFails fallback covers a
+// record written by an older copy of the extension, or merged in from Drive.
+function nextAttemptAt(st) {
+  const s = st || {};
+  const stamped = Number(s.nextAttemptAt) || 0;
+  if (stamped > 0) return stamped;
+  const fails = Math.max(0, Number(s.loginFails) || 0);
+  const ran = Number(s.lastRunAt) || 0;
+  return fails > 0 && ran > 0 ? ran + retryDelayForFails(fails) : 0;
+}
+// What a finished attempt does to the retry bookkeeping. Pure, so recordLoginResult
+// just stamps the result. A success wipes the slate clean - including a stop - so an
+// account that starts working again needs no intervention.
+function retryPatchFor(prev, result, note, now) {
+  if (result === "success") return { loginFails: 0, nextAttemptAt: 0, retryStoppedAt: 0 };
+  const fails = Math.max(0, Number((prev || {}).loginFails) || 0) + 1;
+  // A permanent failure also carries the normal wait, so that clearing the stop
+  // on its own can never turn into an immediate re-attempt.
+  return {
+    loginFails: fails,
+    nextAttemptAt: now + retryDelayForFails(fails),
+    retryStoppedAt: isPermanentFailure(note) ? now : 0,
+  };
+}
 // Should the daily runner attempt this account right now?
 function shouldRun(st) {
   const s = st || {};
@@ -1136,8 +1198,19 @@ function shouldRun(st) {
   // delayed Sep 19's 7:57 AM credit).
   if (s.lastResult === "success" && s.lastRunAt && now - s.lastRunAt < RESET_MS &&
       s.lastRunAt >= effectiveDoneAt(s) + RESET_MS) return false;
-  if (s.lastResult && s.lastResult !== "success" && s.lastRunAt && now - s.lastRunAt < RETRY_COOLDOWN_MS)
-    return false; // back off briefly after a failed / needs-attention attempt
+  // The stored sign-in is wrong, so retrying would only pile up failed GitHub
+  // attempts. Stop until a person fixes it; a manual Run still works.
+  if (Number(s.retryStoppedAt) > 0) return false;
+  // Escalating backoff after a failed / needs-attention attempt. Checked on the
+  // stamp rather than on lastResult, so a record whose lastResult was cleared
+  // (a crashed worker, see clearStaleRunningOnce) still serves out its wait.
+  const until = nextAttemptAt(s);
+  if (until > 0 && now < until) return false;
+  // A record written before the backoff existed carries no counter at all, so keep
+  // the old flat one-hour floor for it: an upgrade must not release a burst of
+  // retries the previous version was holding back.
+  if (!until && s.lastResult && s.lastResult !== "success" && s.lastRunAt && now - s.lastRunAt < RETRY_COOLDOWN_MS)
+    return false;
   return true;
 }
 
@@ -3189,10 +3262,13 @@ async function maybeNotifyRunningTask(cfg) {
   }
   // The floating tracker's bar and face: estimate + time tracked today before this
   // timer started (the live part is added on the page, second by second).
+  // closedTodayMs is TODAY's share of that earlier time, so the pages can show
+  // "4h 49m · 31m today" for a task tracked across several days.
   await chrome.storage.local.set({ runningProgress: {
     taskId: String(entry.taskId), startMs: entry.startMs || 0, taskName: (progress && progress.taskName) || entry.taskName || "",
     estimateMs: progress ? progress.estimateMs : 0,
     closedMs: progress ? Math.max(0, progress.trackedMs - Math.max(0, Date.now() - (entry.startMs || Date.now()))) : 0,
+    closedTodayMs: progress ? Math.max(0, Number(progress.closedTodayMs) || 0) : 0,
     at: Date.now(),
   } });
   const { clickupNotified } = await chrome.storage.local.get("clickupNotified");
@@ -3688,6 +3764,9 @@ async function updateBadge() {
   for (const a of accounts) {
     const st = status[a.id] || {};
     if (isDoneWithinWindow(st)) done++;
+    // Automatic retries stopped: it needs a person whether or not it failed today,
+    // so it can't sit in "pending" once the failure is a day old.
+    else if (Number(st.retryStoppedAt) > 0) attention++;
     else if (st.lastResult && st.lastResult !== "success" && isToday(st.lastRunAt)) attention++;
     else pending++;
   }
@@ -3975,15 +4054,20 @@ async function maybeNotifyBatch(results) {
   let ok = 0;
   let attn = 0;
   let fail = 0;
+  let stopped = 0;
   for (const r of entries) {
     if (r.result === "success") ok++;
     else if (r.result === "needs-attention") attn++;
     else fail++;
+    // Same classifier the backoff uses: say so here, or the user would only find
+    // out that an account stopped retrying by opening the popup.
+    if (r.result !== "success" && isPermanentFailure(r.note)) stopped++;
   }
   const parts = [];
   if (ok) parts.push(`${ok} logged in`);
   if (attn) parts.push(`${attn} need${attn === 1 ? "s" : ""} you`);
   if (fail) parts.push(`${fail} failed`);
+  if (stopped) parts.push(`auto retries stopped for ${stopped}`);
   if (!parts.length) return;
   const title = attn || fail ? "Daily login - action needed" : "Daily login complete";
   await notify("daily-login-batch-" + Date.now(), title, parts.join(" · "));
@@ -4039,6 +4123,11 @@ async function ensureStatusHydrated() {
 // treats "running" as "skip", which would wedge that account out of the daily
 // auto-login forever. Clear it back to a neutral, runnable state (keeping the
 // earning checkpoint lastDone/lastDoneAt) exactly once per worker.
+// The retry bookkeeping (loginFails / nextAttemptAt / retryStoppedAt) is left
+// untouched on purpose: a crashed worker is not a credential failure, so it must
+// not escalate the backoff - but an outstanding wait from the LAST real failure
+// still has to be served out, which is why shouldRun() checks the stamp rather
+// than lastResult.
 let staleRunningCleared = false;
 async function clearStaleRunningOnce() {
   if (staleRunningCleared) return;
@@ -4113,9 +4202,14 @@ async function runAccounts(accountsToRun, { active, manual = false }) {
 // tab left open for them): the status line, and the earning checkpoint rules.
 async function recordLoginResult(accountId, result, note, detected, settings) {
         const patch = { lastRunAt: Date.now(), lastResult: result, note: note || "" };
+        const status = await getStatus();
+        const prev = status[accountId] || {};
+        // Retry bookkeeping: count the failure, stamp when the daily runner may try
+        // again (escalating - see RETRY_BACKOFF_MS), and stop the automatic retries
+        // altogether when the note says the stored sign-in itself is wrong. A
+        // success clears all three.
+        Object.assign(patch, retryPatchFor(prev, result, patch.note, patch.lastRunAt));
         if (result === "success") {
-          const status = await getStatus();
-          const prev = status[accountId] || {};
           if (isDoneWithinWindow(prev)) {
             // Already credited this window - preserve the earning checkpoint.
             patch.lastDone = prev.lastDone || todayString();
@@ -5952,7 +6046,10 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       }
       case "MARK_DONE": {
         const now = Date.now();
-        await setStatusFor(msg.id, { lastDone: todayString(), lastDoneAt: now, lastRunAt: now, lastResult: "success", note: "marked manually" });
+        // This bypasses recordLoginResult, so clear the retry bookkeeping here too:
+        // the person just logged in by hand, which proves the stored sign-in works,
+        // and this is the button sitting next to the failure note.
+        await setStatusFor(msg.id, { lastDone: todayString(), lastDoneAt: now, lastRunAt: now, lastResult: "success", note: "marked manually", loginFails: 0, nextAttemptAt: 0, retryStoppedAt: 0 });
         sendResponse({ ok: true });
         break;
       }

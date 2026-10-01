@@ -260,6 +260,15 @@
     const live = Math.max(0, now - (run.startMs || now));
     const tracked = (rp ? rp.closedMs : 0) + live;
     const est = rp ? Number(rp.estimateMs) || 0 : 0;
+    // Today's share of this task's time, when it was also worked on an earlier
+    // day: the bar's figure counts every day, so on a task that runs all week it
+    // is nothing like today's work. Kept out of the small bar (no room) - it goes
+    // in the hover title and the expanded line.
+    const earlierToday = rp ? Math.max(0, Number(rp.closedTodayMs) || 0) : 0;
+    const dayStart = new Date(now); dayStart.setHours(0, 0, 0, 0);
+    const trackedToday = earlierToday + Math.max(0, now - Math.max(run.startMs || now, dayStart.getTime()));
+    const multiDay = !!rp && (rp.closedMs || 0) > earlierToday + 60000;
+    const todayTrk = multiDay ? fmt(trackedToday) + " today" : "";
     const p = est > 0 ? tracked / est : null;
     const over = p != null && tracked - est >= 60000; // a full minute past the estimate
     const barColor = p == null ? "var(--blue)" : p > 1.07 ? "var(--red)" : p >= 0.8 ? "var(--green)" : "var(--blue)";
@@ -272,7 +281,7 @@
     // popup), so a renamed/other occurrence is still protected.
     const isExtra = !!((st.extraTask && String(st.extraTask.id) === String(run.taskId)) ||
       /\bextra(?:\(s\)|s)?\s+task(?:\(s\)|s)?\b/i.test(String(run.taskName || "")));
-    const bar = '<div class="row"><div class="trk"><b style="width:' + width.toFixed(1) + "%;background:" + barColor + (p == null ? ";opacity:.35" : "") + '"></b></div><span class="tm"' + (over ? ' style="color:var(--red)"' : "") + ">" + esc(time) + "</span></div>";
+    const bar = '<div class="row"><div class="trk"><b style="width:' + width.toFixed(1) + "%;background:" + barColor + (p == null ? ";opacity:.35" : "") + '"></b></div><span class="tm"' + (over ? ' style="color:var(--red)"' : "") + (todayTrk ? ' title="' + esc(fmt(tracked) + " on this task in total · " + todayTrk) + '"' : "") + ">" + esc(time) + "</span></div>";
     if (expanded) {
       if (bigKey !== run.taskId + ":" + run.startMs) { closeBig(); return; }
       const d = pip.document;
@@ -282,7 +291,7 @@
       eb.style.background = barColor;
       eb.style.opacity = p == null ? ".35" : "";
       const et = d.getElementById("eTime");
-      et.textContent = time + (today ? " · " + today : "");
+      et.textContent = time + (todayTrk ? " · " + todayTrk : "") + (today ? " · " + today : "");
       et.style.color = over ? "var(--red)" : "";
       return;
     }
@@ -314,6 +323,7 @@
       b.style.opacity = p == null ? ".35" : "";
       const tm = d.getElementById("fTime");
       tm.textContent = time;
+      tm.title = todayTrk ? fmt(tracked) + " on this task in total · " + todayTrk : "";
       tm.style.color = over ? "var(--red)" : "";
       d.getElementById("fToday").textContent = today || label;
     } else {

@@ -260,9 +260,19 @@ function renderList(accounts, status, today, running) {
     const dAt = doneAtOf(st);
     const resetMs = resetHours * 3600 * 1000;
     let statusText;
+    // The runner waits longer after each failure (1h, 6h, 24h, then 72h) so a broken
+    // login doesn't hammer GitHub; show when it will really try next.
+    const nextTry = Number(st.nextAttemptAt) || 0;
+    const nextTryTxt = nextTry > Date.now() ? " · next try " + fmtDayTime(nextTry) : "";
+    const waiting = !!(st.lastResult && st.lastResult !== "success" && nextTryTxt);
     if (dAt && Date.now() < dAt + resetMs) {
       statusText = "credited " + fmtDayTime(dAt) + (st.creditSource === "login" ? " (at login)" : "") + " · resets " + fmtDayTime(dAt + resetMs);
-    } else if (dAt) {
+    } else if (Number(st.retryStoppedAt) > 0) {
+      // No retry can fix this login (wrong password, bad TOTP secret...), so the
+      // runner has stopped attempting it. Checked before "ready to run" because a
+      // stopped account is never ready, however long ago it last tried.
+      statusText = "automatic retries stopped - fix this login, then Run" + (st.lastRunAt ? " (tried " + fmtDayTime(st.lastRunAt) + ")" : "");
+    } else if (dAt && !waiting) {
       const ranLater = st.lastRunAt && st.lastRunAt > dAt + 60000;
       statusText = "ready to run · " + (ranLater ? "last run " + fmtDayTime(st.lastRunAt) + " · " : "") + "last credit " + fmtDayTime(dAt);
     } else if (!dAt && st.lastResult === "success" && st.lastRunAt) {
@@ -270,7 +280,7 @@ function renderList(accounts, status, today, running) {
       // the row flips to "logged in … resets …" the moment the batch is detected.
       statusText = "Logged in · awaiting credit (run " + fmtDayTime(st.lastRunAt) + ")";
     } else if (st.lastResult && st.lastResult !== "success") {
-      statusText = "last: " + st.lastResult + (st.lastRunAt ? " (" + fmtDayTime(st.lastRunAt) + ")" : "");
+      statusText = "last: " + st.lastResult + (st.lastRunAt ? " (" + fmtDayTime(st.lastRunAt) + ")" : "") + nextTryTxt;
     } else {
       statusText = "not run yet";
     }
@@ -1394,14 +1404,29 @@ function waitSlot(t) {
   return span;
 }
 // Time cell: "tracked / est". Tracked turns red past the estimate; a running
-// timer gets a dot. Called right after the tracked text is set.
-function markTrk(trk, t) {
+// timer gets a dot. Called right after the tracked text is set. `spans` is the
+// row's .estpairs box: when the task was also worked on another day, a small
+// "31m today" pill goes in there after the pair, so a multi-day figure can't be
+// mistaken for today's work. The pill is ordered last (.trk is order 1, .est
+// order 3) instead of landing between the two numbers.
+function markTrk(trk, t, spans) {
   const spent = Number(t && t.spentMs) || 0;
   const est = Number(t && (t.estimateMs != null ? t.estimateMs : t.dayEstimateMs)) || 0;
   if (est > 0 && spent > est) trk.classList.add("over");
   const st = (optClickup && optClickup.state) || null;
   const run = st && st.running;
   const id = t && (t.id != null ? t.id : t.taskId);
+  if (spans) {
+    const todayMs = cuTrkTodayMs(st, t, spent, cuRunPrior, Date.now());
+    if (todayMs > 0) {
+      const pill = document.createElement("span");
+      pill.className = "trk-today";
+      pill.style.order = "4";
+      pill.textContent = fmtDurOpt(todayMs) + " today";
+      pill.title = CU_TRK_TODAY_TIP;
+      spans.appendChild(pill);
+    }
+  }
   if (run && id != null && String(run.taskId) === String(id)) {
     trk.classList.add("running");
     liveTrk(trk, t, st, run, est, fmtDurOpt);
@@ -2468,7 +2493,7 @@ function renderOptionsWeekly(cu) {
             if (Number(t.spentMs) > 0) {
               const trk = document.createElement("span");
               trk.className = "trk";
-              trk.textContent = fmtDurOpt(t.spentMs); markTrk(trk, t);
+              trk.textContent = fmtDurOpt(t.spentMs); markTrk(trk, t, spans);
               spans.appendChild(trk);
             }
             row.appendChild(spans);
@@ -2498,7 +2523,7 @@ function renderOptionsWeekly(cu) {
               if (Number(t.spentMs) > 0) {
                 const trk = document.createElement("span");
                 trk.className = "trk";
-                trk.textContent = fmtDurOpt(t.spentMs); markTrk(trk, t);
+                trk.textContent = fmtDurOpt(t.spentMs); markTrk(trk, t, spans);
                 spans.appendChild(trk);
               }
               row.appendChild(spans);
@@ -3029,7 +3054,7 @@ async function renderOptionsFilter() {
       if (Number(t.spentMs) > 0) {
         const trk = document.createElement("span");
         trk.className = "trk";
-        trk.textContent = fmtDurOpt(t.spentMs); markTrk(trk, t);
+        trk.textContent = fmtDurOpt(t.spentMs); markTrk(trk, t, spans);
         spans.appendChild(trk);
       }
       row.appendChild(spans);
@@ -3052,7 +3077,7 @@ async function renderOptionsFilter() {
       if (Number(dt.spentMs) > 0) {
         const trk = document.createElement("span");
         trk.className = "trk";
-        trk.textContent = fmtDurOpt(dt.spentMs); markTrk(trk, dt);
+        trk.textContent = fmtDurOpt(dt.spentMs); markTrk(trk, dt, spans);
         spans.appendChild(trk);
       }
       row.appendChild(spans);
@@ -3083,7 +3108,7 @@ async function renderOptionsFilter() {
         if (Number(t.spentMs) > 0) {
           const trk = document.createElement("span");
           trk.className = "trk";
-          trk.textContent = fmtDurOpt(t.spentMs); markTrk(trk, t);
+          trk.textContent = fmtDurOpt(t.spentMs); markTrk(trk, t, spans);
           spans.appendChild(trk);
         }
         row.appendChild(spans);
@@ -3541,14 +3566,72 @@ function cuTodayTracked(st, view) {
   const ms = Math.max(0, Number(st.spentMs) || 0);
   return ms > 0 ? ms : 0;
 }
+// ---- today's share of ONE task's tracked time ----
+// A task worked over several days shows a cumulative figure wherever its tracked
+// time appears ("Tracking now" counts every earlier entry; a row's spentMs covers
+// the filter's whole range), so 4h 49m on a task can't be read as today's work.
+// These two put today's own figure beside it, from data already on the page.
+const CU_TRK_TODAY_TIP = "How much of this task's tracked time you put in today. The bigger figure is everything tracked on this task, across the days you worked on it.";
+// Today's tracked time per task, from the state's own today bundle (st.tasks +
+// st.trackedTasks are today's rows, carrying today-only spentMs). Gated on
+// spentToday, so a ClickUp fallback to the cumulative time_spent field yields
+// nothing instead of a wrong number. Memoised per state snapshot - the row
+// painters ask for this once per task.
+function cuTodayByTask(st) {
+  st = st || {};
+  const at = Number(st.at) || 0;
+  const c = cuTodayByTask.c;
+  if (c && c.st === st && c.at === at) return c.map;
+  const rows = (Array.isArray(st.tasks) ? st.tasks : []).concat(Array.isArray(st.trackedTasks) ? st.trackedTasks : []);
+  const map = new Map();
+  if (rows.some((t) => t && t.spentToday === true)) {
+    for (const t of rows) {
+      if (!t || t.spentToday !== true) continue;
+      const id = t.id != null ? String(t.id) : (t.taskId != null ? String(t.taskId) : "");
+      const ms = Math.max(0, Number(t.spentMs) || 0);
+      if (id && ms > 0) map.set(id, Math.max(map.get(id) || 0, ms));
+    }
+  }
+  cuTodayByTask.c = { st, at, map };
+  return map;
+}
+// Today's ms for one task, but ONLY when the task also has time from another day
+// - otherwise 0 and nothing is shown, because the figure already on screen IS
+// today's (the Today scope, or a task started and finished today). `spentShown`
+// is the tracked figure the caller is displaying. `prior` is cuRunPrior: for the
+// RUNNING task its exact closed-today + the live segment wins, since the state
+// snapshot can be ~5 minutes behind. A one-minute margin keeps the two figures
+// from ever rendering identically.
+function cuTrkTodayMs(st, t, spentShown, prior, now) {
+  st = st || {};
+  prior = prior || { key: "", ms: 0, today: 0 };
+  now = Number(now) || Date.now();
+  const id = t && (t.id != null ? t.id : t.taskId);
+  if (id == null || id === "") return 0;
+  const run = st.running && st.running.taskId != null ? st.running : null;
+  if (run && String(run.taskId) === String(id) && prior.key === String(run.taskId) + ":" + String(run.startMs || "")) {
+    const earlier = Math.max(0, Number(prior.ms) || 0);
+    const earlierToday = Math.max(0, Number(prior.today) || 0);
+    if (earlier <= earlierToday + 60000) return 0; // all of this task's earlier time is today's
+    const dayStart = new Date(now); dayStart.setHours(0, 0, 0, 0);
+    const from = Math.max(Number(run.startMs) || 0, dayStart.getTime());
+    return earlierToday + Math.max(0, now - from);
+  }
+  const today = Math.max(0, Number(cuTodayByTask(st).get(String(id))) || 0);
+  const shown = Math.max(0, Number(spentShown) || 0);
+  return (today > 0 && today + 60000 <= shown) ? today : 0;
+}
 // The running task's time from before this timer started (its earlier time
 // entries, kept by the background in runningProgress), so "Tracking now" goes
 // on from 30m instead of starting at 0m after a stop / complete and restart.
-let cuRunPrior = { key: "", ms: 0 };
+// `today` is the share of that earlier time tracked today, for the today pill.
+let cuRunPrior = { key: "", ms: 0, today: 0 };
 function cuLoadRunPrior() {
   try {
     chrome.storage.local.get("runningProgress").then(({ runningProgress: rp }) => {
-      cuRunPrior = rp && rp.taskId ? { key: String(rp.taskId) + ":" + String(rp.startMs || ""), ms: Math.max(0, Number(rp.closedMs) || 0) } : { key: "", ms: 0 };
+      cuRunPrior = rp && rp.taskId
+        ? { key: String(rp.taskId) + ":" + String(rp.startMs || ""), ms: Math.max(0, Number(rp.closedMs) || 0), today: Math.max(0, Number(rp.closedTodayMs) || 0) }
+        : { key: "", ms: 0, today: 0 };
     }).catch(() => {});
   } catch (e) {}
 }
@@ -3870,12 +3953,24 @@ function renderNowTracking() {
   nm.rel = "noopener";
   const time = document.createElement("span");
   time.className = "cu-now-time";
+  const todayPill = document.createElement("span");
+  todayPill.className = "trk-today";
+  todayPill.title = CU_TRK_TODAY_TIP;
+  todayPill.hidden = true;
   const tick = () => {
     if (!run.startMs) { time.textContent = ""; return; }
     const live = Math.max(0, Date.now() - run.startMs);
     const prior = cuRunPrior.key === key ? cuRunPrior.ms : 0;
     time.textContent = fmtDurOpt(prior + live);
-    time.title = prior ? "This session " + fmtDurOpt(live) + " · earlier " + fmtDurOpt(prior) + " (total on this task)" : "This session";
+    // Today's own share, when this task was also worked on an earlier day: the
+    // big figure is everything ever tracked on it, which on a task that runs for
+    // days (a weekly recurring one) is nothing like today's work.
+    const todayMs = cuTrkTodayMs(st, { id: run.taskId }, prior + live, cuRunPrior, Date.now());
+    todayPill.hidden = !(todayMs > 0);
+    todayPill.textContent = todayMs > 0 ? fmtDurOpt(todayMs) + " today" : "";
+    time.title = prior
+      ? "This session " + fmtDurOpt(live) + " · earlier " + fmtDurOpt(prior) + " (total on this task)" + (todayMs > 0 ? " · today " + fmtDurOpt(todayMs) : "")
+      : "This session";
   };
   tick();
   cuNowTimer = setInterval(tick, 15000);
@@ -3946,8 +4041,8 @@ function renderNowTracking() {
   // still be completed from its row in the task list below.
   const isExtra = !!((st.extraTask && st.extraTask.id && String(st.extraTask.id) === String(run.taskId))
     || /\bextra(?:\(s\)|s)?\s+task(?:\(s\)|s)?\b/i.test(String(run.taskName || run.name || "")));
-  if (isExtra) top.append(dot, lab, nm, time, stop);
-  else top.append(dot, lab, nm, time, stop, done);
+  if (isExtra) top.append(dot, lab, nm, time, todayPill, stop);
+  else top.append(dot, lab, nm, time, todayPill, stop, done);
   const fl = window.PcmHelp && window.PcmHelp.floatButton();
   if (fl) top.insertBefore(fl, stop);
   const noteRow = document.createElement("div");
@@ -4399,7 +4494,7 @@ function renderClickupPreview(st) {
         if (Number(dt.spentMs) > 0) {
           const trk = document.createElement("span");
           trk.className = "trk";
-          trk.textContent = fmtDurOpt(dt.spentMs); markTrk(trk, dt);
+          trk.textContent = fmtDurOpt(dt.spentMs); markTrk(trk, dt, spans);
           spans.appendChild(trk);
         }
         appendNameCellOpt(row, nm, dt);
@@ -4466,7 +4561,7 @@ function renderClickupPreview(st) {
         if (Number(t.spentMs) > 0) {
           const trk = document.createElement("span");
           trk.className = "trk";
-          trk.textContent = fmtDurOpt(t.spentMs); markTrk(trk, t);
+          trk.textContent = fmtDurOpt(t.spentMs); markTrk(trk, t, spans);
           spans.appendChild(trk);
         }
         appendNameCellOpt(row, nm, t);
@@ -4508,7 +4603,7 @@ function renderClickupPreview(st) {
         if (Number(t.spentMs) > 0) {
           const trk = document.createElement("span");
           trk.className = "trk";
-          trk.textContent = fmtDurOpt(t.spentMs); markTrk(trk, t);
+          trk.textContent = fmtDurOpt(t.spentMs); markTrk(trk, t, spans);
           spans.appendChild(trk);
         }
         appendNameCellOpt(row, nm, t);

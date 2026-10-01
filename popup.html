@@ -422,6 +422,9 @@
   .cu-now-name { width: 0; }
   .cu-now-name:hover { text-decoration: underline; }
   .cu-now-time { flex: none; font-variant-numeric: tabular-nums; color: var(--green); font-weight: 700; }
+  /* Today's share of the running task's time, beside the all-days total. The row
+     and the strip already space their items, so the pill drops its own margin. */
+  .cu-now .trk-today, .cu-task .trk-today { flex: none; margin-left: 0; }
   .cu-now-stop { flex: none; line-height: 1.15; font-size: 11px; font-weight: 700; padding: 3px 9px; border-radius: 6px; border: 0; background: var(--red); color: #fff; cursor: pointer; }
   .cu-now-stop:disabled { opacity: .6; cursor: default; }
   /* ✓ Complete beside Stop: theme colours only, so it reads in light and dark. */

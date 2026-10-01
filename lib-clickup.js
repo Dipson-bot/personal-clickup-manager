@@ -1220,12 +1220,21 @@ export async function getRunningTaskProgress(token, teamId, taskId, startMs, now
   }
   const entries = (j && Array.isArray(j.data)) ? j.data : [];
   let closedMs = 0;
+  let closedTodayMs = 0;
   for (const e of entries) {
     const dur = Number(e.duration) || 0;
-    if (dur > 0) closedMs += dur; // the live entry reports 0/negative while running - skip it here
+    if (dur <= 0) continue; // the live entry reports 0/negative while running - skip it here
+    closedMs += dur;
+    // Today's own share, so a task tracked across several days can show both
+    // figures. An entry counts for today when it OVERLAPS today and then counts
+    // in full - the same rule fetchTodayTimeEntriesByTask gets from ClickUp for
+    // a today-bounded query, so this matches the Today card's number instead of
+    // disagreeing with it by an overnight entry.
+    const eEnd = Number(e.end) || ((Number(e.start) || 0) + dur);
+    if (eEnd > start) closedTodayMs += dur;
   }
   const liveMs = Math.max(0, now - startMs);
-  return { estimateMs: task.estimateMs, trackedMs: closedMs + liveMs, taskName: task.name || "" };
+  return { estimateMs: task.estimateMs, trackedMs: closedMs + liveMs, closedTodayMs, taskName: task.name || "" };
 }
 
 // ---------- time entries (today-only tracked time) ----------
