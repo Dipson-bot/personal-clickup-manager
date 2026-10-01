@@ -628,9 +628,24 @@ export async function getTaskPanel(token, taskId, force) {
   const hit = panelCache.get(key);
   if (!force && hit && Date.now() - hit.at < PANEL_TTL_MS) return hit.data;
   const [t, cj] = await Promise.all([
-    cuFetch(token, "/task/" + encodeURIComponent(key), [["include_markdown_description", "true"]]),
+    // include_subtasks: the same request also brings the subtasks, for the
+    // "Verify in OpenCode" brief (no extra call).
+    cuFetch(token, "/task/" + encodeURIComponent(key), [["include_markdown_description", "true"], ["include_subtasks", "true"]]),
     cuFetch(token, "/task/" + encodeURIComponent(key) + "/comment").catch(() => ({ comments: [] })),
   ]);
+  const who = (x) => (Array.isArray(x && x.assignees) ? x.assignees : []).map((a) => a && (a.username || a.email)).filter(Boolean);
+  const deps = Array.isArray(t && t.dependencies) ? t.dependencies : [];
+  const subtasks = (Array.isArray(t && t.subtasks) ? t.subtasks : [])
+    .filter((s) => s && String(s.id) !== key && (s.parent == null || String(s.parent) === key))
+    .slice(0, 40)
+    .map((s) => {
+      const sd = String((s.markdown_description || s.description || s.text_content) || "").trim();
+      return {
+        id: String(s.id), name: s.name || "", status: (s.status && s.status.status) || "", done: isTaskDone(s),
+        assignees: who(s), dueDateMs: s.due_date ? Number(s.due_date) : null, url: s.url || taskUrlFor(s.id),
+        description: sd, links: extractTaskLinks(sd),
+      };
+    });
   const text = String((t && (t.markdown_description || t.description || t.text_content)) || "").trim();
   const comments = (Array.isArray(cj && cj.comments) ? cj.comments : []).map((c) => ({
     id: String(c.id || ""),
@@ -655,6 +670,13 @@ export async function getTaskPanel(token, taskId, force) {
       .filter((a) => a && a.url)
       .map((a) => ({ title: a.title || a.url, url: a.url, ext: a.extension || "" })),
     comments,
+    assignees: who(t),
+    tags: (Array.isArray(t && t.tags) ? t.tags : []).map((g) => g && g.name).filter(Boolean),
+    priority: cuPriorityName(t),
+    parentId: t && t.parent != null ? String(t.parent) : "",
+    waitsOn: deps.filter((x) => String(x.task_id) === key && x.depends_on).map((x) => String(x.depends_on)),
+    blocks: deps.filter((x) => String(x.depends_on) === key && x.task_id).map((x) => String(x.task_id)),
+    subtasks,
   };
   panelCache.set(key, { at: Date.now(), data });
   return data;

@@ -106,6 +106,7 @@
       '<div style="min-width:0"><div class="tf-fn" title="' + esc(f.name) + '">' + esc(f.name) + '</div><div class="tf-fm">' + fmtSize(f.size || 0) + " · added " + day(f.addedAt) + " · " + what + (kept ? "" : " · only its text is kept") + "</div></div>" +
       '<div class="tf-facts"><button type="button" class="tf-btn tf-open" title="' + (kept ? "Open it (images, PDF, web pages and text open in a tab; other files download)" : "Open the text that was read from it (the original wasn't kept - it was added before files were kept)") + '">Open</button>' +
       '<button type="button" class="tf-btn tf-show" title="Opens the folder with this file. The first time, a copy is saved to Downloads &gt; Personal ClickUp Manager &gt; Clients &gt; ' + esc(f.client) + ' (the file itself is stored inside Chrome, not in a folder); after that the same copy is shown.">Show in folder</button>' +
+      '<button type="button" class="tf-btn tf-replace" title="Swap this file for a newer one (for example August\'s audit for September\'s). To keep both, use + Add files instead.">Replace</button>' +
       '<button type="button" class="tf-btn tf-rm" title="Remove this file">✕</button></div></div>';
   }
   function chipsHtml(list, cls, removable) {
@@ -176,6 +177,25 @@
     await load();
   }
   picker.onchange = () => { if (pickFor) addTo(pickFor.ck, pickFor.name, [...picker.files]); picker.value = ""; };
+  // Replace one file: the new one is added first, then the old one removed, so
+  // a file that can't be read never leaves the client without its audit.
+  const replacePicker = document.createElement("input");
+  replacePicker.type = "file"; replacePicker.hidden = true; replacePicker.accept = picker.accept;
+  document.body.appendChild(replacePicker);
+  let replaceFor = null;
+  replacePicker.onchange = async () => {
+    const file = replacePicker.files[0], old = replaceFor;
+    replacePicker.value = ""; replaceFor = null;
+    if (!file || !old) return;
+    open.add(old.ck);
+    say("Reading " + file.name + "…");
+    try {
+      const [rec] = await F.add(old.client, [file]);
+      if (!rec || rec.kind === "unreadable") { say("Couldn't read " + file.name + (rec && rec.why ? " (" + rec.why + ")" : "") + ", so " + old.name + " was kept.", "var(--amber, #d97706)"); if (rec) await F.remove(rec.id); }
+      else { await F.remove(old.id); say("Replaced " + old.name + " with " + file.name + " for " + old.client + "."); }
+    } catch (e) { say("Couldn't replace: " + (e && e.message ? e.message : e), "var(--red)"); }
+    await load();
+  };
 
   // ---- files for the next note ----
   const noteInput = document.createElement("input");
@@ -259,6 +279,7 @@
           const r = await F.showInFolder(f);
           say(r.reused ? "Opened the copy in Downloads › Personal ClickUp Manager › Clients › " + f.client + "." : "Saved a copy to Downloads › Personal ClickUp Manager › Clients › " + f.client + (r.original ? "" : " (as text - the original wasn't kept)") + " - next time it just opens that copy.");
         }
+        else if (e.target.closest(".tf-replace")) { replaceFor = f; replacePicker.click(); }
         else if (e.target.closest(".tf-rm")) { if (confirm("Remove “" + f.name + "” from " + name + "?")) { await F.remove(f.id); await load(); } }
       } catch (err) { say(String((err && err.message) || err), "var(--red)"); }
       return;
