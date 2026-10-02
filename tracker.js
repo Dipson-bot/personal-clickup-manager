@@ -99,7 +99,8 @@
     .nm:hover { text-decoration: underline; }
     .row { display: flex; align-items: center; gap: 8px; min-width: 0; }
     .trk { flex: 1; height: 7px; border-radius: 999px; background: var(--track); overflow: hidden; }
-    .trk b { display: block; height: 100%; border-radius: 999px; transition: width .6s, background .6s; }
+    .trk b { display: block; height: 100%; border-radius: 999px; overflow: hidden; transition: width .6s, background .6s; }
+    .trk b .tdy { display: block; height: 100%; border-radius: 999px; background: rgba(255,255,255,.55); }
     .tm { font-variant-numeric: tabular-nums; color: var(--muted); white-space: nowrap; }
     .lab { font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
     .sub { color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
@@ -281,7 +282,14 @@
     // popup), so a renamed/other occurrence is still protected.
     const isExtra = !!((st.extraTask && String(st.extraTask.id) === String(run.taskId)) ||
       /\bextra(?:\(s\)|s)?\s+task(?:\(s\)|s)?\b/i.test(String(run.taskName || "")));
-    const bar = '<div class="row"><div class="trk"><b style="width:' + width.toFixed(1) + "%;background:" + barColor + (p == null ? ";opacity:.35" : "") + '"></b></div><span class="tm"' + (over ? ' style="color:var(--red)"' : "") + (todayTrk ? ' title="' + esc(fmt(tracked) + " on this task in total · " + todayTrk) + '"' : "") + ">" + esc(time) + "</span></div>";
+    // Today's share drawn inside the same bar, in a lighter shade of the fill,
+    // so the bar says at a glance how much of that total is today's work. Only
+    // when there IS time from an earlier day - otherwise today is the whole bar.
+    const todayPct = multiDay && tracked > 0 ? Math.min(100, (trackedToday / tracked) * 100) : 0;
+    const todaySeg = todayPct > 0
+      ? '<i class="tdy" style="width:' + todayPct.toFixed(1) + '%" title="' + esc("Today " + fmt(trackedToday) + " of " + fmt(tracked) + " on this task") + '"></i>'
+      : "";
+    const bar = '<div class="row"><div class="trk"><b style="width:' + width.toFixed(1) + "%;background:" + barColor + (p == null ? ";opacity:.35" : "") + '">' + todaySeg + '</b></div><span class="tm"' + (over ? ' style="color:var(--red)"' : "") + (todayTrk ? ' title="' + esc(fmt(tracked) + " on this task in total · " + todayTrk) + '"' : "") + ">" + esc(time) + "</span></div>";
     if (expanded) {
       if (bigKey !== run.taskId + ":" + run.startMs) { closeBig(); return; }
       const d = pip.document;
@@ -290,6 +298,7 @@
       eb.style.width = width.toFixed(1) + "%";
       eb.style.background = barColor;
       eb.style.opacity = p == null ? ".35" : "";
+      if (eb._tdy !== todaySeg) { eb._tdy = todaySeg; eb.innerHTML = todaySeg; }
       const et = d.getElementById("eTime");
       et.textContent = time + (todayTrk ? " · " + todayTrk : "") + (today ? " · " + today : "");
       et.style.color = over ? "var(--red)" : "";
@@ -321,6 +330,7 @@
       b.style.width = width.toFixed(1) + "%";
       b.style.background = barColor;
       b.style.opacity = p == null ? ".35" : "";
+      if (b._tdy !== todaySeg) { b._tdy = todaySeg; b.innerHTML = todaySeg; }
       const tm = d.getElementById("fTime");
       tm.textContent = time;
       tm.title = todayTrk ? fmt(tracked) + " on this task in total · " + todayTrk : "";

@@ -1973,8 +1973,14 @@ export async function fetchTodayEstimate({ token, teamId, userId, targetHours = 
   // signed-in user so only their own tracked minutes count.
   const userScope = userId != null ? [String(userId)] : [];
   let todayByTask = new Map();
+  // entriesOk: today's time entries were read. An EMPTY map then means nothing
+  // tracked yet today (0m) - it used to be read as "couldn't load" and fall back
+  // to each task's all-time time_spent, so right after starting the day (refresh
+  // at the moment the timer starts) Tracked showed e.g. 5h 48m from earlier days.
+  let entriesOk = false;
   try {
     todayByTask = await fetchTodayTimeEntriesByTask(token, teamId, now, userScope);
+    entriesOk = true;
     // Fold in the live running timer so tracked time reflects an in-progress
     // timer instead of showing 0 until it's paused. Personal-token scope only.
     await addRunningTimerToTodayMap(token, teamId, todayByTask, now);
@@ -2019,7 +2025,7 @@ export async function fetchTodayEstimate({ token, teamId, userId, targetHours = 
     } else {
       est = Number(t.time_estimate) || 0;
     }
-    const spent = todayByTask.size ? (todayByTask.get(t.id) || 0) : (Number(t.time_spent) || 0);
+    const spent = entriesOk ? (todayByTask.get(t.id) || 0) : (Number(t.time_spent) || 0);
     estimateMs += est;
     spentMs += spent;
     tasks.push({
@@ -2030,7 +2036,7 @@ export async function fetchTodayEstimate({ token, teamId, userId, targetHours = 
       startDateMs: tStart || null,
       dueDateMs: tDue || null,
       spentMs: spent,
-      spentToday: todayByTask.size > 0,
+      spentToday: entriesOk,
       status: (t.status && t.status.status) || "",
       priority: cuPriorityName(t),
       done: isTaskDone(t),
@@ -2088,7 +2094,7 @@ export async function fetchTodayEstimate({ token, teamId, userId, targetHours = 
         // Subtasks normally have no dates - their full estimate counts today.
         sEst = Number(s.time_estimate) || 0;
       }
-      const sSpent = todayByTask.size ? (todayByTask.get(s.id) || 0) : (Number(s.time_spent) || 0);
+      const sSpent = entriesOk ? (todayByTask.get(s.id) || 0) : (Number(s.time_spent) || 0);
       estimateMs += sEst;
       spentMs += sSpent;
       subRows.push({
@@ -2097,7 +2103,7 @@ export async function fetchTodayEstimate({ token, teamId, userId, targetHours = 
         estimateMs: sEst,
         totalEstimateMs: Number(s.time_estimate) || 0,
         spentMs: sSpent,
-        spentToday: todayByTask.size > 0,
+        spentToday: entriesOk,
         status: (s.status && s.status.status) || "",
         priority: cuPriorityName(s),
         done: isTaskDone(s),

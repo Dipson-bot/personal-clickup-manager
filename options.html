@@ -953,6 +953,21 @@
   #insView .badge.amber { color: var(--amber); background: rgba(217,119,6,0.14); }
   html[data-theme="dark"] #insView .badge.amber { background: rgba(251,191,36,0.14); }
   #insView .badge.zero { color: var(--muted); background: transparent; }
+  /* A count that is a shortcut into the list below (By client table). */
+  #insView button.badge { font: inherit; font-size: 11px; font-weight: 700; border: 1px solid transparent; cursor: pointer; line-height: 1.5; }
+  #insView button.badge:hover { border-color: currentColor; }
+  #insView button.client, #insView button.opn { font: inherit; background: none; border: 0; padding: 0; color: inherit; cursor: pointer; text-align: left; }
+  #insView button.client { width: 100%; }
+  #insView button.opn { font-weight: 600; }
+  #insView button.client:hover .nm, #insView button.opn:hover { color: var(--indigo); text-decoration: underline; }
+  /* One filter bar for all four lists under it. */
+  #insView .ins-filter { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-top: 18px; padding: 10px 14px; border: 1px solid var(--border); border-radius: 12px; background: var(--card); }
+  #insView .ins-filter.on { border-color: var(--indigo); }
+  #insView .ins-filter .f-lab { font-size: 11.5px; font-weight: 600; color: var(--muted); }
+  #insView .ins-filter .f-sel, #insView .ins-filter .f-q { font: inherit; font-size: 12.5px; padding: 6px 10px; border-radius: 9px; border: 1px solid var(--border); background: var(--bg2); color: var(--text); margin: 0; min-width: 0; }
+  #insView .ins-filter .f-sel { max-width: 240px; }
+  #insView .ins-filter .f-q { flex: 1; min-width: 150px; }
+  #insView .ins-filter .f-stat { font-size: 11.5px; color: var(--muted); }
   #insView details.ins-det { border: 1px solid var(--border); border-radius: 12px; margin-top: 12px; background: var(--card); overflow: hidden; }
   #insView details.ins-det summary { cursor: pointer; padding: 12px 16px; font-weight: 600; font-size: 13px; list-style: none; display: flex; align-items: center; gap: 10px; }
   #insView details.ins-det summary::-webkit-details-marker { display: none; }
@@ -977,6 +992,8 @@
   .pcm-dash-strip .mini.amber { color: var(--amber); background: rgba(217,119,6,0.14); }
   html[data-theme="dark"] .pcm-dash-strip .mini.amber { background: rgba(251,191,36,0.14); }
   .pcm-dash-strip .mini.blue { color: var(--blue); background: rgba(59,130,246,0.14); }
+  .pcm-dash-strip button.mini { font: inherit; font-size: 11px; font-weight: 600; border: 1px solid transparent; cursor: pointer; line-height: 1.6; }
+  .pcm-dash-strip button.mini:hover { border-color: currentColor; }
   .pcm-dash-strip .grow { margin-left: auto; display: flex; gap: 10px; align-items: center; }
   .pcm-dash-strip .pds-go { color: var(--indigo); font-size: 12px; text-decoration: none; font-weight: 700; background: none; border: 0; cursor: pointer; font-family: inherit; }
   .pcm-dash-strip .pds-go:hover { text-decoration: underline; }

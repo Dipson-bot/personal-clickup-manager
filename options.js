@@ -5421,6 +5421,60 @@ function optRepaintCuPreview() {
 var insCache = null;      // { status:"ok"|"err", data:[rows], error, at }
 var insLoading = false;   // a CLICKUP_OPEN_TASKS fetch is in flight
 var INS_TTL = 5 * 60000;  // consider the open-task cache stale after this
+// The last good result is also kept in storage, so opening the dashboard again
+// shows it at once ("Updated 2h ago · refreshing…") instead of "Loading…" every
+// time; only the very first visit has nothing to show.
+var INS_STORE = "insOpenCache";
+var insLastAuto = 0;
+var insHydrated = null;
+function insHydrate() {
+  if (!insHydrated) insHydrated = (typeof chrome !== "undefined" && chrome.storage ? chrome.storage.local.get(INS_STORE) : Promise.resolve({})).then(function (g) {
+    var c = g && g[INS_STORE];
+    if (!insCache && c && Array.isArray(c.tasks)) insCache = { status: "ok", data: c.tasks, at: Number(c.at) || 0 };
+  }).catch(function () {});
+  return insHydrated;
+}
+insHydrate().then(function () {
+  if (!insCache) return;
+  if (insTabActive()) { try { renderInsights(); } catch (e) {} }
+  try { renderDashStrip(); } catch (e) {}
+});
+
+// Narrowing of the four detail lists (NOT of the KPIs or the By client table -
+// those always show the whole board). Kept outside the paint so a background
+// refresh can put the lists back exactly as the user left them.
+var insFilter = { client: "", q: "" };
+var insOpenDrills = Object.create(null); // drill id -> the user has it expanded
+var insPendingDrill = "";                // open + scroll to this list after the next paint
+// Opened from the "needs tidying" notification (options.html?drill=overdue,noest#insights):
+// expand each list it talked about and scroll to the first one.
+(function () {
+  try {
+    var want = (new URLSearchParams(location.search).get("drill") || "").split(",").filter(function (d) { return /^(overdue|noest|nodue|blocked)$/.test(d); });
+    if (!want.length) return;
+    want.forEach(function (d) { insOpenDrills[d] = true; });
+    insPendingDrill = want[0];
+    // Drop it from the address, so a later reload doesn't jump there again.
+    var q = new URLSearchParams(location.search); q.delete("drill");
+    history.replaceState(null, "", location.pathname + (q.toString() ? "?" + q.toString() : "") + location.hash);
+  } catch (e) {}
+})();
+// Same, when the dashboard was already open: the background only switches its
+// #hash (a reload would lose half-typed notes) and leaves the lists in storage.
+try {
+  chrome.storage.onChanged.addListener(function (ch, area) {
+    var v = area === "local" && ch.insGoDrills && ch.insGoDrills.newValue;
+    if (!v || !Array.isArray(v.drills) || Date.now() - (Number(v.at) || 0) > 60000) return;
+    var want = v.drills.filter(function (d) { return /^(overdue|noest|nodue|blocked)$/.test(d); });
+    chrome.storage.local.remove("insGoDrills").catch(function () {});
+    if (!want.length) return;
+    want.forEach(function (d) { insOpenDrills[d] = true; });
+    insSetFilter("", "");
+    insGoToDrill(want[0]);
+  });
+} catch (e) {}
+var INS_DRILL_CAP = 60;                  // rows visible in one list at a time
+var INS_DRILL_MAX = 400;                 // rows put in the DOM per list (filtering needs them there)
 
 function insTabActive() {
   var p = document.querySelector('.panel[data-panel="insights"]');
@@ -5507,7 +5561,7 @@ function insBuildModel(rows, st) {
     r = list[i];
     var umbrella = !!hasKids[r.id]; // a parent whose subtasks are in this list
     openTotal++;
-    var c = byClient[r.client] || (byClient[r.client] = { name: r.client, open: 0, overdue: 0, noEst: 0, weekEst: 0 });
+    var c = byClient[r.client] || (byClient[r.client] = { name: r.client, open: 0, overdue: 0, noEst: 0, blocked: 0, weekEst: 0 });
     c.open++;
     var bk;
     if (!r.due) bk = "noDate";
@@ -5545,6 +5599,14 @@ function insBuildModel(rows, st) {
     blockedList.push({ id: key, name: row ? row.name : "(task " + key + ")", url: row ? row.url : insTaskUrl(key), client: row ? row.client : "", reason: reason });
   }
   overdueList.sort(function (a, z) { return a.due - z.due; });
+  // Per-client blocked count, so a By client row can jump into the Blocked /
+  // waiting list for that client alone. Only rows that HAVE a client are
+  // counted: a blocked task that isn't in the open list has no client known
+  // (see above), so counting it would promise a row the filter can't show.
+  for (i = 0; i < blockedList.length; i++) {
+    var bcl = blockedList[i].client;
+    if (bcl && byClient[bcl]) byClient[bcl].blocked++;
+  }
   var clients = Object.keys(byClient).map(function (kk) { return byClient[kk]; });
   clients.sort(function (a, z) { return (z.overdue - a.overdue) || (z.open - a.open); });
   return {
@@ -5572,11 +5634,16 @@ function renderDashStrip() {
   if (!insConnected() || !st) { el.style.display = "none"; return; }
   var c = insStateCounts(st);
   if (!c.total) { el.style.display = "none"; return; } // don't nag when all is well
+  // Each chip is a shortcut: it switches to Insights and opens that exact list.
   var chips = [];
-  if (c.overdue) chips.push('<span class="mini red">' + c.overdue + " overdue</span>");
-  if (c.blocked) chips.push('<span class="mini red">' + c.blocked + " blocked</span>");
-  if (c.noEst) chips.push('<span class="mini amber">' + c.noEst + " no estimate</span>");
-  if (c.noDue) chips.push('<span class="mini amber">' + c.noDue + " no due date</span>");
+  function chip(n, cls, label, drill) {
+    return '<button type="button" class="mini ' + cls + '" data-ds="' + drill +
+      '" title="See these ' + n + " in Insights\">" + n + " " + label + "</button>";
+  }
+  if (c.overdue) chips.push(chip(c.overdue, "red", "overdue", "overdue"));
+  if (c.blocked) chips.push(chip(c.blocked, "red", "blocked", "blocked"));
+  if (c.noEst) chips.push(chip(c.noEst, "amber", "no estimate", "noest"));
+  if (c.noDue) chips.push(chip(c.noDue, "amber", "no due date", "nodue"));
   el.className = "pcm-dash-strip";
   el.innerHTML =
     '<span class="lead"><span style="color:var(--amber)">⚠️</span> Worth a look:</span>' +
@@ -5585,6 +5652,17 @@ function renderDashStrip() {
   el.style.display = "flex";
   var go = document.getElementById("pcmDashStripGo");
   if (go) go.onclick = function () { showOptTab("insights"); window.scrollTo({ top: 0 }); };
+  el.querySelectorAll("[data-ds]").forEach(function (b) {
+    b.onclick = function () { insGoToDrill(b.getAttribute("data-ds")); };
+  });
+}
+// A chip on the Dashboard: show Insights, then open and scroll to that list.
+// The drill is remembered rather than opened here, because the tab may still
+// have to fetch - insWire applies it as soon as the lists exist.
+function insGoToDrill(drill) {
+  insPendingDrill = drill;
+  window.scrollTo({ top: 0 });
+  showOptTab("insights");
 }
 
 // ---- Full Insights tab ----
@@ -5600,8 +5678,15 @@ function renderInsights() {
     view.innerHTML = insShell('<div class="ins-empty">Connect ClickUp first &mdash; open <b>ClickUp setup</b> to sign in. Insights then shows a health check of everything assigned to you.</div>');
     return;
   }
+  // Wait for the stored copy first (a few ms), so it paints instead of "Loading…".
+  if (!insCache) {
+    var waited = insHydrated;
+    insHydrate().then(function () { if (insCache && insTabActive()) { try { renderInsights(); } catch (e) {} } });
+    if (!waited) { view.innerHTML = insShell('<div class="ins-empty">Loading a health check of your tasks…</div>'); return; }
+  }
   var fresh = insCache && insCache.status === "ok" && (Date.now() - insCache.at < INS_TTL);
-  if (!fresh && !insLoading) insFetchOpen(false);
+  // At most one automatic refresh a minute: a failing one must not retry in a loop.
+  if (!fresh && !insLoading && Date.now() - insLastAuto > 60000) { insLastAuto = Date.now(); insFetchOpen(false); }
   if (insCache && insCache.status === "ok") {
     var meta = "Updated " + insWhen(insCache.at) + " · one ClickUp fetch, then cached" + (insLoading ? " · refreshing…" : "");
     view.innerHTML = insPaint(insBuildModel(insCache.data, st), st, meta);
@@ -5620,20 +5705,24 @@ function insFetchOpen(force) {
   if (insTabActive()) { try { renderInsights(); } catch (e) {} }
   send({ type: "CLICKUP_OPEN_TASKS", force: !!force }, 30000).then(function (r) {
     insLoading = false;
-    if (r && r.ok && r.data && Array.isArray(r.data.tasks)) insCache = { status: "ok", data: r.data.tasks, at: Date.now() };
-    else insCache = { status: "err", error: (r && (r.error || r.reason)) || "No tasks returned", at: Date.now() };
+    if (r && r.ok && r.data && Array.isArray(r.data.tasks)) {
+      insCache = { status: "ok", data: r.data.tasks, at: Date.now() };
+      try { var blob = { at: insCache.at, tasks: r.data.tasks }; if (JSON.stringify(blob).length < 3000000) chrome.storage.local.set({ [INS_STORE]: blob }); } catch (e) {}
+    }
+    // A failed refresh keeps showing the last good result (with its time) rather than an error.
+    else if (!(insCache && insCache.status === "ok")) insCache = { status: "err", error: (r && (r.error || r.reason)) || "No tasks returned", at: Date.now() };
     if (insTabActive()) { try { renderInsights(); } catch (e) {} }
     try { renderDashStrip(); } catch (e) {}
   }).catch(function (e) {
     insLoading = false;
-    insCache = { status: "err", error: String(e && e.message ? e.message : e), at: Date.now() };
+    if (!(insCache && insCache.status === "ok")) insCache = { status: "err", error: String(e && e.message ? e.message : e), at: Date.now() };
     if (insTabActive()) { try { renderInsights(); } catch (e2) {} }
   });
 }
 function insPaint(m, st, meta) {
   var k = m.k, problems = k.overdue + k.noEst + k.noDue + k.blocked, html = "";
   html += '<div class="page-h" style="display:flex;align-items:center;gap:10px;margin:0 0 4px;"><h2 style="margin:0;font-size:18px;">Insights</h2></div>';
-  html += '<p class="ins-sub">A weekly health check of everything assigned to you — the things that are easy to miss until it’s too late. Every number is a shortcut into the details.</p>';
+  html += '<p class="ins-sub">A weekly health check of everything assigned to you — the things that are easy to miss until it’s too late. Every number is a shortcut into the details, including the ones in the By client table.</p>';
   if (problems) {
     var bchips = [];
     if (k.overdue) bchips.push('<span class="mini red">' + k.overdue + " overdue</span>");
@@ -5666,6 +5755,7 @@ function insPaint(m, st, meta) {
     "</div>";
   html += '<div class="cols">' + insWorkloadCard(m) + insHygieneCard(m) + "</div>";
   html += insClientCard(m);
+  html += insFilterBar(m);
   html += insDrillsHtml(m);
   return html;
 }
@@ -5713,61 +5803,200 @@ function insHygieneCard(m) {
 }
 function insClientCard(m) {
   if (!m.clients.length) return "";
-  function badge(n, cls) { return '<span class="badge ' + (n ? cls : "zero") + '">' + n + "</span>"; }
+  // Every count is a shortcut: it narrows the lists below to that client AND
+  // opens the matching one. A zero stays plain text - there'd be nothing to
+  // show, and a dead button that looks alive is worse than no button.
+  function hit(n, cls, drill, client, what) {
+    if (!n) return '<span class="badge zero">0</span>';
+    return '<button type="button" class="badge ' + cls + '" data-drill="' + drill + '" data-client="' +
+      insEsc(client) + '" title="' + insEsc("List the " + n + " " + what + " for " + client) + '">' + n + "</button>";
+  }
+  function narrow(client, inner, extraCls) {
+    return '<button type="button" class="' + extraCls + '" data-client-only="' + insEsc(client) +
+      '" title="' + insEsc("Show only " + client + " in the lists below") + '">' + inner + "</button>";
+  }
   var maxWeek = 0, i, top = m.clients.slice(0, 8), rows = "";
   for (i = 0; i < top.length; i++) maxWeek = Math.max(maxWeek, top[i].weekEst);
   for (i = 0; i < top.length; i++) {
     var c = top[i];
     var dot = c.overdue ? "var(--red)" : (c.noEst ? "var(--amber)" : "var(--indigo)");
     var wpct = maxWeek > 0 ? Math.round((c.weekEst / maxWeek) * 100) : 0;
-    rows += "<tr><td><div class=\"client\"><span class=\"dot\" style=\"background:" + dot + "\"></span><span class=\"nm\">" + insEsc(c.name) + "</span></div></td>" +
-      '<td class="num">' + c.open + "</td>" +
-      '<td class="num">' + badge(c.overdue, "red") + "</td>" +
-      '<td class="num">' + badge(c.noEst, "amber") + "</td>" +
+    rows += "<tr><td>" +
+      narrow(c.name, '<span class="dot" style="background:' + dot + '"></span><span class="nm">' + insEsc(c.name) + "</span>", "client") +
+      "</td>" +
+      '<td class="num">' + narrow(c.name, String(c.open), "opn") + "</td>" +
+      '<td class="num">' + hit(c.overdue, "red", "overdue", c.name, "overdue") + "</td>" +
+      '<td class="num">' + hit(c.noEst, "amber", "noest", c.name, "without an estimate") + "</td>" +
+      '<td class="num">' + hit(c.blocked, "red", "blocked", c.name, "blocked or waiting") + "</td>" +
       '<td><div class="cell-bar"><i style="width:' + wpct + '%"></i></div></td></tr>';
   }
   var note = m.clients.length > 8 ? '<span class="hint">top 8 of ' + m.clients.length + "</span>" : '<span class="hint">sorted by overdue</span>';
-  return '<div class="card" style="margin-top:18px"><div class="dash-h"><div><h3>By client</h3><p class="hint">Where the open work and overdue items are piling up</p></div><span class="spacer"></span>' + note + "</div>" +
-    '<table class="hot"><thead><tr><th>Client</th><th class="num">Open</th><th class="num">Overdue</th><th class="num">No est.</th><th>This week’s load</th></tr></thead><tbody>' + rows + "</tbody></table></div>";
+  return '<div class="card" style="margin-top:18px"><div class="dash-h"><div><h3>By client</h3><p class="hint">Where the open work and overdue items are piling up — click a number to list just that client’s tasks</p></div><span class="spacer"></span>' + note + "</div>" +
+    '<table class="hot"><thead><tr><th>Client</th><th class="num">Open</th><th class="num">Overdue</th><th class="num">No est.</th><th class="num">Blocked</th><th>This week’s load</th></tr></thead><tbody>' + rows + "</tbody></table></div>";
+}
+// The one filter bar for all four lists below it. A <select> rather than chips
+// because a long client list has to stay findable; alphabetical for the same
+// reason, even though the table above is sorted by overdue.
+function insFilterBar(m) {
+  if (!m.clients.length) return "";
+  var sorted = m.clients.slice().sort(function (a, z) { return String(a.name).localeCompare(String(z.name)); });
+  var opts = '<option value="">All clients</option>', i, c;
+  for (i = 0; i < sorted.length; i++) {
+    c = sorted[i];
+    opts += '<option value="' + insEsc(c.name) + '">' + insEsc(c.name) + " (" + c.open + ")</option>";
+  }
+  return '<div class="ins-filter" id="insFilterBar"><span class="f-lab">Narrow the lists below</span>' +
+    '<select id="insFClient" class="f-sel" aria-label="Show one client only">' + opts + "</select>" +
+    '<input id="insFQ" class="f-q" type="search" placeholder="Search a task name, client or reason…" aria-label="Search the lists below">' +
+    '<span class="f-stat" id="insFStat"></span>' +
+    '<button type="button" class="lnk" id="insFClear" hidden>Clear</button></div>';
 }
 function insDrillsHtml(m) {
+  // fmt returns `plain`: the sub-line as RAW text. insDrill escapes it once for
+  // display and lower-cases it into the search haystack, so searching matches
+  // what the eye reads ("waiting on", a date, a client) and nothing is
+  // double-escaped.
   var out = "";
   out += insDrill("overdue", "Overdue tasks", m.overdueList, function (r) {
     var d = insDaysAgo(r.due, m.todayStart);
-    return { badge: '<span class="badge red">' + (d > 0 ? d + "d" : "due") + "</span>", sub: (r.client ? insEsc(r.client) + " · " : "") + "due " + insDateShort(r.due) + (r.est ? " · " + insHrs(r.est) : " · no est"), action: "Open" };
+    return { badge: '<span class="badge red">' + (d > 0 ? d + "d" : "due") + "</span>",
+      plain: "due " + insDateShort(r.due) + (r.est ? " · " + insHrs(r.est) : " · no est"), action: "Open" };
   });
   out += insDrill("blocked", "Blocked / waiting", m.blockedList, function (r) {
-    return { badge: '<span class="badge red">held</span>', sub: (r.client ? insEsc(r.client) + " · " : "") + insEsc(r.reason), action: "Open" };
+    return { badge: '<span class="badge red">held</span>', plain: r.reason, action: "Open" };
   });
   out += insDrill("noest", "Missing an estimate", m.noEstList, function (r) {
-    return { badge: '<span class="badge amber">no est</span>', sub: (r.client ? insEsc(r.client) + " · " : "") + (r.due ? "due " + insDateShort(r.due) : "no due date"), action: "Add estimate" };
+    return { badge: '<span class="badge amber">no est</span>',
+      plain: r.due ? "due " + insDateShort(r.due) : "no due date", action: "Add estimate" };
   });
   out += insDrill("nodue", "Missing a due date", m.noDueList, function (r) {
-    return { badge: '<span class="badge amber">no date</span>', sub: (r.client ? insEsc(r.client) + " · " : "") + (r.est ? insHrs(r.est) : "no estimate"), action: "Set due date" };
+    return { badge: '<span class="badge amber">no date</span>',
+      plain: r.est ? insHrs(r.est) : "no estimate", action: "Set due date" };
   });
   return out;
 }
+// Every row goes in the DOM (up to INS_DRILL_MAX) and insApplyFilter decides
+// which INS_DRILL_CAP of them are visible. Rendering only the first 60 would
+// mean a client filter found nothing for anyone further down the list.
 function insDrill(id, label, listArr, fmt) {
-  var n = listArr.length, cap = 60, body = "", i;
-  for (i = 0; i < Math.min(n, cap); i++) {
-    var r = listArr[i], f = fmt(r);
-    body += '<div class="trow">' + f.badge + '<div class="ttl"><b>' + insEsc(r.name) + "</b><small>" + f.sub + "</small></div>" +
+  var n = listArr.length, rendered = Math.min(n, INS_DRILL_MAX), body = "", i;
+  for (i = 0; i < rendered; i++) {
+    var r = listArr[i], f = fmt(r), plain = f.plain || "", client = r.client || "";
+    var hay = ((r.name || "") + " " + client + " " + plain).toLowerCase();
+    body += '<div class="trow" data-client="' + insEsc(client) + '" data-hay="' + insEsc(hay) + '">' +
+      f.badge + '<div class="ttl"><b>' + insEsc(r.name) + "</b><small>" +
+      (client ? insEsc(client) + " · " : "") + insEsc(plain) + "</small></div>" +
       '<a class="lnk" href="' + insEsc(r.url) + '" target="_blank" rel="noopener">' + f.action + "</a></div>";
   }
-  if (n > cap) body += '<div class="det-more">+ ' + (n - cap) + " more</div>";
+  body += '<div class="det-more" data-more hidden></div>' +
+    '<div class="det-more" data-none hidden>No task in this list matches the filter above.</div>';
   if (!n) body += '<div class="det-more">Nothing here — nice.</div>';
-  return '<details class="ins-det" data-drill="' + id + '"><summary><span class="caret">▸</span> ' + label + ' <span class="count">(' + n + ")</span></summary><div class=\"det-body\">" + body + "</div></details>";
+  return '<details class="ins-det" data-drill="' + id + '"><summary><span class="caret">▸</span> ' + label +
+    ' <span class="count" data-count>(' + n + ')</span></summary>' +
+    '<div class="det-body" data-total="' + n + '">' + body + "</div></details>";
+}
+// One row against the current filter. Pure, so the rule is testable: a row with
+// no known client (a blocked task that isn't in the open list) matches only
+// "All clients", which is exactly what the By client counts promise.
+function insRowMatches(rowClient, hay, client, q) {
+  if (client && rowClient !== client) return false;
+  if (q && String(hay || "").indexOf(q) < 0) return false;
+  return true;
+}
+// Narrow the lists IN PLACE - no repaint, so typing never loses focus and the
+// sections the user opened stay open. The KPIs and the By client table are left
+// alone on purpose: they're the whole-board picture the filter is read against.
+function insApplyFilter() {
+  var view = document.getElementById("insView");
+  if (!view) return;
+  var client = insFilter.client || "", q = (insFilter.q || "").trim().toLowerCase();
+  var active = !!(client || q), hitAll = 0, totalAll = 0;
+  view.querySelectorAll("details.ins-det").forEach(function (d) {
+    var rows = d.querySelectorAll(".trow"), hit = 0, i, r;
+    for (i = 0; i < rows.length; i++) {
+      r = rows[i];
+      if (insRowMatches(r.getAttribute("data-client"), r.getAttribute("data-hay"), client, q)) {
+        hit++;
+        r.style.display = hit > INS_DRILL_CAP ? "none" : "";
+      } else r.style.display = "none";
+    }
+    var body = d.querySelector(".det-body");
+    var total = Number(body && body.getAttribute("data-total")) || 0;
+    hitAll += hit; totalAll += total;
+    var cnt = d.querySelector("[data-count]");
+    if (cnt) cnt.textContent = active ? "(" + hit + " of " + total + ")" : "(" + total + ")";
+    var more = d.querySelector("[data-more]");
+    if (more) {
+      // Rows past INS_DRILL_MAX were never put in the DOM, so they can only be
+      // counted while nothing is filtered (lists that long don't happen today).
+      var extra = (hit - Math.min(hit, INS_DRILL_CAP)) + (active ? 0 : total - rows.length);
+      more.hidden = extra <= 0;
+      more.textContent = "+ " + extra + " more" + (active ? " match" + (extra === 1 ? "" : "es") : "");
+    }
+    var none = d.querySelector("[data-none]");
+    if (none) none.hidden = !(active && total > 0 && hit === 0);
+  });
+  var bar = document.getElementById("insFilterBar");
+  if (bar) bar.classList.toggle("on", active);
+  var stat = document.getElementById("insFStat");
+  if (stat) stat.textContent = active ? hitAll + " of " + totalAll + " listed row" + (totalAll === 1 ? "" : "s") + " match" : "";
+  var clr = document.getElementById("insFClear");
+  if (clr) clr.hidden = !active;
+}
+function insSetFilter(client, q) {
+  insFilter.client = client || "";
+  insFilter.q = q || "";
+  var sel = document.getElementById("insFClient");
+  if (sel) sel.value = insFilter.client;
+  var box = document.getElementById("insFQ");
+  if (box) box.value = insFilter.q;
+  insApplyFilter();
 }
 function insWire(view) {
   view.querySelectorAll("[data-drill]").forEach(function (el) {
-    if (el.tagName === "DETAILS") return; // native <details> toggles itself
-    el.onclick = function () { insOpenDrill(el.getAttribute("data-drill")); };
+    if (el.tagName === "DETAILS") {
+      // Put back what the user had open: a repaint (a background ClickUp
+      // refresh) used to collapse every section out from under them.
+      el.open = !!insOpenDrills[el.getAttribute("data-drill")];
+      el.addEventListener("toggle", function () { insOpenDrills[el.getAttribute("data-drill")] = el.open; });
+      return;
+    }
+    el.onclick = function () { insOpenDrill(el.getAttribute("data-drill"), el.getAttribute("data-client")); };
   });
+  // A client name or its Open count narrows the lists without picking one.
+  view.querySelectorAll("[data-client-only]").forEach(function (el) {
+    el.onclick = function () {
+      insSetFilter(el.getAttribute("data-client-only"), "");
+      var bar = document.getElementById("insFilterBar");
+      if (!bar) return;
+      try { bar.scrollIntoView({ behavior: "smooth", block: "center" }); } catch (e) { bar.scrollIntoView(); }
+    };
+  });
+  var sel = document.getElementById("insFClient");
+  if (sel) {
+    sel.value = insFilter.client;
+    if (sel.value !== insFilter.client) insFilter.client = ""; // that client is gone from the data
+    sel.onchange = function () { insFilter.client = sel.value || ""; insApplyFilter(); };
+  }
+  var box = document.getElementById("insFQ");
+  if (box) {
+    box.value = insFilter.q;
+    box.oninput = function () { insFilter.q = box.value || ""; insApplyFilter(); };
+  }
+  var clr = document.getElementById("insFClear");
+  if (clr) clr.onclick = function () { insSetFilter("", ""); };
+  insApplyFilter();
+  if (insPendingDrill) { var p = insPendingDrill; insPendingDrill = ""; insOpenDrill(p, ""); }
 }
-function insOpenDrill(drill) {
+// client "" (a KPI card, the hygiene card, a Dashboard chip) means the whole
+// board. Either way the shortcut sets the filter outright, including clearing
+// any search text, so what opens is always exactly what the number promised.
+function insOpenDrill(drill, client) {
+  insSetFilter(client || "", "");
   var d = document.querySelector('#insView details.ins-det[data-drill="' + drill + '"]');
   if (!d) return;
   d.open = true;
+  insOpenDrills[drill] = true;
   try { d.scrollIntoView({ behavior: "smooth", block: "center" }); } catch (e) { d.scrollIntoView(); }
 }
 (async function initOptCuFilter() {
@@ -6240,7 +6469,7 @@ function renderSiteMonitorStatus(cfg) {
     const state = resp && resp.state && typeof resp.state === "object" ? resp.state : {};
     const rows = cfg.sites.map((s) => {
       const st = state[s.url] || { up: null, fails: 0, lastCheck: 0 };
-      const statusText = st.up === true ? "✅ Up" : st.up === false ? "❌ Down" : "⚪ Not checked yet";
+      const statusText = st.up === true ? "✅ Up" : st.up === false ? (st.blank || st.kind === "blank" ? "⚠️ Blank page" : st.kind === "5xx" ? "🔥 Server error" + (st.status ? " (HTTP " + st.status + ")" : "") : "🚨 Down") : "⚪ Not checked yet";
       const lastCheckText = st.lastCheck ? new Date(st.lastCheck).toLocaleString() : "never";
       const label = s.name && s.name !== s.url ? escapeHtml(s.name) + ' <span class="hint">' + escapeHtml(s.url) + "</span>" : escapeHtml(s.url);
       const why = st.lastError ? ' · <span class="sm-err">' + escapeHtml(st.lastError) + "</span>" : "";
@@ -6251,14 +6480,44 @@ function renderSiteMonitorStatus(cfg) {
         + '<button type="button" class="sm-act" data-sm-edit="' + u + '" title="Change the client name or website">Edit</button>'
         + '<button type="button" class="sm-act sm-del" data-sm-del="' + u + '" title="Stop monitoring this site">Delete</button></div></div>';
     }).join("");
-    el.innerHTML = '<div class="sm-headrow"><div class="cu-subhead">Current status</div><button type="button" class="sm-act" data-sm-add="1">+ Add site</button></div><div id="smAddSlot"></div>' + rows;
+    el.innerHTML = '<div class="sm-headrow"><div class="cu-subhead">Current status</div><button type="button" class="sm-act" data-sm-add="1">+ Add site</button></div><div id="smBlankLine" class="hint"></div><div id="smAddSlot"></div>' + rows;
+    smPaintBlankLine(cfg.sites);
   }).catch(() => {
     el.innerHTML = '<p class="hint">Could not fetch state.</p>';
   });
 }
 
+// Blank-page check: a site can answer "200 OK" with an empty page (WordPress
+// white screen) and still look up. Reading the page needs Chrome's permission
+// for each monitored site (optional, asked only here, only for these sites).
+// Same patterns as background.js siteReadOrigins.
+function smReadOrigins(url) {
+  try { const h = new URL(url).hostname.replace(/^www\./i, ""); return ["*://" + h + "/*", "*://www." + h + "/*"]; } catch (e) { return []; }
+}
+async function smPaintBlankLine(sites) {
+  const line = $("smBlankLine");
+  if (!line || !chrome.permissions) return;
+  const missing = [];
+  for (const s of sites || []) {
+    const o = smReadOrigins(s.url);
+    if (!o.length) continue;
+    let has = false;
+    try { has = await chrome.permissions.contains({ origins: o }); } catch (e) {}
+    if (!has) missing.push(s);
+  }
+  line.textContent = "";
+  line.style.margin = "4px 0 8px";
+  // Part of every automatic check (every 5 minutes), nothing to switch on. It
+  // can only be missing if the extension wasn't reloaded after the update, or
+  // its site access was limited in chrome://extensions - say how to fix that.
+  if (!missing.length) { line.textContent = "🔎 Each automatic check also looks at the page: a site that answers but shows an empty or error page is marked ⚠️ Blank page."; return; }
+  line.textContent = "🔎 The blank-page check can't read " + (missing.length === sites.length ? "these sites" : missing.length + " of these sites") +
+    " yet, so an empty page would still look Up. Reload the extension (chrome://extensions › ⟳), or set its Site access to \"On all sites\" in Details.";
+}
+
 // "Check now": one site (row button) or all (Check all now). Runs the same check
-// as the 5-minute alarm, but decides up/down immediately and never notifies.
+// as the 5-minute alarm, but decides up/down immediately (no 2-checks-in-a-row
+// wait); it notifies only when the status actually changed.
 async function smCheckNow(url, btn) {
   const btns = url ? [btn] : [btn].concat([...document.querySelectorAll("#siteMonitorStatus .sm-check")]);
   const old = btns.map((b) => b && b.textContent);

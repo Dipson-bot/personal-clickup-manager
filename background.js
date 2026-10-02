@@ -75,8 +75,8 @@ async function setSiteMonitorConfig(cfg) {
 // repository. The repository is public, so the list is encrypted with the ClickUp
 // workspace ID: only copies connected to that workspace can read it. Each copy
 // adds every listed site ONCE (siteDirSeen remembers them, also kept in Drive),
-// so a site the user deletes never comes back. Monitoring stays off until the
-// user ticks "Enable site monitoring". update-policy.json carries sitesAt, so copies
+// so a site the user deletes never comes back. The first list also switches
+// monitoring on once (unticking it later sticks). update-policy.json carries sitesAt, so copies
 // download the file only when it has changed.
 const TEAM_SITES_PATH = "client-sites.json";
 const teamSitesPass = (teamId) => "pcm-team-sites:" + String(teamId);
@@ -137,10 +137,13 @@ async function applyTeamSites(sites) {
     seen.add(k);
     if (!have.has(k)) { list.push({ url: s.url, name: s.name }); have.add(k); added++; }
   }
-  // Monitoring itself stays as the user set it (off by default): only people
-  // who tick "Enable site monitoring" get down alerts.
-  if (added) await setSiteMonitorConfig({ ...cfg, sites: list });
-  await chrome.storage.local.set({ siteDirSeen: [...seen] });
+  // The first time the team list arrives, monitoring is switched on too (as the
+  // Admin card promises) - ONCE: whoever unticks "Enable site monitoring"
+  // afterwards keeps it off (siteMonTeamEnabled remembers it was done).
+  const { siteMonTeamEnabled } = await chrome.storage.local.get("siteMonTeamEnabled");
+  const enableNow = !siteMonTeamEnabled && list.length > 0;
+  if (added || enableNow) await setSiteMonitorConfig({ ...cfg, sites: list, enabled: enableNow ? true : cfg.enabled });
+  await chrome.storage.local.set({ siteDirSeen: [...seen], ...(enableNow ? { siteMonTeamEnabled: Date.now() } : {}) });
   return added;
 }
 // Run from the once-a-minute update check. Cheap when nothing changed: one
@@ -577,7 +580,52 @@ chrome.commands.onCommand.addListener((command) => {
   }
 });
 
-async function checkOneSite(url, timeoutMs = SITE_MONITOR_CHECK_TIMEOUT_MS) {
+// Blank-page check: a site can answer "200 OK" with nothing on it (WordPress's
+// white screen - a PHP fatal error with errors hidden - sends 0 bytes). The
+// no-cors check below can't see that, so for sites the user allowed the
+// extension to read (Site monitor > "Turn on blank-page check", optional host
+// permission per site) the SAME single request reads the page instead.
+// Returns a reason when the page is broken, else "".
+const SITE_ERROR_PAGES = [
+  [/There has been a critical error on (this|your) website/i, "WordPress critical error"],
+  [/Error establishing a database connection/i, "database connection error"],
+  [/(<b>)?(PHP )?(Fatal|Parse) error(<\/b>)?:\s/i, "PHP fatal error"],
+  [/Briefly unavailable for scheduled maintenance/i, "stuck in WordPress maintenance mode"],
+];
+function blankPageReason(html) {
+  const raw = String(html || "");
+  if (raw.trim().length < 64) return raw.trim().length ? "almost empty page (" + raw.trim().length + " bytes)" : "blank page - the server sent 0 bytes";
+  // A meta-refresh page (a redirect, or SiteGround's bot check) isn't blank.
+  if (/<meta[^>]+http-equiv=["']?refresh/i.test(raw)) return "";
+  const text = raw.replace(/<(script|style|noscript|template)\b[\s\S]*?<\/\1>/gi, " ").replace(/<head\b[\s\S]*?<\/head>/i, " ").replace(/<[^>]+>/g, " ").replace(/&[a-z#0-9]+;/gi, " ").replace(/\s+/g, " ").trim();
+  // Error pages are short: an ordinary page that merely MENTIONS "Fatal error:"
+  // or "critical error" somewhere in its text must not count as broken.
+  if (text.length < 1500) for (const [re, why] of SITE_ERROR_PAGES) if (re.test(raw.slice(0, 200000))) return why;
+  // Pages built by JavaScript (an empty shell + scripts) are fine: only call it
+  // blank when nothing at all would show - no text, images, links or scripts.
+  if (/<script[^>]+src=|<img\b|<iframe\b|<video\b|<svg\b|<a\s[^>]*href=/i.test(raw)) return "";
+  return text.length < 20 ? "page has no visible content" : "";
+}
+// Origin patterns the blank-page check needs for a site (with and without www).
+function siteReadOrigins(url) {
+  try {
+    const h = new URL(url).hostname.replace(/^www\./i, "");
+    return ["*://" + h + "/*", "*://www." + h + "/*"];
+  } catch (e) { return []; }
+}
+async function canReadSite(url) {
+  const origins = siteReadOrigins(url);
+  if (!origins.length) return false;
+  try { return await chrome.permissions.contains({ origins }); } catch (e) { return false; }
+}
+
+// plainOnly: the "is this PC online" probes - generate_204 answers with an
+// empty body on purpose, which the page reader would call a blank page.
+async function checkOneSite(url, timeoutMs = SITE_MONITOR_CHECK_TIMEOUT_MS, plainOnly = false) {
+  if (!plainOnly && await canReadSite(url)) {
+    const r = await readOneSite(url, timeoutMs);
+    if (r) return r; // else (a redirect to another domain, odd CORS) - the plain check below
+  }
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
@@ -598,15 +646,133 @@ async function checkOneSite(url, timeoutMs = SITE_MONITOR_CHECK_TIMEOUT_MS) {
   }
 }
 
+// The readable version of the check (one GET, same as the plain one). Returns
+// null when the page couldn't be read (so the caller falls back), never a false
+// "down" for a read problem; a real outage (no reply / timeout) is still down.
+async function readOneSite(url, timeoutMs) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  const t0 = Date.now();
+  let res;
+  try {
+    res = await fetch(url, { method: "GET", cache: "no-store", credentials: "omit", redirect: "follow", signal: controller.signal });
+  } catch (e) {
+    clearTimeout(timer);
+    if (e && e.name === "AbortError") return { ok: false, status: 0, error: "No reply within " + Math.round(timeoutMs / 1000) + "s" };
+    return null; // e.g. redirected to a domain we can't read: let the plain check decide
+  }
+  try {
+    const html = await res.text();
+    clearTimeout(timer);
+    const ms = Date.now() - t0;
+    // A Cloudflare "checking your browser" page isn't an outage.
+    if (res.headers.get("cf-mitigated") === "challenge") return { ok: true, status: res.status, ms, read: true };
+    if (res.status >= 500) return { ok: false, status: res.status, ms, read: true, error: "HTTP " + res.status + ((blankPageReason(html) && " - " + blankPageReason(html)) || "") };
+    if (res.status >= 400) return { ok: true, status: res.status, ms, read: true }; // as before: only 5xx counts as down
+    const why = blankPageReason(html);
+    if (why) return { ok: false, blank: true, status: res.status, ms, read: true, error: "Page is broken: " + why + " (HTTP " + res.status + ")" };
+    return { ok: true, status: res.status, ms, read: true };
+  } catch (e) {
+    clearTimeout(timer);
+    return e && e.name === "AbortError" ? { ok: false, status: res.status, error: "Page didn't finish loading within " + Math.round(timeoutMs / 1000) + "s" } : null;
+  }
+}
+
 // Is THIS machine online? navigator.onLine is a quick "definitely not"; the
 // probes settle it when it says yes (it also says yes on a captive portal).
 async function internetReachable() {
   try { if (typeof navigator !== "undefined" && navigator.onLine === false) return false; } catch (e) {}
   for (const u of SITE_MONITOR_PROBES) {
-    const r = await checkOneSite(u, SITE_MONITOR_PROBE_TIMEOUT_MS);
+    const r = await checkOneSite(u, SITE_MONITOR_PROBE_TIMEOUT_MS, true);
     if (r.ok) return true;
   }
   return false;
+}
+
+// What kind of problem a failed check is: the page answered but is empty / an
+// error page (blank), the server answered with an error (5xx), or no answer at
+// all (down - timeout, DNS, refused). Each gets its own notification.
+const SITE_KINDS = {
+  blank: { icon: "⚠️", level: "Warning", what: "site blank", sound: "danger" },
+  "5xx": { icon: "🔥", level: "Error", what: "server error", sound: "danger" },
+  down: { icon: "🚨", level: "Critical", what: "site down", sound: "danger" },
+};
+const SITE_SEVERITY = { blank: 1, "5xx": 2, down: 3 };
+function siteKind(result) {
+  if (result.blank) return "blank";
+  if (result.read && Number(result.status) >= 500) return "5xx";
+  return "down";
+}
+function siteKindLabel(kind, status) {
+  const k = SITE_KINDS[kind] || SITE_KINDS.down;
+  return k.what + (kind === "5xx" && status ? " (HTTP " + status + ")" : "");
+}
+const fmtMins = (ms) => { const m = Math.max(1, Math.round(ms / 60000)); return m < 60 ? m + " min" : Math.floor(m / 60) + "h" + (m % 60 ? " " + (m % 60) + "m" : ""); };
+// One site's new state after a check, and the notification to show (if any).
+// Pure (no Chrome calls), so it's tested on its own. A notification only comes
+// on a CHANGE: up -> problem, one problem -> another kind, problem -> back up.
+// Automatic checks need failuresNeeded failed checks in a row first; a manual
+// "Check" decides at once (and notifies too - the change is real either way).
+function siteDecide(prevIn, result, o) {
+  const prev = { ...(prevIn || { up: null, fails: 0, lastCheck: 0, lastDownNotified: 0 }) };
+  const now = o.now;
+  // A fail count from long ago (PC asleep, Chrome closed) isn't consecutive.
+  if (prev.lastCheck && now - prev.lastCheck > o.staleMs) prev.fails = 0;
+  prev.lastCheck = now;
+  prev.read = !!result.read; // the page itself was checked (blank-page check on)
+  prev.blank = !result.ok && !!result.blank;
+  let note = null;
+  if (result.ok) {
+    if (prev.up === false) {
+      // Everything it went through, in order: "site blank, then server error (HTTP 500)".
+      const seen = Array.isArray(prev.seen) && prev.seen.length ? prev.seen : [siteKindLabel(prev.kind || "down", prev.status)];
+      const was = seen.join(", then ");
+      note = { kind: "up", sound: undefined, title: "✅ Back up: " + o.name,
+        message: o.name + " is working again" + (prev.downSince ? " - it was " + was + " for " + fmtMins(now - prev.downSince) : " (was " + was + ")") + "." };
+    }
+    prev.up = true;
+    prev.fails = 0;
+    prev.lastError = "";
+    prev.lastMs = result.ms || 0;
+    prev.kind = "";
+    prev.status = 0;
+    prev.downSince = 0;
+    prev.seen = [];
+    prev.worst = 0;
+    return { prev, note };
+  }
+  const kind = siteKind(result);
+  prev.fails = (prev.fails || 0) + 1;
+  prev.lastError = result.error || ("HTTP " + result.status);
+  if (!prev.downSince) prev.downSince = now;
+  const k = SITE_KINDS[kind];
+  const head = k.icon + " " + k.level + " - " + siteKindLabel(kind, result.status) + ": " + o.name;
+  const why = kind === "blank" ? o.name + " answers, but the page is broken. " + prev.lastError
+    : kind === "5xx" ? o.name + " answers with a server error (HTTP " + result.status + "). " + prev.lastError
+    : o.name + " doesn't answer at all. " + prev.lastError;
+  if (prev.up === false) {
+    // Already known to be down: news only when it gets WORSE than anything seen
+    // in this outage (blank -> server error -> no answer). A server flapping
+    // between 503 and a timeout must not post a sticky alarm every 5 minutes.
+    if (SITE_SEVERITY[kind] > (prev.worst != null ? prev.worst : SITE_SEVERITY[prev.kind] || 0)) {
+      note = { kind, sound: k.sound, title: k.icon + " Still broken, now " + siteKindLabel(kind, result.status) + ": " + o.name, message: why };
+    }
+  } else if (o.manual || prev.fails >= o.failuresNeeded) {
+    if (o.manual) prev.fails = Math.max(prev.fails, o.failuresNeeded);
+    prev.up = false;
+    prev.lastDownNotified = now;
+    note = { kind, sound: k.sound, title: head, message: why + (o.manual ? "" : " (" + prev.fails + " checks in a row, ~" + fmtMins(now - prev.downSince) + ")") };
+  }
+  // Only while it counts as down (an unconfirmed first failure isn't history).
+  if (prev.up === false) {
+    const lab = siteKindLabel(kind, result.status);
+    prev.seen = Array.isArray(prev.seen) ? prev.seen : [];
+    if (prev.seen[prev.seen.length - 1] !== lab) prev.seen = prev.seen.concat(lab).slice(-5);
+  }
+  if (prev.up === false) prev.worst = Math.max(prev.worst || 0, SITE_SEVERITY[kind] || 0);
+  prev.kind = kind;
+  prev.status = Number(result.status) || 0;
+  return { prev, note };
 }
 
 // opts.manual (the options page's "Check now" buttons): decide up/down from this
@@ -629,10 +795,13 @@ async function checkSites(opts = {}) {
   let failed = sites.filter((s) => !results.get(s.url).ok);
   // 2) Anything failed: is it us? Offline, or half the list failing in the same
   //    minute, is this PC's connection - never a client outage. Don't count it.
+  // A site that answered with a broken page (read: true) reached us fine, so it
+  // never counts towards "is it this PC's connection".
   let localProblem = false;
-  if (failed.length) {
+  const unreachable = failed.filter((s) => !results.get(s.url).read);
+  if (unreachable.length) {
     if (!(await internetReachable())) localProblem = true;
-    else if (failed.length >= 2 && failed.length * 2 >= sites.length) localProblem = true;
+    else if (unreachable.length >= 2 && unreachable.length * 2 >= sites.length) localProblem = true;
   }
   // 3) Still suspect: re-try up to SITE_MONITOR_RETRIES more times, 20s apart
   //    (UptimeRobot's confirmation re-checks). Any answer clears it.
@@ -646,44 +815,20 @@ async function checkSites(opts = {}) {
     const key = site.url;
     const prev = state[key] || { up: null, fails: 0, lastCheck: 0, lastDownNotified: 0 };
     const result = results.get(key);
-    // A fail count from long ago (PC asleep, Chrome closed) isn't consecutive.
-    if (prev.lastCheck && now - prev.lastCheck > SITE_MONITOR_STALE_MS) prev.fails = 0;
-    prev.lastCheck = now;
-    if (localProblem && !result.ok) {
+    if (localProblem && !result.ok && !result.read) {
       // Leave up/fails untouched; just note why nothing was decided.
+      prev.lastCheck = now;
       prev.lastError = "Couldn't check: this computer looked offline";
       prev.skippedAt = now;
       state[key] = prev;
       continue;
     }
-    if (result.ok) {
-      prev.fails = 0;
-      prev.lastError = "";
-      prev.lastMs = result.ms || 0;
-      // First successful check, or a recovery - mark up. No notify: the user only
-      // wants "down" alerts, not "back up" ones.
-      if (prev.up !== true) prev.up = true;
-    } else {
-      prev.fails = (prev.fails || 0) + 1;
-      prev.lastError = result.error || ("HTTP " + result.status);
-      if (opts.manual) {
-        // Seen by the user directly: mark it down now, silently. Counting it as
-        // a full outage also stops the next alarm from alerting about it again.
-        prev.up = false;
-        prev.fails = Math.max(prev.fails, SITE_MONITOR_FAILURES);
-      } else if (prev.fails >= SITE_MONITOR_FAILURES && prev.up !== false) {
-        // Site went down - notify ONCE
-        prev.up = false;
-        prev.lastDownNotified = now;
-        await notify(
-          "site-down-" + key + "-" + now,
-          "Site down: " + (site.name || site.url),
-          (site.name || site.url) + " didn't answer " + (SITE_MONITOR_RETRIES + 1) + " tries in each of the last " + prev.fails + " checks (~" + (prev.fails * SITE_MONITOR_PERIOD_MIN) + " min). " + prev.lastError,
-          "danger"
-        );
-      }
+    const d = siteDecide(prev, result, { manual: !!opts.manual, now, name: site.name || site.url, failuresNeeded: SITE_MONITOR_FAILURES, staleMs: SITE_MONITOR_STALE_MS });
+    state[key] = d.prev;
+    if (d.note) {
+      await notify("site-" + d.note.kind + "-" + now + "-" + key, d.note.title, d.note.message, d.note.sound, chrome.runtime.getURL("options.html#sites"),
+        { priority: 2, requireInteraction: d.note.kind !== "up" });
     }
-    state[key] = prev;
   }
   // Persist on EVERY run (not only when a status flips) so the "last check" time
   // stays current. Previously a steadily-up site never re-saved its lastCheck, so
@@ -1724,7 +1869,7 @@ async function setClickupConfig(patch) {
   return next;
 }
 async function clearClickupConfig() {
-  await chrome.storage.local.remove(["clickupEnc", "clickupState", "clickupNotified"]);
+  await chrome.storage.local.remove(["clickupEnc", "clickupState", "clickupNotified", "insOpenCache"]);
 }
 
 // Push accounts AND the ClickUp config (encrypted token etc.) together so a new
@@ -3594,8 +3739,35 @@ async function tidyReminderPayload(opts = {}) {
   const say = tidyLines(model, { cats: t.cats, max: t.max, resolved });
   return { ok: true, model, resolved, say, urgent: tidyUrgent(model, resolved), blockedIds: model.blockedIds };
 }
-async function openInsightsPage() {
-  const url = chrome.runtime.getURL("options.html#insights");
+// The Insights lists a "needs tidying" notification talks about, in its order:
+// counts keys (lib-tidy) -> the Insights drill ids. Kept IN the notification id
+// ("cu-tidy-overdue.noest-<time>"), because the in-memory click target is gone
+// once Chrome puts the worker to sleep - that's how a click ended up opening
+// plain ClickUp instead of Insights.
+const TIDY_DRILL = { overdue: "overdue", noEst: "noest", noDue: "nodue", blocked: "blocked" };
+function tidyDrills(say) {
+  return Object.keys((say && say.counts) || {}).map((k) => TIDY_DRILL[k]).filter(Boolean);
+}
+function tidyDrillsFromId(id) {
+  const m = /^cu-tidy-(?:preview-)?([a-z.]+)-\d+$/.exec(String(id || ""));
+  return m ? m[1].split(".").filter((d) => Object.values(TIDY_DRILL).includes(d)) : [];
+}
+// Shown until clicked or closed with its own X (no buttons): opens those lists.
+const TIDY_NOTE_OPTS = { priority: 2, requireInteraction: true };
+async function openInsightsPage(drills) {
+  const url = chrome.runtime.getURL("options.html" + (drills && drills.length ? "?drill=" + drills.join(",") : "") + "#insights");
+  // An open dashboard: change only its #hash (no reload - a half-typed note in
+  // Clients would be lost) and hand it the lists through storage (options.js).
+  try {
+    const open = await chrome.tabs.query({ url: chrome.runtime.getURL("options.html") + "*" });
+    if (open && open.length) {
+      if (drills && drills.length) await chrome.storage.local.set({ insGoDrills: { drills, at: Date.now() } });
+      const cur = String(open[0].url || "").split("#")[0];
+      await chrome.tabs.update(open[0].id, { active: true, url: cur + "#insights" });
+      if (open[0].windowId != null) await chrome.windows.update(open[0].windowId, { focused: true }).catch(() => {});
+      return;
+    }
+  } catch (e) {}
   try {
     const tabs = await chrome.tabs.query({ url: chrome.runtime.getURL("options.html") + "*" });
     if (tabs && tabs.length) {
@@ -3629,9 +3801,9 @@ async function maybeTidyNotify() {
     cuTidyBlocked: { day: todayString(), ids: p.blockedIds || [] },
   });
   if (p.say.empty) return; // clean board: no notification at all
-  await notify("cu-tidy-" + Date.now(), p.say.title, p.say.message, p.urgent ? "danger" : undefined,
-    chrome.runtime.getURL("options.html#insights"),
-    { contextMessage: p.say.context, buttons: [{ title: "Open Insights" }] });
+  const drills = tidyDrills(p.say);
+  await notify("cu-tidy-" + (drills.join(".") || "all") + "-" + Date.now(), p.say.title, p.say.message, p.urgent ? "danger" : undefined,
+    null, { contextMessage: (p.say.context || "Insights") + " · click to see them", ...TIDY_NOTE_OPTS });
 }
 // Keep a task's time of day when moving its due date to another day.
 function shiftDueToDay(oldDueMs, dayMs) {
@@ -4973,7 +5145,7 @@ chrome.notifications.onButtonClicked.addListener((id, btn) => {
     } else if (id.startsWith("cu-tidy-")) {
       // "needs tidying" summary: straight to the Insights tab that produced it.
       chrome.notifications.clear(id).catch(() => {});
-      await openInsightsPage();
+      await openInsightsPage(tidyDrillsFromId(id));
     } else if (id === "update-downloaded" || (id === "update-pending" && btn === 0)) {
       chrome.runtime.reload(); // picks up the unzipped files
     } else if (id === "update-pending" && btn === 1) {
@@ -5352,6 +5524,12 @@ chrome.notifications.onClicked.addListener((id) => {
       openUpdater(true);
       return;
     }
+    if (id.startsWith("cu-tidy-")) {
+      // Before the "cu-" fallback below (plain ClickUp): the lists it names, in Insights.
+      chrome.notifications.clear(id).catch(() => {});
+      await openInsightsPage(tidyDrillsFromId(id));
+      return;
+    }
     let url = notifTargetUrls.get(id);
     if (!url) {
       if (id.startsWith("ar-quota-") || id.startsWith("daily-login-")) {
@@ -5359,6 +5537,8 @@ chrome.notifications.onClicked.addListener((id) => {
         url = (settings && settings.targetUrl) || URLS.agentRouterLogin;
       } else if (id.startsWith("wrapup-")) {
         url = chrome.runtime.getURL("wrapup.html");
+      } else if (id.startsWith("site-")) {
+        url = chrome.runtime.getURL("options.html#sites");
       } else if (id.startsWith("clickup-") || id.startsWith("cu-")) {
         url = "https://app.clickup.com";
       }
@@ -5495,9 +5675,9 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
           ], { p3: { blockers: [{ who: "Rigo" }] } }, today), { cats: {}, max: 3 });
           say.sample = true;
         }
-        await notify("cu-tidy-preview-" + Date.now(), say.title, say.message, undefined,
-          chrome.runtime.getURL("options.html#insights"),
-          { contextMessage: (say.sample ? "Sample - nothing to tidy right now · " : "") + (say.context || "Insights › Needs tidying"), buttons: [{ title: "Open Insights" }] });
+        const drills = tidyDrills(say);
+        await notify("cu-tidy-preview-" + (drills.join(".") || "all") + "-" + Date.now(), say.title, say.message, undefined,
+          null, { contextMessage: (say.sample ? "Sample - nothing to tidy right now · " : "") + (say.context || "Insights › Needs tidying") + " · click to see them", ...TIDY_NOTE_OPTS });
         sendResponse({ ok: true, k: p.model.k, sample: !!say.sample, lines: p.say.lines });
         break;
       }

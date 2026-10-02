@@ -125,6 +125,40 @@
     if (last < clean.length) box.appendChild(document.createTextNode(clean.slice(last)));
   }
 
+  // A link pasted into a client note is a link here too, the same as it is in
+  // Options > Clients. Only bare http(s), and nothing else about what was typed
+  // is touched - a note is the user's own words, not ClickUp markdown.
+  const NOTE_URL_RE = /\bhttps?:\/\/[^\s<>"'`]+/g;
+  // A link at the end of a sentence must not swallow the full stop, and a
+  // closing bracket belongs to the link only if it was opened inside it.
+  function trimNoteUrl(u) {
+    const n = (s, c) => s.split(c).length - 1;
+    let s = String(u);
+    for (;;) {
+      const c = s.slice(-1);
+      if (/[.,;:!?'"’]/.test(c)) { s = s.slice(0, -1); continue; }
+      if ((c === ")" && n(s, "(") < n(s, ")")) ||
+          (c === "]" && n(s, "[") < n(s, "]")) ||
+          (c === "}" && n(s, "{") < n(s, "}"))) { s = s.slice(0, -1); continue; }
+      return s;
+    }
+  }
+  function linkifyInto(box, text) {
+    const s = String(text == null ? "" : text);
+    let at = 0, m;
+    NOTE_URL_RE.lastIndex = 0;
+    while ((m = NOTE_URL_RE.exec(s))) {
+      const url = trimNoteUrl(m[0]);
+      // Nothing left after the scheme: leave it as the plain text it is.
+      if (!/^https?:\/\/[^\s/]/.test(url)) { NOTE_URL_RE.lastIndex = m.index + m[0].length; continue; }
+      if (m.index > at) box.appendChild(document.createTextNode(s.slice(at, m.index)));
+      box.appendChild(link(url, url));
+      at = m.index + url.length;
+      NOTE_URL_RE.lastIndex = at;
+    }
+    if (at < s.length) box.appendChild(document.createTextNode(s.slice(at)));
+  }
+
   // ---------- AI (Chrome's built-in model: on this computer, free, no limits) ----------
   const CAP_BUILTIN = 9000; // characters of attached-file text for the on-device model
   const LINK_MAX = 3500; // encoded characters in a ?q= link; longer ones stall the AI sites
@@ -1061,7 +1095,7 @@
       for (const n of d._notes.slice().sort((a, b) => b.at - a.at).slice(0, 6)) {
         const row = el("div", "pcm-desc");
         row.style.cssText = "max-height:none;border-left:3px solid var(--border);padding-left:8px;margin-bottom:6px;";
-        row.textContent = n.text;
+        linkifyInto(row, n.text);
         const when = el("div", "pcm-note", new Date(n.at).toLocaleDateString([], { month: "short", day: "numeric" }));
         row.appendChild(when);
         ns.appendChild(row);

@@ -166,11 +166,18 @@
     const gone = ids.filter((id) => !used.has(id));
     if (gone.length) await attDo("readwrite", (s) => { for (const id of gone) s.delete(id); }).catch(() => {});
   }
+  // The stored file for a note attachment, or null if it isn't on this computer
+  // (attachments aren't backed up to Drive). Lets a page show a thumbnail
+  // without opening the file.
+  async function attBlob(meta) {
+    const rec = await attGet((meta && meta.id) || meta).catch(() => null);
+    return (rec && rec.blob) || null;
+  }
   async function openAttachment(meta) {
     const rec = await attGet(meta.id).catch(() => null);
     if (!rec || !rec.blob) throw new Error("That file isn't on this computer (attachments aren't backed up to Drive).");
     return openFile({ blob: rec.blob, name: rec.name || meta.name });
   }
 
-  window.PcmFiles = { key, all, forClient, add, remove, counts, auditHtml, allNotes, notesFor, saveNotes, openFile, showInFolder, attPut, attCleanup, openAttachment };
+  window.PcmFiles = { key, all, forClient, add, remove, counts, auditHtml, allNotes, notesFor, saveNotes, openFile, showInFolder, attPut, attCleanup, attBlob, openAttachment };
 })();
