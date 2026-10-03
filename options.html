@@ -2,7 +2,7 @@
 <html>
 <head>
 <meta charset="utf-8" />
-<title>ClickUp - Time Estimate & Tracking</title>
+<title>Personal ClickUp Manager</title>
 <style>
   :root {
     --indigo: #4f46e5;
@@ -884,6 +884,10 @@
      same CSS variables as everything else, so dark mode is automatic. */
   .nv-new { margin-left: auto; font-size: 9px; font-weight: 700; letter-spacing: .03em; background: var(--indigo); color: #fff; padding: 1px 5px; border-radius: 999px; }
   #insView { min-height: 40px; }
+  .ins-subnav { display: inline-flex; gap: 2px; padding: 3px; margin: 0 0 14px; border: 1px solid var(--border); border-radius: 10px; background: var(--card); }
+  .ins-subnav button { font: inherit; font-size: 12.5px; font-weight: 600; padding: 6px 14px; border: 0; border-radius: 7px; background: none; color: var(--muted); cursor: pointer; }
+  .ins-subnav button:hover { color: var(--text); }
+  .ins-subnav button.on { background: var(--indigo, #6366f1); color: #fff; }
   #insView .ins-sub { color: var(--muted); margin: 0 0 18px; font-size: 13px; line-height: 1.5; }
   #insView .banner { display: flex; align-items: center; gap: 12px; border-radius: 14px; padding: 14px 18px; margin-bottom: 18px; border: 1px solid var(--border); }
   #insView .banner.warn { background: rgba(217,119,6,0.10); border-color: rgba(217,119,6,0.35); }
@@ -1003,8 +1007,8 @@
 <div class="wrap">
   <div class="pagehead">
     <div>
-      <h1>ClickUp - Time Estimate &amp; Tracking<span class="ver-badge" id="verBadge"></span></h1>
-      <p class="sub">Track your daily ClickUp time estimate &mdash; and keep your Agent Router accounts logged in each day.</p>
+      <h1>Personal ClickUp Manager<span class="ver-badge" id="verBadge"></span></h1>
+      <p class="sub">Your ClickUp day in one place &mdash; estimates, time tracking, planning and reminders.</p>
     </div>
     <span class="hdr-tools">
       <button id="optPanelBtn" class="hdr-pill" type="button" title="Open in Chrome's side panel (stays open while you browse)" aria-label="Open in the side panel"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" style="display:block"><rect x="3" y="4" width="18" height="16" rx="2.5"/><path d="M15 4v16"/><path d="M18 8.5h.01M18 11.5h.01"/></svg></button>
@@ -1265,7 +1269,10 @@
        Painted entirely by renderInsights() in options.js from one broad open-tasks
        fetch (CLICKUP_OPEN_TASKS, cached) plus the already-loaded ClickUp state. -->
   <section class="panel" data-panel="insights">
+    <!-- Health (renderInsights, options.js) / Plan + Performance (insights-plus.js) -->
+    <div id="insSubNav" class="ins-subnav" role="tablist"></div>
     <div id="insView"></div>
+    <div id="insPlusView" hidden></div>
   </section>
 
   <!-- ===================== ClickUp setup ===================== -->
@@ -1352,6 +1359,8 @@
           <div class="set-line"><input type="checkbox" id="cuAwayNotify" /><label for="cuAwayNotify">Offer to remove time when I've been away for</label><input type="text" id="cuAwayMin" inputmode="numeric" placeholder="15" /><span>minutes or more</span></div>
           <div class="set-line"><input type="checkbox" id="cuWrapUp" /><label for="cuWrapUp">End-of-day wrap-up at</label><input type="time" id="cuWrapUpTime" /><a href="wrapup.html" target="_blank" rel="noopener">Open now</a>
             <p class="hint">Move leftover tasks to tomorrow and copy a standup for Slack.</p></div>
+          <div class="set-line"><input type="checkbox" id="cuExtraAutoClose" /><label for="cuExtraAutoClose">Close my weekly Extra Task at 5 PM on its due day (Friday) if it's still open</label>
+            <p class="hint">It's a recurring task: ClickUp only makes next week's one when this week's is closed. Waits if its timer is still running.</p></div>
           <div class="set-line"><input type="checkbox" id="cuTidyNotify" /><label for="cuTidyNotify">Daily "needs tidying" summary at</label><input type="time" id="cuTidyTime" /></div>
           <div class="set-line indent" id="cuTidyDaysRow"><span class="grow">On</span>
             <select id="cuTidyDays">
@@ -2290,11 +2299,14 @@
 <script src="breakdown.js"></script>
 <script src="calendar.js"></script>
 <script src="notices.js"></script>
+<script src="plan-apply.js"></script>
 <script src="options.js"></script>
+<script src="insights-plus.js"></script>
 <script src="phone-timer.js"></script>
 <script src="bulk-edit.js"></script>
 <script src="task-files.js"></script>
 <script src="reminders.js"></script>
 <script src="hub.js"></script>
+<script src="header-ui.js"></script>
 </body>
 </html>

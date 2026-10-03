@@ -212,10 +212,23 @@
     .pcal-day.flash { animation: pcal-flash 1.6s ease 2; }
     @keyframes pcal-flash { 0%, 100% { box-shadow: 0 0 0 0 rgba(99,102,241,0); } 40% { box-shadow: 0 0 0 3px var(--indigo, #6366f1); } }
     .pcal-day.wfh { background: rgba(59,130,246,.16); }
-    html[data-theme="dark"] .pcal-day.wfh { background: rgba(96,165,250,.34); }
-    html[data-theme="dark"] .pcal-day.we { background: rgba(248,113,113,.2); }
-    html[data-theme="dark"] .pcal-day.hol { background: rgba(248,113,113,.45); }
-    html[data-theme="dark"] .pcal-day.hol .ad { color: #fecaca; }
+    /* Dark mode: tints over a near-black background went muddy (maroon / grey),
+       so dark gets its own brighter set - rose weekends, vivid rose holidays,
+       sky-blue work-from-home, coloured day numbers and a soft glow on today. */
+    html[data-theme="dark"] .pcal-day { background: rgba(255,255,255,.045); border-color: rgba(255,255,255,.05); }
+    html[data-theme="dark"] .pcal-day:hover { background: rgba(255,255,255,.09); border-color: var(--indigo, #6366f1); }
+    html[data-theme="dark"] .pcal-day.we { background: linear-gradient(160deg, rgba(251,113,133,.26), rgba(251,113,133,.12)); border-color: rgba(251,113,133,.22); }
+    html[data-theme="dark"] .pcal-day.we .ad { color: #fda4af; }
+    html[data-theme="dark"] .pcal-day.wfh { background: linear-gradient(160deg, rgba(56,189,248,.32), rgba(56,189,248,.14)); border-color: rgba(56,189,248,.3); }
+    html[data-theme="dark"] .pcal-day.wfh .ad { color: #bae6fd; }
+    html[data-theme="dark"] .pcal-day.hol { background: linear-gradient(160deg, rgba(244,63,94,.62), rgba(244,63,94,.38)); border-color: rgba(251,113,133,.55); }
+    html[data-theme="dark"] .pcal-day.hol .ad { color: #fff; }
+    html[data-theme="dark"] .pcal-day.hol .bsd { color: #ffe4e6; }
+    html[data-theme="dark"] .pcal-day.today { border-color: var(--indigo, #6366f1); box-shadow: inset 0 0 0 1px var(--indigo, #6366f1), 0 0 14px rgba(129,140,248,.45); }
+    html[data-theme="dark"] .pcal-day .rm { color: #fbbf24; }
+    html[data-theme="dark"] .pcal-day.out { opacity: .32; }
+    .lg-we { background: rgba(220,38,38,.35) !important; } .lg-hol { background: rgba(239,68,68,.8) !important; } .lg-wfh { background: rgba(59,130,246,.6) !important; }
+    html[data-theme="dark"] .lg-we { background: rgba(251,113,133,.45) !important; } html[data-theme="dark"] .lg-hol { background: #f43f5e !important; } html[data-theme="dark"] .lg-wfh { background: #38bdf8 !important; }
     .pcal-go { display: flex; align-items: center; gap: 6px; margin: 0 0 8px; }
     .pcal-go button { font: inherit; font-size: 11.5px; padding: 3px 10px; border-radius: 7px; border: 1px solid var(--border); background: var(--bg2, transparent); color: var(--text); cursor: pointer; }
     .pcal-go button:hover { border-color: var(--indigo, #6366f1); color: var(--indigo, #6366f1); }
@@ -301,7 +314,7 @@
     }
     pop.appendChild(grid);
     const lg = el("div", "pcal-legend");
-    lg.innerHTML = '<span>\u23F0 Reminder</span><span><i style="background:rgba(220,38,38,.35)"></i>Weekend</span><span><i style="background:rgba(239,68,68,.8)"></i>Holiday</span><span><i style="background:rgba(59,130,246,.6)"></i>Work from home</span><span><i style="background:var(--indigo,#6366f1)"></i>Tasks due</span>';
+    lg.innerHTML = '<span>\u23F0 Reminder</span><span><i class="lg-we"></i>Weekend</span><span><i class="lg-hol"></i>Holiday</span><span><i class="lg-wfh"></i>Work from home</span><span><i style="background:var(--indigo,#6366f1)"></i>Tasks due</span>';
     pop.appendChild(lg);
     // Company days in this month and the next few weeks.
     const fromK = ymd(new Date(y, m, 1)), toK = ymd(new Date(y, m + 2, 0));

@@ -25,7 +25,7 @@ import {
   driveQuota,
 } from "./lib-drive.js";
 import { runAllAccounts, runAccountLogin, readAgentRouterLogin, URLS, GITHUB_KEEP_COOKIES } from "./lib-automation.js";
-import { getUser, verifyToken, getTeams, fetchTodayEstimate, fetchWeeklySummary, fetchDateRangeEstimate, createTaskCache, fetchTeamMembers, fetchWorkspaceTags, cuTagNames, fmtDuration, findExtraTaskByName, parseTaskIdFromUrl, getCurrentTimeEntry, getRunningTaskProgress, startTimer, stopTimer, getTaskById, setTaskStatus, taskUrlFor, clientLabelFromContainer, resolveSpaceNamesFor, taskContainer, cuPriorityName, isTaskDone, getSubtasksOfParent, getTaskTree, getTaskDetail, updateTimeEntry, setTaskDueDate, clearTaskTreeCache, listWorkspaceClients, cuRowAssignees, fetchDoneBetween, getTaskPanel, addTaskComment, postTaskComment, setTaskDescription, getTaskCommentLinks } from "./lib-clickup.js";
+import { getUser, verifyToken, getTeams, fetchTodayEstimate, fetchWeeklySummary, fetchDateRangeEstimate, createTaskCache, fetchTeamMembers, fetchWorkspaceTags, cuTagNames, fmtDuration, findExtraTaskByName, parseTaskIdFromUrl, getCurrentTimeEntry, getRunningTaskProgress, startTimer, stopTimer, getTaskById, setTaskStatus, taskUrlFor, clientLabelFromContainer, resolveSpaceNamesFor, taskContainer, cuPriorityName, isTaskDone, getSubtasksOfParent, getTaskTree, getTaskDetail, updateTimeEntry, setTaskDueDate, clearTaskTreeCache, listWorkspaceClients, cuRowAssignees, fetchDoneBetween, fetchDoneLite, fetchTrackedHistory, getTaskPanel, addTaskComment, postTaskComment, setTaskDescription, getTaskCommentLinks } from "./lib-clickup.js";
 import { resolveRelayKey, pickProbeModel, probeRelay } from "./lib-availability.js";
 import { tidyCollect, tidyLines, tidyResolved, tidyDayOk, tidyUrgent } from "./lib-tidy.js";
 
@@ -989,6 +989,149 @@ let openTasksCache = null; // Bulk edit "Any date" (CLICKUP_OPEN_TASKS)
 // `assignee` narrows it to one person's tasks (empty = me). Scoping by user is
 // the same `assignees[]` the Filter card already uses, so an Owner/Admin token
 // can reach a teammate's tasks and a plain member simply gets their own.
+// ---------- Insights > Performance (and Plan's estimate suggestions) ----------
+// 12 weeks of history: tracked time per day and per task (ONE time-entries
+// request) + the tasks finished in that time (1-5 light pages). Built only when
+// Plan / Performance is opened, at most every 6 hours, never while ClickUp asks
+// us to back off, one build at a time; kept in storage (perfHistory) so the tab
+// paints at once and only refreshes quietly.
+const PERF_WEEKS = 12;
+const PERF_TTL_MS = 6 * 3600000;
+let perfBuild = null;
+async function getPerfHistory(force) {
+  const { perfHistory } = await chrome.storage.local.get("perfHistory");
+  const cfg = await getClickupConfig().catch(() => null);
+  if (!cfg || !cfg.token || !cfg.teamId || cfg.userId == null) return { ok: false, reason: "not-configured", data: perfHistory || null };
+  // v2 adds per-day task hours + names (the clickable charts); an older copy is still shown until rebuilt.
+  const mine = perfHistory && String(perfHistory.userId) === String(cfg.userId) ? perfHistory : null;
+  const fresh = mine && mine.v === 2 && Date.now() - (mine.at || 0) < (force ? 10 * 60000 : PERF_TTL_MS);
+  if (fresh) return { ok: true, data: mine };
+  const cst = await getClickupState().catch(() => null);
+  if (cst && cst.rateLimitedUntil > Date.now()) return { ok: true, data: mine, busy: true };
+  if (!perfBuild) perfBuild = (async () => {
+    const now = new Date();
+    const mon = new Date(now); mon.setHours(0, 0, 0, 0); mon.setDate(mon.getDate() - ((mon.getDay() + 6) % 7) - 7 * (PERF_WEEKS - 1));
+    const fromTs = mon.getTime(), toTs = Date.now();
+    const hist = await fetchTrackedHistory(cfg.token, cfg.teamId, fromTs, toTs, cfg.userId);
+    const days = {}, taskMs = {};
+    for (const [d, m] of Object.entries(hist.byDay)) { let s = 0; for (const [tid, ms] of Object.entries(m)) { s += ms; taskMs[tid] = (taskMs[tid] || 0) + ms; } days[d] = s; }
+    const done = await fetchDoneLite(cfg.token, cfg.teamId, cfg.userId, fromTs, toTs);
+    const settings = await getSettings().catch(() => ({}));
+    const holder = { tasks: done };
+    await annotateClients(cfg.token, holder, settings.cuClientLevel || "auto").catch(() => {});
+    const slim = (holder.tasks || done).map((t) => ({ id: t.id, name: t.name, url: t.url, parentId: t.parentId, client: t.client || "",
+      dueDateMs: t.dueDateMs, doneAt: t.doneAt, estimateMs: t.estimateMs, spentMs: t.spentMs }));
+    const data = { v: 2, at: Date.now(), userId: String(cfg.userId), fromTs, toTs, weeks: PERF_WEEKS, days, taskMs, byDay: hist.byDay, names: hist.names, done: slim };
+    await chrome.storage.local.set({ perfHistory: data });
+    return data;
+  })().finally(() => { perfBuild = null; });
+  try { return { ok: true, data: await perfBuild }; }
+  catch (e) { return { ok: !!mine, data: mine, error: String(e && e.message ? e.message : e) }; }
+}
+// ---------- Insights > Plan: developers' tasks that will come back as reviews ----------
+// When a developer finishes a "dev"-tagged task, a short review task lands on the
+// tech team. Plan reserves that time ahead: open dev-tagged tasks due by the end
+// of next week that are NOT assigned to me (mine are already in my list). ONE
+// team-task query (no assignee filter: everything this token can see, up to 3
+// pages), cached 30 minutes in storage, never while ClickUp asks us to back off,
+// one build at a time; only when Plan is open.
+const DEV_TAG = "dev";
+const DEV_TTL_MS = 30 * 60000;
+let devBuild = null;
+async function getDevPipeline(force) {
+  const { devPipeline } = await chrome.storage.local.get("devPipeline");
+  const cfg = await getClickupConfig().catch(() => null);
+  if (!cfg || !cfg.token || !cfg.teamId || cfg.userId == null) return { ok: false, reason: "not-configured", data: devPipeline || null };
+  const mine = devPipeline && String(devPipeline.userId) === String(cfg.userId) ? devPipeline : null;
+  if (mine && Date.now() - (mine.at || 0) < (force ? 5 * 60000 : DEV_TTL_MS)) return { ok: true, data: mine };
+  const cst = await getClickupState().catch(() => null);
+  if (cst && cst.rateLimitedUntil > Date.now()) return { ok: true, data: mine, busy: true };
+  if (!devBuild) devBuild = (async () => {
+    const end = new Date(); end.setHours(23, 59, 59, 999);
+    end.setDate(end.getDate() + ((7 - end.getDay()) % 7) + 7); // Sunday after next
+    const raw = [];
+    for (let page = 0; page < 3; page++) {
+      const url = "https://api.clickup.com/api/v2/team/" + encodeURIComponent(cfg.teamId) + "/task?page=" + page +
+        "&subtasks=true&include_closed=false&tags[]=" + encodeURIComponent(DEV_TAG) + "&due_date_lt=" + end.getTime();
+      const res = await fetch(url, { headers: { Authorization: cfg.token } });
+      if (!res.ok) { if (page === 0) throw new Error(res.status === 429 ? "ClickUp rate limit" : "ClickUp HTTP " + res.status); break; }
+      const j = await res.json().catch(() => null);
+      const batch = j && Array.isArray(j.tasks) ? j.tasks : [];
+      raw.push(...batch);
+      if (batch.length < 100 || j.last_page === true) break;
+    }
+    const me = String(cfg.userId);
+    const tasks = raw.filter((x) => x && !isTaskDone(x) && !(Array.isArray(x.assignees) && x.assignees.some((a) => String(a && a.id) === me))).map((x) => ({
+      id: String(x.id), name: x.name || "(untitled task)", url: taskUrlFor(x.id),
+      dueDateMs: Number(x.due_date) || 0, startDateMs: Number(x.start_date) || 0, estimateMs: Number(x.time_estimate) || 0,
+      status: (x.status && x.status.status) || "", container: taskContainer(x),
+      assignees: (Array.isArray(x.assignees) ? x.assignees : []).map((a) => String((a && (a.username || a.email)) || "").trim()).filter(Boolean),
+    }));
+    const settings = await getSettings().catch(() => ({}));
+    const holder = { tasks };
+    await annotateClients(cfg.token, holder, settings.cuClientLevel || "auto").catch(() => {});
+    const data = { at: Date.now(), userId: me, tag: DEV_TAG, tasks: (holder.tasks || tasks).map((x) => { const { container, ...rest } = x; return { ...rest, client: x.client || "" }; }) };
+    await chrome.storage.local.set({ devPipeline: data });
+    return data;
+  })().finally(() => { devBuild = null; });
+  try { return { ok: true, data: await devBuild }; }
+  catch (e) { return { ok: !!mine, data: mine, error: String(e && e.message ? e.message : e) }; }
+}
+// ---------- Smart search: "tasks I completed last month for Acme Dental" ----------
+// The search box turns a sentence into { assignee, mode, fromTs, toTs, client }
+// and asks here: ONE filtered team-task query (ClickUp does the person + date
+// filtering), up to 5 pages, then the client is matched on our side. Someone
+// else's tasks use the workspace Admin token when one is saved (same rule as the
+// Filter card). Cached 3 minutes per question; skipped while ClickUp asks us to
+// back off.
+const smartCache = new Map();
+async function smartTaskSearch(q) {
+  const cfg = await getClickupConfig().catch(() => null);
+  if (!cfg || !cfg.token || !cfg.teamId || cfg.userId == null) return { ok: false, error: "Connect ClickUp first." };
+  const who = cuScopeKey(cfg.userId, q.assignee);
+  const isMe = who === String(cfg.userId);
+  const token = cuScopeToken(cfg, cfg.userId, who);
+  const mode = q.mode === "done" ? "done" : q.mode === "any" ? "any" : "due";
+  const fromTs = Number(q.fromTs) || 0, toTs = Number(q.toTs) || 0;
+  const key = [who, mode, fromTs, toTs].join("|");
+  const hit = smartCache.get(key);
+  let rows;
+  if (hit && Date.now() - hit.at < 3 * 60000) rows = hit.rows;
+  else {
+    const cst = await getClickupState().catch(() => null);
+    if (cst && cst.rateLimitedUntil > Date.now()) return { ok: false, error: "ClickUp asked us to slow down - try again in a minute." };
+    const params = ["subtasks=true", "assignees[]=" + encodeURIComponent(who), "include_closed=" + (mode === "due" ? "false" : "true")];
+    if (mode === "done") { if (fromTs) params.push("date_done_gt=" + (fromTs - 1)); if (toTs) params.push("date_done_lt=" + (toTs + 1)); }
+    else { if (fromTs) params.push("due_date_gt=" + (fromTs - 1)); if (toTs) params.push("due_date_lt=" + (toTs + 1)); }
+    const raw = [];
+    for (let page = 0; page < 5; page++) {
+      const res = await fetch("https://api.clickup.com/api/v2/team/" + encodeURIComponent(cfg.teamId) + "/task?page=" + page + "&" + params.join("&"), { headers: { Authorization: token } });
+      if (res.status === 429) { if (page === 0) return { ok: false, error: "ClickUp rate limit - try again in a minute." }; break; }
+      if (!res.ok) { if (page === 0) return { ok: false, error: "ClickUp HTTP " + res.status }; break; }
+      const j = await res.json().catch(() => null);
+      const batch = j && Array.isArray(j.tasks) ? j.tasks : [];
+      raw.push(...batch);
+      if (batch.length < 100 || j.last_page === true) break;
+    }
+    rows = raw.filter((x) => x && (mode !== "done" || isTaskDone(x))).map((x) => ({
+      id: String(x.id), name: x.name || "(untitled task)", url: taskUrlFor(x.id),
+      status: (x.status && x.status.status) || "", done: isTaskDone(x), priority: cuPriorityName(x),
+      dueDateMs: Number(x.due_date) || 0, doneAt: Number(x.date_done || x.date_closed) || 0,
+      estimateMs: Number(x.time_estimate) || 0, spentMs: Number(x.time_spent) || 0,
+      container: taskContainer(x), assignee: cuTaskAssigneeName(x),
+    }));
+    const settings = await getSettings().catch(() => ({}));
+    const holder = { tasks: rows };
+    await annotateClients(token, holder, settings.cuClientLevel || "auto").catch(() => {});
+    rows = (holder.tasks || rows).map((x) => { const { container, ...rest } = x; return { ...rest, client: x.client || "" }; });
+    smartCache.set(key, { at: Date.now(), rows });
+    if (smartCache.size > 30) smartCache.delete(smartCache.keys().next().value);
+  }
+  const ck = (s) => String(s || "").toLowerCase().replace(/[^a-z0-9]+/g, "");
+  const want = ck(q.client);
+  const tasks = want ? rows.filter((x) => ck(x.client).includes(want) || (want.length >= 5 && want.includes(ck(x.client)) && ck(x.client).length >= 4)) : rows;
+  return { ok: true, tasks, isMe, viaAdmin: !isMe && !!(cfg.adminToken && String(cfg.adminToken).trim()), total: rows.length };
+}
 async function getOpenTasks(cfg, force, tag, assignee) {
   const tagKey = String(tag || "").trim().toLowerCase();
   const whoKey = cuScopeKey(cfg.userId, assignee);
@@ -1026,6 +1169,11 @@ async function getOpenTasks(cfg, force, tag, assignee) {
       tags: (Array.isArray(t.tags) ? t.tags : []).map((x) => String((x && (x.name || x)) || "").trim()).filter(Boolean),
       // Who owns it, so a batch on someone else's work can say so out loud.
       assignee: cuTaskAssigneeName(t),
+      // How many people share it - Insights > Plan reads a dev-tagged task shared
+      // with a developer as "my part is the review", not its whole estimate.
+      assigneeCount: Array.isArray(t.assignees) ? t.assignees.length : 0,
+      // What it waits on (ClickUp dependencies) - Insights > Plan orders by it.
+      dependsOn: (Array.isArray(t.dependencies) ? t.dependencies : []).filter((d) => d && String(d.task_id) === String(t.id) && d.depends_on).map((d) => String(d.depends_on)),
     };
   });
   const data = { tasks, deadlineTasks: [], trackedTasks: [] };
@@ -1204,6 +1352,8 @@ const DEFAULT_SETTINGS = {
   // ---- End-of-day wrap-up ----
   // Weekday notification that opens wrapup.html (leftovers -> tomorrow, standup copy).
   clickupWrapUp: true,
+  // ---- Close the weekly Extra Task (see maybeCloseExtraTask) ----
+  clickupExtraAutoClose: true,
   // ---- Daily "needs tidying" reminder ----
   // One short, actionable summary a day of what the Insights tab flags:
   // overdue, no estimate, no due date, blocked - plus a "dependency resolved,
@@ -1869,7 +2019,7 @@ async function setClickupConfig(patch) {
   return next;
 }
 async function clearClickupConfig() {
-  await chrome.storage.local.remove(["clickupEnc", "clickupState", "clickupNotified", "insOpenCache"]);
+  await chrome.storage.local.remove(["clickupEnc", "clickupState", "clickupNotified", "insOpenCache", "perfHistory", "devPipeline"]);
 }
 
 // Push accounts AND the ClickUp config (encrypted token etc.) together so a new
@@ -2101,6 +2251,7 @@ async function clickupPublic() {
     awayNotify: settings.clickupAwayNotify !== false,
     awayMin: Number(settings.clickupAwayMin) || 15,
     wrapUp: settings.clickupWrapUp !== false,
+    extraAutoClose: settings.clickupExtraAutoClose !== false,
     wrapUpTime: settings.clickupWrapUpTime || "16:45",
     // Daily "needs tidying" reminder (see maybeTidyNotify / lib-tidy.js).
     tidyNotify: settings.clickupTidyNotify !== false,
@@ -3672,6 +3823,54 @@ async function openWrapUpPage() {
     }
   } catch (e) {}
   await chrome.tabs.create({ url }).catch(() => {});
+}
+// The weekly "Extra Task" is a recurring ClickUp task (Mon-Fri). ClickUp makes
+// next week's copy when this one is closed, so a forgotten one used to block
+// next week's. From 5 PM on its due day (Friday) - or the next time the
+// extension runs if Chrome was closed then - an open occurrence is set to
+// "complete", once per occurrence. Never while its timer is still running (it
+// waits until you stop). Settings > ClickUp setup > "Close my weekly Extra
+// Task" turns it off.
+const EXTRA_CLOSE_HOUR = 17;
+function extraCloseDue(t, now) {
+  if (!t || !t.id || t.done || !(Number(t.dueDateMs) > 0)) return false;
+  const at = new Date(Number(t.dueDateMs)); at.setHours(EXTRA_CLOSE_HOUR, 0, 0, 0);
+  return now >= at.getTime();
+}
+async function maybeCloseExtraTask() {
+  const s = await getSettings();
+  if (s.clickupExtraAutoClose === false) return;
+  const st = (await getClickupState().catch(() => null)) || {};
+  const ex = st.extraTask;
+  const now = Date.now();
+  if (!extraCloseDue(ex, now)) return;
+  const { extraAutoClosed, extraCloseTry } = await chrome.storage.local.get(["extraAutoClosed", "extraCloseTry"]);
+  const done = extraAutoClosed && typeof extraAutoClosed === "object" ? extraAutoClosed : {};
+  if (done[ex.id]) return;
+  // At most one try every 5 minutes (it waits while the timer runs), and an hour
+  // after a failed one - this runs every minute, ClickUp's limits are shared.
+  const tr = extraCloseTry && extraCloseTry.id === String(ex.id) ? extraCloseTry : null;
+  if (tr && now - (tr.at || 0) < (tr.failed ? 3600000 : 5 * 60000)) return;
+  await chrome.storage.local.set({ extraCloseTry: { id: String(ex.id), at: now } });
+  const cfg = await getClickupConfig().catch(() => null);
+  if (!cfg || !cfg.token || !cfg.teamId) return;
+  // Re-read it: the state can be minutes old (closed by hand meanwhile, or moved).
+  const t = await getTaskById(cfg.token, String(ex.id)).catch(() => null);
+  if (!t) return;
+  const fresh = { id: String(ex.id), done: isTaskDone(t), dueDateMs: Number(t.dueDateMs || t.due_date) || 0 };
+  if (!extraCloseDue(fresh, now)) return;
+  const cur = await getCurrentTimeEntry(cfg.token, cfg.teamId).catch(() => null);
+  if (cur && String(cur.taskId) === fresh.id) return; // still tracking on it: wait until it's stopped
+  try { await setTaskStatus(cfg.token, fresh.id, "complete"); }
+  catch (e) { await chrome.storage.local.set({ extraCloseTry: { id: fresh.id, at: now, failed: String(e && e.message ? e.message : e).slice(0, 200) } }); return; }
+  done[fresh.id] = now;
+  const keep = Object.entries(done).sort((a, b) => b[1] - a[1]).slice(0, 20);
+  await chrome.storage.local.set({ extraAutoClosed: Object.fromEntries(keep) });
+  clearFilterCache();
+  refreshClickup({ includeTasks: true }).catch(() => {});
+  await notify("cu-extra-closed-" + now, "Extra Task closed for this week",
+    (ex.name || "Your Extra Task") + " was still open after 5 PM on its due day, so it was marked complete. ClickUp now creates next week's one.",
+    undefined, t.url || ex.url || null);
 }
 async function maybeWrapUp() {
   const s = await getSettings();
@@ -5472,6 +5671,7 @@ chrome.alarms.onAlarm.addListener(async (alarm) => {
     // The daily "needs tidying" summary, same deal: it self-gates on the time
     // of day, so checking every minute is free and a missed alarm still lands.
     await maybeTidyNotify().catch(() => {});
+    await maybeCloseExtraTask().catch(() => {});
     // Backstop for reminder alarms (asleep / missed).
     await fireDueReminders();
     await maybeCompanyHeadsUp().catch(() => {});
@@ -5637,6 +5837,21 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         } catch (e) {
           sendResponse({ ok: false, error: String(e && e.message ? e.message : e), changed: e && e.code === "changed", current: e && e.current });
         }
+        break;
+      }
+      case "SMART_TASKS": {
+        try { sendResponse(await smartTaskSearch(msg.q || {})); }
+        catch (e) { sendResponse({ ok: false, error: String(e && e.message ? e.message : e) }); }
+        break;
+      }
+      case "PLAN_DEV_TASKS": {
+        try { sendResponse(await getDevPipeline(!!msg.force)); }
+        catch (e) { sendResponse({ ok: false, error: String(e && e.message ? e.message : e) }); }
+        break;
+      }
+      case "PERF_HISTORY": {
+        try { sendResponse(await getPerfHistory(!!msg.force)); }
+        catch (e) { sendResponse({ ok: false, error: String(e && e.message ? e.message : e) }); }
         break;
       }
       case "CLICKUP_OPEN_TASKS": {
@@ -6653,6 +6868,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
           if (Number.isFinite(n) && n >= 5 && n <= 240) patch.clickupAwayMin = Math.floor(n);
         }
         if (p.clickupWrapUp !== undefined) patch.clickupWrapUp = !!p.clickupWrapUp;
+        if (p.clickupExtraAutoClose !== undefined) patch.clickupExtraAutoClose = !!p.clickupExtraAutoClose;
         if (p.clickupWrapUpTime !== undefined && parseHM(p.clickupWrapUpTime, null)) {
           const [h, m] = parseHM(p.clickupWrapUpTime, null);
           patch.clickupWrapUpTime = String(h).padStart(2, "0") + ":" + String(m).padStart(2, "0");

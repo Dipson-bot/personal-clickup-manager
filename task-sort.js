@@ -89,7 +89,8 @@
         if (el.classList.contains("cu-sub") && blocks.length) blocks[blocks.length - 1].push(el);
         else blocks.push([el]);
       }
-      if (state.key) blocks.sort((x, y) => compare(x[0]._cuTask, y[0]._cuTask) || x[0]._pcsOrd - y[0]._pcsOrd);
+      // A day plan applied from Insights > Plan keeps its own order (plan-apply.js).
+      if (state.key && !document.documentElement.classList.contains("pcm-plan-on")) blocks.sort((x, y) => compare(x[0]._cuTask, y[0]._cuTask) || x[0]._pcsOrd - y[0]._pcsOrd);
       // Only move rows when the order really changes (the lists redraw every
       // second while a timer runs; moving rows under the mouse loses clicks).
       const want = blocks.flat();

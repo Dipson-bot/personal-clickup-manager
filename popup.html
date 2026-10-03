@@ -46,7 +46,9 @@
   html[data-theme="dark"] ::-webkit-scrollbar-thumb:hover { background-color: rgba(154, 163, 178, 0.55); }
   body {
     font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
-    width: fit-content; min-width: 430px; margin: 0; padding: 12px; background: var(--bg); color: var(--text);
+    /* A fixed width: "fit-content" let one long row grow the popup until Chrome
+       added a sideways scrollbar. The side panel sets its own width (in-panel). */
+    width: 680px; box-sizing: border-box; min-width: 0; margin: 0; padding: 12px; background: var(--bg); color: var(--text);
   }
   .header { display: flex; align-items: center; gap: 8px; margin-bottom: 10px; width: 100%; }
   .header img { width: 22px; height: 22px; }
@@ -63,6 +65,16 @@
   .themeBtn { border: none; background: none; cursor: pointer; font-size: 14px; padding: 2px 4px; line-height: 1; color: var(--text); }
 
   .grid { display: grid; gap: 10px; }
+  /* Never a horizontal scrollbar: a grid item's default min-width is its
+     content, so a long task row (or saved column widths) used to stretch the
+     card - and the whole popup - past its width. Let items shrink instead, and
+     clip anything that still sticks out rather than scrolling sideways. */
+  .grid > * { min-width: 0; }
+  .pcm-planbar { display: flex; align-items: center; flex-wrap: wrap; gap: 6px 10px; margin: 6px 0 4px; padding: 6px 10px; border-radius: 8px; background: rgba(99,102,241,.12); font-size: 12px; }
+  .pcm-planbar button { margin-left: auto; font: inherit; font-size: 11.5px; padding: 3px 10px; border-radius: 7px; border: 1px solid var(--border); background: var(--card); color: var(--text); cursor: pointer; }
+  /* Every row assigned to the same one person (you): the avatar column says nothing - give the room to the task name. */
+  .cu-tasklist.who-same .cu-task .cu-who { display: none; }
+  html, body { overflow-x: hidden; }
 
   .card {
     background: var(--card); border: 1px solid var(--border); border-radius: 11px;
@@ -380,8 +392,8 @@
 
   /* ---- v3.4 row layout: fixed client / due / status / time columns; the
      title takes whatever is left (ellipsis). ---- */
-  .cu-task .cu-client { flex: 0 0 auto; width: 84px; max-width: none; text-align: center; box-sizing: border-box; }
-  .cu-task .cu-due { flex: 0 0 auto; width: 42px; text-align: center; box-sizing: border-box; overflow: hidden; text-overflow: ellipsis; }
+  .cu-task .cu-client { flex: 0 0 auto; width: 84px; max-width: 120px; text-align: center; box-sizing: border-box; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .cu-task .cu-due { flex: 0 0 auto; width: 44px; max-width: 70px; text-align: center; box-sizing: border-box; overflow: hidden; text-overflow: ellipsis; }
   .cu-task .cu-wait { display: none; }
   .cu-tasklist:has(.cu-wait.on) .cu-wait { display: inline-flex; flex: 0 0 auto; width: 18px; }
   .cu-task .cu-wait.on { align-items: center; gap: 4px; font-size: 11px; font-weight: 700;  cursor: pointer; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; box-sizing: border-box; }
@@ -443,7 +455,7 @@
 
   /* "Tracking now": task line + note box for the running time entry */
   .cu-now { flex-direction: column; align-items: stretch; gap: 6px; }
-  .cu-now-top { display: flex; align-items: center; gap: 8px; min-width: 0; }
+  .cu-now-top { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 8px; min-width: 0; }
   .cu-now-noterow { display: flex; align-items: center; gap: 8px; }
   .cu-now-note { flex: 1; min-width: 0; font: inherit; font-size: 12px; padding: 4px 8px; border: 1px solid var(--border); border-radius: 7px; background: var(--card); color: var(--text); }
   .cu-now-note:focus { outline: none; border-color: var(--green); }
@@ -744,6 +756,8 @@
   <script src="breakdown.js"></script>
   <script src="calendar.js"></script>
   <script src="notices.js"></script>
+  <script src="plan-apply.js"></script>
   <script src="popup.js"></script>
+  <script src="header-ui.js"></script>
 </body>
 </html>

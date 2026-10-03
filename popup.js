@@ -645,6 +645,8 @@ function cuPrioRank(t) {
   return r == null ? 4 : r;
 }
 function cuPrioCmp(a, b) {
+  // A day plan applied from Insights > Plan keeps the plan's order (plan-apply.js).
+  if (a && b && a._planIdx != null && b._planIdx != null) return a._planIdx - b._planIdx;
   return cuPrioRank(a) - cuPrioRank(b) ||
     (Number(b.estimateMs != null ? b.estimateMs : b.dayEstimateMs) || 0) - (Number(a.estimateMs != null ? a.estimateMs : a.dayEstimateMs) || 0) ||
     // Same priority and same estimate: fall back to the name, read the way a
@@ -2085,6 +2087,9 @@ function cuOtherTracked(d, dueRows) {
 }
 function resolveCuFilterView(st, f) {
   st = st || {};
+  // A day plan applied from Insights > Plan wins over the filter (plan-apply.js).
+  const planV = window.PcmPlanDay && window.PcmPlanDay.view(st);
+  if (planV) return planV;
   // Deadline crossed looks at ALL dates, so it takes over the date scope.
   if (f.deadlineCrossed) return cuOverdueView();
   if (f.dueCustom) { const cv = cuCustomView(f, st); if (cv) return cv; }
@@ -2517,7 +2522,9 @@ function renderClickup() {
   // The custom-order layer is keyed by the active date scope, so a drag in
   // "due today" is remembered separately from "due next week".
   cuActiveScope = view.scope || "extended";
-  const targetMs = cuScopeTargetMs(st && Number(st.targetMs) > 0 ? Number(st.targetMs) : (Number(cu.targetHours) || 0) * 3600000, st, cuFilter);
+  const dailyTargetMs = st && Number(st.targetMs) > 0 ? Number(st.targetMs) : (Number(cu.targetHours) || 0) * 3600000;
+  const targetMs = view.scope === "plan" ? dailyTargetMs : cuScopeTargetMs(dailyTargetMs, st, cuFilter);
+  if (window.PcmPlanDay) { const sc = $("statsCard"); window.PcmPlanDay.paintBanner(sc && sc.querySelector(".card-title"), "cuPlanDayBar"); }
   const estMs = Number(view.estimateMs) || 0;
   const spentTot = Number(view.spentMs) || 0;
 
@@ -2586,7 +2593,7 @@ function renderClickup() {
   // rows without a due date (some week-scope rows) simply never match.
   const refineOn = cuFilter.missingEst || cuFilter.missingDue || cuFilter.waitingOthers || cuFilter.deadlineCrossed || cuFilter.hasTracked
     || (cuFilter.statuses && cuFilter.statuses.length) || (cuFilter.priorities && cuFilter.priorities.length);
-  if (refineOn) {
+  if (refineOn && view.scope !== "plan") { // an applied plan is an explicit list: shown whole
     const keep = cuRefinePredicate(cuFilter);
     const todayStart = new Date().setHours(0, 0, 0, 0);
     taskList = taskList.filter(keep);
@@ -3713,3 +3720,21 @@ function applyArVisibility(st) {
 
 // The main task list (popup and side panel remember their own heights).
 makeListResizable(document.getElementById("cuTaskList"), IN_PANEL ? "panel" : "popup");
+
+// Hide the avatar column in a task list when every row has the same single
+// assignee (in "My tasks" that's always you) - the popup is narrow and the task
+// name needs the room. Mixed lists (department / everyone) keep their avatars.
+(() => {
+  const check = (list) => {
+    const slots = [...list.querySelectorAll(".cu-task .cu-who")];
+    const keys = new Set(slots.map((s) => (s.children.length <= 1 ? (s.firstChild ? s.firstChild.title : "") : "*" + s.children.length + s.textContent)));
+    list.classList.toggle("who-same", slots.length > 0 && keys.size === 1 && slots[0].children.length <= 1);
+  };
+  const scan = () => document.querySelectorAll(".cu-tasklist").forEach(check);
+  let pending = 0;
+  new MutationObserver(() => { if (!pending) pending = setTimeout(() => { pending = 0; scan(); }, 40); }).observe(document.documentElement, { childList: true, subtree: true });
+  scan();
+})();
+
+// A day plan applied (or cleared) from Insights > Plan repaints the list.
+if (window.PcmPlanDay) window.PcmPlanDay.onChange(() => { try { renderClickup(); } catch (e) {} });

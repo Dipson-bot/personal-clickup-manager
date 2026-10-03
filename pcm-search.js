@@ -145,9 +145,27 @@
     { id: "chartday", title: "See one day's tasks from the weekly chart", tab: "dashboard",
       keys: "chart bar graph day monday click tasks completed that day",
       a: "On the dashboard, click a day in the This week chart: the Tasks card below lists that day's tasks. Use Back to my filter to return." },
+    { id: "plan", title: "Plan my week: reach my weekly target and order my tasks", tab: "insights/plan",
+      keys: "review reviews dev developer incoming review task plan week planner weekly target 35 hours capacity estimate suggestion fill week day by day order dependencies what to do first schedule next week",
+      a: "Insights › Plan: how full this or next week is against your target (working days × daily target, holidays left out), realistic estimates for tasks without one (from how long similar finished tasks took), tasks you could start early to fill the week, and a day-by-day order that puts dependencies and earlier audit steps first. Developers' dev tasks count as the short review that comes back to you (expected on their due day). It changes nothing in ClickUp." },
+    { id: "asktasks", title: "Find tasks by asking in plain words (who, client, when, done or due)", tab: "dashboard", here: true,
+      keys: "find search tasks completed last month previous week client person user teammate colleague someone else upcoming week due done finished show me what did yesterday last friday next tuesday since overdue quarter weekend recently",
+      a: "Press Ctrl+K and type a sentence such as \"tasks I completed last month for Acme Dental\" or \"Sam's tasks due next week for Bright Roofing\". The first result says what it understood; press Enter to list the tasks (with estimate and tracked time). Remove a chip (✕) to widen it. Someone else's tasks need a workspace Admin token in ClickUp setup." },
+    { id: "applyplan", title: "Show one day of my plan in my task list", tab: "insights/plan",
+      keys: "apply plan day tuesday task list filter order today plan show planned tasks back to my filter",
+      a: "Insights › Plan › Day by day: press Apply to my task list on a day. The dashboard, popup and side panel show exactly that day's tasks in the plan's order; Back to my filter (in the bar above the list) returns. Nothing changes in ClickUp." },
+    { id: "themes", title: "Change the theme or colours (light, dark, palettes)", tab: "dashboard", here: true,
+      keys: "theme dark light mode colour color palette ocean forest rose lavender slate midnight pine plum mocha appearance",
+      a: "Click the moon / sun button at the top: switch light or dark and pick a palette for each (Ocean, Forest, Rose, Lavender, Slate; Midnight, Pine, Plum, Mocha). The popup, side panel and dashboard follow." },
+    { id: "performance", title: "See my performance: 7-hour days, deadlines met, workload", tab: "insights/performance",
+      keys: "performance analytics stats graph chart deadlines met late on time 7 hours per day target days tracked per week workload overloaded estimate accuracy time by client history",
+      a: "Insights › Performance (only you see it): days you reached your daily target, average per day, deadlines met, how long tasks take against their estimates, tasks finished per week, workload ahead (overloaded over 110%), and where your time went per client - over the last 12 weeks. Click any number, bar or day to see the tasks and hours behind it." },
     { id: "insights", title: "See overdue, unestimated, blocked and upcoming work (Insights)", tab: "insights",
       keys: "insights overview health overdue missing estimate no due date blocked waiting subtasks dependency workload outlook by client problem clients analytics performance filter by client narrow search a list clickable number drill down worth a look health strip jump from dashboard only one client",
       a: "Open the Insights tab in Options: it shows how many of your tasks are overdue, due this week, missing an estimate or a due date, or blocked and waiting, plus a workload outlook for the coming weeks and a by-client table. Click any number to list the exact tasks behind it. In the By client table every count is a button: click a client's \"No est.\", Overdue or Blocked number and the list below opens showing only that client's tasks, and clicking the client name (or its Open count) narrows all four lists to them. Above the lists, a client picker and a search box let you pick a client and search within what's listed - task name, client and the reason a task is blocked are all searchable - and each heading says how much you're looking at, like \"Missing an estimate (30 of 55)\"; press Clear to see everything again. On the Dashboard the \"Worth a look\" counts are clickable too: press \"3 blocked\" or \"55 no estimate\" and you land in Insights with that list already open. Tasks blocked by their own open subtasks are flagged too, and the Dashboard shows a short health strip when you have overdue or blocked work." },
+    { id: "extraclose", title: "Close the weekly Extra Task automatically on Friday", tab: "clickup", card: "Reminders",
+      keys: "extra task close friday weekly recurring next week new extra task complete automatically end of week",
+      a: "On by default: if your Extra Task is still open at 5 PM on its due day (Friday), it's marked complete so ClickUp creates next week's one (it waits while its timer runs). Switch it off in ClickUp setup with \"Close my weekly Extra Task at 5 PM…\"." },
     { id: "tidyreminder", title: "Get a daily reminder of overdue, unestimated or blocked tasks", tab: "clickup", card: "Reminders",
       keys: "tidy needs tidying daily reminder summary overdue unestimated no estimate no due date blocked dependency resolved remind 2pm nudge notify",
       a: "In Options > ClickUp setup > Reminders, tick \"Daily 'needs tidying' summary at\" and pick the time (2:00 PM by default), the days (weekdays by default) and which of the four lists to mention - overdue, no estimate, no due date, blocked. \"Name up to\" caps how many tasks each line lists, and you can also be told when a dependency was resolved so a blocked task can be finished. It sends one short summary a day that stays on screen until you click or close it; clicking opens Insights with the lists it mentions opened, stays quiet when there's nothing to tidy, and can be switched off from the bell menu too. Use Preview now to see it before it arrives." },
@@ -342,6 +360,351 @@
     return 0;
   }
 
+  // ---------- smart task search ----------
+  // "tasks I completed last month for acmedental clinic", "sam's tasks for the
+  // upcoming week for bright roofing": who + client + when + done/due, read from the
+  // sentence right here (no AI service, nothing sent anywhere). People come from
+  // the workspace member list, clients from every task the extension has loaded,
+  // so a name or client is only picked when it really exists. The background then
+  // runs one filtered ClickUp query (SMART_TASKS).
+  const MONTHS = ["january", "february", "march", "april", "may", "june", "july", "august", "september", "october", "november", "december"];
+  const ckey = (s) => String(s || "").toLowerCase().replace(/[^a-z0-9]+/g, "");
+  const dStart = (d) => { const x = new Date(d); x.setHours(0, 0, 0, 0); return x.getTime(); };
+  const dEnd = (d) => { const x = new Date(d); x.setHours(23, 59, 59, 999); return x.getTime(); };
+  // Weeks run Sunday to Saturday, like the calendar and the dashboard's "Due this
+  // week" / "Due next week" (owner's call): on Sunday Oct 4, this week is Oct 4-10.
+  const weekStartOf = (d) => { const x = new Date(dStart(d)); x.setDate(x.getDate() - x.getDay()); return x; };
+  const shortDay = (ts) => new Date(ts).toLocaleDateString([], { month: "short", day: "numeric" });
+  let known = null;
+  async function knownLists() {
+    if (known && Date.now() - known.at < 60000) return known;
+    const g = await chrome.storage.local.get(["clickupState", "insOpenCache", "perfHistory", "devPipeline", "clientNotes", "siteMonitorConfig"]).catch(() => ({}));
+    const st = g.clickupState || {};
+    const clients = new Map();
+    const addC = (c) => { const k = ckey(c); if (k.length >= 3 && !clients.has(k)) clients.set(k, String(c).trim()); };
+    const rows = (b) => b ? [].concat(b.tasks || [], b.deadlineTasks || [], b.trackedTasks || []) : [];
+    for (const b of [st, st.todayFilter, st.thisWeek, st.nextWeek, st.custom, st.tomorrow]) for (const t of rows(b)) if (t && t.client) addC(t.client);
+    for (const t of (g.insOpenCache && g.insOpenCache.tasks) || []) if (t && t.client) addC(t.client);
+    for (const t of (g.perfHistory && g.perfHistory.done) || []) if (t && t.client) addC(t.client);
+    for (const t of (g.devPipeline && g.devPipeline.tasks) || []) if (t && t.client) addC(t.client);
+    for (const s of ((g.siteMonitorConfig && g.siteMonitorConfig.sites) || [])) if (s && s.name && !/^https?:/i.test(s.name)) addC(s.name);
+    const members = (Array.isArray(st.members) ? st.members : []).filter((m) => m && m.id != null && m.name && !/^User \d+$/.test(m.name));
+    known = { at: Date.now(), clients: [...clients.values()], members };
+    return known;
+  }
+  // ---- when: every way people say a period ----
+  // Returns candidate periods, best first; a second one is offered as "Or: …"
+  // when the words can fairly mean two things ("last week" on a Saturday: the
+  // week just worked, or the one before it). Each: { fromTs, toTs, label, past, mode? }.
+  const WEEKDAYS = ["sunday", "monday", "tuesday", "wednesday", "thursday", "friday", "saturday"];
+  const PREV = "(?:last|previous|past|prior|preceding)";
+  const NEXT = "(?:next|upcoming|coming|following)";
+  // Small typos in the date words ("previos", "upcomming", "nxt wek") are fixed
+  // first; names of clients and people are never touched (they aren't near these).
+  const VOCAB = ["previous", "last", "next", "upcoming", "coming", "following", "week", "weeks", "month", "months", "today", "yesterday", "tomorrow",
+    "completed", "finished", "weekend", "quarter", "overdue", "recently", "since", "between", "remaining", "pending"]
+    .concat(WEEKDAYS, MONTHS);
+  const SHORT = { prev: "previous", prv: "previous", nxt: "next", wk: "week", wks: "weeks", wek: "week", weeek: "week", mnt: "month", mon: "monday", tue: "tuesday", tues: "tuesday", wed: "wednesday", thu: "thursday", thur: "thursday", thurs: "thursday", fri: "friday", mth: "month", mnth: "month", tmrw: "tomorrow", tmr: "tomorrow", tdy: "today", yday: "yesterday", sept: "september" };
+  function lev(a, b) {
+    if (Math.abs(a.length - b.length) > 2) return 9;
+    const d = Array.from({ length: a.length + 1 }, (_, i) => [i]);
+    for (let j = 1; j <= b.length; j++) d[0][j] = j;
+    for (let i = 1; i <= a.length; i++) for (let j = 1; j <= b.length; j++) d[i][j] = Math.min(d[i - 1][j] + 1, d[i][j - 1] + 1, d[i - 1][j - 1] + (a[i - 1] === b[j - 1] ? 0 : 1));
+    return d[a.length][b.length];
+  }
+  function fixWords(q) {
+    return q.replace(/[a-z]+/g, (w) => {
+      if (SHORT[w]) return SHORT[w];
+      // Only longer words: a short real word ("many") must not turn into "may".
+      if (w.length < 5 || VOCAB.includes(w)) return w;
+      let best = null, bd = 9;
+      for (const v of VOCAB) { const d = lev(w, v); if (d < bd) { bd = d; best = v; } }
+      return bd <= (w.length >= 8 ? 2 : 1) ? best : w;
+    });
+  }
+  // "sep 28", "28 sep", "september 28 2025", "28/9", "2026-09-28", "monday" -> a day (ms) or 0.
+  function parseDay(s, now, preferPast) {
+    s = String(s || "").trim();
+    let m;
+    const year = now.getFullYear();
+    const mi = (name) => MONTHS.findIndex((x) => x.startsWith(name.slice(0, 3)));
+    if ((m = /^(\d{4})-(\d{1,2})-(\d{1,2})$/.exec(s))) return new Date(+m[1], +m[2] - 1, +m[3]).getTime();
+    if ((m = /^(\d{1,2})[/.](\d{1,2})(?:[/.](\d{2,4}))?$/.exec(s))) return new Date(m[3] ? (+m[3] < 100 ? 2000 + +m[3] : +m[3]) : year, +m[2] - 1, +m[1]).getTime();
+    const pick = (mo, day, y) => {
+      if (y) return new Date(y, mo, day).getTime();
+      let t = new Date(year, mo, day).getTime();
+      // No year: the nearest one in the direction the sentence points to.
+      if (preferPast && t > dEnd(now) + 7 * 864e5) t = new Date(year - 1, mo, day).getTime();
+      if (!preferPast && t < dStart(now) - 60 * 864e5) t = new Date(year + 1, mo, day).getTime();
+      return t;
+    };
+    if ((m = /^([a-z]{3,9})\.? (\d{1,2})(?:st|nd|rd|th)?(?:,? (\d{4}))?$/.exec(s)) && mi(m[1]) >= 0) return pick(mi(m[1]), +m[2], m[3] ? +m[3] : 0);
+    if ((m = /^(\d{1,2})(?:st|nd|rd|th)? (?:of )?([a-z]{3,9})\.?(?:,? (\d{4}))?$/.exec(s)) && mi(m[2]) >= 0) return pick(mi(m[2]), +m[1], m[3] ? +m[3] : 0);
+    const wd = WEEKDAYS.indexOf(s);
+    if (wd >= 0) {
+      const t = new Date(dStart(now));
+      const diff = (wd - t.getDay() + 7) % 7;
+      t.setDate(t.getDate() + (preferPast ? (diff === 0 ? 0 : diff - 7) : diff));
+      return t.getTime();
+    }
+    if (s === "today") return dStart(now);
+    if (s === "yesterday") return dStart(now) - 864e5;
+    if (s === "tomorrow") return dStart(now) + 864e5;
+    return 0;
+  }
+  // Month words only (so "completed 28 sep" isn't read as a date "completed 28").
+  const MON_RX = "(?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*";
+  const DATE_RX = "(\\d{4}-\\d{1,2}-\\d{1,2}|\\d{1,2}[/.]\\d{1,2}(?:[/.]\\d{2,4})?|" + MON_RX + "\\.? \\d{1,2}(?:st|nd|rd|th)?(?:,? \\d{4})?|\\d{1,2}(?:st|nd|rd|th)? (?:of )?" + MON_RX + "(?:,? \\d{4})?|monday|tuesday|wednesday|thursday|friday|saturday|sunday|today|yesterday|tomorrow)";
+  function parsePeriod(q) {
+    const now = new Date();
+    const today = dStart(now);
+    const add = (d, n) => { const x = new Date(d); x.setDate(x.getDate() + n); return x; };
+    const r = (from, to, label, past, extra) => ({ fromTs: dStart(from), toTs: dEnd(to), label, past, ...(extra || {}) });
+    const cap = (s) => s.replace(/^./, (c) => c.toUpperCase());
+    const mon = weekStartOf(now); // the Sunday this week started (name kept from the Monday days)
+    const dow = now.getDay();
+    // The work week is over: Saturday, Sunday, or Friday after 5 PM.
+    // The work week is over: Saturday (the week's last day), or Friday after 5 PM.
+    // Sunday is the first day of a new week.
+    const weekDone = dow === 6 || (dow === 5 && now.getHours() >= 17);
+    const monthStart = (y, m) => new Date(y, m, 1);
+    const monthEnd = (y, m) => new Date(y, m + 1, 0);
+    const pastHint = /\b(did|done|complet\w*|finish\w*|closed|was|were|worked|ago|last|previous|past|since|recently)\b/.test(q);
+    const one = (x) => [x];
+    let m;
+
+    if (/\boverdue\b|\blate tasks?\b|\bmissed (?:deadline|due)/.test(q)) return one({ fromTs: 0, toTs: today - 1, label: "overdue (due before today)", past: false, mode: "due" });
+
+    // Explicit ranges: "from sep 1 to sep 15", "between 1/9 and 15/9", "sep 1 - sep 15"
+    if ((m = new RegExp("(?:from|between) " + DATE_RX + " (?:to|and|till|until|-) " + DATE_RX).exec(q)) || (m = new RegExp(DATE_RX + " ?(?:-|to|till|until) ?" + DATE_RX).exec(q))) {
+      const a = parseDay(m[1], now, pastHint), b = parseDay(m[2], now, pastHint);
+      if (a && b) { const lo = Math.min(a, b), hi = Math.max(a, b); return one(r(lo, hi, shortDay(lo) + " – " + shortDay(hi), hi < today)); }
+    }
+    if ((m = new RegExp("\\bsince " + DATE_RX).exec(q))) { const a = parseDay(m[1], now, true); if (a) return one(r(a, now, "since " + shortDay(a), true)); }
+
+    if (/\bday after tomorrow\b/.test(q)) return one(r(add(now, 2), add(now, 2), "day after tomorrow", false));
+    if (/\bday before yesterday\b/.test(q)) return one(r(add(now, -2), add(now, -2), "day before yesterday", true));
+    if (/\btoday and tomorrow\b/.test(q)) return one(r(now, add(now, 1), "today and tomorrow", false));
+
+    // "3 days ago", "2 weeks ago", "a month ago"
+    if ((m = /\b(\d{1,2}|a|an|one|two|three) (day|week|month)s? ago\b/.exec(q))) {
+      const n = { a: 1, an: 1, one: 1, two: 2, three: 3 }[m[1]] || +m[1];
+      if (m[2] === "day") return one(r(add(now, -n), add(now, -n), n + " day" + (n > 1 ? "s" : "") + " ago", true));
+      if (m[2] === "week") { const s = add(mon, -7 * n); return one(r(s, add(s, 6), n + " week" + (n > 1 ? "s" : "") + " ago", true)); }
+      const s = monthStart(now.getFullYear(), now.getMonth() - n); return one(r(s, monthEnd(s.getFullYear(), s.getMonth()), cap(MONTHS[s.getMonth()]) + " (" + n + " month" + (n > 1 ? "s" : "") + " ago)", true));
+    }
+    // Rolling: "last 10 days", "past 2 weeks", "next 3 months"
+    if ((m = new RegExp("\\b" + PREV + " (\\d{1,3}|two|three|few) (day|week|month)s?\\b").exec(q))) {
+      const n = { two: 2, three: 3, few: 3 }[m[1]] || +m[1], days = m[2] === "day" ? n : m[2] === "week" ? 7 * n : 30 * n;
+      return one(r(add(now, -days), now, "last " + n + " " + m[2] + "s", true));
+    }
+    if ((m = new RegExp("\\b" + NEXT + " (\\d{1,3}|two|three|few) (day|week|month)s?\\b").exec(q))) {
+      const n = { two: 2, three: 3, few: 3 }[m[1]] || +m[1], days = m[2] === "day" ? n : m[2] === "week" ? 7 * n : 30 * n;
+      return one(r(now, add(now, days), "next " + n + " " + m[2] + "s", false));
+    }
+    if (/\bfortnight\b/.test(q)) return new RegExp("\\b" + PREV).test(q) ? one(r(add(now, -14), now, "last 2 weeks", true)) : one(r(now, add(now, 14), "next 2 weeks", false));
+
+    // Weekends
+    if (/\bweekend\b/.test(q)) {
+      // A weekend is Saturday + the Sunday after it (it spans two calendar weeks).
+      // "This weekend" on a Sunday is the one we're in (yesterday + today).
+      const sat = dow === 0 ? add(mon, -1) : add(mon, 6);
+      if (new RegExp("\\b" + PREV + " weekend").test(q)) { const s = add(sat, -7); return one(r(s, add(s, 1), "last weekend", true)); }
+      if (new RegExp("\\b" + NEXT + " weekend").test(q)) { const s = add(sat, 7); return one(r(s, add(s, 1), "next weekend", false)); }
+      return one(r(sat, add(sat, 1), "this weekend", false));
+    }
+
+    // "week of oct 12" = the Mon-Sun week that day is in.
+    if ((m = new RegExp("\\bweek of " + DATE_RX).exec(q))) {
+      const d = parseDay(m[1], now, pastHint);
+      if (d) { const s = weekStartOf(d); return one(r(s, add(s, 6), "week of " + shortDay(s.getTime()), add(s, 6).getTime() < today)); }
+    }
+    // Weeks
+    if (new RegExp("\\b" + PREV + " (?:work ?)?week\\b").test(q)) {
+      const before = r(add(mon, -7), add(mon, -1), "the week before", true);
+      if (weekDone) return [r(mon, add(mon, 6), "last week (just ended)", true), before];
+      return [r(add(mon, -7), add(mon, -1), "last week", true), r(add(now, -7), add(now, -1), "last 7 days", true)];
+    }
+    if (/\b(?:this week and next|this and next week)\b/.test(q)) return one(r(weekDone ? add(mon, 7) : mon, add(mon, 13), "this week and next", false));
+    if (/\brest of (?:the|this) week\b/.test(q)) return one(r(now, add(mon, 6), "rest of this week", false));
+    if (new RegExp("\\b" + NEXT + " (?:work ?)?week\\b").test(q)) {
+      return [r(add(mon, 7), add(mon, 13), "next week", false), r(now, add(now, 7), "next 7 days", false)];
+    }
+    if (/\b(?:this|current) (?:work ?)?week\b|\bthis wk\b/.test(q) || /\bweek\b/.test(q)) {
+      if (weekDone) return [r(mon, add(mon, 6), "this week (ending)", pastHint), r(add(mon, 7), add(mon, 13), "the coming week", false)];
+      return one(r(mon, add(mon, 6), "this week", false));
+    }
+
+    // Weekdays: "last friday", "next tuesday", "on monday", "friday"
+    if ((m = new RegExp("\\b(" + PREV.slice(3, -1) + "|" + NEXT.slice(3, -1) + "|this|on)? ?(" + WEEKDAYS.join("|") + ")\\b").exec(q))) {
+      const w = WEEKDAYS.indexOf(m[2]);
+      const isPrev = m[1] && new RegExp("^" + PREV + "$").test(m[1]);
+      const isNext = m[1] && new RegExp("^" + NEXT + "$").test(m[1]);
+      const t = new Date(today);
+      let diff = (w - dow + 7) % 7;
+      if (isPrev) diff = diff === 0 ? -7 : diff - 7;
+      else if (isNext) diff = diff === 0 ? 7 : diff; // "next tuesday" = the coming one
+      else if (pastHint && diff > 0) diff -= 7;
+      t.setDate(t.getDate() + diff);
+      return one(r(t, t, cap((isPrev ? "last " : isNext ? "next " : "") + m[2]) + " " + shortDay(t.getTime()), t.getTime() < today));
+    }
+
+    // Months
+    if (new RegExp("\\b" + PREV + " month\\b").test(q)) {
+      const s = monthStart(now.getFullYear(), now.getMonth() - 1);
+      return [r(s, monthEnd(s.getFullYear(), s.getMonth()), "last month (" + cap(MONTHS[s.getMonth()]) + ")", true), r(add(now, -30), now, "last 30 days", true)];
+    }
+    if (new RegExp("\\b" + NEXT + " month\\b").test(q)) {
+      const s = monthStart(now.getFullYear(), now.getMonth() + 1);
+      return [r(s, monthEnd(s.getFullYear(), s.getMonth()), "next month (" + cap(MONTHS[s.getMonth()]) + ")", false), r(now, add(now, 30), "next 30 days", false)];
+    }
+    if (/\b(?:end of (?:the |this )?month|rest of (?:the |this )?month)\b/.test(q)) return one(r(now, monthEnd(now.getFullYear(), now.getMonth()), "rest of " + cap(MONTHS[now.getMonth()]), false));
+    if (/\b(?:this|current) month\b|\bmonth\b/.test(q)) {
+      const c = r(monthStart(now.getFullYear(), now.getMonth()), monthEnd(now.getFullYear(), now.getMonth()), "this month (" + cap(MONTHS[now.getMonth()]) + ")", pastHint);
+      // In the first days of a month, "this month" might still mean the one just ended.
+      if (now.getDate() <= 3) { const s = monthStart(now.getFullYear(), now.getMonth() - 1); return [c, r(s, monthEnd(s.getFullYear(), s.getMonth()), cap(MONTHS[s.getMonth()]) + " (just ended)", true)]; }
+      return one(c);
+    }
+
+    // Quarters and years
+    if (/\bquarter\b/.test(q)) {
+      const qi = Math.floor(now.getMonth() / 3) + (new RegExp("\\b" + PREV + " quarter").test(q) ? -1 : new RegExp("\\b" + NEXT + " quarter").test(q) ? 1 : 0);
+      const s = monthStart(now.getFullYear(), qi * 3);
+      return one(r(s, monthEnd(s.getFullYear(), s.getMonth() + 2), "Q" + (((qi % 4) + 4) % 4 + 1) + " " + s.getFullYear(), s.getTime() < today && qi <= Math.floor(now.getMonth() / 3) - 1));
+    }
+    if (new RegExp("\\b" + PREV + " year\\b").test(q)) { const y = now.getFullYear() - 1; return one(r(new Date(y, 0, 1), new Date(y, 11, 31), String(y), true)); }
+    if (/\b(?:this|current) year\b/.test(q)) return one(r(new Date(now.getFullYear(), 0, 1), new Date(now.getFullYear(), 11, 31), String(now.getFullYear()), pastHint));
+
+    // One day by date: "on sep 28", "28 sep", "28/9"
+    // Every date-looking phrase is tried ("task 12" before "sep 28" must not hide it).
+    for (const mm of q.matchAll(new RegExp("\\b(?:on )?" + DATE_RX + "\\b", "g"))) {
+      if (WEEKDAYS.includes(mm[1]) || ["today", "yesterday", "tomorrow"].includes(mm[1])) continue;
+      const d = parseDay(mm[1], now, pastHint);
+      if (d) return one(r(d, d, shortDay(d), d < today));
+    }
+
+    // Month names: "september", "sept 2025", "last september"
+    for (let i = 0; i < 12; i++) {
+      const mm = new RegExp("\\b(" + PREV.slice(3, -1) + "|" + NEXT.slice(3, -1) + "|this)? ?(?:" + MONTHS[i] + "|" + MONTHS[i].slice(0, 3) + ")\\b(?: (\\d{4}))?").exec(q);
+      if (!mm) continue;
+      let y = mm[2] ? +mm[2] : now.getFullYear();
+      if (!mm[2]) {
+        if (mm[1] && new RegExp("^" + PREV + "$").test(mm[1])) y = i >= now.getMonth() ? y - 1 : y;
+        else if (mm[1] && new RegExp("^" + NEXT + "$").test(mm[1])) y = i <= now.getMonth() ? y + 1 : y;
+        else if (i > now.getMonth() && pastHint) y -= 1; // "completed in november" (it's October) = last year's
+      }
+      const end = monthEnd(y, i);
+      return one(r(monthStart(y, i), end, cap(MONTHS[i]) + (y !== now.getFullYear() ? " " + y : ""), end.getTime() < today));
+    }
+
+    if (/\b(?:recently|lately|recent)\b/.test(q)) return one(r(add(now, -14), now, "last 2 weeks", true));
+    if (/\b(?:upcoming|coming up|soon)\b/.test(q)) return [r(now, add(now, 14), "next 2 weeks", false), r(add(mon, 7), add(mon, 13), "next week", false)];
+    if (/\byesterday\b/.test(q)) return one(r(add(now, -1), add(now, -1), "yesterday", true));
+    if (/\btoday\b/.test(q)) return one(r(now, now, "today", false));
+    if (/\btomorrow\b/.test(q)) return one(r(add(now, 1), add(now, 1), "tomorrow", false));
+    return [];
+  }
+  function bestClient(q, clients) {
+    const words = q.split(/[^a-z0-9]+/).filter(Boolean);
+    const skip = new Set(["task", "tasks", "the", "for", "client", "of", "my", "me", "and", "week", "month", "last", "next", "this", "that", "completed", "done", "due", "show", "see", "want"]);
+    let best = null;
+    for (let n = 3; n >= 1; n--) {
+      for (let i = 0; i + n <= words.length; i++) {
+        const span = words.slice(i, i + n);
+        if (span.every((w) => skip.has(w))) continue;
+        const g = span.join("");
+        if (g.length < 4) continue;
+        for (const c of clients) {
+          const k = ckey(c);
+          const hit = k === g || k.includes(g) || (g.includes(k) && k.length >= 5) || (k.replace(/seo$/, "").length >= 5 && g.startsWith(k.replace(/seo$/, "")));
+          if (hit && (!best || g.length > best.len)) best = { name: c, len: g.length };
+        }
+      }
+      if (best) break;
+    }
+    return best ? best.name : "";
+  }
+  function bestMember(q, members) {
+    let best = null;
+    for (const m of members) {
+      const parts = m.name.toLowerCase().split(/[\s._@-]+/).filter((p) => p.length >= 3);
+      if (!parts.length) continue;
+      const full = parts.join(" ");
+      let s = 0;
+      if (q.includes(full)) s = 100;
+      else if (parts.length > 1 && parts.every((p) => new RegExp("\\b" + p).test(q))) s = 90;
+      else if (new RegExp("\\b" + parts[0] + "(?:'?s)?\\b").test(q)) s = 60;
+      if (s && (!best || s > best.s)) best = { m, s, n: 1 }; else if (s && best && s === best.s) best.n++;
+    }
+    // A first name two people share is ambiguous - better ask than guess.
+    return best && best.n === 1 ? best.m : null;
+  }
+  // A sentence -> the readings of it, best first (the second is the "Or: …" one).
+  async function parseSmart(raw) {
+    const q0 = " " + norm(raw).replace(/[’']s\b/g, "s") + " ";
+    if (q0.trim().split(" ").length < 3) return null;
+    const q = fixWords(q0); // date / status words with small typos fixed; names read from q0
+    const k = await knownLists();
+    const periods = parsePeriod(q);
+    const client = bestClient(q0, k.clients);
+    const person = bestMember(q0, k.members);
+    const doneW = /\b(complet\w*|done|finish\w*|closed|did|worked on|delivered|wrapped up)\b/.test(q);
+    const dueW = /\b(due|upcoming|pending|open|todo|to do|left|remaining|planned|scheduled|coming|overdue|outstanding)\b/.test(q);
+    const taskW = /\btasks?\b|\bwork\b|\bjobs?\b|\bassignments?\b/.test(q);
+    const mine = /\b(my|mine)\b/.test(q) && taskW && (doneW || dueW);
+    if (!(taskW || doneW || dueW) || !(periods.length || client || person || mine)) return null;
+    const now = new Date();
+    const base = { assignee: person ? String(person.id) : "", personName: person ? person.name : "you", client }; // a named teammate wins over "I"/"my"
+    const modeFor = (p) => p && p.mode ? p.mode : doneW ? "done" : dueW ? "due" : p && p.past ? "done" : "due";
+    const list = periods.length ? periods : [null];
+    return list.slice(0, 2).map((p) => {
+      const mode = modeFor(p);
+      const pp = p || (mode === "done" ? { fromTs: dStart(new Date(now.getTime() - 30 * 864e5)), toTs: dEnd(now), label: "last 30 days" } : { fromTs: dStart(now), toTs: dEnd(new Date(now.getTime() + 30 * 864e5)), label: "next 30 days" });
+      return { ...base, mode, fromTs: pp.fromTs, toTs: pp.toTs, periodLabel: pp.label };
+    });
+  }
+  const rangeText = (s) => !s.fromTs ? "until " + shortDay(s.toTs) : shortDay(s.fromTs) + (s.fromTs !== dStart(s.toTs) ? " – " + shortDay(s.toTs) : "");
+  function smartLabel(s) {
+    return (s.mode === "done" ? "completed" : "due") + " · " + s.periodLabel + " (" + rangeText(s) + ")" + (s.client ? " · " + s.client : "") + " · " + s.personName;
+  }
+  const fmtH = (ms) => { const m = Math.round((Number(ms) || 0) / 60000); const h = Math.floor(m / 60); return h ? h + "h" + (m % 60 ? " " + (m % 60) + "m" : "") : m + "m"; };
+  async function runSmart(s) {
+    resBox.innerHTML = '<div class="pcs-empty">Finding ' + esc(smartLabel(s)) + "…</div>";
+    let r = null;
+    try { r = await new Promise((res) => chrome.runtime.sendMessage({ type: "SMART_TASKS", q: s }, (x) => { void chrome.runtime.lastError; res(x || null); })); } catch (e) {}
+    if (!back) return;
+    const chip = (key, text) => '<span class="pcs-chip">' + esc(text) + (key ? ' <button type="button" data-drop="' + key + '" title="Remove this filter">✕</button>' : "") + "</span>";
+    let h = '<div class="pcs-smart"><div class="pcs-chips">' + chip("", s.mode === "done" ? "Completed" : "Due") + chip("period", s.periodLabel + " · " + rangeText(s)) +
+      (s.client ? chip("client", s.client) : "") + chip(s.assignee ? "person" : "", s.personName === "you" ? "Your tasks" : s.personName) + "</div>";
+    if (!r || !r.ok) { h += '<div class="pcs-empty" style="color:var(--red)">' + esc((r && r.error) || "No answer from the extension.") + "</div></div>"; resBox.innerHTML = h; wireSmart(s); return; }
+    const list = (r.tasks || []).slice().sort((a, b) => (s.mode === "done" ? b.doneAt - a.doneAt : (a.dueDateMs || 9e15) - (b.dueDateMs || 9e15)));
+    const est = list.reduce((a, t) => a + (Number(t.estimateMs) || 0), 0), spent = list.reduce((a, t) => a + (Number(t.spentMs) || 0), 0);
+    h += '<div class="pcs-sm" style="margin:6px 14px">' + list.length + " task" + (list.length === 1 ? "" : "s") + " · estimated " + fmtH(est) + " · tracked " + fmtH(spent) +
+      (!r.isMe && !r.viaAdmin ? " · only what your own ClickUp access can see (save a workspace admin token in ClickUp setup to see everything)" : "") + "</div>";
+    if (!list.length) h += '<div class="pcs-empty">No tasks match. Remove a filter above (✕) to widen it.</div>';
+    for (const t of list.slice(0, 200)) {
+      const when = s.mode === "done" ? (t.doneAt ? "done " + shortDay(t.doneAt) : "done") : (t.dueDateMs ? "due " + shortDay(t.dueDateMs) : "no due date");
+      h += '<a class="pcs-it pcs-trow" href="' + esc(t.url) + '" target="_blank" rel="noopener"><span class="t" title="' + esc(t.name) + '">' + esc(t.name) + '</span><span class="w">' + esc([t.client, when, t.status].filter(Boolean).join(" · ")) + '</span><span class="w pcs-tm">' + (t.spentMs ? fmtH(t.spentMs) : "0m") + (t.estimateMs ? " / " + fmtH(t.estimateMs) : "") + "</span></a>";
+    }
+    if (list.length > 200) h += '<div class="pcs-sm" style="margin:6px 14px">…and ' + (list.length - 200) + " more.</div>";
+    h += "</div>";
+    items = []; sel = 0;
+    resBox.innerHTML = h;
+    wireSmart(s);
+  }
+  function wireSmart(s) {
+    resBox.querySelectorAll("[data-drop]").forEach((b) => {
+      b.onclick = () => {
+        const k = b.getAttribute("data-drop");
+        const n = { ...s };
+        if (k === "client") n.client = "";
+        if (k === "person") { n.assignee = ""; n.personName = "you"; }
+        if (k === "period") { const now = new Date(); if (n.mode === "done") { n.fromTs = dStart(new Date(now.getTime() - 90 * 864e5)); n.toTs = dEnd(now); n.periodLabel = "last 90 days"; } else { n.fromTs = dStart(now); n.toTs = dEnd(new Date(now.getTime() + 90 * 864e5)); n.periodLabel = "next 90 days"; } }
+        runSmart(n);
+      };
+    });
+  }
+
   // ---------- UI ----------
   const css = document.createElement("style");
   css.textContent = `
@@ -372,6 +735,14 @@
     .pcs-row { display: flex; gap: 8px; margin-top: 8px; }
     .pcs-b { font: inherit; font-size: 12.5px; padding: 5px 10px; border-radius: 7px; border: 1px solid var(--border); background: transparent; color: var(--text); cursor: pointer; margin-top: 6px; }
     .pcs-b.pri { background: var(--indigo, #6366f1); border-color: var(--indigo, #6366f1); color: #fff; }
+    .pcs-it.smart .t { color: var(--indigo, #6366f1); font-weight: 600; }
+    .pcs-chips { display: flex; flex-wrap: wrap; gap: 6px; padding: 10px 14px 4px; }
+    .pcs-chip { display: inline-flex; align-items: center; gap: 4px; font-size: 12px; font-weight: 600; padding: 3px 9px; border-radius: 999px; background: rgba(99,102,241,.12); color: var(--indigo, #6366f1); }
+    .pcs-chip button { border: 0; background: none; color: inherit; cursor: pointer; font-size: 11px; padding: 0 2px; opacity: .7; }
+    .pcs-chip button:hover { opacity: 1; }
+    a.pcs-it.pcs-trow { color: var(--text); text-decoration: none; }
+    a.pcs-it.pcs-trow:hover { background: var(--bg2, rgba(99,102,241,.08)); }
+    .pcs-it .pcs-tm { flex: none; min-width: 64px; text-align: right; font-weight: 600; color: var(--text); }
   `;
   document.head.appendChild(css);
 
@@ -418,6 +789,10 @@
       : [["Actions", ACTIONS]];
     // Not it? Ask the AI (only when clicked).
     if (q.split(" ").length >= 3) groups.push([guides.length ? "Not it?" : "Ask", [{ type: "ai", text: "✨ Ask AI: “" + input.value.trim() + "”" }]]);
+    // A question about tasks ("what I completed last month for Acme Dental") goes first.
+    const smart = q ? await parseSmart(input.value) : null;
+    if (!back) return;
+    if (smart && smart.length) groups.unshift(["Find tasks", smart.map((s, i) => ({ type: "smart", s, text: (i ? "Or: " : "🔎 Show tasks ") + smartLabel(s) }))]);
     items = [];
     let html = "";
     for (const [name, list] of groups) {
@@ -429,7 +804,7 @@
           : it.type === "task" ? [it.client, it.due ? new Date(it.due).toLocaleDateString([], { month: "short", day: "numeric" }) : ""].filter(Boolean).join(" · ")
           : "";
         if (it.type === "guide") html += '<div class="pcs-it g" data-i="' + idx + '"><span class="t">' + esc(it.title) + '</span><div class="pcs-a">' + esc(it.a) + "</div></div>";
-        else html += '<div class="pcs-it' + (it.type === "ai" ? " ai" : "") + '" data-i="' + idx + '"><span class="t">' + esc(it.text) + '</span><span class="w">' + esc(where) + "</span></div>";
+        else html += '<div class="pcs-it' + (it.type === "ai" ? " ai" : it.type === "smart" ? " smart" : "") + '" data-i="' + idx + '"><span class="t">' + esc(it.text) + '</span><span class="w">' + esc(where) + "</span></div>";
       }
     }
     resBox.innerHTML = html || '<div class="pcs-empty">Nothing found for “' + esc(input.value) + "”.</div>";
@@ -447,6 +822,7 @@
   }
   function pick(it) {
     if (it.type === "ai") { askAI(input.value.trim()); return; }
+    if (it.type === "smart") { runSmart(it.s); return; }
     if (it.type === "guide") {
       const act = it.action && ACTIONS.find((a) => (it.action === "float" ? /Float/ : /wrap-up/).test(a.text));
       close();
@@ -556,5 +932,5 @@
       '<div class="pcs-aig"><b>' + esc(g.title) + '</b><div class="pcs-a">' + esc(g.a) + '</div><button type="button" class="pcs-b pri" data-g="' + i + '">Go there</button></div>').join(""));
     box.querySelectorAll("[data-g]").forEach((b) => { b.onclick = () => pick(picked[Number(b.dataset.g)]); });
   }
-  window.PcmSearch = { open };
+  window.PcmSearch = { open, _parse: parseSmart, _label: smartLabel };
 })();

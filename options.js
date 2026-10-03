@@ -1275,6 +1275,8 @@ function cuPrioRank(t) {
   return r == null ? 4 : r;
 }
 function cuPrioCmp(a, b) {
+  // A day plan applied from Insights > Plan keeps the plan's order (plan-apply.js).
+  if (a && b && a._planIdx != null && b._planIdx != null) return a._planIdx - b._planIdx;
   return cuPrioRank(a) - cuPrioRank(b) ||
     (Number(b.estimateMs != null ? b.estimateMs : b.dayEstimateMs) || 0) - (Number(a.estimateMs != null ? a.estimateMs : a.dayEstimateMs) || 0) ||
     // Same priority and same estimate: fall back to the name, read the way a
@@ -2240,6 +2242,7 @@ function renderClickupSettings(cu) {
   $("cuAwayNotify").checked = cu.awayNotify !== false;
   $("cuAwayMin").value = cu.awayMin != null ? String(cu.awayMin) : "15";
   $("cuWrapUp").checked = cu.wrapUp !== false;
+  if ($("cuExtraAutoClose")) $("cuExtraAutoClose").checked = cu.extraAutoClose !== false;
   $("cuWrapUpTime").value = cu.wrapUpTime || "16:45";
   $("cuTidyNotify").checked = cu.tidyNotify !== false;
   $("cuTidyTime").value = cu.tidyTime || "14:00";
@@ -3649,6 +3652,9 @@ function cuOtherTracked(d, dueRows) {
 }
 function resolveCuFilterView(st, f) {
   st = st || {};
+  // A day plan applied from Insights > Plan wins over the filter (plan-apply.js).
+  const planV = window.PcmPlanDay && window.PcmPlanDay.view(st);
+  if (planV) return planV;
   // Deadline crossed looks at ALL dates, so it takes over the date scope.
   if (f.deadlineCrossed) return cuOverdueView();
   if (f.dueCustom) { const cv = cuCustomView(f, st); if (cv) return cv; }
@@ -4246,7 +4252,7 @@ function renderClickupPreview(st) {
   // The custom-order layer is keyed by the active date scope, so a drag in
   // "due today" is remembered separately from "due next week".
   cuActiveScopeOpt = view.scope || "extended";
-  const targetMs = cuScopeTargetMs(Number(st.targetMs) || 0, st, cuFilter);
+  const targetMs = view.scope === "plan" ? Number(st.targetMs) || 0 : cuScopeTargetMs(Number(st.targetMs) || 0, st, cuFilter);
   let estMs = Number(view.estimateMs) || 0;
   let met = targetMs > 0 && estMs >= targetMs;
   let spentTot = Number(view.spentMs) || 0;
@@ -4255,7 +4261,7 @@ function renderClickupPreview(st) {
   let viewTracked = Array.isArray(view.trackedTasks) ? view.trackedTasks : [];
   const refineOn = cuFilter.missingEst || cuFilter.missingDue || cuFilter.waitingOthers || cuFilter.deadlineCrossed || cuFilter.hasTracked
     || (cuFilter.statuses && cuFilter.statuses.length) || (cuFilter.priorities && cuFilter.priorities.length);
-  if (refineOn) {
+  if (refineOn && view.scope !== "plan") { // an applied plan is an explicit list: shown whole
     const keep = cuRefinePredicate(cuFilter);
     const todayStart = new Date().setHours(0, 0, 0, 0);
     viewTasks = viewTasks.filter(keep);
@@ -4898,6 +4904,7 @@ $("cuSave").onclick = async () => {
         clickupAwayNotify: $("cuAwayNotify").checked,
         clickupAwayMin: awayMin,
         clickupWrapUp: $("cuWrapUp").checked,
+        clickupExtraAutoClose: $("cuExtraAutoClose") ? $("cuExtraAutoClose").checked : true,
         clickupWrapUpTime: wrapUpTime,
         clickupTidyNotify: $("cuTidyNotify").checked,
         clickupTidyTime: tidyTime,
@@ -5402,9 +5409,12 @@ function optOpenCuFilterMenu(open) {
 function optRepaintCuPreview() {
   if (optClickup && optClickup.state) renderClickupPreview(optClickup.state);
   cuPaintChartBanner();
+  if (window.PcmPlanDay) { const card = $("dashTasksCard"); window.PcmPlanDay.paintBanner(card && (card.querySelector(".dash-h") || card.firstElementChild), "cuPlanDayBar"); }
   try { renderDashStrip(); } catch (e) {}
   try { if (insTabActive()) renderInsights(); } catch (e) {}
 }
+
+if (window.PcmPlanDay) window.PcmPlanDay.onChange(() => optRepaintCuPreview());
 
 /* ============================ Insights ============================ */
 /* Phase 1 - a weekly health check surfaced two ways:
@@ -5419,6 +5429,13 @@ function optRepaintCuPreview() {
    All markup reuses existing CSS variables, so light/dark is automatic. */
 
 var insCache = null;      // { status:"ok"|"err", data:[rows], error, at }
+// Insights sub-tab: "health" (this file), "plan" / "performance" (insights-plus.js).
+var INS_SUBS = ["health", "plan", "performance"];
+var insSub = (function () { try { var s = localStorage.getItem("insSub"); return INS_SUBS.indexOf(s) >= 0 ? s : "health"; } catch (e) { return "health"; } })();
+function insSetSub(s) {
+  insSub = INS_SUBS.indexOf(s) >= 0 ? s : "health";
+  try { localStorage.setItem("insSub", insSub); } catch (e) {}
+}
 var insLoading = false;   // a CLICKUP_OPEN_TASKS fetch is in flight
 var INS_TTL = 5 * 60000;  // consider the open-task cache stale after this
 // The last good result is also kept in storage, so opening the dashboard again
@@ -5454,6 +5471,7 @@ var insPendingDrill = "";                // open + scroll to this list after the
     if (!want.length) return;
     want.forEach(function (d) { insOpenDrills[d] = true; });
     insPendingDrill = want[0];
+    insSetSub("health");
     // Drop it from the address, so a later reload doesn't jump there again.
     var q = new URLSearchParams(location.search); q.delete("drill");
     history.replaceState(null, "", location.pathname + (q.toString() ? "?" + q.toString() : "") + location.hash);
@@ -5660,6 +5678,7 @@ function renderDashStrip() {
 // The drill is remembered rather than opened here, because the tab may still
 // have to fetch - insWire applies it as soon as the lists exist.
 function insGoToDrill(drill) {
+  insSetSub("health"); // the lists live on Health
   insPendingDrill = drill;
   window.scrollTo({ top: 0 });
   showOptTab("insights");
@@ -5670,9 +5689,28 @@ function insShell(inner) {
   return '<div class="page-h" style="margin:0 0 4px;"><h2 style="margin:0;font-size:18px;">Insights</h2></div>' +
     '<p class="ins-sub">A weekly health check of everything assigned to you.</p>' + inner;
 }
+function insPaintSubNav() {
+  var nav = document.getElementById("insSubNav");
+  if (!nav) return;
+  var labels = { health: "Health", plan: "Plan", performance: "Performance" };
+  nav.innerHTML = INS_SUBS.map(function (s) {
+    return '<button type="button" role="tab" data-sub="' + s + '" class="' + (s === insSub ? "on" : "") + '" aria-selected="' + (s === insSub) + '">' + labels[s] + "</button>";
+  }).join("");
+  nav.querySelectorAll("[data-sub]").forEach(function (b) {
+    b.onclick = function () { insSetSub(b.getAttribute("data-sub")); history.replaceState(null, "", "#insights" + (insSub === "health" ? "" : "/" + insSub)); renderInsights(); };
+  });
+}
 function renderInsights() {
   var view = document.getElementById("insView");
   if (!view) return;
+  insPaintSubNav();
+  var plus = document.getElementById("insPlusView");
+  if (plus) {
+    var other = insSub !== "health" && window.PcmInsightsPlus;
+    plus.hidden = !other;
+    view.hidden = !!other;
+    if (other) { try { window.PcmInsightsPlus.render(insSub, plus); } catch (e) { plus.textContent = "Couldn't show this: " + e.message; } return; }
+  }
   var st = (optClickup && optClickup.state) || {};
   if (!insConnected()) {
     view.innerHTML = insShell('<div class="ins-empty">Connect ClickUp first &mdash; open <b>ClickUp setup</b> to sign in. Insights then shows a health check of everything assigned to you.</div>');
@@ -6734,19 +6772,23 @@ setInterval(() => { if (!document.hidden) syncClickupRunning(); }, 60000);
 // be deep-linked with #dashboard / #clickup / #agent / #sites / #general.
 const OPT_TABS = ["dashboard", "insights", "clickup", "agent", "sites", "hub", "reminders", "files", "bulk", "admin", "general"];
 function showOptTab(name) {
+  // "insights/plan" = the Insights tab on its Plan sub-tab (links, notifications).
+  const subM = /^insights\/(health|plan|performance)$/.exec(String(name || ""));
+  if (subM) { insSetSub(subM[1]); name = "insights"; }
   if (!OPT_TABS.includes(name)) name = "dashboard";
   document.querySelectorAll("#sideNav [data-tab]").forEach((b) => b.classList.toggle("on", b.dataset.tab === name));
   document.querySelectorAll(".panel[data-panel]").forEach((p) => p.classList.toggle("on", p.dataset.panel === name));
   try { renderDashStrip(); } catch (e) {}
   if (name === "insights") { try { renderInsights(); } catch (e) {} }
   try { localStorage.setItem("optTab", name); } catch (e) {}
-  if (location.hash !== "#" + name) history.replaceState(null, "", "#" + name);
+  const want = "#" + name + (name === "insights" && insSub !== "health" ? "/" + insSub : "");
+  if (location.hash !== want) history.replaceState(null, "", want);
 }
 if (document.body.classList.contains("tabbed")) {
   document.querySelectorAll("#sideNav [data-tab]").forEach((b) => { b.onclick = () => { showOptTab(b.dataset.tab); window.scrollTo({ top: 0 }); }; });
   document.querySelectorAll("[data-goto]").forEach((b) => { b.onclick = () => showOptTab(b.dataset.goto); });
   let first = (location.hash || "").replace("#", "");
-  if (!OPT_TABS.includes(first)) { try { first = localStorage.getItem("optTab") || ""; } catch (e) { first = ""; } }
+  if (!OPT_TABS.includes(first) && !/^insights\/(health|plan|performance)$/.test(first)) { try { first = localStorage.getItem("optTab") || ""; } catch (e) { first = ""; } }
   showOptTab(first || "dashboard");
   window.addEventListener("hashchange", () => showOptTab((location.hash || "").replace("#", "")));
 }
@@ -7104,7 +7146,7 @@ const ADMIN_FILES = [
   "manifest.json", "background.js", "popup.html", "popup.js", "options.html", "options.js", "phone-timer.js",
   "offscreen.html", "offscreen.js", "update.html", "update.js", "wrapup.html", "wrapup.js",
   "notify-menu.js", "export-tasks.js", "lib-zip.js", "lib-unzip.js", "lib-automation.js",
-  "lib-availability.js", "lib-clickup.js", "lib-crypto.js", "lib-tidy.js", "lib-drive.js", "task-panel.js", "lib-updater.js", "offscreen-updater.js", "celebrate.js", "celebrate.html", "celebrate-window.js", "fx.js", "pcm-help.js", "tracker.html", "tracker.js", "bulk-edit.js", "pcm-search.js", "lib-taskfiles.js", "task-files.js", "reminders.js", "hub.js", "task-sort.js", "breakdown.js", "calendar.js", "notices.js", "team-hub.gs", "vendor/pdf.min.js", "vendor/pdf.worker.min.js", "vendor/pdfjs-LICENSE.txt",
+  "lib-availability.js", "lib-clickup.js", "lib-crypto.js", "lib-tidy.js", "lib-drive.js", "task-panel.js", "lib-updater.js", "offscreen-updater.js", "celebrate.js", "celebrate.html", "celebrate-window.js", "fx.js", "pcm-help.js", "tracker.html", "tracker.js", "bulk-edit.js", "pcm-search.js", "lib-taskfiles.js", "task-files.js", "reminders.js", "hub.js", "task-sort.js", "breakdown.js", "calendar.js", "notices.js", "insights-plus.js", "header-ui.js", "plan-apply.js", "team-hub.gs", "vendor/pdf.min.js", "vendor/pdf.worker.min.js", "vendor/pdfjs-LICENSE.txt",
   "icons/icon16.png", "icons/icon48.png", "icons/icon128.png", "icons/celebrate.png", "icons/sad.png",
   "sounds/notify.wav", "sounds/danger.mp3", "sounds/winner.wav",
   "README.md", "CHANGELOG.md",

@@ -579,6 +579,32 @@ export async function fetchDoneBetween(token, teamId, userId, fromTs, toTs) {
   return out;
 }
 
+// Finished tasks for Insights > Performance / Plan: the light version of
+// fetchDoneBetween (no descriptions), at most 5 pages (500 tasks).
+export async function fetchDoneLite(token, teamId, userId, fromTs, toTs) {
+  const out = [];
+  const seen = new Set();
+  for (let page = 0; page < 5; page++) {
+    const j = await cuFetch(token, "/team/" + teamId + "/task", [
+      ["assignees[]", String(userId)], ["include_closed", "true"], ["subtasks", "true"],
+      ["date_done_gt", String(fromTs - 1)], ["date_done_lt", String(toTs + 1)], ["page", String(page)],
+    ]);
+    const tasks = Array.isArray(j && j.tasks) ? j.tasks : [];
+    for (const t of tasks) {
+      if (!t || t.id == null || seen.has(String(t.id)) || !isTaskDone(t)) continue;
+      seen.add(String(t.id));
+      out.push({
+        id: String(t.id), name: t.name || "(untitled task)", url: taskUrlFor(t.id),
+        parentId: t.parent != null ? String(t.parent) : null, container: taskContainer(t),
+        dueDateMs: Number(t.due_date) || 0, doneAt: Number(t.date_done || t.date_closed) || 0,
+        estimateMs: Number(t.time_estimate) || 0, spentMs: Number(t.time_spent) || 0,
+      });
+    }
+    if (tasks.length < 100 || (j && j.last_page === true)) break;
+  }
+  return out;
+}
+
 export async function getTaskDetail(token, taskId) {
   const t = await cuFetch(token, "/task/" + encodeURIComponent(String(taskId)), [["include_markdown_description", "true"]]);
   const rows = Array.isArray(t && t.dependencies) ? t.dependencies : [];
@@ -1403,6 +1429,32 @@ export async function fetchTimeEntriesByDayTask(token, teamId, fromTs, toTs, ass
     m.set(taskId, (m.get(taskId) || 0) + dur);
   }
   return byDay;
+}
+
+// Insights > Performance: tracked time per day per task AND the task names,
+// from ONE time-entries request (each entry carries its task's name), so the
+// charts can list what's behind every bar without another read.
+export async function fetchTrackedHistory(token, teamId, fromTs, toTs, userId) {
+  const params = [["start_date", String(fromTs)], ["end_date", String(toTs)]];
+  const scope = userId != null ? [String(userId)] : [];
+  const j = await cuFetchTimeEntries(token, teamId, params, scope);
+  const entries = (j && Array.isArray(j.data)) ? j.data : [];
+  const byDay = {}, names = {};
+  for (const e of entries) {
+    if (scope.length) {
+      const uid = (e.user && e.user.id != null) ? String(e.user.id) : (e.assignee && e.assignee.id != null) ? String(e.assignee.id) : "";
+      if (!uid || uid !== scope[0]) continue;
+    }
+    const tid = e.task && e.task.id;
+    const dur = Number(e.duration) || 0;
+    if (!tid || dur <= 0) continue;
+    const d = new Date(Number(e.start) || 0);
+    const day = new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime();
+    const m = byDay[day] || (byDay[day] = {});
+    m[tid] = (m[tid] || 0) + dur;
+    if (e.task.name && !names[tid]) names[tid] = String(e.task.name).slice(0, 200);
+  }
+  return { byDay, names };
 }
 
 // All calendar days (normalized to their 00:00 start) between two easy dates.
