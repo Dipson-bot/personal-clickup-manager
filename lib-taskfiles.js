@@ -160,8 +160,10 @@
   async function attCleanup(ids) {
     if (!ids || !ids.length) return;
     const used = new Set();
-    const g = await chrome.storage.local.get(["reminders", "clientNotes"]).catch(() => ({}));
+    const g = await chrome.storage.local.get(["reminders", "clientNotes", "taskNotes"]).catch(() => ({}));
     for (const r of Array.isArray(g.reminders) ? g.reminders : []) for (const f of (r && r.files) || []) used.add(f.id);
+    // Personal task notes (task-notes.js) share this store too.
+    for (const t of Object.values((g.taskNotes && typeof g.taskNotes === "object") ? g.taskNotes : {})) for (const n of (t && t.notes) || []) for (const f of (n && n.files) || []) used.add(f.id);
     for (const list of Object.values((g.clientNotes && typeof g.clientNotes === "object") ? g.clientNotes : {})) for (const n of list || []) for (const f of (n && n.files) || []) used.add(f.id);
     const gone = ids.filter((id) => !used.has(id));
     if (gone.length) await attDo("readwrite", (s) => { for (const id of gone) s.delete(id); }).catch(() => {});

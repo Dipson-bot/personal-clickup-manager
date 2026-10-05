@@ -607,6 +607,8 @@
     ta.addEventListener("paste", (e) => {
       const items = [...((e.clipboardData && e.clipboardData.files) || [])];
       if (items.length) { e.preventDefault(); addFiles(items); }
+      // Pasted from an AI: keep its formatting (as Markdown; it's posted formatted).
+      else if (window.PcmMd) window.PcmMd.pasteInto(e, ta);
     });
     const drop = d.getElementById("eDrop");
     drop.addEventListener("dragover", (e) => { e.preventDefault(); drop.classList.add("over"); });
@@ -772,7 +774,7 @@
     d.getElementById("eMeta").textContent = bits.filter(Boolean).join(" · ");
     const cs = (p.comments || []).slice(0, 5);
     d.getElementById("eComments").innerHTML = cs.length
-      ? cs.map((c) => '<div class="cmt"><b>' + esc(c.who) + '</b>' + (cw.seenBefore && Number(c.at) > cw.seenBefore && c.userId !== cw.me ? '<span class="newtag">NEW</span>' : "") + ' <span class="when">' + (c.at ? esc(new Date(c.at).toLocaleString([], { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" })) : "") + "</span><div>" + linkify(c.text) + "</div></div>").join("")
+      ? cs.map((c) => '<div class="cmt"><b>' + esc(c.who) + '</b>' + (cw.seenBefore && Number(c.at) > cw.seenBefore && c.userId !== cw.me ? '<span class="newtag">NEW</span>' : "") + ' <span class="when">' + (c.at ? esc(new Date(c.at).toLocaleString([], { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" })) : "") + "</span><div>" + (window.PcmMd ? window.PcmMd.render(c.text) : linkify(c.text)) + "</div></div>").join("")
       : "No comments yet.";
     dsc.loaded(String(p.description || "").trim());
   }

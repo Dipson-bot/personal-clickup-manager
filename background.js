@@ -25,7 +25,7 @@ import {
   driveQuota,
 } from "./lib-drive.js";
 import { runAllAccounts, runAccountLogin, readAgentRouterLogin, URLS, GITHUB_KEEP_COOKIES } from "./lib-automation.js";
-import { getUser, verifyToken, getTeams, fetchTodayEstimate, fetchWeeklySummary, fetchDateRangeEstimate, createTaskCache, fetchTeamMembers, fetchWorkspaceTags, cuTagNames, fmtDuration, findExtraTaskByName, parseTaskIdFromUrl, getCurrentTimeEntry, getRunningTaskProgress, startTimer, stopTimer, getTaskById, setTaskStatus, taskUrlFor, clientLabelFromContainer, resolveSpaceNamesFor, taskContainer, cuPriorityName, isTaskDone, getSubtasksOfParent, getTaskTree, getTaskDetail, updateTimeEntry, setTaskDueDate, clearTaskTreeCache, listWorkspaceClients, cuRowAssignees, fetchDoneBetween, fetchDoneLite, fetchTrackedHistory, getTaskPanel, addTaskComment, postTaskComment, setTaskDescription, getTaskCommentLinks } from "./lib-clickup.js";
+import { getUser, verifyToken, getTeams, fetchTodayEstimate, fetchWeeklySummary, fetchDateRangeEstimate, createTaskCache, fetchTeamMembers, fetchWorkspaceTags, cuTagNames, fmtDuration, findExtraTaskByName, parseTaskIdFromUrl, getCurrentTimeEntry, getRunningTaskProgress, startTimer, stopTimer, getTaskById, setTaskStatus, taskUrlFor, clientLabelFromContainer, resolveSpaceNamesFor, taskContainer, cuPriorityName, isTaskDone, getSubtasksOfParent, getTaskTree, getTaskDetail, updateTimeEntry, setTaskDueDate, clearTaskTreeCache, listWorkspaceClients, cuRowAssignees, fetchDoneBetween, fetchDoneLite, fetchTrackedHistory, getTaskPanel, addTaskComment, postTaskComment, setTaskDescription, getTaskCommentLinks, createTask, weeklyWithToday } from "./lib-clickup.js";
 import { resolveRelayKey, pickProbeModel, probeRelay } from "./lib-availability.js";
 import { tidyCollect, tidyLines, tidyResolved, tidyDayOk, tidyUrgent } from "./lib-tidy.js";
 
@@ -2041,7 +2041,7 @@ async function pushAllToDrive(tok, accounts) {
 // Each key carries its own "last changed" stamp (extrasStamps) so the newest copy
 // wins per key: a fresh install adopts the Drive copy, while a newer local edit is
 // never overwritten by an older remote one.
-const EXTRA_KEYS = ["siteMonitorConfig", "theme", "cuFilter", "cuFilterMode", "cuFilterDefault", "customSounds", "cuManualOrder", "siteDirSeen", "reminders", "clientNotes"];
+const EXTRA_KEYS = ["siteMonitorConfig", "theme", "cuFilter", "cuFilterMode", "cuFilterDefault", "customSounds", "cuManualOrder", "siteDirSeen", "reminders", "clientNotes", "taskNotes", "taskPins", "planOverrides", "localTasks"];
 const EXTRAS_MAX_SOUNDS = 1500000; // skip very large custom-sound files in the Drive copy
 async function collectExtras() {
   const got = await chrome.storage.local.get([...EXTRA_KEYS, "extrasStamps"]);
@@ -3095,6 +3095,9 @@ async function refreshClickupImpl({ includeTasks = false, viaAlarm = false, forc
         });
         weekly.at = Date.now();
       }
+      // Today's column is Due today's own numbers (fresh every refresh), so the
+      // This week card can't disagree with the Due today card on the same day.
+      weekly = weeklyWithToday(weekly, data);
       // Remember which slice the user last picked so the popup can settle its toggle.
       weekly.weeklyToView = settings.clickupWeeklyTo === "friday" ? "friday" : "today";
     } catch (e) {
@@ -5148,7 +5151,16 @@ async function autoUpdateReady() {
     await ensureOffscreenDocument();
     for (let i = 0; i < 6; i++) {
       const r = await chrome.runtime.sendMessage({ target: "offscreen", type: "AUTO_UPDATE_READY" }).catch(() => null);
-      if (r && typeof r.ready === "boolean") { ready = r.ready; break; }
+      if (r && typeof r.ready === "boolean") {
+        ready = r.ready;
+        // The hidden page lacks the permission, but the last update went in from
+        // a background tab: it will again, so no "Update now" pop-up is needed.
+        if (!ready && r.reason === "permission") {
+          const { autoUpdateViaTab: v } = await chrome.storage.local.get("autoUpdateViaTab");
+          ready = !!(v && v.ok);
+        }
+        break;
+      }
       await new Promise((res) => setTimeout(res, 200));
     }
   } catch (e) {}
@@ -5222,6 +5234,17 @@ async function maybeAutoUpdate() {
     try { r = await chrome.runtime.sendMessage({ target: "offscreen", type: "AUTO_UPDATE", ui: { latest: ui.latest, zip: ui.zip } }); }
     catch (e) { await new Promise((res) => setTimeout(res, 300)); }
   }
+  // The hidden page couldn't use the folder permission (Chrome applies "Allow on
+  // every visit" to the extension's tabs): do the same install from a tab opened
+  // in the background - the tab the user works in stays in front.
+  if (!(r && r.ok) && (!r || r.reason === "permission")) {
+    const t = await installViaTab();
+    if (t) {
+      await chrome.storage.local.set({ autoUpdateViaTab: { ok: !!t.ok || !/^(permission|no-folder|moved|tab-timeout|no-update)$/.test(t.reason || ""), at: now, reason: t.reason || "" } });
+      r = t;
+      autoReadyCache = null;
+    }
+  }
   if (r && r.ok) {
     await chrome.storage.local.set({
       autoUpdateState: { version: ui.latest, installedAt: now, fails: 0 },
@@ -5257,6 +5280,30 @@ async function maybeAutoUpdate() {
     diagLog("automatic update", "waiting for setup: " + st.reason);
   }
   await chrome.storage.local.set({ autoUpdateState: st });
+}
+
+// Install from auto-update.html in a tab that isn't focused, wait for its
+// answer (2 minutes at most), close it. null = the tab couldn't be opened.
+async function installViaTab() {
+  const nonce = Math.random().toString(36).slice(2) + Date.now().toString(36);
+  let tab = null, onMsg = null, timer = null;
+  const answer = new Promise((resolve) => {
+    onMsg = (msg) => { if (msg && msg.type === "AUTO_UPDATE_TAB_RESULT" && msg.nonce === nonce) resolve(msg); };
+    chrome.runtime.onMessage.addListener(onMsg);
+    timer = setTimeout(() => resolve({ ok: false, reason: "tab-timeout" }), 120000);
+  });
+  try {
+    tab = await chrome.tabs.create({ url: chrome.runtime.getURL("auto-update.html?n=" + nonce), active: false });
+  } catch (e) {
+    chrome.runtime.onMessage.removeListener(onMsg); clearTimeout(timer);
+    return null;
+  }
+  const r = await answer;
+  chrome.runtime.onMessage.removeListener(onMsg);
+  clearTimeout(timer);
+  if (tab && tab.id != null) await chrome.tabs.remove(tab.id).catch(() => {});
+  diagLog("automatic update", "via a background tab: " + (r.ok ? "installed v" + r.version : r.reason + (r.error ? ": " + r.error : "")));
+  return { ok: !!r.ok, version: r.version, reason: r.reason || "", error: r.error || "" };
 }
 
 async function confirmUpdateApplied() {
@@ -6972,6 +7019,55 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
           sendResponse({ ok: true, description });
         } catch (e) {
           sendResponse({ ok: false, error: String(e && e.message ? e.message : e) });
+        }
+        break;
+      }
+      case "CLICKUP_TASK_LISTS": {
+        // "Create a task": the Lists the user's open tasks live in (from the
+        // cached open-task read - usually no new request), with their client.
+        const cfg = await getClickupConfig();
+        if (!cfg || !cfg.token || !cfg.teamId) { sendResponse({ ok: false, reason: "not-configured" }); break; }
+        try {
+          const collect = (r) => {
+            const map = new Map();
+            for (const t of (r && r.data && r.data.tasks) || []) {
+              const c = t.container || {};
+              if (!c.listId) continue;
+              const x = map.get(c.listId) || { id: c.listId, name: c.listName || "List", folder: c.folderName || "", client: t.client || "", n: 0 };
+              x.n++;
+              map.set(c.listId, x);
+            }
+            return [...map.values()];
+          };
+          let lists = collect(await getOpenTasks(cfg, !!msg.force));
+          // A copy read before lists carried their id: read once more.
+          if (!lists.length && !msg.force) lists = collect(await getOpenTasks(cfg, true));
+          lists.sort((a, b) => (a.client || a.name).localeCompare(b.client || b.name) || a.name.localeCompare(b.name));
+          sendResponse({ ok: true, lists });
+        } catch (e) {
+          sendResponse({ ok: false, error: String(e && e.message ? e.message : e), status: e && e.status });
+        }
+        break;
+      }
+      case "CLICKUP_CREATE_TASK": {
+        // "Apply to ClickUp" on a draft task (local-tasks.js): one POST.
+        const cfg = await getClickupConfig();
+        if (!cfg || !cfg.token) { sendResponse({ ok: false, reason: "not-configured", error: "Connect ClickUp first (ClickUp setup)." }); break; }
+        const d = msg.draft || {};
+        const listId = String(d.listId || "").trim();
+        if (!/^\d+$/.test(listId)) { sendResponse({ ok: false, error: "Pick the List to create it in." }); break; }
+        if (!String(d.name || "").trim()) { sendResponse({ ok: false, error: "The task needs a name." }); break; }
+        try {
+          const task = await createTask(cfg.token, listId, {
+            name: d.name, md: d.md, dueDateMs: d.dueDateMs, estimateMs: d.estimateMs, priority: d.priority,
+            assignees: d.assignMe !== false && cfg.userId != null ? [cfg.userId] : [],
+          });
+          openTasksCache = null;
+          clearFilterCache();
+          refreshClickup({ includeTasks: true, forceWeeks: true }).catch(() => {});
+          sendResponse({ ok: true, task });
+        } catch (e) {
+          sendResponse({ ok: false, error: String(e && e.message ? e.message : e), status: e && e.status });
         }
         break;
       }

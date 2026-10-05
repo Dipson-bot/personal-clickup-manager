@@ -137,7 +137,8 @@
 
   // The add form. opts.task = { id, name, url } to link it to a task;
   // opts.at / opts.repeat / opts.sound prefill (Duplicate, Edit);
-  // opts.editId = save over that reminder instead of adding one (Edit).
+  // opts.editId = save over that reminder instead of adding one (Edit);
+  // opts.noteId = the task note it was made from (that note shows its ⏰ time).
   function buildForm(opts, onSaved) {
     const f = el("form", "rm-form");
     const text = el("input");
@@ -263,7 +264,7 @@
         catch (err) { save.disabled = false; say("Couldn't save the files (is the disk full?).", true); return; }
         save.disabled = false;
       }
-      const rec = { text: words.slice(0, MAX_TEXT), at, repeat: rep.value, sound: snd.value, taskId: task ? task.id : "", taskName: task ? task.name : "", taskUrl: task ? task.url : "", files: pending.map((p) => ({ id: p.id, name: p.name, type: p.type, size: p.size })), active: true };
+      const rec = { text: words.slice(0, MAX_TEXT), at, repeat: rep.value, sound: snd.value, taskId: task ? task.id : "", taskName: task ? task.name : "", taskUrl: task ? task.url : "", ...(opts && opts.noteId ? { noteId: String(opts.noteId) } : {}), files: pending.map((p) => ({ id: p.id, name: p.name, type: p.type, size: p.size })), active: true };
       if (editing) {
         // Edit: same reminder, new details (a paused one stays paused).
         const oldFiles = editing.files || [];

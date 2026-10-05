@@ -47,6 +47,9 @@
     return null;
   }
   function compare(a, b) {
+    // Pinned tasks (task-notes.js) stay on top whatever the column sort.
+    const pa = !!(window.PcmTaskNotes && a && window.PcmTaskNotes.isPinned(a.id)), pb = !!(window.PcmTaskNotes && b && window.PcmTaskNotes.isPinned(b.id));
+    if (pa !== pb) return pa ? -1 : 1;
     const va = value(a, state.key), vb = value(b, state.key);
     if (va == null && vb == null) return 0;
     if (va == null) return 1; // empty values last, either way

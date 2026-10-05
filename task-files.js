@@ -235,8 +235,8 @@
     const ed = editing[n.id];
     const atts = ed == null ? (n.files || []) : (editFiles[n.id] || n.files || []);
     const body = ed == null
-      ? '<div class="tf-nt">' + linkify(n.text) + "</div>"
-      : '<textarea class="tf-nein" maxlength="2000" data-nid="' + esc(n.id) + '" aria-label="Edit this note">' + esc(ed) + "</textarea>";
+      ? '<div class="tf-nt md">' + (typeof window !== "undefined" && window.PcmMd ? window.PcmMd.render(n.text) : linkify(n.text)) + "</div>"
+      : '<textarea class="tf-nein" maxlength="20000" data-nid="' + esc(n.id) + '" aria-label="Edit this note">' + esc(ed) + "</textarea>";
     const meta = ed == null
       ? '<span class="hint">' + day(n.at) + (n.editedAt ? " · edited" : "") + "</span>" +
         '<button type="button" class="tf-btn tf-nrem" title="Set a reminder about this note (any date and time)">⏰ Remind me</button>' +
@@ -291,7 +291,7 @@
           (fs.length ? fs.map(fileRow).join("") : '<div class="hint" style="padding:4px 2px;">No files yet.</div>') + "</div>" +
           '<div class="tf-sec"><div class="tf-sech">📝 Notes <span class="hint">What you were told, what to watch out for. Task details and "Explain this task" show them.</span></div>' +
           ns.map(noteHtml).join("") +
-          '<div class="tf-nadd"><textarea class="tf-nin" maxlength="2000" placeholder="Add a note about ' + esc(name) + '… Paste a screenshot with Ctrl+V or drop files here. Ctrl+Enter saves.">' + esc(drafts[k] || "") + "</textarea>" +
+          '<div class="tf-nadd"><textarea class="tf-nin" maxlength="20000" placeholder="Add a note about ' + esc(name) + '… Paste a screenshot with Ctrl+V or drop files here. Ctrl+Enter saves.">' + esc(drafts[k] || "") + "</textarea>" +
           attHtml(noteFiles[k], "tf-npf", true) +
           '<div class="tf-nrow"><button type="button" class="tf-btn tf-nattach" title="Attach screenshots or files to this note">📎 Attach</button>' +
           '<label title="Also get a reminder about this note"><input type="checkbox" class="tf-nremon"' + (remindAt[k] ? " checked" : "") + " /> ⏰ Remind me at</label>" +
@@ -495,7 +495,7 @@
     } catch (e) { say("Couldn't save the files (is the disk full?).", "var(--red)"); return; }
     const meta = pend.map((p) => ({ id: p.id, name: p.name, type: p.type, size: p.size }));
     const list = (notes[ck] || []).slice();
-    list.push({ id: Date.now().toString(36) + Math.random().toString(36).slice(2, 6), text: (text || pend.map((p) => p.name).join(", ")).slice(0, 2000), at: Date.now(), client: name, files: meta });
+    list.push({ id: Date.now().toString(36) + Math.random().toString(36).slice(2, 6), text: (text || pend.map((p) => p.name).join(", ")).slice(0, 20000), at: Date.now(), client: name, files: meta });
     await F.saveNotes(name, list);
     let msg = "Note saved for " + name + ".";
     if (when) {
@@ -602,6 +602,14 @@
         if (m) { if (isImage(m)) expand(m.id, m.name); else if (!m.blob) F.openAttachment(m).catch((err) => say(err.message, "var(--red)")); }
         return;
       }
+      // Tick / untick a checkbox in the shown note - saved at once, no Edit needed.
+      const mbox = e.target.closest(".tf-nt .md-box");
+      if (mbox && window.PcmMd) {
+        const idx = [...nEl.querySelectorAll(".tf-nt .md-box")].indexOf(mbox);
+        const txt = window.PcmMd.toggleTask(n.text, idx);
+        if (txt !== n.text) { n.text = txt; await F.saveNotes(name, list); await load(); }
+        return;
+      }
       if (e.target.closest(".tf-ndel")) {
         if (confirm("Delete this note about " + name + "?")) { const ids = (n.files || []).map((x) => x.id); endEdit(n.id, true); await F.saveNotes(name, list.filter((x) => x !== n)); await F.attCleanup(ids); dropThumbs(ids); await load(); }
         return;
@@ -623,7 +631,7 @@
         }
         endEdit(n.id, false);
         if (v === n.text && !pend.length && !gone.length) { render(); return; }
-        n.text = v.slice(0, 2000);
+        n.text = v.slice(0, 20000);
         n.files = work.map((f) => ({ id: f.id, name: f.name, type: f.type, size: f.size }));
         n.editedAt = Date.now();
         await F.saveNotes(name, list);

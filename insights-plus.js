@@ -108,6 +108,12 @@
   #insPlusView .ip-daybar i { display: block; height: 100%; background: var(--indigo); }
   #insPlusView .ip-apply { font-size: 11.5px; padding: 3px 10px; font-weight: 600; color: var(--indigo); border-color: var(--indigo); }
   #insPlusView .ip-apply.on { background: var(--indigo); color: #fff; }
+  #insPlusView .ip-tmed { font: inherit; font-weight: 600; color: inherit; text-align: right; background: none; border: 1px dashed transparent; border-radius: 6px; padding: 1px 5px; margin: -2px -6px -2px 0; cursor: text; }
+  #insPlusView .ip-tmed:hover { border-color: var(--indigo); color: var(--indigo); }
+  #insPlusView .ip-tmreset { display: block; margin: 2px 0 0 auto; font: inherit; font-size: 10.5px; color: var(--muted); background: none; border: 0; padding: 0; cursor: pointer; }
+  #insPlusView .ip-tmreset:hover { color: var(--indigo); text-decoration: underline; }
+  #insPlusView .ip-tmin { width: 78px; font: inherit; font-size: 12px; text-align: right; padding: 3px 6px; border: 1px solid var(--indigo); border-radius: 6px; background: var(--card); color: var(--text); }
+  #insPlusView .ip-tmin.bad { border-color: var(--red); }
   #insPlusView .ip-empty { padding: 26px 0; text-align: center; color: var(--muted); }
   /* performance */
   #insPlusView .ip-kpis { display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); gap: 10px; margin: 0 0 14px; }
@@ -146,7 +152,12 @@
   // ---------- shared data loading (no spinners after the first time) ----------
   let perf = null, perfLoaded = false, perfAsked = 0, perfErr = "";
   const view = { el: null, sub: "" };
-  function repaint() { if (view.el && !view.el.hidden && view.sub) render(view.sub, view.el); }
+  function repaint() {
+    if (!view.el || view.el.hidden || !view.sub) return;
+    // Not while a time is being typed in (it would vanish); the edit repaints when done.
+    if (view.el.querySelector(".ip-tmin")) return;
+    render(view.sub, view.el);
+  }
   function loadPerfStored() {
     if (perfLoaded) return Promise.resolve();
     return chrome.storage.local.get("perfHistory").then((g) => { if (!perf && g && g.perfHistory) perf = g.perfHistory; }).catch(() => {}).then(() => { perfLoaded = true; });
@@ -157,10 +168,10 @@
   // at most from here.
   function maybeRefreshPerf(force) {
     const stale = !perf || perf.v !== 2 || Date.now() - (perf.at || 0) > 6 * H;
-    if (!force && !stale) return;
-    if (Date.now() - perfAsked < 60000) return;
+    if (!force && !stale) return Promise.resolve();
+    if (Date.now() - perfAsked < 60000) return Promise.resolve();
     perfAsked = Date.now();
-    send({ type: "PERF_HISTORY", force: !!force }, 90000).then((r) => {
+    return send({ type: "PERF_HISTORY", force: !!force }, 90000).then((r) => {
       if (r && r.data) perf = r.data;
       perfErr = r && !r.ok ? (r.error || r.reason || "") : (r && r.error) || "";
       repaint();
@@ -181,6 +192,31 @@
     send({ type: "PLAN_DEV_TASKS" }, 60000).then((r) => { if (r && r.data) { dev = r.data; repaint(); } }).catch(() => {});
   }
   try { chrome.storage.onChanged.addListener((ch, area) => { if (area === "local" && ch.devPipeline && ch.devPipeline.newValue) { dev = ch.devPipeline.newValue; repaint(); } }); } catch (e) {}
+  // Times typed into Plan by hand (this extension only, never sent to ClickUp):
+  // planOverrides { [taskId or "rev-<devId>"]: { ms, spent, est, at } }. Time
+  // tracked since the edit still counts down from it; a changed ClickUp estimate
+  // wins over it (newer information). Kept 60 days.
+  let planOv = {};
+  try {
+    chrome.storage.local.get("planOverrides").then((g) => { planOv = (g && g.planOverrides && typeof g.planOverrides === "object") ? g.planOverrides : {}; repaint(); }).catch(() => {});
+    chrome.storage.onChanged.addListener((ch, area) => { if (area === "local" && ch.planOverrides) { planOv = ch.planOverrides.newValue || {}; repaint(); } });
+  } catch (e) {}
+  function applyOv(t) {
+    const o = planOv[t.id];
+    if (!o || (Number(o.est) || 0) !== (Number(t.estimateMs) || 0)) return;
+    t.autoMs = t.planMs;
+    t.planMs = o.ms <= 0 ? 0 : Math.max(5 * MIN, o.ms - Math.max(0, (Number(t.spentMs) || 0) - (Number(o.spent) || 0)));
+    t.edited = true;
+  }
+  async function setOv(t, ms) {
+    const g = await chrome.storage.local.get("planOverrides").catch(() => ({}));
+    const all = (g && g.planOverrides && typeof g.planOverrides === "object") ? g.planOverrides : {};
+    for (const k of Object.keys(all)) if (Date.now() - (Number(all[k] && all[k].at) || 0) > 60 * DAY) delete all[k];
+    if (ms == null) delete all[t.id];
+    else all[t.id] = { ms: Math.max(0, Math.round(ms)), spent: Number(t.spentMs) || 0, est: Number(t.estimateMs) || 0, at: Date.now() };
+    planOv = all;
+    await chrome.storage.local.set({ planOverrides: all });
+  }
   // How long a review usually takes you: the median of your finished review
   // tasks (10 min - 1 h), else 30 minutes.
   const REVIEW_RE = /\breview/i;
@@ -395,6 +431,7 @@
       reviewsExpected.push(t);
       items.push(t);
     }
+    for (const t of items) applyOv(t);
     const ordered = orderTasks(items, today);
     ordered.forEach((t, i) => { t.no = i + 1; });
     // Fill the days: each working day holds the daily target minus the configured share.
@@ -452,7 +489,9 @@
     if (o.after && t.afterNames && t.afterNames.length) bits.push('<span class="flag mut" title="' + esc(t.afterNames.join("\n")) + '">After ' + esc(t.afterNames[0].slice(0, 28)) + (t.afterNames.length > 1 ? " +" + (t.afterNames.length - 1) : "") + "</span>");
     if (o.why) bits.push('<span title="' + esc(o.why) + '">' + esc(o.why.length > 90 ? o.why.slice(0, 88) + "…" : o.why) + "</span>");
     return '<div class="ip-row"><span class="no">' + esc(o.no != null ? o.no : "") + '</span><div class="nm"><a href="' + esc(t.url || taskUrl(t.id)) + '" target="_blank" rel="noopener" title="' + esc(t.name) + '">' + esc(t.name) + "</a>" +
-      (bits.length ? '<div class="sub">' + bits.join('<span aria-hidden="true">·</span>') + "</div>" : "") + '</div><span class="tm">' + timeHtml + "</span></div>";
+      (bits.length ? '<div class="sub">' + bits.join('<span aria-hidden="true">·</span>') + "</div>" : "") + '</div><span class="tm">' +
+      (o.edit ? '<button type="button" class="ip-tmed" data-ed="' + esc(t.id) + '" data-ms="' + Math.round(o.edit.ms) + '"' + (o.edit.day ? ' data-day="1"' : "") + ' title="Click to change the time planned for this ' + (o.edit.day ? "task on this day" : "task") + ' (only in this plan - nothing changes in ClickUp)">' + timeHtml + "</button>" +
+        (t.edited ? '<button type="button" class="ip-tmreset" data-reset="' + esc(t.id) + '" title="Back to the automatic time">↺ was ' + esc(fmt(t.autoMs)) + "</button>" : "") : timeHtml) + "</span></div>";
   }
   function grp(id, color, title, total, body, openByDefault) {
     const open = planOpen[id] != null ? planOpen[id] : !!openByDefault;
@@ -490,21 +529,21 @@
     if (p.withEst.length) {
       const list = p.withEst.slice().sort((a, b2) => b2.planMs - a.planMs);
       b += grp("est", "var(--amber)", "Tasks with an estimate · " + p.withEst.length, fmt(p.estMs),
-        list.map((t) => taskRow(t, fmt(t.planMs) + (t.spentMs ? "<small>" + fmt(t.estimateMs) + " − " + fmt(t.spentMs) + " done</small>" : ""), { no: t.no })).join(""));
+        list.map((t) => taskRow(t, fmt(t.planMs) + (t.edited ? "<small>your time</small>" : t.spentMs ? "<small>" + fmt(t.estimateMs) + " − " + fmt(t.spentMs) + " done</small>" : ""), { no: t.no, edit: { ms: t.planMs } })).join(""));
     }
     if (p.missing.length) {
       b += grp("sug", "rgba(217,119,6,.5)", "Tasks without an estimate · " + p.missing.length + " (suggested)", fmt(p.sugMs),
-        p.missing.slice().sort((a, b2) => b2.planMs - a.planMs).map((t) => taskRow(t, fmt(t.planMs) + (t.suggested.sure ? "" : "<small>rough</small>"), { no: t.no, why: t.suggested.why })).join(""));
+        p.missing.slice().sort((a, b2) => b2.planMs - a.planMs).map((t) => taskRow(t, fmt(t.planMs) + (t.edited ? "<small>your time</small>" : t.suggested.sure ? "" : "<small>rough</small>"), { no: t.no, why: t.suggested.why, edit: { ms: t.planMs } })).join(""));
     }
     if (p.reviewMine.length) {
       b += grp("revmine", "#0d9488", "Your part: reviews of developers' tasks · " + p.reviewMine.length, fmt(p.reviewMine.reduce((a, t) => a + t.planMs, 0)),
-        p.reviewMine.map((t) => taskRow(t, fmt(t.planMs) + (t.estimateMs ? "<small>task est " + fmt(t.estimateMs) + "</small>" : ""), { no: t.no, why: t.why })).join(""), true);
+        p.reviewMine.map((t) => taskRow(t, fmt(t.planMs) + (t.edited ? "<small>your time</small>" : t.estimateMs ? "<small>task est " + fmt(t.estimateMs) + "</small>" : ""), { no: t.no, why: t.why, edit: { ms: t.planMs } })).join(""), true);
     }
     if (p.reviewsExpected.length) {
       b += grp("revexp", "#0d9488", "Expected reviews · " + p.reviewsExpected.length + " (not created yet)", fmt(p.reviewsExpected.reduce((a, t) => a + t.planMs, 0)),
-        p.reviewsExpected.map((t) => taskRow(t, fmt(t.planMs) + "<small>expected</small>", { no: t.no, why: t.why })).join(""));
+        p.reviewsExpected.map((t) => taskRow(t, fmt(t.planMs) + (t.edited ? "<small>your time</small>" : "<small>expected</small>"), { no: t.no, why: t.why, edit: { ms: t.planMs } })).join(""));
     }
-    h += '<div class="ip-card"><h3>What makes up the ' + fmt(p.plannedMs) + '</h3><p class="hint">Every task due ' + (planWeek === "this" ? "by Friday" : "that week") + ", overdue ones included (they carry over). Time = estimate minus what's already tracked. Tasks without an estimate get a suggested time based on how long similar tasks took. Developers' dev tasks count as the short review that comes back to you (" + esc(fmt(p.rv.ms)) + " each), not their whole estimate. Open a group to see each task.</p>" +
+    h += '<div class="ip-card"><h3>What makes up the ' + fmt(p.plannedMs) + '</h3><p class="hint">Every task due ' + (planWeek === "this" ? "by Friday" : "that week") + ", overdue ones included (they carry over). Time = estimate minus what's already tracked. Tasks without an estimate get a suggested time based on how long similar tasks took. Developers' dev tasks count as the short review that comes back to you (" + esc(fmt(p.rv.ms)) + " each), not their whole estimate. Open a group to see each task; click a time to change it (only in this plan).</p>" +
       b + '<div class="ip-total"><span>Total</span><span>' + fmt(p.plannedMs) + "</span></div></div>";
     // 3) Fix it
     if (p.overflow.length) {
@@ -524,7 +563,7 @@
     for (const day of p.cal) {
       const used = day.cap - day.left;
       const tasksN = new Set(day.items.map((it) => it.t.id)).size;
-      const body = day.items.length ? day.items.map((it) => taskRow(it.t, fmt(it.ms) + (it.cont ? "<small>continued</small>" : ""), { no: it.cont ? "↳" : it.t.no, after: !it.cont, late: !it.t.overdue && it.t.due && day.ts > dayStart(it.t.due) })).join("") : '<p class="ip-meta" style="margin:8px 0">Nothing planned - room for more.</p>';
+      const body = day.items.length ? day.items.map((it) => taskRow(it.t, fmt(it.ms) + (it.cont ? "<small>continued</small>" : it.ms < it.t.planMs ? "<small>of " + fmt(it.t.planMs) + "</small>" : ""), { no: it.cont ? "↳" : it.t.no, after: !it.cont, late: !it.t.overdue && it.t.due && day.ts > dayStart(it.t.due), edit: { ms: it.ms, day: true } })).join("") : '<p class="ip-meta" style="margin:8px 0">Nothing planned - room for more.</p>';
       const cur = window.PcmPlanDay && window.PcmPlanDay.active() && window.PcmPlanDay.current();
       const applied = !!(cur && cur.day === day.ts);
       const applyBtn = day.items.length ? '<button type="button" class="ip-btn ip-apply' + (applied ? " on" : "") + '" data-apply-day="' + day.ts + '" title="' + (applied ? "Showing this day in your task list - click to go back to your filter" : "Show exactly these tasks, in this order, in the task list on the dashboard, popup and side panel (nothing changes in ClickUp)") + '">' + (applied ? "Applied ✓" : "Apply to my task list") + "</button>" : "";
@@ -588,7 +627,7 @@
     return '<div class="ip-drill"><div class="dh"><b>' + title + '</b><button type="button" class="x" data-close-drill="1" title="Close">✕</button></div>' + body + "</div>";
   }
   function renderPerf(el) {
-    const head = '<div class="ip-head"><h2>Performance</h2><span class="sp"></span><button type="button" class="ip-btn" data-perf-refresh="1" title="Read your history from ClickUp again (at most every 10 minutes)">↻ Refresh</button></div>' +
+    const head = '<div class="ip-head"><h2>Performance</h2></div>' +
       '<p class="ip-sub">Only you see this: your own tracked time, deadlines and workload over the last ' + ((perf && perf.weeks) || 12) + " weeks. Weekends and company holidays don't count against you. Click any number, bar or day to see what's behind it.</p>";
     if (!perf) { el.innerHTML = head + '<div class="ip-empty">' + (perfErr ? "Couldn't read your history: " + esc(perfErr) : "Reading your last 12 weeks from ClickUp (first time only, one short read)…") + "</div>"; wire(el); return; }
     const tMs = targetMs(), today = dayStart(Date.now());
@@ -758,6 +797,42 @@
       b.addEventListener("click", (e) => { e.preventDefault(); e.stopPropagation(); applyDay(Number(b.getAttribute("data-apply-day"))); });
     });
     el.querySelectorAll("details.ip-grp").forEach((d) => { d.addEventListener("toggle", () => { planOpen[d.getAttribute("data-grp")] = d.open; }); });
+    // Click a time -> type a new one (Enter / click away saves, Esc cancels).
+    const findT = (id) => lastPlan && lastPlan.items.find((x) => x.id === id);
+    el.querySelectorAll(".ip-tmed").forEach((b) => {
+      b.onclick = (e) => {
+        e.preventDefault(); e.stopPropagation();
+        const t = findT(b.getAttribute("data-ed"));
+        if (!t) return;
+        const part = Number(b.getAttribute("data-ms")) || 0, isDay = b.hasAttribute("data-day");
+        const inp = document.createElement("input");
+        inp.className = "ip-tmin"; inp.value = fmt(part);
+        inp.title = "e.g. 45m, 1h 30m or 1.5 (hours); 0 leaves it out of the plan. Enter saves, Esc cancels.";
+        b.replaceWith(inp);
+        inp.focus(); inp.select();
+        let done = false;
+        const finish = async (save) => {
+          if (done) return;
+          if (save) {
+            const v = inp.value.trim() === "0" ? 0 : (typeof parseFlexDurationOpt === "function" ? parseFlexDurationOpt(inp.value) : null);
+            if (v == null) { inp.classList.add("bad"); inp.focus(); return; }
+            done = true;
+            // On a day: that day's share changes, the rest of the task stays.
+            const total = isDay ? Math.max(0, t.planMs - part + v) : v;
+            inp.remove();
+            if (Math.round(total / MIN) !== Math.round(t.planMs / MIN)) await setOv(t, total).catch(() => {});
+          } else { done = true; inp.remove(); }
+          repaint();
+        };
+        inp.addEventListener("keydown", (k) => { if (k.key === "Enter") { k.preventDefault(); finish(true); } else if (k.key === "Escape") { k.preventDefault(); k.stopPropagation(); finish(false); } });
+        inp.addEventListener("blur", () => setTimeout(() => finish(true), 0));
+        inp.addEventListener("input", () => inp.classList.remove("bad"));
+        inp.addEventListener("click", (k) => k.stopPropagation());
+      };
+    });
+    el.querySelectorAll(".ip-tmreset").forEach((b) => {
+      b.onclick = async (e) => { e.preventDefault(); e.stopPropagation(); const t = findT(b.getAttribute("data-reset")); if (t) { await setOv(t, null).catch(() => {}); repaint(); } };
+    });
     const r = el.querySelector("[data-perf-refresh]");
     if (r) r.onclick = () => { perfAsked = 0; r.textContent = "Refreshing…"; r.disabled = true; maybeRefreshPerf(true); };
     el.querySelectorAll("[data-card][data-key]").forEach((n) => {
@@ -780,5 +855,12 @@
     if (sub === "plan") renderPlan(el);
     else renderPerf(el);
   }
-  window.PcmInsightsPlus = { render, _test: { words, similarity, suggest: (t) => suggest(t), orderTasks, codeParts, buildPlan, setPerf: (p) => { perf = p; perfLoaded = true; histIndex = null; } } };
+  // The Insights bar's ↻ Refresh (options.js). Plan: the developers' dev tasks
+  // (options.js refreshes the open tasks); Performance: the tracked-time history.
+  function refresh(sub) {
+    if (sub === "performance") { perfAsked = 0; return maybeRefreshPerf(true); }
+    if (sub === "plan") { devAsked = Date.now(); return send({ type: "PLAN_DEV_TASKS", force: true }, 60000).then((r) => { if (r && r.data) { dev = r.data; repaint(); } }).catch(() => {}); }
+    return Promise.resolve();
+  }
+  window.PcmInsightsPlus = { render, refresh, _test: { words, similarity, suggest: (t) => suggest(t), orderTasks, codeParts, buildPlan, setPerf: (p) => { perf = p; perfLoaded = true; histIndex = null; } } };
 })();

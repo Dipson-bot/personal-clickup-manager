@@ -647,6 +647,9 @@ function cuPrioRank(t) {
 function cuPrioCmp(a, b) {
   // A day plan applied from Insights > Plan keeps the plan's order (plan-apply.js).
   if (a && b && a._planIdx != null && b._planIdx != null) return a._planIdx - b._planIdx;
+  // Pinned tasks (task-notes.js) first.
+  const pa = !!(window.PcmTaskNotes && a && window.PcmTaskNotes.isPinned(a.id)), pb = !!(window.PcmTaskNotes && b && window.PcmTaskNotes.isPinned(b.id));
+  if (pa !== pb) return pa ? -1 : 1;
   return cuPrioRank(a) - cuPrioRank(b) ||
     (Number(b.estimateMs != null ? b.estimateMs : b.dayEstimateMs) || 0) - (Number(a.estimateMs != null ? a.estimateMs : a.dayEstimateMs) || 0) ||
     // Same priority and same estimate: fall back to the name, read the way a
@@ -1440,7 +1443,7 @@ document.addEventListener("click", (e) => {
   if (!el || el.querySelector("input")) return;
   const row = el.closest(".cu-task");
   const t = row && row._cuTask;
-  if (!t) return;
+  if (!t || t.local) return; // a draft (local-tasks.js) isn't in ClickUp
   e.preventDefault();
   e.stopPropagation();
   startEditEstimate(el, t);
@@ -3738,3 +3741,5 @@ makeListResizable(document.getElementById("cuTaskList"), IN_PANEL ? "panel" : "p
 
 // A day plan applied (or cleared) from Insights > Plan repaints the list.
 if (window.PcmPlanDay) window.PcmPlanDay.onChange(() => { try { renderClickup(); } catch (e) {} });
+// A task pinned / unpinned (task-notes.js) moves to / from the top of the list.
+if (window.PcmTaskNotes) window.PcmTaskNotes.onChange(() => { try { renderClickup(); } catch (e) {} });

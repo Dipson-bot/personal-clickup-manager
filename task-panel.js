@@ -916,7 +916,8 @@
       h.append(el("b", "", c.who), document.createTextNode(" · " + (c.at ? ago(c.at) : "")));
       if (c.at) h.title = new Date(c.at).toLocaleString();
       const t = el("div", "pcm-cm-t");
-      renderRichText(t, c.text);
+      // Shown formatted (headings, lists, ☑ boxes) like notes; plain links otherwise.
+      if (window.PcmMd) { t.classList.add("md"); t.innerHTML = window.PcmMd.render(c.text); } else renderRichText(t, c.text);
       b.append(h, t);
       row.append(av, b);
       list.appendChild(row);
@@ -932,8 +933,9 @@
     more.onclick = () => paintComments(list, more, comments, true);
     paintComments(list, more, comments, false);
     const box = el("div", "pcm-compose");
-    const ta = el("textarea");
-    ta.placeholder = "Write a comment for this task…";
+    // .pcm-cmt: md-notes.js makes it the formatted editor (posted with its formatting).
+    const ta = el("textarea", "pcm-cmt");
+    ta.placeholder = "Write a comment for this task… Paste from Claude / ChatGPT keeps its formatting.";
     ta.maxLength = 5000;
     const r = el("div", "pcm-compose-row");
     const msg = el("span", "pcm-note", "Ctrl+Enter to post");
@@ -1010,7 +1012,7 @@
       edit.remove();
       desc.remove();
       const box = el("div", "pcm-compose");
-      const ta = el("textarea");
+      const ta = el("textarea", "pcm-desc-ta"); // pasted formatting arrives as Markdown (md-notes.js)
       ta.value = from;
       ta.rows = Math.min(18, Math.max(6, from.split("\n").length + 1));
       ta.placeholder = "Write the description…";
@@ -1117,6 +1119,9 @@
     buildAi(ai, d);
     p.appendChild(ai);
 
+    // My notes + pin (task-notes.js): personal, never sent to ClickUp.
+    if (window.PcmTaskNotes) { const tn = el("div"); p.appendChild(tn); window.PcmTaskNotes.renderPanel(tn, d); }
+
     const cs = el("div");
     const h = el("div", "pcm-sec-h");
     h.append(document.createTextNode("Comments" + ((d.comments || []).length ? " (" + d.comments.length + ")" : "")));
@@ -1126,6 +1131,8 @@
   }
 
   async function load(p, id, force) {
+    // A draft made in the extension (local-tasks.js): nothing to fetch.
+    if (/^local-/.test(String(id)) && window.PcmLocalTasks) { window.PcmLocalTasks.fill(p, id); return; }
     p.textContent = "";
     p.appendChild(el("div", "pcm-note", "Loading task details…"));
     const res = await send({ type: "CLICKUP_TASK_PANEL", taskId: id, force: !!force });

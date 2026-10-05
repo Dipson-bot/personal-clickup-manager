@@ -888,6 +888,11 @@
   .ins-subnav button { font: inherit; font-size: 12.5px; font-weight: 600; padding: 6px 14px; border: 0; border-radius: 7px; background: none; color: var(--muted); cursor: pointer; }
   .ins-subnav button:hover { color: var(--text); }
   .ins-subnav button.on { background: var(--indigo, #6366f1); color: #fff; }
+  .ins-top { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; margin: 0 0 14px; }
+  .ins-top .ins-subnav { margin: 0; }
+  .ins-refresh { font: inherit; font-size: 12.5px; font-weight: 600; padding: 6px 12px; border: 1px solid var(--border); border-radius: 9px; background: var(--card); color: var(--text); cursor: pointer; }
+  .ins-refresh:hover:not(:disabled) { border-color: var(--indigo, #6366f1); color: var(--indigo, #6366f1); }
+  .ins-refresh:disabled { opacity: .6; cursor: default; }
   #insView .ins-sub { color: var(--muted); margin: 0 0 18px; font-size: 13px; line-height: 1.5; }
   #insView .banner { display: flex; align-items: center; gap: 12px; border-radius: 14px; padding: 14px 18px; margin-bottom: 18px; border: 1px solid var(--border); }
   #insView .banner.warn { background: rgba(217,119,6,0.10); border-color: rgba(217,119,6,0.35); }
@@ -1270,7 +1275,7 @@
        fetch (CLICKUP_OPEN_TASKS, cached) plus the already-loaded ClickUp state. -->
   <section class="panel" data-panel="insights">
     <!-- Health (renderInsights, options.js) / Plan + Performance (insights-plus.js) -->
-    <div id="insSubNav" class="ins-subnav" role="tablist"></div>
+    <div class="ins-top"><div id="insSubNav" class="ins-subnav" role="tablist"></div><button type="button" id="insRefresh" class="ins-refresh">↻ Refresh</button></div>
     <div id="insView"></div>
     <div id="insPlusView" hidden></div>
   </section>
@@ -2292,6 +2297,9 @@
 <script src="lib-zip.js"></script>
 <script src="task-panel.js"></script>
 <script src="lib-taskfiles.js"></script>
+<script src="md-notes.js"></script>
+<script src="task-notes.js"></script>
+<script src="local-tasks.js"></script>
 <script src="celebrate.js"></script>
 <script src="pcm-help.js"></script>
 <script src="pcm-search.js"></script>

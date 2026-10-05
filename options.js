@@ -1207,7 +1207,7 @@ document.addEventListener("click", (e) => {
   if (!el || el.querySelector("input")) return;
   const row = el.closest(".cu-task");
   const t = row && row._cuTask;
-  if (!t) return;
+  if (!t || t.local) return; // a draft (local-tasks.js) isn't in ClickUp
   e.preventDefault();
   e.stopPropagation();
   startEditEstimateOpt(el, t);
@@ -1277,6 +1277,9 @@ function cuPrioRank(t) {
 function cuPrioCmp(a, b) {
   // A day plan applied from Insights > Plan keeps the plan's order (plan-apply.js).
   if (a && b && a._planIdx != null && b._planIdx != null) return a._planIdx - b._planIdx;
+  // Pinned tasks (task-notes.js) first.
+  const pa = !!(window.PcmTaskNotes && a && window.PcmTaskNotes.isPinned(a.id)), pb = !!(window.PcmTaskNotes && b && window.PcmTaskNotes.isPinned(b.id));
+  if (pa !== pb) return pa ? -1 : 1;
   return cuPrioRank(a) - cuPrioRank(b) ||
     (Number(b.estimateMs != null ? b.estimateMs : b.dayEstimateMs) || 0) - (Number(a.estimateMs != null ? a.estimateMs : a.dayEstimateMs) || 0) ||
     // Same priority and same estimate: fall back to the name, read the way a
@@ -5415,6 +5418,8 @@ function optRepaintCuPreview() {
 }
 
 if (window.PcmPlanDay) window.PcmPlanDay.onChange(() => optRepaintCuPreview());
+// A task pinned / unpinned (task-notes.js) moves to / from the top of the list.
+if (window.PcmTaskNotes) window.PcmTaskNotes.onChange(() => optRepaintCuPreview());
 
 /* ============================ Insights ============================ */
 /* Phase 1 - a weekly health check surfaced two ways:
@@ -5699,6 +5704,23 @@ function insPaintSubNav() {
   nav.querySelectorAll("[data-sub]").forEach(function (b) {
     b.onclick = function () { insSetSub(b.getAttribute("data-sub")); history.replaceState(null, "", "#insights" + (insSub === "health" ? "" : "/" + insSub)); renderInsights(); };
   });
+  // One ↻ Refresh for all three: Health + Plan re-read the open tasks (Plan also
+  // the developers' dev tasks); Performance re-reads the tracked-time history.
+  var rb = document.getElementById("insRefresh");
+  if (rb && !rb._busy) {
+    rb.title = insSub === "performance" ? "Read your tracked-time history from ClickUp again (at most every 10 minutes)"
+      : insSub === "plan" ? "Read your open tasks and the developers' dev tasks from ClickUp again" : "Read your open tasks from ClickUp again";
+    rb.onclick = function () {
+      var plus = window.PcmInsightsPlus;
+      var jobs = insSub === "performance" ? [plus ? plus.refresh("performance") : null]
+        : [insFetchOpen(true), insSub === "plan" && plus ? plus.refresh("plan") : null];
+      rb._busy = true; rb.disabled = true; rb.textContent = "Refreshing…";
+      Promise.all(jobs.map(function (j) { return Promise.resolve(j).catch(function () {}); })).then(function () {
+        rb._busy = false; rb.disabled = false; rb.textContent = "↻ Refresh";
+        if (insTabActive()) { try { renderInsights(); } catch (e) {} }
+      });
+    };
+  }
 }
 function renderInsights() {
   var view = document.getElementById("insView");
@@ -5737,11 +5759,12 @@ function renderInsights() {
     view.innerHTML = insShell('<div class="ins-empty">Loading a health check of your tasks…</div>');
   }
 }
+var insFetchP = null;
 function insFetchOpen(force) {
-  if (insLoading) return;
+  if (insLoading) return insFetchP;
   insLoading = true;
   if (insTabActive()) { try { renderInsights(); } catch (e) {} }
-  send({ type: "CLICKUP_OPEN_TASKS", force: !!force }, 30000).then(function (r) {
+  return insFetchP = send({ type: "CLICKUP_OPEN_TASKS", force: !!force }, 30000).then(function (r) {
     insLoading = false;
     if (r && r.ok && r.data && Array.isArray(r.data.tasks)) {
       insCache = { status: "ok", data: r.data.tasks, at: Date.now() };
@@ -7144,9 +7167,9 @@ function arVisible(st) {
 // the browser. The GitHub token lives encrypted in the background, never here.
 const ADMIN_FILES = [
   "manifest.json", "background.js", "popup.html", "popup.js", "options.html", "options.js", "phone-timer.js",
-  "offscreen.html", "offscreen.js", "update.html", "update.js", "wrapup.html", "wrapup.js",
+  "offscreen.html", "offscreen.js", "update.html", "update.js", "auto-update.html", "auto-update.js", "wrapup.html", "wrapup.js",
   "notify-menu.js", "export-tasks.js", "lib-zip.js", "lib-unzip.js", "lib-automation.js",
-  "lib-availability.js", "lib-clickup.js", "lib-crypto.js", "lib-tidy.js", "lib-drive.js", "task-panel.js", "lib-updater.js", "offscreen-updater.js", "celebrate.js", "celebrate.html", "celebrate-window.js", "fx.js", "pcm-help.js", "tracker.html", "tracker.js", "bulk-edit.js", "pcm-search.js", "lib-taskfiles.js", "task-files.js", "reminders.js", "hub.js", "task-sort.js", "breakdown.js", "calendar.js", "notices.js", "insights-plus.js", "header-ui.js", "plan-apply.js", "team-hub.gs", "vendor/pdf.min.js", "vendor/pdf.worker.min.js", "vendor/pdfjs-LICENSE.txt",
+  "lib-availability.js", "lib-clickup.js", "lib-crypto.js", "lib-tidy.js", "lib-drive.js", "task-panel.js", "lib-updater.js", "offscreen-updater.js", "celebrate.js", "celebrate.html", "celebrate-window.js", "fx.js", "pcm-help.js", "tracker.html", "tracker.js", "bulk-edit.js", "pcm-search.js", "lib-taskfiles.js", "task-files.js", "reminders.js", "hub.js", "task-sort.js", "breakdown.js", "calendar.js", "notices.js", "insights-plus.js", "header-ui.js", "plan-apply.js", "task-notes.js", "md-notes.js", "local-tasks.js", "team-hub.gs", "vendor/pdf.min.js", "vendor/pdf.worker.min.js", "vendor/pdfjs-LICENSE.txt",
   "icons/icon16.png", "icons/icon48.png", "icons/icon128.png", "icons/celebrate.png", "icons/sad.png",
   "sounds/notify.wav", "sounds/danger.mp3", "sounds/winner.wav",
   "README.md", "CHANGELOG.md",

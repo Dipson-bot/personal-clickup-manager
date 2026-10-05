@@ -633,10 +633,111 @@ export async function getTaskDetail(token, taskId) {
 const PANEL_TTL_MS = 60000;
 const panelCache = new Map(); // task id -> { at, data }
 function commentText(c) {
-  if (c && typeof c.comment_text === "string" && c.comment_text.trim()) return c.comment_text.trim();
-  // Rich comments come as an array of pieces; keep their plain text.
+  // Formatted comments (lists, bold, links…) come as pieces: keep the formatting as Markdown.
   const parts = Array.isArray(c && c.comment) ? c.comment : [];
+  if (parts.some((p) => p && p.attributes && Object.keys(p.attributes).length)) {
+    const md = commentOpsToMd(parts);
+    if (md) return md;
+  }
+  if (c && typeof c.comment_text === "string" && c.comment_text.trim()) return c.comment_text.trim();
   return parts.map((p) => (p && (p.text || (p.type === "tag" && p.user && ("@" + p.user.username)))) || "").join("").trim();
+}
+
+// ---------- formatted comments: Markdown <-> ClickUp's comment pieces ----------
+// ClickUp comments are a list of pieces { text, attributes } (Quill style):
+// bold / italic / strike / code / link on a run of text, and list / header /
+// blockquote / code-block on the "\n" that ends a line. Notes and pasted AI
+// answers are Markdown, so a comment written in the extension is turned into
+// pieces (ClickUp then shows it formatted) and read back the same way.
+const MD_INLINE = /`([^`\n]+)`|\[([^\]\n]+)\]\((https?:\/\/[^\s)]+)\)|\*\*([^*\n]+?)\*\*|__([^_\n]+?)__|~~([^~\n]+?)~~|(^|[^*\w])\*([^*\s][^*\n]*?)\*(?!\w)|(https?:\/\/[^\s<>"')]+[^\s<>"').,;:!?])/g;
+function mdInlineOps(s) {
+  const out = [];
+  let at = 0, m;
+  const push = (text, attributes) => { if (text) out.push(attributes ? { text, attributes } : { text }); };
+  MD_INLINE.lastIndex = 0;
+  while ((m = MD_INLINE.exec(s)) !== null) {
+    let start = m.index;
+    if (m[8] != null) start += m[7].length; // *em*: keep the character before it
+    push(s.slice(at, start).replace(/\\([\\`*_~[\]()#>|-])/g, "$1"));
+    if (m[1] != null) push(m[1], { code: true });
+    else if (m[2] != null) push(m[2], { link: m[3] });
+    else if (m[4] != null || m[5] != null) push(m[4] != null ? m[4] : m[5], { bold: true });
+    else if (m[6] != null) push(m[6], { strike: true });
+    else if (m[8] != null) push(m[8], { italic: true });
+    else if (m[9] != null) push(m[9], { link: m[9] });
+    at = MD_INLINE.lastIndex;
+  }
+  push(s.slice(at).replace(/\\([\\`*_~[\]()#>|-])/g, "$1"));
+  return out;
+}
+export function mdToCommentOps(md) {
+  const lines = String(md || "").replace(/\r\n?/g, "\n").split("\n");
+  const ops = [];
+  const line = (text, attrs) => { ops.push(...mdInlineOps(text)); ops.push(attrs ? { text: "\n", attributes: attrs } : { text: "\n" }); };
+  let fence = false;
+  for (const L of lines) {
+    if (/^\s*```/.test(L)) { fence = !fence; continue; }
+    if (fence) { if (L) ops.push({ text: L }); ops.push({ text: "\n", attributes: { "code-block": { "code-block": "plain" } } }); continue; }
+    let m;
+    if ((m = /^(#{1,6})\s+(.*)$/.exec(L))) { const n = m[1].length; if (n <= 3) line(m[2], { header: n }); else { ops.push({ text: m[2].replace(/\*\*/g, ""), attributes: { bold: true } }); ops.push({ text: "\n" }); } continue; }
+    if (/^\s*(?:-{3,}|\*{3,}|_{3,})\s*$/.test(L)) { ops.push({ text: "———" }, { text: "\n" }); continue; }
+    if (/^\s*\|?\s*:?-{2,}:?\s*(\|\s*:?-{2,}:?\s*)*\|?\s*$/.test(L) && L.includes("-") && L.includes("|")) continue; // table divider
+    if (/^\s*\|.*\|\s*$/.test(L)) { line(L.trim().replace(/^\||\|$/g, "").split(/(?<!\\)\|/).map((c) => c.trim()).join("  |  ")); continue; }
+    if ((m = /^(\s*)(?:[-*+]|(\d+)[.)])\s+(?:\[( |x|X)\]\s+)?(.*)$/.exec(L))) {
+      const ind = Math.min(4, Math.floor(m[1].replace(/\t/g, "  ").length / 2));
+      const box = /^(\s*)(?:[-*+]|\d+[.)])\s+\[( |x|X)\]\s+/.exec(L);
+      const kind = box ? (box[2] === " " ? "unchecked" : "checked") : m[2] != null ? "ordered" : "bullet";
+      const a = { list: { list: kind } };
+      if (ind) a.indent = ind;
+      line(m[4], a);
+      continue;
+    }
+    if ((m = /^\s*>\s?(.*)$/.exec(L))) { line(m[1], { blockquote: {} }); continue; }
+    line(L);
+  }
+  while (ops.length && ops[ops.length - 1].text === "\n" && !ops[ops.length - 1].attributes) ops.pop();
+  return ops;
+}
+export function commentOpsToMd(parts) {
+  let out = "", cur = "", n = 0, inCode = false;
+  const flush = (a) => {
+    const at = a || {};
+    const list = at.list && (at.list.list || at.list);
+    const pad = "  ".repeat(Number(at.indent) || 0);
+    if (at["code-block"]) { if (!inCode) { out += "```\n"; inCode = true; } out += cur + "\n"; cur = ""; return; }
+    if (inCode) { out += "```\n"; inCode = false; }
+    if (list === "bullet") out += pad + "- " + cur;
+    else if (list === "ordered") out += pad + (++n) + ". " + cur;
+    else if (list === "checked") out += pad + "- [x] " + cur;
+    else if (list === "unchecked") out += pad + "- [ ] " + cur;
+    else if (at.header) out += "#".repeat(Math.min(6, Number(at.header) || 1)) + " " + cur;
+    else if (at.blockquote) out += "> " + cur;
+    else out += cur;
+    if (list !== "ordered") n = 0;
+    out += "\n";
+    cur = "";
+  };
+  for (const p of parts || []) {
+    if (!p) continue;
+    if (p.type === "tag" && p.user) { cur += "@" + (p.user.username || p.user.email || ""); continue; }
+    const text = String(p.text == null ? "" : p.text), a = p.attributes || {};
+    const segs = text.split("\n");
+    segs.forEach((seg, i) => {
+      if (seg) {
+        let s = seg;
+        if (a.code) s = "`" + s + "`";
+        if (a.bold) s = "**" + s + "**";
+        if (a.italic) s = "*" + s + "*";
+        if (a.strike) s = "~~" + s + "~~";
+        if (a.link && typeof a.link === "string" && /^https?:\/\//.test(a.link)) s = s === a.link ? s : "[" + s + "](" + a.link + ")";
+        cur += s;
+      }
+      if (i < segs.length - 1) flush(a);
+    });
+  }
+  if (cur) flush({});
+  if (inCode) out += "```\n";
+  return out.replace(/\n{3,}/g, "\n\n").trim();
 }
 // Every link in a task's comments (typed addresses and linked text), for the
 // client report's Reference column.
@@ -711,7 +812,16 @@ export async function getTaskPanel(token, taskId, force) {
 // where fetching each task's panel back would be pure rate-limit pressure.
 export async function postTaskComment(token, taskId, text) {
   // notify_all false: ClickUp still notifies assignees / watchers as usual.
-  await cuPost(token, "/task/" + encodeURIComponent(String(taskId)) + "/comment", { comment_text: String(text).slice(0, 5000), notify_all: false });
+  const path = "/task/" + encodeURIComponent(String(taskId)) + "/comment";
+  const plain = String(text).slice(0, 5000);
+  // Formatted (lists, bold, headings, links…): send ClickUp's formatted pieces so
+  // it shows the same way there. Should ClickUp refuse them, post the text as is.
+  const ops = mdToCommentOps(plain);
+  if (ops.some((p) => p.attributes)) {
+    try { await cuPost(token, path, { comment: ops, notify_all: false }); return; }
+    catch (e) { if (!e || e.status === 401 || e.status === 403 || e.status === 429 || e.status === 0) throw e; }
+  }
+  await cuPost(token, path, { comment_text: plain, notify_all: false });
 }
 export async function addTaskComment(token, taskId, text) {
   const key = String(taskId);
@@ -742,6 +852,23 @@ export async function setTaskDescription(token, taskId, text, expected) {
   await cuPut(token, "/task/" + encodeURIComponent(key), md ? { markdown_content: md, description: md } : { description: " " });
   panelCache.delete(key);
   return getTaskPanel(token, key, true);
+}
+
+// Create a task in a List (local-tasks.js "Apply to ClickUp"). f = { name, md,
+// dueDateMs, estimateMs, priority ("urgent" | "high" | "normal" | "low"),
+// assignees: [userId] }. Returns { id, url, name } of the new task.
+export async function createTask(token, listId, f) {
+  const body = { name: String(f.name || "").trim().slice(0, 1000) };
+  const md = String(f.md || "").replace(/\r\n/g, "\n").trim();
+  if (md) { body.markdown_content = md; body.description = md; }
+  if (Array.isArray(f.assignees) && f.assignees.length) body.assignees = f.assignees.map(Number).filter((n) => Number.isFinite(n));
+  if (Number(f.dueDateMs) > 0) { body.due_date = Number(f.dueDateMs); body.due_date_time = false; }
+  if (Number(f.estimateMs) > 0) body.time_estimate = Math.round(Number(f.estimateMs));
+  const pr = { urgent: 1, high: 2, normal: 3, low: 4 }[String(f.priority || "").toLowerCase()];
+  if (pr) body.priority = pr;
+  const t = await cuPost(token, "/list/" + encodeURIComponent(listId) + "/task", body);
+  if (!t || !t.id) throw new Error("ClickUp didn't return the new task.");
+  return { id: String(t.id), url: t.url || taskUrlFor(t.id), name: t.name || body.name };
 }
 
 // Due today looks up EVERY due-today task's subtasks, one request each, on every
@@ -1020,6 +1147,8 @@ export function taskContainer(t) {
   return {
     folderName: folder && folder.hidden !== true ? (folder.name || "") : "",
     listName: (list && list.name) || "",
+    // The List's id: where "Create a task" (local-tasks.js) can put a new task.
+    listId: list && list.id != null ? String(list.id) : "",
     spaceId: space && space.id != null ? String(space.id) : "",
     clientField: taskClientField(t),
   };
@@ -1750,6 +1879,42 @@ export async function fetchConfiguredTasks({ token, teamId, taskUrls = [], today
 //
 //   today  = { estimateMs, spentMs, fromTs, toTs, count } (Mon → today)
 //   friday = { estimateMs, spentMs, fromTs, toTs, count } (Mon → Fri, full week)
+// A task's estimate on day `ts`, by the rule Due today uses (fetchTodayEstimate):
+// a multi-day (start -> due) or single-bound task counts that day's share; any
+// other task its whole estimate.
+function dayEstimateOf(t, ts, mode, byDayTask) {
+  const full = Number(t && t.time_estimate) || 0;
+  const tStart = Number(t && t.start_date) || 0, tDue = Number(t && t.due_date) || 0;
+  const scaled = !!(tStart || tDue) && (!!(tStart && tDue && tDue > tStart) || (!!tStart !== !!tDue));
+  if (!scaled) return full;
+  const excluded = mode === "excl0" ? zeroTrackedDaysFromMap(t.id, tStart || tDue, tDue || tStart, byDayTask || new Map()) : [];
+  const split = splitEstimateAcrossDays({ estimateMs: full, startDateMs: tStart, dueDateMs: tDue, mode, excludedDays: excluded, singleDay: !!tStart !== !!tDue });
+  return split.byDay.get(new Date(ts).setHours(0, 0, 0, 0)) || 0;
+}
+
+// The week's TODAY column = exactly what Due today shows (fetchTodayEstimate's
+// result, refreshed every few minutes): its estimate (with subtasks of today's
+// tasks and the configured share), its tracked time (with the running timer) and
+// its rows. The week itself is only rebuilt every ~30 minutes, so without this
+// the two cards disagreed on the same day. Re-sums the To today / To Friday totals.
+export function weeklyWithToday(weekly, today, now = Date.now()) {
+  if (!weekly || !Array.isArray(weekly.perDay) || !weekly.perDay.length || !today || !weekly.today || !weekly.friday) return weekly;
+  const ts = new Date(now).setHours(0, 0, 0, 0);
+  const i = weekly.perDay.findIndex((p) => p && p.ts === ts);
+  if (i < 0) return weekly; // a weekend day: not in the Mon-Fri week
+  const rows = (Array.isArray(today.tasks) ? today.tasks : []).map((t) => ({ ...t, type: "due" }))
+    .concat((Array.isArray(today.deadlineTasks) ? today.deadlineTasks : []).filter((d) => d && d.id).map((d) => ({
+      id: d.id, name: d.name || "(configured task)", url: d.url || "", estimateMs: Number(d.dayEstimateMs) || 0, spentMs: Number(d.spentMs) || 0,
+      done: !!d.done, status: d.status || "", priority: d.priority || "", type: EXTRA_TASK_NAME_RE.test(d.name || "") ? "extra" : "cfg", container: d.container,
+    })));
+  const perDay = weekly.perDay.slice();
+  perDay[i] = { ...perDay[i], estimateMs: Number(today.estimateMs) || 0, spentMs: Number(today.spentMs) || 0, tasks: rows,
+    trackedTasks: (Array.isArray(today.trackedTasks) ? today.trackedTasks : []).slice(), live: true };
+  const sum = (arr) => arr.reduce((a, p) => ({ estimateMs: a.estimateMs + (Number(p.estimateMs) || 0), spentMs: a.spentMs + (Number(p.spentMs) || 0) }), { estimateMs: 0, spentMs: 0 });
+  const upTo = perDay.filter((p) => p.ts <= ts);
+  return { ...weekly, perDay, today: { ...weekly.today, ...sum(upTo) }, friday: { ...weekly.friday, ...sum(perDay) } };
+}
+
 export async function fetchWeeklySummary({ token, teamId, userId, taskUrls = [], fromTs, toTs, extendedMode = "days", now = Date.now(), taskCache, assigneeIds }) {
   const MS = 86400000;
   const monday = new Date(fromTs);
@@ -1859,10 +2024,12 @@ export async function fetchWeeklySummary({ token, teamId, userId, taskUrls = [],
       // due-day rows; the single discovered extra is spread across the week below.
       if (isExtraName) continue;
       dueIds.add(t.id);
-      const est = Number(t.time_estimate) || 0;
+      // Same rule as Due today: a multi-day task counts this day's share, not
+      // its whole estimate (that made a Monday read 32h here vs 9h 30m there).
+      const est = dayEstimateOf(t, ts, extendedMode, byDayTask);
       const sp = dayTime.get(t.id) || 0;
       dayEst += est;
-      dayRows.push({ id: t.id, name: t.name || "(untitled task)", url: taskUrlFor(t.id), estimateMs: est, totalEstimateMs: est, dueDateMs: Number(t.due_date) || null, spentMs: sp, done: isTaskDone(t), status: (t.status && t.status.status) || "", priority: cuPriorityName(t), type: "due", parentId: t.parent != null ? String(t.parent) : null, assignees: cuRowAssignees(t), container: taskContainer(t) });
+      dayRows.push({ id: t.id, name: t.name || "(untitled task)", url: taskUrlFor(t.id), estimateMs: est, totalEstimateMs: Number(t.time_estimate) || 0, dueDateMs: Number(t.due_date) || null, spentMs: sp, done: isTaskDone(t), status: (t.status && t.status.status) || "", priority: cuPriorityName(t), type: "due", parentId: t.parent != null ? String(t.parent) : null, assignees: cuRowAssignees(t), container: taskContainer(t) });
     }
     // Configured tasks active on this day (skip the extra and anything already
     // counted in the due list). The auto-detected "Extra(s) Task(s)" is matched
