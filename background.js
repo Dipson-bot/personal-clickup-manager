@@ -2247,6 +2247,7 @@ async function clickupPublic() {
     halfwayNotify: settings.clickupHalfwayNotify !== false,
     almostThereNotify: settings.clickupAlmostThereNotify !== false,
     runningNotify: settings.clickupRunningNotify !== false,
+    autoComplete: settings.clickupAutoComplete === true,
     runningThresholdMin: Number(settings.clickupRunningThresholdMin) || 10,
     idleNotify: settings.clickupIdleNotify !== false,
     idleStartHour: Number.isFinite(Number(settings.clickupIdleStartHour)) ? Number(settings.clickupIdleStartHour) : 8,
@@ -3557,12 +3558,14 @@ const EST_ALARM_NEAR = "cu-est-near", EST_ALARM_MET = "cu-est-met";
 async function scheduleEstimateAlarms(entry, progress, settings, seenNear, seenMet) {
   await chrome.alarms.clear(EST_ALARM_NEAR).catch(() => {});
   await chrome.alarms.clear(EST_ALARM_MET).catch(() => {});
-  if (!entry || !progress || !(progress.estimateMs > 0) || settings.clickupRunningNotify === false) return;
+  // (Called with no arguments to just clear them - settings may be missing then.)
+  const notifyOn = !!settings && settings.clickupRunningNotify !== false, autoOn = !!settings && settings.clickupAutoComplete === true;
+  if (!entry || !progress || !(progress.estimateMs > 0) || (!notifyOn && !autoOn)) return;
   const now = Date.now();
   const crossAt = now + (progress.estimateMs - progress.trackedMs) + 3000; // a few seconds late, so ClickUp agrees it's crossed
   const thresholdMs = Math.max(1, Number(settings.clickupRunningThresholdMin) || 10) * 60000;
   const nearAt = crossAt - thresholdMs;
-  if (!seenNear && nearAt > now + 5000) chrome.alarms.create(EST_ALARM_NEAR, { when: nearAt });
+  if (notifyOn && !seenNear && nearAt > now + 5000) chrome.alarms.create(EST_ALARM_NEAR, { when: nearAt });
   if (!seenMet && crossAt > now + 5000) chrome.alarms.create(EST_ALARM_MET, { when: crossAt });
 }
 async function maybeNotifyRunningTask(cfg) {
@@ -3599,6 +3602,38 @@ async function maybeNotifyRunningTask(cfg) {
   const today = todayString();
   const key = String(entry.taskId);
   await scheduleEstimateAlarms(entry, progress, settings, runningNear[key] === today, runningMet[key] === today).catch(() => {});
+  // Optional (off by default): when the running task's tracked time reaches its
+  // estimate, stop the timer and mark the task complete. Never the Extra Task or a
+  // configured recurring / multi-day task (daily buckets), and never a task shared
+  // with someone else (completing it would finish it for them too).
+  if (settings.clickupAutoComplete === true && progress && progress.estimateMs > 0 && progress.trackedMs >= progress.estimateMs && runningMet[key] !== today) {
+    const name0 = progress.taskName || entry.taskName || "this task";
+    const configured = (Array.isArray(settings.clickupDeadlineTaskUrls) ? settings.clickupDeadlineTaskUrls : []).some((u) => parseTaskIdFromUrl(u) === key);
+    const isExtra = /\bextra\s*\(?s?\)?\s*tasks?\b/i.test(name0);
+    let task = null;
+    try { task = await getTaskById(cfg.token, key); } catch (e) {}
+    const shared = !!(task && Number(task.assigneeCount) > 1);
+    if (!configured && !isExtra && !shared && task) {
+      try {
+        await stopTimer(cfg.token, cfg.teamId);
+        await setTaskStatus(cfg.token, key, "complete");
+        const st = (await getClickupState().catch(() => null)) || {};
+        if (String(st.activeTaskId || "") === key) await setClickupState({ ...st, activeTaskId: null });
+        await chrome.storage.local.set({ runningProgress: null, clickupNotified: { ...seen, runningMet: { ...runningMet, [key]: today } } });
+        await scheduleEstimateAlarms(null);
+        await notify("clickup-autocomplete-" + Date.now(), "Completed automatically ✓",
+          "\"" + name0 + "\" reached its " + fmtDuration(progress.estimateMs) + " estimate, so the timer was stopped and the task marked complete. (Turn this off in ClickUp setup.)",
+          undefined, taskUrlFor(key));
+        clearFilterCache();
+        // Not awaited: this can run inside a refresh, which must finish first.
+        setTimeout(() => { refreshClickup({ includeTasks: true }).catch(() => {}); }, 2000);
+        return;
+      } catch (e) {
+        diagLog("auto-complete", String(e && e.message ? e.message : e));
+        // Fall through to the usual "estimate reached" notice.
+      }
+    }
+  }
   if (settings.clickupRunningNotify === false) return;
   if (!progress) return; // task has no estimate set - nothing to compare against
   const thresholdMs = Math.max(1, Number(settings.clickupRunningThresholdMin) || 10) * 60000;
@@ -5231,7 +5266,9 @@ function autoUpdateWhen(st, ui, autoOn, now) {
   const lastTry = Number(st && st.lastTry) || 0;
   if (lastTry) {
     const fails = (st && st.fails) || 0;
-    const wait = fails < AUTO_FAST_TRIES ? AUTO_FAST_RETRY_MS : AUTO_RETRY_MS;
+    // Waiting for the person (setup, Chrome's OK, a click): don't keep opening tabs.
+    const setup = /^(no-folder|permission|moved|needs-click)$/.test(String((st && st.reason) || ""));
+    const wait = setup ? AUTO_RETRY_MS : fails < AUTO_FAST_TRIES ? AUTO_FAST_RETRY_MS : AUTO_RETRY_MS;
     if (now - lastTry < wait) return { go: false, why: "retry-wait" };
   }
   return { go: true, why: "" };
@@ -5256,18 +5293,29 @@ async function maybeAutoUpdate() {
     try { r = await chrome.runtime.sendMessage({ target: "offscreen", type: "AUTO_UPDATE", ui: { latest: ui.latest, zip: ui.zip } }); }
     catch (e) { await new Promise((res) => setTimeout(res, 300)); }
   }
-  // The hidden page couldn't use the folder permission (Chrome applies "Allow on
-  // every visit" to the extension's tabs): do the same install from a tab opened
-  // in the background - the tab the user works in stays in front.
-  if (!(r && r.ok) && (!r || r.reason === "permission")) {
+  const trace = ["hidden page: " + (!r ? "no reply" : r.ok ? "installed" : r.reason + (r.error ? " (" + String(r.error).slice(0, 80) + ")" : ""))];
+  // The hidden page couldn't do it (often the folder permission - Chrome applies
+  // "Allow on every visit" to the extension's tabs - or anything else that went
+  // wrong there): do the same install from a tab opened in the background; if
+  // that tab isn't allowed either, it is brought to the front (see installViaTab).
+  if (!(r && r.ok) && !(r && /^(no-update|no-folder)$/.test(r.reason || ""))) {
     const t = await installViaTab();
     if (t) {
-      await chrome.storage.local.set({ autoUpdateViaTab: { ok: !!t.ok || !/^(permission|no-folder|moved|tab-timeout|no-update)$/.test(t.reason || ""), at: now, reason: t.reason || "" } });
+      trace.push((t.woke ? "tab (brought to the front): " : "background tab: ") + (t.ok ? "installed" : t.reason + (t.error ? " (" + String(t.error).slice(0, 80) + ")" : "")));
+      await chrome.storage.local.set({ autoUpdateViaTab: { ok: !!t.ok || !/^(permission|no-folder|moved|tab-timeout|no-update|needs-click)$/.test(t.reason || ""), at: now, reason: t.reason || "" } });
       r = t;
       autoReadyCache = null;
-    }
+    } else trace.push("background tab: couldn't open one");
   }
+  diagLog("automatic update", trace.join(" -> "));
   if (r && r.ok) {
+    // Put back the tab the person was using if the update tab came to the front.
+    try {
+      const { autoUpdateWake: w } = await chrome.storage.local.get("autoUpdateWake");
+      if (w && w.prevTabId != null) await chrome.tabs.update(w.prevTabId, { active: true }).catch(() => {});
+      if (w && w.prevWindowId != null) await chrome.windows.update(w.prevWindowId, { focused: true }).catch(() => {});
+      await chrome.storage.local.remove("autoUpdateWake");
+    } catch (e) {}
     await chrome.storage.local.set({
       autoUpdateState: { version: ui.latest, installedAt: now, fails: 0 },
       updateDownload: { version: ui.latest, done: true, at: now, via: "auto" },
@@ -5278,6 +5326,22 @@ async function maybeAutoUpdate() {
   }
   st.reason = (r && r.reason) || "no-reply";
   st.error = (r && r.error) || "";
+  st.trace = trace;
+  st.lastTryAt = now;
+  // Chrome wants one click: the update tab is open in front with a Finish update
+  // button. Say so once per version (clicking the notice shows that tab).
+  if (st.reason === "needs-click") {
+    if (st.clickNoticeFor !== ui.latest && !notificationsMuted(await getSettings())) {
+      st.clickNoticeFor = ui.latest;
+      chrome.notifications.create("auto-update-click-" + ui.latest, {
+        type: "basic", iconUrl: chrome.runtime.getURL("icons/icon128.png"), priority: 2, requireInteraction: true,
+        title: "One click to finish updating to v" + ui.latest,
+        message: "Chrome needs your OK once to let the extension update its folder. Click \"Finish update\" in the update tab - it installs and restarts the extension.",
+      }, () => void chrome.runtime.lastError);
+    }
+    await chrome.storage.local.set({ autoUpdateState: st });
+    return;
+  }
   // A one-time setup problem isn't a failure to count - it just waits for setup.
   if (!/^(no-folder|permission|moved)$/.test(st.reason)) {
     st.fails = (st.fails || 0) + 1;
@@ -5306,26 +5370,54 @@ async function maybeAutoUpdate() {
 
 // Install from auto-update.html in a tab that isn't focused, wait for its
 // answer (2 minutes at most), close it. null = the tab couldn't be opened.
+// The tab asks to come to the front when Chrome won't let a hidden page use the
+// folder (AUTO_UPDATE_TAB_FRONT) - like Agent Router's paused-tab wake - and the
+// tab the person was using is put back afterwards. A tab that needs a click
+// (needs-click) stays open in front. The background keeps itself awake while the
+// tab downloads and installs.
 async function installViaTab() {
   const nonce = Math.random().toString(36).slice(2) + Date.now().toString(36);
-  let tab = null, onMsg = null, timer = null;
+  let tab = null, onMsg = null, timer = null, keep = null, woke = false;
+  const bringForward = async () => {
+    if (woke || !tab) return;
+    woke = true;
+    try {
+      const [prev] = await chrome.tabs.query({ active: true, lastFocusedWindow: true }).catch(() => []);
+      const win = await chrome.windows.getLastFocused().catch(() => null);
+      await chrome.storage.local.set({ autoUpdateWake: { prevTabId: prev && prev.id !== tab.id ? prev.id : null, prevWindowId: win && win.id !== tab.windowId ? win.id : null } });
+      await chrome.tabs.update(tab.id, { active: true });
+      await chrome.windows.update(tab.windowId, { focused: true }).catch(() => {});
+    } catch (e) {}
+  };
   const answer = new Promise((resolve) => {
-    onMsg = (msg) => { if (msg && msg.type === "AUTO_UPDATE_TAB_RESULT" && msg.nonce === nonce) resolve(msg); };
+    onMsg = (msg) => {
+      if (!msg || msg.nonce !== nonce) return;
+      if (msg.type === "AUTO_UPDATE_TAB_FRONT") { bringForward(); return; }
+      if (msg.type === "AUTO_UPDATE_TAB_RESULT") resolve(msg);
+    };
     chrome.runtime.onMessage.addListener(onMsg);
-    timer = setTimeout(() => resolve({ ok: false, reason: "tab-timeout" }), 120000);
+    timer = setTimeout(() => resolve({ ok: false, reason: "tab-timeout" }), 150000);
   });
+  const cleanup = () => { chrome.runtime.onMessage.removeListener(onMsg); clearTimeout(timer); clearInterval(keep); };
+  keep = setInterval(() => { chrome.runtime.getPlatformInfo().catch(() => {}); }, 20000);
   try {
     tab = await chrome.tabs.create({ url: chrome.runtime.getURL("auto-update.html?n=" + nonce), active: false });
   } catch (e) {
-    chrome.runtime.onMessage.removeListener(onMsg); clearTimeout(timer);
+    cleanup();
     return null;
   }
   const r = await answer;
-  chrome.runtime.onMessage.removeListener(onMsg);
-  clearTimeout(timer);
-  if (tab && tab.id != null) await chrome.tabs.remove(tab.id).catch(() => {});
-  diagLog("automatic update", "via a background tab: " + (r.ok ? "installed v" + r.version : r.reason + (r.error ? ": " + r.error : "")));
-  return { ok: !!r.ok, version: r.version, reason: r.reason || "", error: r.error || "" };
+  cleanup();
+  if (!r.ok && r.reason !== "needs-click") {
+    if (tab && tab.id != null) await chrome.tabs.remove(tab.id).catch(() => {});
+    if (woke) {
+      const { autoUpdateWake: w } = await chrome.storage.local.get("autoUpdateWake").catch(() => ({}));
+      if (w && w.prevTabId != null) await chrome.tabs.update(w.prevTabId, { active: true }).catch(() => {});
+      if (w && w.prevWindowId != null) await chrome.windows.update(w.prevWindowId, { focused: true }).catch(() => {});
+      await chrome.storage.local.remove("autoUpdateWake").catch(() => {});
+    }
+  }
+  return { ok: !!r.ok, version: r.version, reason: r.reason || "", error: r.error || "", woke };
 }
 
 async function confirmUpdateApplied() {
@@ -5791,6 +5883,14 @@ chrome.notifications.onClicked.addListener((id) => {
     if (id.startsWith("auto-update-setup-")) {
       chrome.notifications.clear(id).catch(() => {});
       openUpdater(true);
+      return;
+    }
+    if (id.startsWith("auto-update-click-")) {
+      // The update tab waiting for its one click: show it (or the update page if it was closed).
+      chrome.notifications.clear(id).catch(() => {});
+      const [t] = await chrome.tabs.query({ url: chrome.runtime.getURL("auto-update.html") + "*" }).catch(() => []);
+      if (t) { await chrome.tabs.update(t.id, { active: true }).catch(() => {}); await chrome.windows.update(t.windowId, { focused: true }).catch(() => {}); }
+      else openUpdater();
       return;
     }
     if (id.startsWith("cu-tidy-")) {
@@ -6914,6 +7014,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         if (p.clickupHalfwayNotify !== undefined) patch.clickupHalfwayNotify = !!p.clickupHalfwayNotify;
         if (p.clickupAlmostThereNotify !== undefined) patch.clickupAlmostThereNotify = !!p.clickupAlmostThereNotify;
         if (p.clickupRunningNotify !== undefined) patch.clickupRunningNotify = !!p.clickupRunningNotify;
+        if (p.clickupAutoComplete !== undefined) patch.clickupAutoComplete = !!p.clickupAutoComplete;
         if (p.clickupRunningThresholdMin !== undefined) {
           const n = Number(p.clickupRunningThresholdMin);
           if (Number.isFinite(n) && n >= 1 && n <= 180) patch.clickupRunningThresholdMin = Math.floor(n);

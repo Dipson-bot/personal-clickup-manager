@@ -661,13 +661,13 @@
         // An audit (HTML, or "audit" in the name) also goes into this client's
         // files (Options > Clients), so every task of the client - and Verify -
         // has it without attaching it again. Screenshots etc. stay with this task.
-        if (r.kind === "text" && (r.doc || /audit/i.test(r.name)) && d.list && window.PcmFiles) {
+        if (r.kind === "text" && (r.doc || /audit/i.test(r.name)) && (d._client || d.list) && window.PcmFiles) {
           try {
-            const have = await window.PcmFiles.forClient(d.list);
+            const have = await window.PcmFiles.forClient((d._client || d.list));
             const same = have.find((x) => x.name === r.name && Number(x.size) === Number(f.size || 0));
             if (same) { r.clientId = same.id; r.addedAt = same.addedAt; }
             else {
-              const [rec] = await window.PcmFiles.add(d.list, [f]);
+              const [rec] = await window.PcmFiles.add((d._client || d.list), [f]);
               if (rec) { r.clientId = rec.id; r.addedAt = rec.addedAt; }
               saved.push(r.name);
               // The client already had an audit: offer to replace it (a new month's audit).
@@ -682,7 +682,7 @@
         files.push(r);
       }
       if (note.textContent.startsWith("Reading")) note.textContent = "";
-      if (saved.length) { note.className = "pcm-note"; note.textContent = "📁 Saved " + saved.join(", ") + " to " + d.list + "'s files (Clients), so this client's other tasks use it too."; }
+      if (saved.length) { note.className = "pcm-note"; note.textContent = "📁 Saved " + saved.join(", ") + " to " + (d._client || d.list) + "'s files (Clients), so this client's other tasks use it too."; }
       // "Replace the old audit" / "Keep both" - kept both until the user picks.
       const olds = [...new Map(offers.flatMap((o) => o.older).map((x) => [x.id, x])).values()].slice(0, 4);
       if (olds.length) {
@@ -691,7 +691,7 @@
         for (const old of olds) {
           const b = el("button", "pcm-btn", "Replace " + old.name);
           b.type = "button";
-          b.title = "Remove " + old.name + " (added " + fmtDay(old.addedAt) + ") from " + d.list + "'s files in Clients";
+          b.title = "Remove " + old.name + " (added " + fmtDay(old.addedAt) + ") from " + (d._client || d.list) + "'s files in Clients";
           b.onclick = async () => {
             b.disabled = true;
             try {
@@ -782,7 +782,7 @@
       const b = verifyBrief(d, files);
       try { await navigator.clipboard.writeText(b.text); } catch (e) { note.className = "pcm-err"; note.textContent = "Couldn't copy the brief."; return; }
       flash(verify, "Copied ✓", "🧪 Verify in OpenCode");
-      const client = d.list || "this client";
+      const client = (d._client || d.list) || "this client";
       // Success in the normal note colour; the audit hint is a tip (amber), not an error.
       note.className = "pcm-note";
       note.textContent = "✓ Copied. Paste it (Ctrl+V) into OpenCode, Claude Code, Codex or any AI - open it in the client's site folder so it can check the code too." + imageNote();
@@ -1185,9 +1185,20 @@
     const res = await send({ type: "CLICKUP_TASK_PANEL", taskId: id, force: !!force });
     if (p !== panel) return; // closed or switched meanwhile
     if (res && res.ok && res.data) {
+      // Which saved client this task is: its List, the client label on its row or
+      // its Folder - so a client added by hand in the Clients tab (or named after
+      // the Folder / Client Name field) brings its files, notes and audit too.
+      res.data.client = openClient;
+      let who = "";
+      if (window.PcmFiles && window.PcmFiles.resolveClient) { try { who = await window.PcmFiles.resolveClient([res.data.list, openClient, res.data.folder]); } catch (e) {} }
+      res.data._client = who || res.data.list || openClient || "";
       // A remembered audit for this client, if one was saved from the Export menu.
-      if (window.pcmAudit && res.data.list) { try { res.data._audit = await window.pcmAudit.get(res.data.list); } catch (e) {} }
-      if (window.PcmFiles && window.PcmFiles.notesFor && res.data.list) { try { res.data._notes = await window.PcmFiles.notesFor(res.data.list); } catch (e) {} }
+      if (window.pcmAudit) {
+        for (const n of [who, res.data.list, openClient].filter(Boolean)) {
+          try { const a = await window.pcmAudit.get(n); if (a) { res.data._audit = a; break; } } catch (e) {}
+        }
+      }
+      if (window.PcmFiles && window.PcmFiles.notesFor && res.data._client) { try { res.data._notes = await window.PcmFiles.notesFor(res.data._client); } catch (e) {} }
       if (p !== panel) return;
       fill(p, res.data);
       return;
@@ -1287,9 +1298,11 @@
     document.documentElement.classList.remove("pcm-open");
     setChevrons();
   }
+  let openClient = ""; // the client label shown on the task's row (helps find its saved files)
   function open(row, id) {
     close();
     openId = id;
+    openClient = (row && row._cuTask && row._cuTask.client) ? String(row._cuTask.client) : "";
     panel = el("div", "pcm-panel");
     panel.dataset.taskId = id;
     if (isPopup()) openSheet(row).appendChild(panel);
@@ -1408,9 +1421,10 @@
   // Task files (Options > Task files) of this task's client, as attached files
   // for the AI - shown as 📁 chips so it's clear what's used.
   async function clientFiles(d) {
-    if (!window.PcmFiles || !d || !d.list) return [];
+    const who = d && (d._client || d.list);
+    if (!window.PcmFiles || !who) return [];
     let recs = [];
-    try { recs = await window.PcmFiles.forClient(d.list); } catch (e) { return []; }
+    try { recs = await window.PcmFiles.forClient(who); } catch (e) { return []; }
     // The same HTML audit would otherwise also arrive via the remembered-audit summary.
     if (d._audit && recs.some((r) => r.html && r.name === d._audit.fileName)) d._audit = null;
     return recs.map((r) => {

@@ -823,6 +823,8 @@ export async function getTaskPanel(token, taskId, force) {
     dueDateMs: t && t.due_date ? Number(t.due_date) : null,
     estimateMs: Number(t && t.time_estimate) || 0,
     list: (t && t.list && t.list.name) || "",
+    // The Folder too: a saved client can be named after it (task-panel matches both).
+    folder: (t && t.folder && t.folder.hidden !== true && t.folder.name) || "",
     description: text,
     links: extractTaskLinks(text),
     attachments: (Array.isArray(t && t.attachments) ? t.attachments : [])

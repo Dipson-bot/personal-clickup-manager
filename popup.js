@@ -2004,6 +2004,17 @@ function cuScopeTargetMs(dailyMs, st, f) {
 // time-entries source was actually used, so a ClickUp fallback to the cumulative
 // field returns 0 and the chip stays hidden instead of showing a wrong number.
 const CU_TODAY_TIP = "Time you tracked today, across all your tasks. The bar shows this filter's own total, which for this filter is not today only. Point at the light part of the bar for today's share of it.";
+// Today's estimate (the Due today total, counted by the same multi-day rule)
+// inside a wider date filter's Estimated bar - like the tracked "today" part.
+// Only when the filter's dates include today.
+const CU_TODAY_EST_TIP = "Today's estimate: what is due today (the Due today total). The bar shows this filter's own total; the light part of it is today's share.";
+function cuTodayEstimate(st, view, f) {
+  st = st || {}; view = view || {};
+  if (!view.scope || view.scope === "today" || view.scope === "extended" || view.scope === "plan") return 0; // the bar IS today
+  const r = cuViewRange(st, f), now = Date.now();
+  if (!r || now < r.fromTs || now > r.toTs) return 0;
+  return Math.max(0, Number(st.estimateMs) || 0);
+}
 function cuTodayTracked(st, view) {
   st = st || {}; view = view || {};
   if (view.scope === "today" || view.scope === "extended") return 0; // the bar IS today
@@ -2546,6 +2557,23 @@ function renderClickup() {
   const met = targetMs > 0 && estMs >= targetMs;
   fill.className = "cu-fill" + (met ? " met" : "");
   $("cuEstVal").textContent = st ? fmtDur(estMs) + (targetMs > 0 ? " / " + fmtDur(targetMs) : "") : "-";
+  // Wider-than-today dates: today's own estimate, like the tracked chip below.
+  const todayEstMs = cuTodayEstimate(st, view, cuFilter);
+  const estChip = $("cuEstToday");
+  if (estChip) {
+    estChip.hidden = !(todayEstMs > 0);
+    estChip.textContent = todayEstMs > 0 ? fmtDur(todayEstMs) + " today" : "";
+    estChip.title = CU_TODAY_EST_TIP;
+  }
+  fill.innerHTML = "";
+  if (todayEstMs > 0 && todayEstMs <= estMs) {
+    const seg = document.createElement("div");
+    seg.className = "cu-today-seg";
+    seg.style.width = Math.min(100, Math.round((todayEstMs / estMs) * 100)) + "%";
+    seg.title = CU_TODAY_EST_TIP;
+    fill.appendChild(seg);
+  }
+  if (fill.parentElement) fill.parentElement.title = todayEstMs > 0 ? CU_TODAY_EST_TIP : "";
 
   const trk = $("cuFillTrk");
   const trkPct = targetMs > 0 ? Math.min(100, Math.round((spentTot / targetMs) * 100)) : 0;

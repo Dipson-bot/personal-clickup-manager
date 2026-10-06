@@ -2236,6 +2236,7 @@ function renderClickupSettings(cu) {
   $("cuHalfway").checked = cu.halfwayNotify !== false;
   $("cuAlmostThere").checked = cu.almostThereNotify !== false;
   $("cuRunningNotify").checked = cu.runningNotify !== false;
+  if ($("cuAutoComplete")) $("cuAutoComplete").checked = cu.autoComplete === true;
   $("cuRunningThreshold").value = cu.runningThresholdMin != null ? String(cu.runningThresholdMin) : "10";
   $("cuIdleNotify").checked = cu.idleNotify !== false;
   $("cuIdleStart").value = cu.idleStartHour != null ? String(cu.idleStartHour) : "8";
@@ -3596,6 +3597,17 @@ function cuScopeTargetMs(dailyMs, st, f) {
 // time-entries source was actually used, so a ClickUp fallback to the cumulative
 // field returns 0 and the chip stays hidden instead of showing a wrong number.
 const CU_TODAY_TIP = "Time you tracked today, across all your tasks. The bar shows this filter's own total, which for this filter is not today only. Point at the light part of the bar for today's share of it.";
+// Today's estimate (the Due today total, counted by the same multi-day rule)
+// inside a wider date filter's Estimated bar - like the tracked "today" part.
+// Only when the filter's dates include today.
+const CU_TODAY_EST_TIP = "Today's estimate: what is due today (the Due today total). The bar shows this filter's own total; the light part of it is today's share.";
+function cuTodayEstimate(st, view, f) {
+  st = st || {}; view = view || {};
+  if (!view.scope || view.scope === "today" || view.scope === "extended" || view.scope === "plan") return 0; // the bar IS today
+  const r = cuViewRange(st, f), now = Date.now();
+  if (!r || now < r.fromTs || now > r.toTs) return 0;
+  return Math.max(0, Number(st.estimateMs) || 0);
+}
 function cuTodayTracked(st, view) {
   st = st || {}; view = view || {};
   if (view.scope === "today" || view.scope === "extended") return 0; // the bar IS today
@@ -4370,6 +4382,16 @@ function renderClickupPreview(st) {
   const estVal = document.createElement("span");
   estVal.className = "val";
   estVal.textContent = fmtDurOpt(estMs) + (targetMs > 0 ? " of " + fmtDurOpt(targetMs) : "");
+  // Wider-than-today dates: today's own estimate beside it, like Tracked's chip.
+  const todayEstMs = cuTodayEstimate(st, view, cuFilter);
+  if (todayEstMs > 0) {
+    const chip = document.createElement("span");
+    chip.className = "est-today";
+    chip.textContent = fmtDurOpt(todayEstMs) + " today";
+    chip.title = CU_TODAY_EST_TIP;
+    estName.appendChild(document.createTextNode(" "));
+    estName.appendChild(chip);
+  }
   estLabel.appendChild(estName);
   estLabel.appendChild(estVal);
 
@@ -4379,6 +4401,14 @@ function renderClickupPreview(st) {
   estFill.className = "cu-fill2" + (met ? " met" : "");
   const estPct = targetMs > 0 ? Math.min(100, Math.round((estMs / targetMs) * 100)) : 0;
   estFill.style.width = estPct + "%";
+  if (todayEstMs > 0 && todayEstMs <= estMs) {
+    const seg = document.createElement("div");
+    seg.className = "cu-today-seg";
+    seg.style.width = Math.min(100, Math.round((todayEstMs / estMs) * 100)) + "%";
+    seg.title = CU_TODAY_EST_TIP;
+    estFill.appendChild(seg);
+  }
+  estBar.title = todayEstMs > 0 ? CU_TODAY_EST_TIP : "";
   estBar.appendChild(estFill);
   barWrap.appendChild(estLabel);
   barWrap.appendChild(estBar);
@@ -4929,6 +4959,7 @@ $("cuSave").onclick = async () => {
         clickupHalfwayNotify: $("cuHalfway").checked,
         clickupAlmostThereNotify: $("cuAlmostThere").checked,
         clickupRunningNotify: $("cuRunningNotify").checked,
+        clickupAutoComplete: !!($("cuAutoComplete") && $("cuAutoComplete").checked),
         clickupRunningThresholdMin: runningThreshold,
         clickupIdleNotify: $("cuIdleNotify").checked,
         clickupIdleStartHour: idleStart,
@@ -7023,7 +7054,9 @@ async function renderAutoUpdate() {
   const ui = got.updateInfo, st = got.autoUpdateState;
   const when = (t) => new Date(t).toLocaleString([], { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" });
   if (ui && ui.newer) {
-    if (st && st.version === ui.latest && st.reason && !/^(no-folder|permission|moved)$/.test(st.reason)) {
+    if (st && st.version === ui.latest && st.reason === "needs-click") {
+      line.textContent = "v" + ui.latest + " needs one click: press \"Finish update\" in the update tab (or Update now). Chrome asks for your OK once to let the extension update its folder.";
+    } else if (st && st.version === ui.latest && st.reason && !/^(no-folder|permission|moved)$/.test(st.reason)) {
       line.textContent = "Still trying to install v" + ui.latest + " for you (" + st.reason + (st.error ? ": " + st.error : "") + "). It keeps retrying; Update now also works.";
     } else if (Number(ui.autoAt) > Date.now()) {
       line.textContent = "On. v" + ui.latest + " installs automatically after " + when(ui.autoAt) + ".";
@@ -7032,6 +7065,14 @@ async function renderAutoUpdate() {
     }
   } else {
     line.textContent = "On. New versions install by themselves within a minute or two; you're up to date.";
+  }
+  // What the last automatic attempt did, step by step (for troubleshooting).
+  if (st && Array.isArray(st.trace) && st.trace.length) {
+    const d = document.createElement("div");
+    d.className = "hint";
+    d.style.marginTop = "4px";
+    d.textContent = "Last automatic try" + (st.lastTryAt ? " (" + when(st.lastTryAt) + ")" : "") + ": " + st.trace.join(" → ");
+    line.appendChild(d);
   }
 }
 if ($("autoUpdate")) $("autoUpdate").onchange = async () => {

@@ -87,6 +87,22 @@
     try { const g = await chrome.storage.local.get("clientNotes"); return g.clientNotes && typeof g.clientNotes === "object" ? g.clientNotes : {}; } catch (e) { return {}; }
   }
   async function notesFor(client) { const all = await allNotes(); return Array.isArray(all[key(client)]) ? all[key(client)] : []; }
+  // Which saved client a task belongs to, among the clients that have files or
+  // notes here: its List, its client label or its Folder (exact, ignoring case,
+  // spaces and emoji); otherwise the ONE saved client whose name starts the same
+  // (6+ letters) - e.g. a client added as "Bright Roofing" for the List
+  // "Bright Roofing SEO". Returns that client's saved name, or "".
+  async function resolveClient(names) {
+    const want = [...new Set((names || []).map(key).filter(Boolean))];
+    if (!want.length) return "";
+    const have = new Map();
+    for (const f of await all().catch(() => [])) if (f && f.ck && !have.has(f.ck)) have.set(f.ck, f.client || f.ck);
+    const ns = await allNotes();
+    for (const k of Object.keys(ns)) if ((ns[k] || []).length && !have.has(k)) have.set(k, (ns[k][0] && ns[k][0].client) || k);
+    for (const k of want) if (have.has(k)) return have.get(k);
+    const near = [...have.keys()].filter((h) => want.some((w) => Math.min(w.length, h.length) >= 6 && (w.startsWith(h) || h.startsWith(w))));
+    return near.length === 1 ? have.get(near[0]) : "";
+  }
   async function saveNotes(client, list) {
     const all = await allNotes();
     const k = key(client);
@@ -181,5 +197,5 @@
     return openFile({ blob: rec.blob, name: rec.name || meta.name });
   }
 
-  window.PcmFiles = { key, all, forClient, add, remove, counts, auditHtml, allNotes, notesFor, saveNotes, openFile, showInFolder, attPut, attCleanup, attBlob, openAttachment };
+  window.PcmFiles = { key, all, forClient, resolveClient, add, remove, counts, auditHtml, allNotes, notesFor, saveNotes, openFile, showInFolder, attPut, attCleanup, attBlob, openAttachment };
 })();

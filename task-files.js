@@ -69,6 +69,7 @@
 
   let myClients = [];     // from my tasks
   let allClients = [];    // whole workspace (loaded on demand)
+  let added = [];         // clients the user added by hand (settings.tfAdded) - not assigned to them
   let files = [];         // every stored file
   let notes = {};         // client key -> [{ id, text, at, editedAt, client, files }]
   const drafts = {};      // client key -> note text being typed (kept across redraws)
@@ -121,6 +122,10 @@
     #tfList .tf-nrow label { display: flex; gap: 6px; align-items: center; margin: 0; font-weight: 400; }
     #tfList .tf-nrow input[type=datetime-local] { font: inherit; font-size: 12px; padding: 3px 6px; }
     #tfList .tf-nrow .sp { flex: 1; }
+    .tf-addc { display: inline-flex; gap: 4px; align-items: center; }
+    .tf-addc input { width: 190px; }
+    #tfList .tf-unadd { border: 0; background: none; cursor: pointer; color: var(--muted); font-size: 12px; padding: 2px 5px; border-radius: 6px; }
+    #tfList .tf-unadd:hover { color: var(--red, #dc2626); background: var(--bg2); }
     #tfList .tf-pin { border: 0; background: none; cursor: pointer; font-size: 14px; line-height: 1; padding: 2px 4px; border-radius: 6px; filter: grayscale(1); opacity: .35; }
     #tfList .tf-pin:hover { opacity: .8; filter: none; }
     #tfList .tf-pin.on { opacity: 1; filter: none; }
@@ -175,11 +180,20 @@
     } catch (e) { return []; }
   }
 
+  async function readAdded() {
+    try {
+      const g = await chrome.storage.local.get("settings");
+      const a = g && g.settings && g.settings.tfAdded;
+      return Array.isArray(a) ? a.filter((x) => typeof x === "string" && x.trim()) : [];
+    } catch (e) { return []; }
+  }
+
   async function load() {
     files = await F.all().catch(() => []);
     notes = await F.allNotes().catch(() => ({}));
     myClients = await mine();
     pinned = await readPins();
+    added = await readAdded();
     render();
   }
 
@@ -187,6 +201,7 @@
     const byKey = new Map();
     const src = $("tfAll").checked && allClients.length ? allClients : myClients;
     for (const c of src) byKey.set(F.key(c), c);
+    for (const c of added) if (!byKey.has(F.key(c))) byKey.set(F.key(c), c); // added by hand
     for (const f of files) if (!byKey.has(f.ck)) byKey.set(f.ck, f.client); // clients with files always show
     for (const k of Object.keys(notes)) if (!byKey.has(k) && (notes[k] || []).length) byKey.set(k, notes[k][0].client || k); // and clients with notes
     const q = $("tfSearch").value.trim().toLowerCase().replace(/[^a-z0-9]+/g, "");
@@ -304,7 +319,9 @@
         '<span class="tf-name">' + esc(name) + "</span>" +
         '<span class="tf-count">' + count + "</span>" +
         '<button type="button" class="tf-pin' + (isPin ? " on" : "") + '" aria-pressed="' + isPin + '" title="' + (isPin ? "Unpin " + esc(name) : "Pin " + esc(name) + " to the top of the list") + '">📌</button>' +
-        '<button type="button" class="tf-btn tf-add">+ Add files</button></div>' + body + "</div>";
+        '<button type="button" class="tf-btn tf-add">+ Add files</button>' +
+        (added.some((c) => F.key(c) === k) && !myClients.some((c) => F.key(c) === k) ? '<button type="button" class="tf-unadd" title="Take ' + esc(name) + ' off your list (its files and notes are kept, and keep it in the list while it has any)">✕</button>' : "") +
+        "</div>" + body + "</div>";
     }).join("");
     if (focusNid) {
       const ta = list.querySelector('.tf-note[data-nid="' + focusNid + '"] .tf-nein');
@@ -514,6 +531,14 @@
     if (e.target.closest(".tf-add")) { e.stopPropagation(); pickFor = { ck, name }; picker.click(); return; }
     // Before the .tf-head branch below: the pin sits in the header, and a click
     // on it must not also open or shut the client.
+    if (e.target.closest(".tf-unadd")) {
+      e.stopPropagation();
+      added = added.filter((c) => F.key(c) !== ck);
+      send({ type: "SET_SETTINGS", patch: { tfAdded: added } });
+      say(name + " is off your list" + ((files.some((f) => f.ck === ck) || (notes[ck] || []).length) ? " (it still shows while it has files or notes)." : "."));
+      render();
+      return;
+    }
     if (e.target.closest(".tf-pin")) {
       e.stopPropagation();
       const i = pinned.indexOf(ck);
@@ -688,13 +713,52 @@
     else addTo(b.dataset.ck, b.dataset.name, fl);
   });
 
+  // ---- add a client you aren't assigned to ----
+  // Suggestions come from every client in the workspace (the same list as "All
+  // workspace clients", read once); any other name can be typed too.
+  async function workspaceClients() {
+    if (!allClients.length) {
+      const r = await send({ type: "CLICKUP_CLIENT_NAMES" }, 60000);
+      allClients = (r && Array.isArray(r.names) ? r.names : []).map((n) => (typeof n === "string" ? n : n && n.name) || "").filter(Boolean);
+    }
+    return allClients;
+  }
+  let suggested = false;
+  $("tfAddClient").addEventListener("focus", async () => {
+    if (suggested) return;
+    suggested = true;
+    const dl = $("tfAddList");
+    const all = await workspaceClients().catch(() => []);
+    dl.textContent = "";
+    for (const c of all.slice().sort((a, b) => sortName(a).localeCompare(sortName(b)))) { const o = document.createElement("option"); o.value = c; dl.appendChild(o); }
+  });
+  async function addClient() {
+    const typed = $("tfAddClient").value.trim();
+    if (!typed) { $("tfAddClient").focus(); return; }
+    const all = await workspaceClients().catch(() => []);
+    const name = all.find((c) => F.key(c) === F.key(typed)) || typed; // the workspace's own spelling
+    const ck = F.key(name);
+    $("tfAddClient").value = "";
+    open.add(ck);
+    if (myClients.some((c) => F.key(c) === ck) || added.some((c) => F.key(c) === ck)) { say(name + " is already in your list."); render(); return; }
+    added = [name].concat(added).slice(0, 200);
+    send({ type: "SET_SETTINGS", patch: { tfAdded: added } });
+    const known = all.some((c) => F.key(c) === ck);
+    say(name + " added to your list - add its files and notes below." + (known || !all.length ? " Its tasks pick them up automatically (Ask, Explain, Verify)." :
+      " It isn't a client name in ClickUp, so a task picks up its files only when the task's List, client or Folder name matches it (or starts the same way)."), known || !all.length ? "" : "var(--amber, #d97706)");
+    render();
+    const el = [...document.querySelectorAll("#tfList .tf-client")].find((b) => b.dataset.ck === ck);
+    if (el) try { el.scrollIntoView({ block: "nearest", behavior: "smooth" }); } catch (e) {}
+  }
+  $("tfAddClientBtn").onclick = addClient;
+  $("tfAddClient").addEventListener("keydown", (e) => { if (e.key === "Enter") { e.preventDefault(); addClient(); } });
+
   // ---- filters ----
   $("tfSearch").oninput = render;
   $("tfAll").onchange = async () => {
     if ($("tfAll").checked && !allClients.length) {
       $("tfSummary").textContent = "Loading every client in the workspace…";
-      const r = await send({ type: "CLICKUP_CLIENT_NAMES" }, 60000);
-      allClients = (r && Array.isArray(r.names) ? r.names : []).map((n) => (typeof n === "string" ? n : n && n.name) || "").filter(Boolean);
+      await workspaceClients().catch(() => []);
     }
     render();
   };
