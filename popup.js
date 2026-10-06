@@ -439,16 +439,22 @@ function appendTaskControls(row, t) {
   const cu = state.clickup || {};
   if (!cu.configured) return;
   if (t.done) {
-    // Completed: no live controls, but keep the column. Without it this row
-    // had no buttons and its chips and times shifted right of every other row.
+    // Completed: no live controls - a "✓ Done" badge in their place instead, in
+    // the same fixed-width column (so the chips and times stay lined up, and a
+    // long task name can never push it out of sight).
     const ghost = document.createElement("span");
-    ghost.className = "cu-actions cu-actions-ghost";
-    ghost.setAttribute("aria-hidden", "true");
+    ghost.className = "cu-actions cu-done-cell";
     for (let i = 0; i < 2; i++) {
       const g = document.createElement("span");
       g.className = "cu-iconbtn";
+      g.setAttribute("aria-hidden", "true");
       ghost.appendChild(g);
     }
+    const pill = document.createElement("span");
+    pill.className = "cu-done-pill";
+    pill.textContent = "✓ Done";
+    pill.title = "Completed in ClickUp";
+    ghost.appendChild(pill);
     row.appendChild(ghost);
     return;
   }
@@ -1069,6 +1075,7 @@ function appendNameCell(row, nm, t, opts) {
   // task object - the delegated estimate editor (document click handler below
   // startEditEstimate) reads it back.
   row._cuTask = t;
+  row.classList.toggle("cu-done", !!(t && t.done)); // finished: green tint + edge, name greyed
   const client = !(opts && opts.hideClient) && t && t.client ? String(t.client) : "";
   const due = dueChip(t);
   const wrap = document.createElement("span");

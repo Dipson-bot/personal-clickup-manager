@@ -1703,6 +1703,7 @@ function appendNameCellOpt(row, nm, t) {
   // Every task row passes through here, so it's also where the row learns its
   // task object - the delegated estimate editor reads it back (row._cuTask).
   row._cuTask = t;
+  row.classList.toggle("cu-done", !!(t && t.done)); // finished: green tint + edge, name greyed
   const client = t && t.client ? String(t.client) : "";
   const due = dueChipOpt(t);
   const wrap = document.createElement("span");
@@ -1938,16 +1939,22 @@ function appendTaskControlsOpt(row, t) {
   const cu = optClickup || {};
   if (!cu.configured) return;
   if (t.done) {
-    // Completed: no live controls, but keep the column. Without it this row
-    // had no buttons and its chips and times shifted right of every other row.
+    // Completed: no live controls - a "✓ Done" badge in their place instead, in
+    // the same fixed-width column (so the chips and times stay lined up, and a
+    // long task name can never push it out of sight).
     const ghost = document.createElement("span");
-    ghost.className = "cu-actions cu-actions-ghost";
-    ghost.setAttribute("aria-hidden", "true");
+    ghost.className = "cu-actions cu-done-cell";
     for (let i = 0; i < 2; i++) {
       const g = document.createElement("span");
       g.className = "cu-iconbtn";
+      g.setAttribute("aria-hidden", "true");
       ghost.appendChild(g);
     }
+    const pill = document.createElement("span");
+    pill.className = "cu-done-pill";
+    pill.textContent = "✓ Done";
+    pill.title = "Completed in ClickUp";
+    ghost.appendChild(pill);
     row.appendChild(ghost);
     return;
   }
@@ -7240,7 +7247,7 @@ const ADMIN_FILES = [
   "manifest.json", "background.js", "popup.html", "popup.js", "options.html", "options.js", "phone-timer.js",
   "offscreen.html", "offscreen.js", "update.html", "update.js", "auto-update.html", "auto-update.js", "wrapup.html", "wrapup.js",
   "notify-menu.js", "export-tasks.js", "lib-zip.js", "lib-unzip.js", "lib-automation.js",
-  "lib-availability.js", "lib-clickup.js", "lib-crypto.js", "lib-tidy.js", "lib-drive.js", "task-panel.js", "lib-updater.js", "offscreen-updater.js", "celebrate.js", "celebrate.html", "celebrate-window.js", "fx.js", "pcm-help.js", "tracker.html", "tracker.js", "bulk-edit.js", "pcm-search.js", "lib-taskfiles.js", "task-files.js", "reminders.js", "hub.js", "task-sort.js", "breakdown.js", "calendar.js", "notices.js", "insights-plus.js", "header-ui.js", "plan-apply.js", "task-notes.js", "md-notes.js", "local-tasks.js", "ui-extras.js", "team-hub.gs", "vendor/pdf.min.js", "vendor/pdf.worker.min.js", "vendor/pdfjs-LICENSE.txt",
+  "lib-availability.js", "lib-clickup.js", "lib-crypto.js", "lib-tidy.js", "lib-drive.js", "task-panel.js", "lib-updater.js", "offscreen-updater.js", "celebrate.js", "celebrate.html", "celebrate-window.js", "fx.js", "pcm-help.js", "tracker.html", "tracker.js", "bulk-edit.js", "pcm-search.js", "lib-taskfiles.js", "task-files.js", "reminders.js", "hub.js", "task-sort.js", "breakdown.js", "calendar.js", "notices.js", "insights-plus.js", "header-ui.js", "plan-apply.js", "task-notes.js", "md-notes.js", "local-tasks.js", "ui-extras.js", "assignees.js", "add-time.js", "team-hub.gs", "vendor/pdf.min.js", "vendor/pdf.worker.min.js", "vendor/pdfjs-LICENSE.txt",
   "icons/icon16.png", "icons/icon48.png", "icons/icon128.png", "icons/celebrate.png", "icons/sad.png",
   "sounds/notify.wav", "sounds/danger.mp3", "sounds/winner.wav",
   "README.md", "CHANGELOG.md",

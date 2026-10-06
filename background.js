@@ -25,7 +25,7 @@ import {
   driveQuota,
 } from "./lib-drive.js";
 import { runAllAccounts, runAccountLogin, readAgentRouterLogin, URLS, GITHUB_KEEP_COOKIES } from "./lib-automation.js";
-import { getUser, verifyToken, getTeams, fetchTodayEstimate, fetchWeeklySummary, fetchDateRangeEstimate, createTaskCache, fetchTeamMembers, fetchWorkspaceTags, cuTagNames, fmtDuration, findExtraTaskByName, parseTaskIdFromUrl, getCurrentTimeEntry, getRunningTaskProgress, startTimer, stopTimer, getTaskById, setTaskStatus, taskUrlFor, clientLabelFromContainer, resolveSpaceNamesFor, taskContainer, cuPriorityName, isTaskDone, getSubtasksOfParent, getTaskTree, getTaskDetail, updateTimeEntry, setTaskDueDate, clearTaskTreeCache, listWorkspaceClients, cuRowAssignees, fetchDoneBetween, fetchDoneLite, fetchTrackedHistory, getTaskPanel, addTaskComment, postTaskComment, setTaskDescription, getTaskCommentLinks, createTask, weeklyWithToday, listClientFieldOptions, listReachableClients } from "./lib-clickup.js";
+import { getUser, verifyToken, getTeams, fetchTodayEstimate, fetchWeeklySummary, fetchDateRangeEstimate, createTaskCache, fetchTeamMembers, fetchWorkspaceTags, cuTagNames, fmtDuration, findExtraTaskByName, parseTaskIdFromUrl, getCurrentTimeEntry, getRunningTaskProgress, startTimer, stopTimer, getTaskById, setTaskStatus, taskUrlFor, clientLabelFromContainer, resolveSpaceNamesFor, taskContainer, cuPriorityName, isTaskDone, getSubtasksOfParent, getTaskTree, getTaskDetail, updateTimeEntry, setTaskDueDate, clearTaskTreeCache, listWorkspaceClients, cuRowAssignees, fetchDoneBetween, fetchDoneLite, fetchTrackedHistory, getTaskPanel, addTaskComment, postTaskComment, setTaskDescription, getTaskCommentLinks, createTask, removeTaskAssignee, postAssignedComment, addTimeEntry, weeklyWithToday, listClientFieldOptions, listReachableClients } from "./lib-clickup.js";
 import { resolveRelayKey, pickProbeModel, probeRelay } from "./lib-availability.js";
 import { tidyCollect, tidyLines, tidyResolved, tidyDayOk, tidyUrgent } from "./lib-tidy.js";
 
@@ -1238,6 +1238,34 @@ function cuScopeToken(cfg, myId, assignee) {
   return cuScopeKey(me, assignee) !== me && admin ? admin : String((cfg && cfg.token) || "");
 }
 let doneTodayCache = null; // wrap-up's "closed today" list, kept one minute
+// Someone was taken off a task: drop them from that task's rows in everything
+// already saved (dashboard state + filter / overdue / open-task caches), so the
+// lists show it at once with NO ClickUp calls - instead of throwing the caches
+// away, which made the next look rebuild every list from ClickUp.
+function dropAssigneeIn(node, taskId, userId, depth) {
+  if (!node || typeof node !== "object" || depth > 9) return 0;
+  let n = 0;
+  if (!Array.isArray(node) && String(node.id) === taskId && Array.isArray(node.assignees)) {
+    const before = node.assignees.length;
+    node.assignees = node.assignees.filter((a) => String(a && a.id) !== userId);
+    if (node.assignees.length !== before) { n++; if (typeof node.assigneeCount === "number") node.assigneeCount = node.assignees.length; }
+  }
+  for (const k in node) { const v = node[k]; if (v && typeof v === "object") n += dropAssigneeIn(v, taskId, userId, depth + 1); }
+  return n;
+}
+async function dropAssigneeEverywhere(taskId, userId) {
+  const id = String(taskId), uid = String(userId);
+  let n = 0;
+  try {
+    const st = await getClickupState();
+    if (st && dropAssigneeIn(st, id, uid, 0)) { n++; await setClickupState(st); }
+  } catch (e) {}
+  await hydrateFilterCache(); // a restarted worker: load the saved lists first so none are lost
+  for (const v of filterCache.values()) if (v && v.data) n += dropAssigneeIn(v.data, id, uid, 0);
+  for (const c of [overdueCache, openTasksCache, ...overdueScopeCache.values()]) if (c) n += dropAssigneeIn(c, id, uid, 0);
+  await persistFilterCache();
+  return n;
+}
 function clearFilterCache() {
   filterCache.clear();
   overdueCache = null;
@@ -4990,6 +5018,40 @@ async function setHubNotices(list, seenIn) {
   }
   await chrome.storage.local.set({ hubNotices: { at: Date.now(), list: notices }, hubNoticesSeen: seen });
 }
+// Task reminders a teammate sent you through the hub (the 🔔 next to a person
+// on a task): checked every few minutes, each shown once as a notification that
+// opens the task. Like your own reminders they show while notifications are
+// paused; only "All notifications off" silences them.
+const HUB_NUDGE_MS = 3 * 60000;
+async function hubPollNudges(force) {
+  const { hubNudgesAt } = await chrome.storage.local.get("hubNudgesAt");
+  if (!force && Date.now() - (Number(hubNudgesAt) || 0) < HUB_NUDGE_MS) return;
+  if (!(await hubUrl())) return;
+  const cfg = await getClickupConfig().catch(() => null);
+  if (!cfg || !cfg.token) return;
+  await chrome.storage.local.set({ hubNudgesAt: Date.now() });
+  const r = await hubCall("nudges", {});
+  if (!r || !r.ok || !Array.isArray(r.nudges) || !r.nudges.length) return; // an older hub script has no nudges
+  const s = await getSettings();
+  const { nudgesIn } = await chrome.storage.local.get("nudgesIn");
+  const kept = (Array.isArray(nudgesIn) ? nudgesIn : []).concat(r.nudges).slice(-30);
+  await chrome.storage.local.set({ nudgesIn: kept });
+  if (s.notifyAll === false) return;
+  for (const n of r.nudges.slice(0, 10)) {
+    const id = "nudge-" + n.id;
+    const url = /^https:\/\/app\.clickup\.com\//.test(n.taskUrl || "") ? n.taskUrl : (n.taskId ? taskUrlFor(n.taskId) : null);
+    try {
+      await chrome.notifications.create(id, {
+        type: "basic", iconUrl: chrome.runtime.getURL("icons/icon128.png"),
+        title: ("\u23F0 Reminder from " + (n.fromName || "a teammate")).slice(0, 120),
+        message: ((n.taskName || "A task") + (n.text ? " - \u201C" + n.text + "\u201D" : "")).slice(0, 300),
+        contextMessage: "Click to open the task in ClickUp", priority: 2, requireInteraction: true,
+      });
+      if (url) notifTargetUrls.set(id, url);
+    } catch (e) {}
+    if (s.notifySound !== false) await playNotificationSound(true).catch(() => {});
+  }
+}
 // Admin replies / resolutions in threads you started, replied to or "me too"'d.
 async function hubPollReplies(force) {
   const { hubActive, hubPollAt, hubSeen } = await chrome.storage.local.get(["hubActive", "hubPollAt", "hubSeen"]);
@@ -5886,6 +5948,7 @@ chrome.alarms.onAlarm.addListener(async (alarm) => {
     await hubHello().catch(() => {});
     await hubPollReplies().catch(() => {});
     await hubPollNotices().catch(() => {});
+    await hubPollNudges().catch(() => {});
   } else if (alarm.name === CLICKUP_ALARM) {
     refreshClickup({ viaAlarm: true }).catch(() => {});
   } else if (alarm.name === EST_ALARM_NEAR || alarm.name === EST_ALARM_MET) {
@@ -7268,6 +7331,78 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         } catch (e) {
           sendResponse({ ok: false, error: String(e && e.message ? e.message : e) });
         }
+        break;
+      }
+      case "CLICKUP_ADD_TIME": {
+        // "+ Add missed time": a finished time entry on the Extra task (or msg.taskId).
+        const cfg = await getClickupConfig();
+        if (!cfg || !cfg.token || !cfg.teamId) { sendResponse({ ok: false, error: "Connect ClickUp first." }); break; }
+        const st = (await getClickupState().catch(() => null)) || {};
+        const taskId = msg.taskId ? String(msg.taskId) : (st.extraTask && st.extraTask.id ? String(st.extraTask.id) : "");
+        if (!taskId) { sendResponse({ ok: false, error: "No Extra task found yet - refresh ClickUp first." }); break; }
+        const startMs = Number(msg.startMs), durationMs = Number(msg.durationMs);
+        if (!(startMs > 0) || !(durationMs >= 60000) || durationMs > 12 * 3600000 || startMs + durationMs > Date.now() + 120000) { sendResponse({ ok: false, error: "Pick a past time span between 1 minute and 12 hours." }); break; }
+        try {
+          await addTimeEntry(cfg.token, cfg.teamId, taskId, startMs, durationMs, String(msg.description || "").slice(0, 200));
+          clearFilterCache();
+          refreshClickup({ includeTasks: true, forceWeeks: true }).catch(() => {});
+          sendResponse({ ok: true, taskName: msg.taskId ? "" : ((st.extraTask && st.extraTask.name) || "the Extra task") });
+        } catch (e) {
+          sendResponse({ ok: false, error: String(e && e.message ? e.message : e) });
+        }
+        break;
+      }
+      case "CLICKUP_REMOVE_ASSIGNEE": {
+        // The ✕ next to a person in a task row's WHO list. Taking yourself off
+        // needs msg.confirmSelf (the task then leaves your list).
+        const cfg = await getClickupConfig();
+        if (!cfg || !cfg.token) { sendResponse({ ok: false, reason: "not-configured", error: "Connect ClickUp first." }); break; }
+        const taskId = msg.taskId ? String(msg.taskId) : "";
+        const userId = msg.userId ? String(msg.userId) : "";
+        if (!taskId || !/^\d+$/.test(userId)) { sendResponse({ ok: false, error: "No task or person." }); break; }
+        if (cfg.userId && String(cfg.userId) === userId && !msg.confirmSelf) { sendResponse({ ok: false, reason: "self" }); break; }
+        try {
+          await removeTaskAssignee(cfg.token, taskId, userId);
+          if (cfg.userId && String(cfg.userId) === userId) {
+            // Took yourself off: the task leaves your lists and totals - rebuild them.
+            clearFilterCache();
+            refreshClickup({ includeTasks: true, forceWeeks: true }).catch(() => {});
+          } else {
+            // Someone else: only their initials change - fix the saved lists in place
+            // (no ClickUp calls; the regular refresh confirms it later).
+            await dropAssigneeEverywhere(taskId, userId);
+          }
+          sendResponse({ ok: true, self: !!(cfg.userId && String(cfg.userId) === userId) });
+        } catch (e) {
+          sendResponse({ ok: false, error: String(e && e.message ? e.message : e) });
+        }
+        break;
+      }
+      case "CLICKUP_NUDGE": {
+        // The 🔔 next to a teammate on a task: a reminder shown by THEIR extension
+        // (through the Team hub), or - msg.via "clickup" - a ClickUp comment
+        // assigned to them, so ClickUp notifies them (for people without the extension).
+        const cfg = await getClickupConfig();
+        if (!cfg || !cfg.token) { sendResponse({ ok: false, error: "Connect ClickUp first." }); break; }
+        const taskId = msg.taskId ? String(msg.taskId) : "";
+        const userId = msg.userId ? String(msg.userId) : "";
+        if (!taskId || !/^\d+$/.test(userId)) { sendResponse({ ok: false, error: "No task or person." }); break; }
+        if (cfg.userId && String(cfg.userId) === userId) { sendResponse({ ok: false, reason: "self", error: "That's you - use ⏰ Remind me in the task's details for your own reminder." }); break; }
+        const text = String(msg.text || "").trim().slice(0, 300);
+        if (msg.via === "clickup") {
+          try {
+            const me = cfg.username || "A teammate";
+            await postAssignedComment(cfg.token, taskId, "\u23F0 Reminder from " + me + (text ? ": " + text : " - please take a look at this task."), userId);
+            sendResponse({ ok: true, via: "clickup" });
+          } catch (e) { sendResponse({ ok: false, error: String(e && e.message ? e.message : e) }); }
+          break;
+        }
+        if (!(await hubUrl())) { sendResponse({ ok: false, reason: "no-hub", error: "The Team hub isn't set up, so reminders can't reach their extension." }); break; }
+        await hubHello(true).catch(() => {});
+        const r = await hubCall("nudge", { toUser: userId, taskId, taskName: String(msg.taskName || "").slice(0, 200), taskUrl: taskUrlFor(taskId), text });
+        if (r && r.ok) { sendResponse({ ok: true, via: "hub" }); break; }
+        if (r && r.error === "unknown action") { sendResponse({ ok: false, reason: "old-hub", error: "The Team hub script needs updating before reminders can reach their extension." }); break; }
+        sendResponse(r || { ok: false, error: "No answer from the Team hub." });
         break;
       }
       case "CLICKUP_EXPORT_SUBTASKS": {

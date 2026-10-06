@@ -16,10 +16,10 @@
 
   const COLS = [
     { key: "name", label: "Task", sel: ".nm", tip: "Sort by task name" },
-    { key: "who", label: "Who", short: "👤", shortBelow: 34, sel: ".cu-who", tip: "Assignee - sort by who it's assigned to", resize: true, min: 20, max: 140 },
+    { key: "who", label: "Who", short: "👤", shortBelow: 34, sel: ".cu-who", tip: "Sort by who else is on the task (tasks only you are on first)", resize: true, min: 20, max: 140 },
     { key: "client", label: "Client", sel: ".cu-client", tip: "Sort by client", resize: true, min: 50, max: 280 },
     { key: "due", label: "Due", sel: ".cu-due", tip: "Sort by due date", resize: true, min: 36, max: 130 },
-    { key: "time", label: "Time", sel: ".estpairs", tip: "Sort by estimate (then time tracked)" },
+    { key: "time", label: "Time", sel: ".estpairs", tip: "Sort by time tracked (then estimate)" },
   ];
   // Column widths the user dragged, per page (the popup is narrower than the
   // dashboard), applied to every row through CSS variables.
@@ -37,14 +37,31 @@
   applyWidths();
   const low = (s) => String(s == null ? "" : s).trim().toLowerCase();
   // The value a row sorts by; null = no value (always listed last).
+  // The person on most rows of the list being sorted (that's you): "Who" sorts
+  // by the OTHER people, otherwise every row would tie on your own name.
+  let listMe = "";
+  const nameOfA = (a) => low(a && (a.username || a.email || a.id));
   function value(t, key) {
     if (!t) return null;
-    if (key === "name") return low(t.name) || null;
-    if (key === "who") { const a = Array.isArray(t.assignees) ? t.assignees : []; return a.length ? low(a[0] && (a[0].username || a[0].email || a[0].id)) : null; }
+    if (key === "name") return low(String(t.name || "").replace(/^[^\p{L}\p{N}]+/u, "")) || null;
+    if (key === "who") {
+      const a = Array.isArray(t.assignees) ? t.assignees : [];
+      if (!a.length) return null;
+      const others = a.filter((x) => String(x && x.id) !== listMe).map(nameOfA).filter(Boolean).sort();
+      return others.length ? "1" + others.join(", ") : "0"; // only you: first
+    }
     if (key === "client") return low(t.client) || null;
     if (key === "due") return Number(t.dueDateMs) || null;
-    if (key === "time") { const e = Number(t.estimateMs || t.totalEstimateMs || t.dayEstimateMs) || 0; const s = Number(t.spentMs) || 0; return e || s ? e * 1e6 + s / 1000 : null; }
+    // The bold number on the row is the time tracked, so that leads; the estimate breaks ties.
+    if (key === "time") { const e = Number(t.estimateMs || t.totalEstimateMs || t.dayEstimateMs) || 0; const s = Number(t.spentMs) || 0; return e || s ? Math.round(s / 1000) * 1e7 + Math.round(e / 1000) : null; }
     return null;
+  }
+  function pickMe(rows) {
+    const n = new Map();
+    for (const r of rows) for (const a of ((r._cuTask && r._cuTask.assignees) || [])) { const id = String(a && a.id); n.set(id, (n.get(id) || 0) + 1); }
+    let best = "", c = 0;
+    for (const [id, k] of n) if (k > c) { best = id; c = k; }
+    return best;
   }
   function compare(a, b) {
     // Pinned tasks (task-notes.js) stay on top whatever the column sort.
@@ -86,6 +103,7 @@
     for (const el of kids) {
       if (isRow(el)) { if (!run) runs.push((run = [])); run.push(el); } else run = null;
     }
+    listMe = pickMe(kids.filter(isRow));
     for (const r of runs) {
       const blocks = [];
       for (const el of r.slice().sort((a, b) => a._pcsOrd - b._pcsOrd)) {
@@ -233,7 +251,37 @@
     queued = true;
     setTimeout(() => { queued = false; refreshAll(); }, 40);
   });
-  const start = () => { mo.observe(document.documentElement, { childList: true, subtree: true }); refreshAll(); };
+  // Keep where you were when a list is redrawn (every few minutes, or when
+  // something changes): emptying and refilling a task list put its scroll box -
+  // and sometimes the page - back at the top while you were reading a task.
+  // Positions are noted on every scroll and put back right after the redraw,
+  // before anything is painted.
+  // Keyed by where the list sits (its nearest ancestor with an id + its place
+  // among the lists there), because a redraw can swap in a brand-new list element.
+  const lastTop = new Map();
+  const listKey = (l) => { const host = (l.parentElement && l.parentElement.closest("[id]")) || document.body; return (host.id || "body") + ":" + [...host.querySelectorAll(".cu-tasklist")].indexOf(l); };
+  let lastY = window.scrollY || 0, userScrollAt = 0;
+  const noteUser = () => { userScrollAt = Date.now(); };
+  for (const ev of ["wheel", "touchmove", "keydown", "pointerdown"]) window.addEventListener(ev, noteUser, { capture: true, passive: true });
+  document.addEventListener("scroll", (e) => {
+    const el = e.target;
+    if (el === document || el === document.documentElement || el === document.body) { if (!guarding) lastY = window.scrollY || 0; return; }
+    if (el && el.classList && el.classList.contains("cu-tasklist") && !guarding) lastTop.set(listKey(el), el.scrollTop);
+  }, true);
+  let guarding = false;
+  const keep = new MutationObserver((recs) => {
+    if (!recs.some((r) => r.target && r.target.closest && r.target.closest(".cu-tasklist"))) return;
+    if (Date.now() - userScrollAt < 150) return; // the person is scrolling: leave it
+    guarding = true;
+    try {
+      for (const l of document.querySelectorAll(".cu-tasklist")) {
+        const want = lastTop.get(listKey(l));
+        if (want > 0 && Math.abs(l.scrollTop - want) > 2) l.scrollTop = want;
+      }
+      if (lastY > 0 && (window.scrollY || 0) < lastY - 4) window.scrollTo(window.scrollX || 0, lastY);
+    } finally { setTimeout(() => { guarding = false; }, 0); }
+  });
+  const start = () => { mo.observe(document.documentElement, { childList: true, subtree: true }); keep.observe(document.documentElement, { childList: true, subtree: true }); refreshAll(); };
   if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", start); else start();
   window.PcmTaskSort = { refresh: refreshAll };
 })();

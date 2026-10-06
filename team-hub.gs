@@ -31,7 +31,10 @@ const SHEETS = {
   Messages: ["id", "threadId", "install", "name", "avatar", "color", "initials", "role", "text", "at", "editedAt", "files", "diag", "deleted", "reactions", "replyTo"],
   // Announcements from the admin (maintenance break, sudden holiday...), shown to everyone until "until".
   Notices: ["id", "title", "text", "level", "createdAt", "until", "ended"],
+  // Task reminders one teammate sends another (both on the same task); collected by the recipient's extension.
+  Nudges: ["id", "toUser", "fromInstall", "fromUser", "fromName", "taskId", "taskName", "taskUrl", "text", "at", "deliveredAt"],
 };
+const NUDGES_PER_HOUR = 20; // per install
 const REACTIONS = ["👍", "❤️", "😂", "🎉", "😮", "🙏", "✅", "👀"];
 
 // ---------- storage ----------
@@ -116,6 +119,8 @@ function doPost(e) {
         case "deleteOwn": return out(deleteOwn(q));
         case "react": return out(react(q));
         case "notices": return out(notices());
+        case "nudge": return out(nudge(q));
+        case "nudges": return out(nudges(q));
       }
       if (!admin) return out({ ok: false, error: "admin only" });
       switch (q.action) {
@@ -386,6 +391,38 @@ function notices() {
     .map((n) => ({ id: String(n.id), title: String(n.title), text: String(n.text), level: String(n.level || "info"), createdAt: Number(n.createdAt) || 0, until: Number(n.until) || 0 }));
   return { ok: true, notices: list };
 }
+// ---------- task reminders between teammates ----------
+// nudge { toUser (ClickUp user id), taskId, taskName, taskUrl, text }: only to
+// someone whose extension has checked in (so it can actually show it).
+function nudge(q) {
+  const install = cleanInstall(q);
+  const u = install ? findUser(install) : null;
+  if (!u) return { ok: false, error: "Open the extension once more so the hub knows who you are, then try again." };
+  const st = userState(u);
+  if (st !== "ok") return { ok: false, error: st === "banned" ? "You can't send reminders (ask your admin)." : "You're muted for now." };
+  const to = String(q.toUser || "").replace(/[^0-9]/g, "").slice(0, 30);
+  if (!to) return { ok: false, error: "No person picked." };
+  if (to === String(u.cuUserId)) return { ok: false, reason: "self", error: "That's you." };
+  if (!readAll("Users").some((x) => String(x.cuUserId) === to && x.status !== "banned")) return { ok: false, reason: "no-extension" };
+  const t = now();
+  const all = readAll("Nudges");
+  if (all.filter((n) => String(n.fromInstall) === install && t - Number(n.at) < 3600000).length >= NUDGES_PER_HOUR) return { ok: false, error: "That's a lot of reminders for one hour - try again later." };
+  const url = /^https:\/\/app\.clickup\.com\//.test(String(q.taskUrl || "")) ? String(q.taskUrl).slice(0, 300) : "";
+  writeRow("Nudges", { id: "n" + t.toString(36) + Math.random().toString(36).slice(2, 5), toUser: to, fromInstall: install, fromUser: String(u.cuUserId || ""), fromName: String(u.name || "").slice(0, 80),
+    taskId: String(q.taskId || "").slice(0, 40), taskName: String(q.taskName || "").slice(0, 200), taskUrl: url, text: String(q.text || "").trim().slice(0, 300), at: t, deliveredAt: "" });
+  return { ok: true };
+}
+// nudges: this install's user's reminders not collected yet (marked collected now).
+function nudges(q) {
+  const install = cleanInstall(q);
+  const u = install ? findUser(install) : null;
+  if (!u || !u.cuUserId) return { ok: true, nudges: [] };
+  const t = now();
+  const list = readAll("Nudges").filter((n) => String(n.toUser) === String(u.cuUserId) && !n.deliveredAt && t - Number(n.at) < 7 * 86400000);
+  for (const n of list) { n.deliveredAt = t; writeRow("Nudges", n); }
+  return { ok: true, nudges: list.map((n) => ({ id: String(n.id), fromName: String(n.fromName), taskId: String(n.taskId), taskName: String(n.taskName), taskUrl: String(n.taskUrl), text: String(n.text), at: Number(n.at) || 0 })) };
+}
+
 // Admin: op "post" { title, text, level, until } or op "end" { id }.
 function notice(q) {
   if (q.op === "end") {

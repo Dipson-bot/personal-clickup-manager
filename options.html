@@ -329,6 +329,13 @@
   .cu-who .av.more { background: var(--muted); }
   /* Finished task: same-width empty slot, so its row lines up with the rest. */
   .cu-actions-ghost { visibility: hidden; }
+  /* Completed task rows: tint + green edge, name greyed, "✓ Done" badge in the actions column. */
+  .cu-task.cu-done { background: rgba(34,197,94,.10); box-shadow: inset 3px 0 0 #16a34a; border-radius: 6px; }
+  .cu-task.cu-done .nm { opacity: .62; }
+  .cu-task.cu-done .nm .tick { display: none; }
+  .cu-done-cell { position: relative; }
+  .cu-done-cell .cu-iconbtn { visibility: hidden; }
+  .cu-done-pill { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; border-radius: 6px; background: #15803d; color: #fff; font-size: 10.5px; font-weight: 700; letter-spacing: .01em; white-space: nowrap; }
   /* Task lists stretch from their bottom-right corner (makeListResizable). */
   .cu-tasklist.cu-resizable { min-height: 60px; }
   /* Drag bar under a stretchable list: full width, above nothing clickable. */
@@ -2331,6 +2338,8 @@
 <script src="export-tasks.js"></script>
 <script src="lib-zip.js"></script>
 <script src="task-panel.js"></script>
+<script src="assignees.js"></script>
+<script src="add-time.js"></script>
 <script src="lib-taskfiles.js"></script>
 <script src="md-notes.js"></script>
 <script src="task-notes.js"></script>

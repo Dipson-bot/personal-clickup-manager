@@ -857,6 +857,11 @@ export async function postTaskComment(token, taskId, text) {
   }
   await cuPost(token, path, { comment_text: plain, notify_all: false });
 }
+// A comment assigned to one person: ClickUp notifies them (the reminder
+// fallback for a teammate who doesn't use the extension).
+export async function postAssignedComment(token, taskId, text, userId) {
+  return cuPost(token, "/task/" + encodeURIComponent(String(taskId)) + "/comment", { comment_text: String(text).slice(0, 5000), assignee: Number(userId), notify_all: false });
+}
 export async function addTaskComment(token, taskId, text) {
   const key = String(taskId);
   await postTaskComment(token, key, text);
@@ -1436,12 +1441,25 @@ export async function startTimer(token, teamId, taskId, description) {
   return (j && j.data) || null;
 }
 
+// Add time afterwards (a meeting you forgot to track): a finished entry.
+export async function addTimeEntry(token, teamId, taskId, startMs, durationMs, description) {
+  const body = { tid: String(taskId), start: Number(startMs), duration: Number(durationMs), stop: Number(startMs) + Number(durationMs) };
+  if (description && String(description).trim()) body.description = String(description).trim().slice(0, 500);
+  const j = await cuPost(token, "/team/" + teamId + "/time_entries", body);
+  return (j && j.data) || null;
+}
+
 // Edit a time entry (e.g. end it earlier to drop away-from-desk time).
 export async function updateTimeEntry(token, teamId, entryId, body) {
   return cuPut(token, "/team/" + teamId + "/time_entries/" + encodeURIComponent(entryId), body || {});
 }
 
 // Change a task's due date. hasTime null = leave ClickUp's date-only/timed flag alone.
+// Take one person off a task (the ✕ next to an assignee).
+export async function removeTaskAssignee(token, taskId, userId) {
+  return cuPut(token, "/task/" + encodeURIComponent(taskId), { assignees: { add: [], rem: [Number(userId)] } });
+}
+
 export async function setTaskDueDate(token, taskId, dueMs, hasTime) {
   // dueMs null/0 clears the due date.
   const body = { due_date: dueMs ? Number(dueMs) : null };
