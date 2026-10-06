@@ -519,6 +519,38 @@ export async function getTasksDueToday(token, teamId, userId, now = Date.now()) 
   return out;
 }
 
+// Tasks assigned to the user that are due within [fromTs, toTs] (inclusive), any status.
+export async function getTasksDueBetween(token, teamId, userId, fromTs, toTs) {
+  const out = [];
+  for (let page = 0; page < MAX_PAGES; page++) {
+    const params = [
+      ["assignees[]", String(userId)],
+      ["due_date_gt", String(fromTs - 1)],
+      ["due_date_lt", String(toTs + 1)],
+      ["subtasks", "true"],
+      ["include_closed", "true"],
+      ["page", String(page)],
+    ];
+    const j = await cuFetch(token, "/team/" + teamId + "/task", params);
+    const tasks = Array.isArray(j && j.tasks) ? j.tasks : [];
+    for (const t of tasks) out.push(t);
+    if (tasks.length < 100 || j.last_page === true) break;
+  }
+  return out;
+}
+// How a multi-day task (start -> due) counts - ONE setting for every card and
+// filter (Due today, This week, Due this week / next week / tomorrow / custom):
+//   spread = false ("By due date", the default): its whole estimate on its due date.
+//   spread = true  ("Spread across working days"): its estimate divided over the
+//     working days it covers - also days before its due date - so a started task
+//     due later counts its share today. Spread mode looks this far ahead for them.
+// Recurring tasks configured by link (the Extra Task) keep their daily share in both.
+export const SPAN_HORIZON_DAYS = 14;
+function isSpread(t) {
+  const st = Number(t && t.start_date) || 0, d = Number(t && t.due_date) || 0;
+  return !!(st && d && d > st);
+}
+
 // All subtasks of a given parent task, across statuses. Subtasks frequently
 // carry NO due date of their own (only the parent does), so the due-today filter
 // in getTasksDueToday never surfaces them - this pulls a parent's breakdown work
@@ -1704,7 +1736,8 @@ export function splitEstimateAcrossDays({ estimateMs, startDateMs, dueDateMs, mo
       if (isWeekday(ts)) days.push(ts); // weekends never count as days
     }
   }
-  if (!days.length) return empty();
+  // A span with no working day in it (e.g. Saturday -> Sunday): its due day, so it isn't lost.
+  if (!days.length) days.push(new Date(effDue).setHours(0, 0, 0, 0));
   const excluded = new Set((excludedDays || []).map((d) => new Date(d).setHours(0, 0, 0, 0)));
   const totalDays = days.length;
   let divisor = totalDays;
@@ -1915,17 +1948,21 @@ export function weeklyWithToday(weekly, today, now = Date.now()) {
   return { ...weekly, perDay, today: { ...weekly.today, ...sum(upTo) }, friday: { ...weekly.friday, ...sum(perDay) } };
 }
 
-export async function fetchWeeklySummary({ token, teamId, userId, taskUrls = [], fromTs, toTs, extendedMode = "days", now = Date.now(), taskCache, assigneeIds }) {
+export async function fetchWeeklySummary({ token, teamId, userId, taskUrls = [], fromTs, toTs, extendedMode = "days", now = Date.now(), taskCache, assigneeIds, spread = false }) {
   const MS = 86400000;
   const monday = new Date(fromTs);
   monday.setHours(0, 0, 0, 0);
   const friEnd = new Date(toTs);
   friEnd.setHours(23, 59, 59, 999);
 
-  // Weekday day-starts Mon..Fri.
+  // Every day of the range (the Due this week filter's Sunday -> Saturday), so a
+  // task due on a weekend is never missed. The working days (Mon-Fri) are the
+  // ones that carry the configured shares and the daily target.
+  const days = [];
   const weekdays = [];
   const cur = new Date(monday.getTime());
   while (cur.getTime() <= friEnd.getTime()) {
+    days.push(cur.getTime());
     if (isWeekday(cur.getTime())) weekdays.push(cur.getTime());
     cur.setDate(cur.getDate() + 1);
   }
@@ -1941,7 +1978,7 @@ export async function fetchWeeklySummary({ token, teamId, userId, taskUrls = [],
     : (userId != null ? [String(userId)] : []);
   let byDayTask = new Map();
   try {
-    byDayTask = await fetchTimeEntriesByDayTask(token, teamId, weekdays[0], weekdays[weekdays.length - 1] + (MS - 1), scopeUsers);
+    byDayTask = await fetchTimeEntriesByDayTask(token, teamId, days[0], days[days.length - 1] + (MS - 1), scopeUsers);
   } catch (e) {}
 
   // Pre-fetch the configured (by-URL) tasks once and compute each one's per-day
@@ -1995,15 +2032,30 @@ export async function fetchWeeklySummary({ token, teamId, userId, taskUrls = [],
     }
   }
 
+  // Every task of the week up front: due on each day, plus - in spread mode -
+  // started tasks due in the next two weeks, which count their share on the days
+  // of this week they cover.
+  const dueByDay = new Map();
+  for (const ts of days) {
+    try { dueByDay.set(ts, await getTasksDueToday(token, teamId, userId, ts)); } catch (e) { dueByDay.set(ts, []); }
+  }
+  let laterTasks = [];
+  if (spread) {
+    try { laterTasks = await getTasksDueBetween(token, teamId, userId, friEnd.getTime() + 1, friEnd.getTime() + SPAN_HORIZON_DAYS * MS); } catch (e) { laterTasks = []; }
+  }
+  const weekTasks = new Map();
+  for (const ts of days) for (const t of dueByDay.get(ts) || []) if (t && t.id != null && !weekTasks.has(String(t.id))) weekTasks.set(String(t.id), t);
+  for (const t of laterTasks) if (t && t.id != null && isSpread(t) && !weekTasks.has(String(t.id))) weekTasks.set(String(t.id), t);
+  const dueDayOf = (t) => (Number(t.due_date) ? new Date(Number(t.due_date)).setHours(0, 0, 0, 0) : 0);
+
   const perDay = [];
   let extraTask = null; // the auto-detected "Extra(s) Task(s)" (by name) - if found
-  for (const ts of weekdays) {
+  for (const ts of days) {
     const dayTime = byDayTask.get(ts) || new Map();
-    let dayTasks = [];
-    try {
-      dayTasks = await getTasksDueToday(token, teamId, userId, ts);
-    } catch (e) {
-      dayTasks = [];
+    const dayTasks = [];
+    for (const t of weekTasks.values()) {
+      if (dueDayOf(t) === ts) dayTasks.push(t);
+      else if (spread && isSpread(t) && !EXTRA_TASK_NAME_RE.test(t.name || "") && dayEstimateOf(t, ts, extendedMode, byDayTask) > 0) dayTasks.push(t);
     }
     const dayRows = [];
     const dueIds = new Set();
@@ -2024,9 +2076,8 @@ export async function fetchWeeklySummary({ token, teamId, userId, taskUrls = [],
       // due-day rows; the single discovered extra is spread across the week below.
       if (isExtraName) continue;
       dueIds.add(t.id);
-      // Same rule as Due today: a multi-day task counts this day's share, not
-      // its whole estimate (that made a Monday read 32h here vs 9h 30m there).
-      const est = dayEstimateOf(t, ts, extendedMode, byDayTask);
+      // By due date: the whole estimate on its due day. Spread: this day's share.
+      const est = spread ? dayEstimateOf(t, ts, extendedMode, byDayTask) : (Number(t.time_estimate) || 0);
       const sp = dayTime.get(t.id) || 0;
       dayEst += est;
       dayRows.push({ id: t.id, name: t.name || "(untitled task)", url: taskUrlFor(t.id), estimateMs: est, totalEstimateMs: Number(t.time_estimate) || 0, dueDateMs: Number(t.due_date) || null, spentMs: sp, done: isTaskDone(t), status: (t.status && t.status.status) || "", priority: cuPriorityName(t), type: "due", parentId: t.parent != null ? String(t.parent) : null, assignees: cuRowAssignees(t), container: taskContainer(t) });
@@ -2108,7 +2159,7 @@ export async function fetchWeeklySummary({ token, teamId, userId, taskUrls = [],
         }
       } else {
         const share = Math.round(((extraTask.estimateMs || 0) * 100) / weekdayCount) / 100;
-        for (const p of perDay) extraByDay.set(p.ts, share);
+        for (const p of perDay) if (isWeekday(p.ts)) extraByDay.set(p.ts, share); // working days only
       }
     } else if (extraCfg) {
       for (const p of perDay) {
@@ -2156,9 +2207,10 @@ export async function fetchWeeklySummary({ token, teamId, userId, taskUrls = [],
 
   return {
     perDay,
-    today: { estimateMs: tg.estimateMs, spentMs: tg.spentMs, fromTs: weekdays[0], toTs: todayTs + (MS - 1), count: t.length },
-    friday: { estimateMs: fg.estimateMs, spentMs: fg.spentMs, fromTs: weekdays[0], toTs: fridayTs + (MS - 1), count: perDay.length },
-    fromTs: weekdays[0],
+    // count = WORKING days (the daily target applies to those, not to a weekend).
+    today: { estimateMs: tg.estimateMs, spentMs: tg.spentMs, fromTs: days[0], toTs: todayTs + (MS - 1), count: t.filter((p) => isWeekday(p.ts)).length },
+    friday: { estimateMs: fg.estimateMs, spentMs: fg.spentMs, fromTs: days[0], toTs: fridayTs + (MS - 1), count: perDay.filter((p) => isWeekday(p.ts)).length },
+    fromTs: days[0],
     toTs: friEnd.getTime(),
   };
 }
@@ -2184,8 +2236,21 @@ export function cuRowAssignees(t) {
   }));
 }
 
-export async function fetchTodayEstimate({ token, teamId, userId, targetHours = 7, deadlineTaskUrls = [], now = Date.now(), extendedMode = "days", taskCache }) {
+export async function fetchTodayEstimate({ token, teamId, userId, targetHours = 7, deadlineTaskUrls = [], now = Date.now(), extendedMode = "days", taskCache, spread = false }) {
   const rawTasks = await getTasksDueToday(token, teamId, userId, now);
+  // Spread mode: started multi-day tasks due LATER count today's share too. They
+  // list with their real due date; only today's share is in the estimate.
+  if (spread) {
+    const { end: todayEnd } = localDayBounds(now);
+    const have = new Set(rawTasks.map((t) => String(t.id)));
+    let later = [];
+    try { later = await getTasksDueBetween(token, teamId, userId, todayEnd + 1, todayEnd + SPAN_HORIZON_DAYS * 86400000); } catch (e) { later = []; }
+    for (const t of later) {
+      if (!t || have.has(String(t.id)) || !isSpread(t) || Number(t.start_date) > todayEnd || EXTRA_TASK_NAME_RE.test(t.name || "")) continue;
+      have.add(String(t.id));
+      rawTasks.push({ ...t, _spanning: true });
+    }
+  }
   // Fetch today's tracked time per task ONCE (time entries API), so both the
   // regular tasks and the deadline tasks report time tracked today - not the
   // cumulative time_spent field (which includes previous days). Scoped to the
@@ -2222,7 +2287,10 @@ export async function fetchTodayEstimate({ token, teamId, userId, targetHours = 
     const hasBound = !!(tStart || tDue);
     const scaled = hasBound && (!!(tStart && tDue && tDue > tStart) || (!!tStart !== !!tDue));
     let est;
-    if (scaled) {
+    // By due date (default): a task's whole estimate counts on its due date.
+    // Spread: a multi-day task counts today's share. The Extra Task keeps its
+    // daily share either way.
+    if (scaled && (spread || isExtra)) {
       let spanMap = null;
       if (extendedMode === "excl0") {
         try { spanMap = await fetchTimeEntriesByDayTask(token, teamId, tStart || tDue, tDue || tStart, userScope); } catch (e) {}
@@ -2244,6 +2312,7 @@ export async function fetchTodayEstimate({ token, teamId, userId, targetHours = 
     } else {
       est = Number(t.time_estimate) || 0;
     }
+    if (t._spanning && !(est > 0)) continue; // no share today: not today's work
     const spent = entriesOk ? (todayByTask.get(t.id) || 0) : (Number(t.time_spent) || 0);
     estimateMs += est;
     spentMs += spent;
@@ -2267,6 +2336,7 @@ export async function fetchTodayEstimate({ token, teamId, userId, targetHours = 
       assignees: cuRowAssignees(t),
       container: taskContainer(t),
       url: taskUrlFor(t.id),
+      ...(t._spanning ? { spanning: true, extended: true } : {}),
     });
   }
 
@@ -2279,7 +2349,8 @@ export async function fetchTodayEstimate({ token, teamId, userId, targetHours = 
   // inflate the day. `seenIds` also blocks re-listing a subtask that is itself
   // due today (already a parent row) and, later, tracked-not-due-today dupes.
   const seenIds = new Set(tasks.map((t) => String(t.id)));
-  const originalParentIds = tasks.map((t) => t.id);
+  // Only parents DUE today (a later-due task's undated subtasks aren't today's work).
+  const originalParentIds = tasks.filter((t) => !t.spanning).map((t) => t.id);
   const todayFloorMs = new Date(now).setHours(0, 0, 0, 0);
   for (const parentId of originalParentIds) {
     let subs = [];
@@ -2298,7 +2369,7 @@ export async function fetchTodayEstimate({ token, teamId, userId, targetHours = 
       // in the "Tracked · not due today" section built later.
       if (sDue && new Date(sDue).setHours(0, 0, 0, 0) !== todayFloorMs) continue;
       seenIds.add(String(s.id));
-      const sScaled = !!(sStart && sDue && sDue > sStart) || (!!sStart !== !!sDue);
+      const sScaled = spread && (!!(sStart && sDue && sDue > sStart) || (!!sStart !== !!sDue));
       let sEst;
       if (sScaled) {
         const split = splitEstimateAcrossDays({
@@ -2452,7 +2523,7 @@ export async function fetchTodayEstimate({ token, teamId, userId, targetHours = 
 // Fetch tasks due within an arbitrary [fromTs, toTs] date range (inclusive) and
 // sum their estimates + tracked time within that window. Used by the popup's
 // "Filter Tasks" card for Today / This Week / Custom date views.
-export async function fetchDateRangeEstimate({ token, teamId, userId, fromTs, toTs, deadlineTaskUrls = [], extendedMode = "days", taskCache, assigneeIds, adminToken }) {
+export async function fetchDateRangeEstimate({ token, teamId, userId, fromTs, toTs, deadlineTaskUrls = [], extendedMode = "days", taskCache, assigneeIds, adminToken, spread = false }) {
   const MS = 86400000;
   const start = new Date(fromTs);
   start.setHours(0, 0, 0, 0);
@@ -2543,10 +2614,14 @@ export async function fetchDateRangeEstimate({ token, teamId, userId, fromTs, to
     ["due_date_gt", String(start.getTime() - 1)],
     ["due_date_lt", String(end.getTime() + 1)],
   ]));
-  await collectTasks(baseParams.concat([
-    ["due_date_gt", String(end.getTime() + 1)],
-    ["due_date_lt", String(end.getTime() + HORIZON_DAYS * MS + 1)],
-  ]));
+  // Spread mode only: started multi-day tasks due after the range count their
+  // share of the days inside it. By due date, a task belongs to its due date.
+  if (spread) {
+    await collectTasks(baseParams.concat([
+      ["due_date_gt", String(end.getTime() + 1)],
+      ["due_date_lt", String(end.getTime() + HORIZON_DAYS * MS + 1)],
+    ]));
+  }
 
   let estimateMs = 0;
   let spentMs = 0;
@@ -2570,7 +2645,7 @@ export async function fetchDateRangeEstimate({ token, teamId, userId, fromTs, to
     let est = rawEst;
     let divisor = 0;
     let totalDays = 0;
-    if (scaled) {
+    if (scaled && spread) {
       // Spread across the span's working days; count ONLY the days inside the
       // range so a Mon→Tue task contributes its share on Monday AND Tuesday.
       const excluded = extendedMode === "excl0"

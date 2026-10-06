@@ -109,6 +109,10 @@
     t = t.replace(/\u0000(\d+)\u0000/g, (m, i) => "<code>" + esc(codes[+i]) + "</code>");
     return t;
   }
+  const URL_RX = /(^|[\s(])(https?:\/\/[^\s<>"')]+[^\s<>"').,;:!?])/g;
+  function linkifyHtml(text) {
+    return String(text).split("\n").map((line) => esc(line.replace(/^ /, "\u00a0").replace(/ $/, "\u00a0")).replace(URL_RX, (m, pre, u) => pre + '<a href="' + u + '" target="_blank" rel="noopener noreferrer">' + u + "</a>")).join("<br>");
+  }
   function render(md) {
     const lines = String(md || "").replace(/\r\n?/g, "\n").split("\n");
     let out = "", i = 0;
@@ -282,8 +286,44 @@
     const changed = () => { if (o.onInput) o.onInput(get()); };
     area.addEventListener("focus", () => { try { document.execCommand("defaultParagraphSeparator", false, "p"); } catch (e) {} });
     area.addEventListener("input", () => { fixBoxes(); changed(); });
+    // A typed web address becomes a link once a space / Enter follows it (or
+    // when you leave the box). The cursor stays where it was.
+    const autoLink = () => {
+      const sel = window.getSelection();
+      const caret = sel && sel.rangeCount && area.contains(sel.getRangeAt(0).startContainer) ? sel.getRangeAt(0) : null;
+      const walker = document.createTreeWalker(area, NodeFilter.SHOW_TEXT);
+      const hits = [];
+      for (let n = walker.nextNode(); n; n = walker.nextNode()) {
+        if (n.parentElement && n.parentElement.closest("a, code, pre")) continue;
+        URL_RX.lastIndex = 0;
+        // Only an address that is complete (followed by a space or the end of a line someone left).
+        if (/https?:\/\/\S+\s/.test(n.nodeValue) || (!caret && URL_RX.test(n.nodeValue))) hits.push(n);
+      }
+      let restore = null;
+      for (const n of hits) {
+        const keep = caret && caret.startContainer === n ? caret.startOffset : -1;
+        const box = document.createElement("span");
+        box.innerHTML = linkifyHtml(n.nodeValue.replace(/\u00a0/g, " "));
+        const parts = [...box.childNodes];
+        n.replaceWith(...parts);
+        if (keep >= 0) {
+          let left = keep;
+          for (const part of parts) {
+            const len = part.textContent.length;
+            if (left <= len) { restore = part.nodeType === 3 ? [part, left] : [part.nextSibling || part, part.nextSibling ? 0 : 1]; break; }
+            left -= len;
+          }
+        }
+      }
+      if (restore) { try { const r = document.createRange(); r.setStart(restore[0], Math.min(restore[1], restore[0].nodeType === 3 ? restore[0].nodeValue.length : restore[0].childNodes.length)); r.collapse(true); sel.removeAllRanges(); sel.addRange(r); } catch (e) {} }
+      if (hits.length) changed();
+    };
+    area.addEventListener("blur", autoLink);
+    area.addEventListener("keyup", (e) => { if (e.key === " " || e.key === "Enter") autoLink(); });
     raw.addEventListener("input", changed);
     area.addEventListener("click", (e) => {
+      const a = e.target.closest("a[href]");
+      if (a && (e.ctrlKey || e.metaKey)) { e.preventDefault(); window.open(a.href, "_blank", "noopener"); return; }
       const b = e.target.closest(".md-box");
       if (!b) return;
       const on = !/☑/.test(b.textContent);
@@ -301,6 +341,7 @@
       e.preventDefault();
       e.stopPropagation();
       if (md2) document.execCommand("insertHTML", false, render(md2));
+      else if (/https?:\/\//.test(text || "")) document.execCommand("insertHTML", false, linkifyHtml(text));
       else document.execCommand("insertText", false, text || "");
     });
     wrap.querySelector(".md-tb").addEventListener("mousedown", (e) => { if (e.target.closest("button")) e.preventDefault(); }); // keep the selection
@@ -328,6 +369,27 @@
       else document.execCommand(cmd, false, null);
       changed();
     });
+    let lastRange = null;
+    const keepRange = () => { const sel = window.getSelection(); if (sel && sel.rangeCount && area.contains(sel.getRangeAt(0).startContainer)) lastRange = sel.getRangeAt(0).cloneRange(); };
+    area.addEventListener("keyup", keepRange);
+    area.addEventListener("mouseup", keepRange);
+    area.addEventListener("input", keepRange);
+    // Put plain text where the cursor last was (end of the note if it never had one).
+    wrap.insertText = (text) => {
+      if (rawMode) { raw.focus(); raw.setRangeText(text, raw.selectionStart, raw.selectionEnd, "end"); changed(); return; }
+      area.focus();
+      const sel = window.getSelection();
+      if (lastRange && area.contains(lastRange.startContainer)) { sel.removeAllRanges(); sel.addRange(lastRange); }
+      else { const r = document.createRange(); r.selectNodeContents(area); r.collapse(false); sel.removeAllRanges(); sel.addRange(r); }
+      const r0 = sel.rangeCount ? sel.getRangeAt(0) : null;
+      let before = "";
+      if (r0) { try { const pre = document.createRange(); pre.selectNodeContents(area); pre.setEnd(r0.startContainer, r0.startOffset); before = pre.toString().slice(-1); } catch (e) {} }
+      const t2 = (before && !/[\s"'(\[]/.test(before) ? " " : "") + text;
+      if (/https?:\/\//.test(t2)) document.execCommand("insertHTML", false, linkifyHtml(t2));
+      else document.execCommand("insertText", false, t2);
+      keepRange();
+      changed();
+    };
     wrap.getMarkdown = get;
     wrap.focusEnd = () => { const a = rawMode ? raw : area; a.focus(); if (!rawMode) { const r = document.createRange(); r.selectNodeContents(area); r.collapse(false); const s = window.getSelection(); s.removeAllRanges(); s.addRange(r); } };
     wrap.contentEl = () => (rawMode ? raw : area);
@@ -358,7 +420,7 @@
   // the editor writes Markdown into it (with an input event), setting its value
   // redraws the editor, Ctrl+Enter / Esc and pasted files are handed to it, and
   // focus() goes to the editor.
-  const RICH = "textarea.tf-nin, textarea.tf-nein, textarea.pcm-cmt";
+  const RICH = "textarea.tf-nin, textarea.tf-nein, textarea.pcm-cmt, textarea.pcm-desc-ta";
   const valueDesc = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value");
   function upgrade(ta) {
     if (ta._mdEd || !ta.isConnected) return;
@@ -370,11 +432,13 @@
     ta.style.display = "none";
     ed.hidden = ta.hidden;
     ta.after(ed);
+    // A tall box (e.g. the task description) opens just as tall.
+    if (Number(ta.rows) > 3) ed.querySelector(".md-area").style.minHeight = Math.min(420, Number(ta.rows) * 20) + "px";
     Object.defineProperty(ta, "value", { configurable: true, get: () => valueDesc.get.call(ta), set: (v) => { valueDesc.set.call(ta, v); ed.setMarkdown(v); } });
     ta.focus = () => ed.focusEnd();
     try { new MutationObserver(() => { ed.hidden = ta.hidden; }).observe(ta, { attributes: true, attributeFilter: ["hidden"] }); } catch (e) {}
     ed.addEventListener("keydown", (e) => {
-      if ((e.key === "Enter" && (e.ctrlKey || e.metaKey)) || e.key === "Escape") {
+      if ((e.key === "Enter" && (e.ctrlKey || e.metaKey)) || e.key === "Escape" || ((e.ctrlKey || e.metaKey) && String(e.key).toLowerCase() === "s")) {
         e.preventDefault(); e.stopPropagation();
         ta.dispatchEvent(new KeyboardEvent("keydown", { key: e.key, ctrlKey: e.ctrlKey, metaKey: e.metaKey, bubbles: true, cancelable: true }));
       }
@@ -386,6 +450,13 @@
       e.preventDefault(); e.stopPropagation();
       try { const dt = new DataTransfer(); for (const f of fl) dt.items.add(f); ta.dispatchEvent(new ClipboardEvent("paste", { clipboardData: dt, bubbles: true, cancelable: true })); } catch (err) {}
     });
+    ed.addEventListener("dragover", (e) => { if (e.dataTransfer && [...e.dataTransfer.types].includes("Files")) e.preventDefault(); });
+    ed.addEventListener("drop", (e) => {
+      const fl = [...((e.dataTransfer && e.dataTransfer.files) || [])];
+      if (!fl.length) return;
+      e.preventDefault(); e.stopPropagation();
+      try { const dt = new DataTransfer(); for (const f of fl) dt.items.add(f); ta.dispatchEvent(new DragEvent("drop", { dataTransfer: dt, bubbles: true, cancelable: true })); } catch (err) {}
+    });
     if (wasFocused) setTimeout(() => ed.focusEnd(), 0);
   }
   const upgradeAll = () => document.querySelectorAll(RICH).forEach(upgrade);
@@ -394,7 +465,8 @@
   upgradeAll();
   const ucss = document.createElement("style");
   ucss.textContent = ".md-ed-for .md-area { min-height: 54px; } .md-ed-for[hidden] { display: none; }" +
-    " .pcm-cm-t .md-box { cursor: default; pointer-events: none; }"; // a ClickUp comment's boxes are read-only here
+    " .pcm-cm-t .md-box { cursor: default; pointer-events: none; }" + // a ClickUp comment's boxes are read-only here
+    " .md-area a { cursor: pointer; }";
   document.head.appendChild(ucss);
 
   window.PcmMd = { render, fromHtml, toggleTask, editor, pasteInto };

@@ -1307,7 +1307,11 @@ const DEFAULT_SETTINGS = {
   // For a task that spans a start..due date range, "days" divides its estimate
   // equally across all days in the span; "excl0" divides across ONLY the days
   // with >0 tracked minutes (skipping untracked days and re-spreading the share).
-  clickupExtendedMode: "days", // "days" | "excl0"
+  clickupExtendedMode: "days", // "days" | "excl0" (legacy - clickupMultiDay decides now)
+  // How a multi-day task (start -> due) counts, in EVERY card and filter:
+  // "due" = whole estimate on its due date (default), "days" = spread over the
+  // working days it covers, "excl0" = spread over the days with time tracked on it.
+  clickupMultiDay: "due",
   // ---- Client label ----
   // Which level of the ClickUp hierarchy names the "client" a task belongs to.
   // "auto" = Folder (when not hidden) → Space → List; or force one level.
@@ -2264,7 +2268,8 @@ async function clickupPublic() {
     weekMode: settings.clickupWeekMode || "sun-sat",
     adminSyncToken: settings.adminSyncToken !== false,
     workdayEndHour: Number(settings.clickupWorkdayEndHour) || 0,
-    extendedMode: settings.clickupExtendedMode === "excl0" ? "excl0" : "days",
+    extendedMode: extendedModeOf(settings),
+    multiDay: multiDayOf(settings),
     weeklyTo: settings.clickupWeeklyTo === "friday" ? "friday" : "today",
     state: state || null,
   };
@@ -2358,7 +2363,9 @@ function mergeExtraTaskUrl(deadlineTaskUrls, extraTask) {
 async function buildRangeBundle(cfg, settings, fromTs, toTs) {
   const d = await computeFilterData(cfg, settings, [], fromTs, toTs);
   cacheFilterResult(filterKey([], fromTs, toTs), d); // Explore / exports get it free
-  const inRange = (t) => { const x = Number(t && t.dueDateMs) || 0; return x >= fromTs && x <= toTs; };
+  // Spread mode: a started task due later belongs here for its share of these dates.
+  const spreadOn = spreadOf(settings);
+  const inRange = (t) => { const x = Number(t && t.dueDateMs) || 0; return (x >= fromTs && x <= toTs) || (spreadOn && t && t.extended && Number(t.estimateMs) > 0); };
   const tasks = (Array.isArray(d.tasks) ? d.tasks : []).filter(inRange);
   const deadlineTasks = Array.isArray(d.deadlineTasks) ? d.deadlineTasks : []; // already this range's share
   const sum = (a, k) => a.reduce((n, t) => n + (Number(t && t[k]) || 0), 0);
@@ -2443,7 +2450,7 @@ async function computeFilterData(cfg, settings, assigneeIds, fromTs, toTs) {
     const tid = parseTaskIdFromUrl(u);
     if (tid && !deadlineTaskUrls.some((x) => parseTaskIdFromUrl(x) === tid)) deadlineTaskUrls.push(u);
   }
-  const extendedMode = settings.clickupExtendedMode === "excl0" ? "excl0" : "days";
+  const extendedMode = extendedModeOf(settings);
   // "My tasks" (no scope) keeps the historical userId-based path; any real
   // multi-someone scope sends the member ids explicitly.
   const isSelfOnly = scopeIds.length === 1 && scopeIds[0] === myId;
@@ -2457,7 +2464,7 @@ async function computeFilterData(cfg, settings, assigneeIds, fromTs, toTs) {
   const admin = (cfg.adminToken && String(cfg.adminToken).trim()) || undefined;
   const data = await fetchDateRangeEstimate({
     token: cfg.token, teamId: cfg.teamId, userId: cfg.userId,
-    fromTs, toTs, deadlineTaskUrls, extendedMode,
+    fromTs, toTs, deadlineTaskUrls, extendedMode, spread: spreadOf(settings),
     assigneeIds: passIds,
     adminToken: isSelfOnly ? undefined : admin,
     taskCache: createTaskCache(),
@@ -2998,6 +3005,14 @@ async function refreshClickup(opts = {}) {
 // ClickUp fan-out, and reopening the popup a few times in a row was burning
 // through the rate limit ("ClickUp rate limit hit - try again in a minute").
 const FORCE_REBUILD_MIN_MS = 60000;
+// How the weekly bundle counts (bump when the rule changes so cached copies rebuild).
+// 5 = the filter's Sun-Sat week, counted by the multi-day setting (by due date /
+// spread). Stamped with the setting too, so switching it rebuilds the week at once.
+const WEEKLY_RULE = 5;
+// The multi-day setting ("due" | "days" | "excl0") and what the counting code needs from it.
+function multiDayOf(settings) { const m = settings && settings.clickupMultiDay; return m === "days" || m === "excl0" ? m : "due"; }
+function extendedModeOf(settings) { return multiDayOf(settings) === "excl0" ? "excl0" : "days"; }
+function spreadOf(settings) { return multiDayOf(settings) !== "due"; }
 function forceFloor(forced, ttl) { return forced ? FORCE_REBUILD_MIN_MS : ttl; }
 
 // A configured task (the recurring Extra Task) that fails to load on THIS refresh
@@ -3049,12 +3064,13 @@ async function refreshClickupImpl({ includeTasks = false, viaAlarm = false, forc
     Array.isArray(settings.clickupDeadlineTaskUrls) ? settings.clickupDeadlineTaskUrls : [],
     extraTask
   );
-  const extendedMode = settings.clickupExtendedMode === "excl0" ? "excl0" : "days";
+  const extendedMode = extendedModeOf(settings);
+  const spread = spreadOf(settings), multiDay = multiDayOf(settings);
   // One shared cache for configured-task fetches across today + weekly, so each
   // by-URL task is fetched from the API at most once per refresh.
   const taskCache = createTaskCache();
   try {
-    const data = await fetchTodayEstimate({ token: cfg.token, teamId: cfg.teamId, userId: cfg.userId, targetHours, deadlineTaskUrls, extendedMode, taskCache });
+    const data = await fetchTodayEstimate({ token: cfg.token, teamId: cfg.teamId, userId: cfg.userId, targetHours, deadlineTaskUrls, extendedMode, taskCache, spread });
     // One failed request must not knock the Extra Task out of today's total.
     keepLastGoodConfigured(data, await getClickupState().catch(() => null));
 
@@ -3066,19 +3082,19 @@ async function refreshClickupImpl({ includeTasks = false, viaAlarm = false, forc
     // fetchTodayEstimate above. It also re-runs when the week rolls over.
     let weekly = null;
     try {
-      const nowDate = new Date();
-      const monday = new Date(nowDate);
-      monday.setHours(0, 0, 0, 0);
-      monday.setDate(nowDate.getDate() - ((nowDate.getDay() + 6) % 7));
-      const friEnd = new Date(monday);
-      friEnd.setDate(monday.getDate() + 4);
-      friEnd.setHours(23, 59, 59, 999);
+      // The same week as the Due this week filter (Sunday -> Saturday by default),
+      // so a task due on a weekend is counted too.
+      const wb = cuWeekBounds(settings.clickupWeekMode || "sun-sat", 0);
+      const monday = new Date(wb.fromTs);
+      const friEnd = new Date(wb.toTs);
       const mondayTs = monday.getTime();
       const friEndTs = friEnd.getTime();
       const prev = (await getClickupState().catch(() => null)) || null;
       const prevWeekly = prev && prev.weekly;
       const WEEKLY_TTL = 30 * 60000;
-      const weekChanged = !prevWeekly ||
+      // A copy built by an older counting rule is rebuilt at once (an update must
+      // not leave Tue-Fri on the old numbers for up to half an hour).
+      const weekChanged = !prevWeekly || prevWeekly.rule !== WEEKLY_RULE + ":" + multiDay ||
         prevWeekly.fromTs !== mondayTs || prevWeekly.toTs !== friEndTs;
       if (!weekChanged && prevWeekly.at && Date.now() - prevWeekly.at < forceFloor(forceWeekly, WEEKLY_TTL)) {
         weekly = prevWeekly; // still fresh - reuse without extra API calls
@@ -3092,8 +3108,10 @@ async function refreshClickupImpl({ includeTasks = false, viaAlarm = false, forc
           toTs: friEndTs,
           extendedMode,
           taskCache,
+          spread,
         });
         weekly.at = Date.now();
+        weekly.rule = WEEKLY_RULE + ":" + multiDay;
       }
       // Today's column is Due today's own numbers (fresh every refresh), so the
       // This week card can't disagree with the Due today card on the same day.
@@ -3137,7 +3155,7 @@ async function refreshClickupImpl({ includeTasks = false, viaAlarm = false, forc
       // the background; opening the popup or the options page rebuilds them now.
       const WEEK_TTL = 15 * 60000;
       const buildWeek = async (prev, fromTs, toTs) => {
-        const rangeChanged = !prev || prev.fromTs !== fromTs || prev.toTs !== toTs;
+        const rangeChanged = !prev || prev.fromTs !== fromTs || prev.toTs !== toTs || prev.multiDay !== multiDay;
         if (!rangeChanged && prev && prev.at && Date.now() - prev.at < forceFloor(forceWeeks, WEEK_TTL)) return prev; // fresh - no API calls
         const w = await computeFilterData(cfg, settings, [], fromTs, toTs);
         // "Due this week" / "Due next week" / "Due Mon-Fri" are STRICTLY
@@ -3151,9 +3169,12 @@ async function refreshClickupImpl({ includeTasks = false, viaAlarm = false, forc
         // estimate total from the surviving rows so the badge/headline match the
         // listing. trackedTasks (time spent IN the range) are intentionally kept -
         // they reflect tracked time, not a due claim.
+        // Spread mode keeps a started task due after the week: it counts its
+        // share of this week's days (by the setting the user chose).
         const prune = (rows) => (Array.isArray(rows) ? rows : []).filter((t) => {
           const d = Number(t && t.dueDateMs) || 0;
           if (!d) return true;            // no due → not a due-bound claim to prune
+          if (spread && t.extended && Number(t.estimateMs) > 0) return true;
           return d >= fromTs && d <= toTs;
         });
         const tasks = prune(w.tasks);
@@ -3174,6 +3195,7 @@ async function refreshClickupImpl({ includeTasks = false, viaAlarm = false, forc
           noEstimateCount: tasks.filter((t) => !Number(t.estimateMs)).length
             + deadlineTasks.filter((t) => !Number(t.dayEstimateMs)).length,
           at: Date.now(),
+          multiDay,
         };
       };
       thisWeek = await buildWeek((prevSt && prevSt.thisWeek) || null, sun.getTime(), sat.getTime());
@@ -3186,9 +3208,9 @@ async function refreshClickupImpl({ includeTasks = false, viaAlarm = false, forc
       // once here means the popup paints instantly from state and the badge -
       // which cannot run page code - reads the very same number.
       const buildDay = async (prev, fromTs, toTs) => {
-        const rangeChanged = !prev || prev.fromTs !== fromTs || prev.toTs !== toTs;
+        const rangeChanged = !prev || prev.fromTs !== fromTs || prev.toTs !== toTs || prev.multiDay !== multiDay;
         if (!rangeChanged && prev && prev.at && Date.now() - prev.at < forceFloor(forceWeeks, WEEK_TTL)) return prev;
-        return buildRangeBundle(cfg, settings, fromTs, toTs);
+        return { ...(await buildRangeBundle(cfg, settings, fromTs, toTs)), multiDay };
       };
       const tomStart = new Date(); tomStart.setDate(tomStart.getDate() + 1); tomStart.setHours(0, 0, 0, 0);
       const tomEnd = new Date(tomStart); tomEnd.setHours(23, 59, 59, 999);
@@ -6070,6 +6092,8 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
             } catch (e) {}
           }
           sendResponse({ ok: res.ok, status: res.status });
+          // A batch (Insights › Plan "Apply all") refreshes once at the end itself.
+          if (res.ok && msg.skipRefresh) break;
           if (res.ok) {
             // Clearing the filter cache alone isn't enough: the stored today card,
             // weekly summary and the due-this/next-week bundles (30-60 min TTLs)
@@ -6951,6 +6975,9 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         if (p.clickupExtendedMode !== undefined) {
           patch.clickupExtendedMode = p.clickupExtendedMode === "excl0" ? "excl0" : "days";
         }
+        if (p.clickupMultiDay !== undefined) {
+          patch.clickupMultiDay = p.clickupMultiDay === "days" || p.clickupMultiDay === "excl0" ? p.clickupMultiDay : "due";
+        }
         if (p.clickupWeeklyTo !== undefined) {
           patch.clickupWeeklyTo = p.clickupWeeklyTo === "friday" ? "friday" : "today";
         }
@@ -6969,6 +6996,13 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         // estimate itself, so refetch from the API. The weeklyTo toggle is cheap:
         // it just re-renders from the cached Mon→today / Mon→Friday aggregates
         // (fetchWeeklySummary already computed both), so no network here.
+        if (patch.clickupMultiDay !== undefined) {
+          // Every card and filter counts differently now: rebuild them all.
+          clearFilterCache();
+          sendResponse({ ok: true, settings: next });
+          refreshClickup({ includeTasks: true, forceWeeks: true, forceWeekly: true }).catch(() => {});
+          break;
+        }
         if (patch.clickupWeekMode !== undefined) {
           // Same here: the week bundles rebuild in the background.
           sendResponse({ ok: true, settings: next });

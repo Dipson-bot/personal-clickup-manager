@@ -171,5 +171,25 @@
     valueEl.title = kind === "est" ? "Show the tasks behind this estimate" : "Show where this tracked time went";
     valueEl.onclick = (e) => { e.stopPropagation(); const d = getData(); if (d) open(valueEl, d, kind); };
   }
-  window.PcmBreakdown = { open, attach, close };
+  // The This week card's breakdown: every task's share added up over the days
+  // shown (Mon -> today, or Mon -> Friday). A task due after these days is
+  // marked with its due date - it's here for the days it's being worked on.
+  function fromWeek(w, agg, label, fmt) {
+    const days = (w && Array.isArray(w.perDay) ? w.perDay : []).filter((d) => d && d.ts <= agg.toTs);
+    const due = new Map(), cfg = new Map(), other = new Map();
+    const add = (m, t, est, spent) => {
+      const k = String(t.id || t.name);
+      const r = m.get(k) || { name: t.name, url: t.url, estimateMs: 0, dayEstimateMs: 0, spentMs: 0, dueDateMs: Number(t.dueDateMs) || 0 };
+      r.estimateMs += est; r.dayEstimateMs += est; r.spentMs += spent;
+      m.set(k, r);
+    };
+    for (const d of days) {
+      for (const t of d.tasks || []) add(t.type === "cfg" || t.type === "extra" ? cfg : due, t, num(t.estimateMs), num(t.spentMs));
+      for (const t of d.trackedTasks || []) add(other, t, 0, num(t.spentMs));
+    }
+    const short = (ms) => new Date(ms).toLocaleDateString(undefined, { month: "short", day: "numeric" });
+    const tasks = [...due.values()].map((r) => (r.dueDateMs > agg.toTs ? { ...r, name: r.name + " (due " + short(r.dueDateMs) + ")" } : r));
+    return { label, estMs: num(agg.estimateMs), spentMs: num(agg.spentMs), tasks, cfg: [...cfg.values()], other: [...other.values()], fmt };
+  }
+  window.PcmBreakdown = { open, attach, close, fromWeek };
 })();

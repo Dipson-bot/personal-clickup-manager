@@ -114,6 +114,13 @@
   #insPlusView .ip-tmreset:hover { color: var(--indigo); text-decoration: underline; }
   #insPlusView .ip-tmin { width: 78px; font: inherit; font-size: 12px; text-align: right; padding: 3px 6px; border: 1px solid var(--indigo); border-radius: 6px; background: var(--card); color: var(--text); }
   #insPlusView .ip-tmin.bad { border-color: var(--red); }
+  #insPlusView .ip-applyest { margin: 4px 0 0 auto; display: block; font-size: 11px; padding: 2px 9px; color: var(--indigo); border-color: var(--indigo); }
+  #insPlusView .ip-applyest:hover { background: var(--indigo); color: #fff; }
+  #insPlusView .ip-applybar { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; padding: 8px 0; border-bottom: 1px dashed var(--border); font-size: 12px; color: var(--muted); }
+  #insPlusView .ip-applybar span { flex: 1; min-width: 200px; }
+  #insPlusView .ip-applyall { font-weight: 600; color: #fff; background: var(--indigo); border-color: var(--indigo); }
+  #insPlusView .ip-applyall:hover { color: #fff; filter: brightness(1.1); }
+  #insPlusView .ip-applymsg { margin: 6px 0 0; }
   #insPlusView .ip-empty { padding: 26px 0; text-align: center; color: var(--muted); }
   /* performance */
   #insPlusView .ip-kpis { display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); gap: 10px; margin: 0 0 14px; }
@@ -491,11 +498,28 @@
     return '<div class="ip-row"><span class="no">' + esc(o.no != null ? o.no : "") + '</span><div class="nm"><a href="' + esc(t.url || taskUrl(t.id)) + '" target="_blank" rel="noopener" title="' + esc(t.name) + '">' + esc(t.name) + "</a>" +
       (bits.length ? '<div class="sub">' + bits.join('<span aria-hidden="true">·</span>') + "</div>" : "") + '</div><span class="tm">' +
       (o.edit ? '<button type="button" class="ip-tmed" data-ed="' + esc(t.id) + '" data-ms="' + Math.round(o.edit.ms) + '"' + (o.edit.day ? ' data-day="1"' : "") + ' title="Click to change the time planned for this ' + (o.edit.day ? "task on this day" : "task") + ' (only in this plan - nothing changes in ClickUp)">' + timeHtml + "</button>" +
-        (t.edited ? '<button type="button" class="ip-tmreset" data-reset="' + esc(t.id) + '" title="Back to the automatic time">↺ was ' + esc(fmt(t.autoMs)) + "</button>" : "") : timeHtml) + "</span></div>";
+        (t.edited ? '<button type="button" class="ip-tmreset" data-reset="' + esc(t.id) + '" title="Back to the automatic time">↺ was ' + esc(fmt(t.autoMs)) + "</button>" : "") : timeHtml) +
+      (o.apply ? '<button type="button" class="ip-btn ip-applyest" data-applyest="' + esc(t.id) + '" title="Set ' + esc(fmt(estOf(t))) + ' as this task\'s estimate in ClickUp">' + (applying.has(t.id) ? "Saving…" : "Apply") + "</button>" : "") + "</span></div>";
   }
-  function grp(id, color, title, total, body, openByDefault) {
+  function grp(id, color, title, total, body, openByDefault, top) {
     const open = planOpen[id] != null ? planOpen[id] : !!openByDefault;
-    return '<details class="ip-grp" data-grp="' + esc(id) + '"' + (open ? " open" : "") + "><summary>" + (color ? '<span class="dot" style="--c:' + color + '"></span>' : "") + "<span>" + title + '</span><span class="sp"></span><span class="tot">' + total + '</span></summary><div class="body">' + body + "</div></details>";
+    return '<details class="ip-grp" data-grp="' + esc(id) + '"' + (open ? " open" : "") + "><summary>" + (color ? '<span class="dot" style="--c:' + color + '"></span>' : "") + "<span>" + title + '</span><span class="sp"></span><span class="tot">' + total + '</span></summary><div class="body">' + (top || "") + body + "</div></details>";
+  }
+  // ---------- Apply a suggested time as the task's ClickUp estimate ----------
+  const applying = new Set();
+  let applyingAll = "", applyMsg = "";
+  // The time shown (your own if you changed it), rounded to 5 minutes.
+  const estOf = (t) => Math.max(5 * MIN, Math.round((Number(t.planMs) || 0) / (5 * MIN)) * 5 * MIN);
+  async function applyEstimate(t, batch) {
+    const ms = estOf(t);
+    const r = await send({ type: "SET_CLICKUP_ESTIMATE", taskId: String(t.id), estimateMs: ms, skipRefresh: !!batch }, 20000).catch(() => null);
+    if (!(r && r.ok)) return false;
+    // The task has an estimate now: move it to "Tasks with an estimate" at once
+    // (the open-task list refreshes from ClickUp in the background).
+    const rows = openRows();
+    const row = rows && rows.find((x) => String(x.id) === String(t.id));
+    if (row) row.estimateMs = ms;
+    return true;
   }
   function renderPlan(el) {
     const head = '<div class="ip-head"><h2>Plan</h2><span class="sp"></span>' +
@@ -533,7 +557,8 @@
     }
     if (p.missing.length) {
       b += grp("sug", "rgba(217,119,6,.5)", "Tasks without an estimate · " + p.missing.length + " (suggested)", fmt(p.sugMs),
-        p.missing.slice().sort((a, b2) => b2.planMs - a.planMs).map((t) => taskRow(t, fmt(t.planMs) + (t.edited ? "<small>your time</small>" : t.suggested.sure ? "" : "<small>rough</small>"), { no: t.no, why: t.suggested.why, edit: { ms: t.planMs } })).join(""));
+        p.missing.slice().sort((a, b2) => b2.planMs - a.planMs).map((t) => taskRow(t, fmt(t.planMs) + (t.edited ? "<small>your time</small>" : t.suggested.sure ? "" : "<small>rough</small>"), { no: t.no, why: t.suggested.why, edit: { ms: t.planMs }, apply: true })).join(""), false,
+        '<div class="ip-applybar"><span>Make these times the tasks\' real estimates in ClickUp (change any time first by clicking it).</span><button type="button" class="ip-btn ip-applyall" data-applyall="1">' + (applyingAll ? "Saving… " + applyingAll : "Apply all " + p.missing.length) + "</button></div>");
     }
     if (p.reviewMine.length) {
       b += grp("revmine", "#0d9488", "Your part: reviews of developers' tasks · " + p.reviewMine.length, fmt(p.reviewMine.reduce((a, t) => a + t.planMs, 0)),
@@ -544,7 +569,7 @@
         p.reviewsExpected.map((t) => taskRow(t, fmt(t.planMs) + (t.edited ? "<small>your time</small>" : "<small>expected</small>"), { no: t.no, why: t.why, edit: { ms: t.planMs } })).join(""));
     }
     h += '<div class="ip-card"><h3>What makes up the ' + fmt(p.plannedMs) + '</h3><p class="hint">Every task due ' + (planWeek === "this" ? "by Friday" : "that week") + ", overdue ones included (they carry over). Time = estimate minus what's already tracked. Tasks without an estimate get a suggested time based on how long similar tasks took. Developers' dev tasks count as the short review that comes back to you (" + esc(fmt(p.rv.ms)) + " each), not their whole estimate. Open a group to see each task; click a time to change it (only in this plan).</p>" +
-      b + '<div class="ip-total"><span>Total</span><span>' + fmt(p.plannedMs) + "</span></div></div>";
+      (applyMsg ? '<p class="ip-meta ip-applymsg">' + esc(applyMsg) + "</p>" : "") + b + '<div class="ip-total"><span>Total</span><span>' + fmt(p.plannedMs) + "</span></div></div>";
     // 3) Fix it
     if (p.overflow.length) {
       h += '<div class="ip-card"><h3>Doesn\'t fit this week · ' + fmt(p.overMs) + '</h3><p class="hint">The days below hold ' + fmt(p.fitsMs) + " of tasks (" + fmt(Math.max(0, p.tMs - p.cfgPerDay)) + " a day next to the Extra Task). These come last in the order, so they're the ones to move to next week, split, or ask about.</p>" +
@@ -830,6 +855,36 @@
         inp.addEventListener("click", (k) => k.stopPropagation());
       };
     });
+    el.querySelectorAll("[data-applyest]").forEach((b) => {
+      b.onclick = async (e) => {
+        e.preventDefault(); e.stopPropagation();
+        const t = findT(b.getAttribute("data-applyest"));
+        if (!t || applying.has(t.id) || applyingAll) return;
+        applying.add(t.id); applyMsg = ""; repaint();
+        const ok = await applyEstimate(t, false);
+        applying.delete(t.id);
+        applyMsg = ok ? "“" + t.name + "” now has a " + fmt(estOf(t)) + " estimate in ClickUp." : "Couldn't set the estimate for “" + t.name + "” - try again in a minute.";
+        repaint();
+      };
+    });
+    const all = el.querySelector("[data-applyall]");
+    if (all) all.onclick = async (e) => {
+      e.preventDefault(); e.stopPropagation();
+      const list = (lastPlan && lastPlan.missing || []).slice();
+      if (!list.length || applyingAll) return;
+      if (!confirm("Set these estimates in ClickUp?\n\n" + list.map((t) => "• " + fmt(estOf(t)) + "  " + t.name).join("\n").slice(0, 1500))) return;
+      let done = 0, failed = 0;
+      for (const t of list) {
+        applyingAll = (done + failed + 1) + " of " + list.length; repaint();
+        if (await applyEstimate(t, true)) done++; else failed++;
+        await new Promise((r) => setTimeout(r, 400)); // gentle on ClickUp's rate limit
+      }
+      applyingAll = "";
+      applyMsg = done + " estimate" + (done === 1 ? "" : "s") + " set in ClickUp." + (failed ? " " + failed + " couldn't be set - try those again in a minute." : "");
+      repaint();
+      // One refresh for the whole batch (each save skipped its own).
+      send({ type: "CLICKUP_REFRESH", includeTasks: true, forceWeekly: true, forceWeeks: true }, 90000).catch(() => {});
+    };
     el.querySelectorAll(".ip-tmreset").forEach((b) => {
       b.onclick = async (e) => { e.preventDefault(); e.stopPropagation(); const t = findT(b.getAttribute("data-reset")); if (t) { await setOv(t, null).catch(() => {}); repaint(); } };
     });

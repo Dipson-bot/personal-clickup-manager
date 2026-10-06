@@ -888,6 +888,21 @@
   .ins-subnav button { font: inherit; font-size: 12.5px; font-weight: 600; padding: 6px 14px; border: 0; border-radius: 7px; background: none; color: var(--muted); cursor: pointer; }
   .ins-subnav button:hover { color: var(--text); }
   .ins-subnav button.on { background: var(--indigo, #6366f1); color: #fff; }
+  .md-ex { margin-top: 8px; border: 1px solid var(--border); border-radius: 10px; padding: 10px 12px; background: var(--card); font-size: 12px; }
+  .md-ex-h { margin-bottom: 6px; color: var(--text); }
+  .md-ex table { width: 100%; border-collapse: collapse; }
+  .md-ex th, .md-ex td { padding: 5px 8px; border-bottom: 1px solid var(--border); text-align: center; font-variant-numeric: tabular-nums; }
+  .md-ex thead th { font-size: 10.5px; text-transform: uppercase; letter-spacing: .05em; color: var(--muted); font-weight: 700; }
+  .md-ex tbody th { text-align: left; font-weight: 500; color: var(--muted); }
+  .md-ex tbody th small { display: block; font-size: 10.5px; opacity: .85; }
+  .md-ex td { color: var(--muted); }
+  .md-ex tr.on th { color: var(--text); font-weight: 700; }
+  .md-ex tr.on td.v { color: #fff; background: var(--indigo, #6366f1); font-weight: 700; border-radius: 4px; }
+  .md-ex tr.on { box-shadow: inset 3px 0 0 var(--indigo, #6366f1); }
+  .md-ex-n { margin: 8px 0 4px; padding-left: 18px; color: var(--muted); line-height: 1.5; }
+  .md-ex-n li { display: none; }
+  .md-ex-n li.on { display: list-item; color: var(--text); }
+  .wk-mode { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin: 6px 0 2px; font-size: 11.5px; color: var(--muted); }
   .ins-top { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; margin: 0 0 14px; }
   .ins-top .ins-subnav { margin: 0; }
   .ins-refresh { font: inherit; font-size: 12.5px; font-weight: 600; padding: 6px 12px; border: 1px solid var(--border); border-radius: 9px; background: var(--card); color: var(--text); cursor: pointer; }
@@ -1085,7 +1100,7 @@
         <div class="dash-h"><h3>This week</h3><span class="hint" id="optWeekRange"></span><span class="spacer"></span>
           <div class="opt-toggle sm" id="optWeekToggle">
             <button type="button" data-to="today">To today</button>
-            <button type="button" data-to="friday">To Friday</button>
+            <button type="button" data-to="friday" title="The whole week, Sunday to Saturday (tasks due on a weekend count too)">Whole week</button>
           </div>
         </div>
         <div class="cu-bars">
@@ -1095,6 +1110,7 @@
           <div class="cu-bar2 trk"><div class="cu-fill2 trk" id="optWeekTrkFill"></div></div>
         </div>
         <div class="hint" id="optWeekSub"></div>
+        <div class="wk-mode" id="optWeekMode"></div>
         <div class="wk-chart" id="optWeekChart" hidden></div>
       </div>
     </div>
@@ -1420,7 +1436,7 @@
           <div class="set-line"><span class="grow">Weekly totals count up to</span>
             <select id="cuWeeklyTo">
               <option value="today">Today</option>
-              <option value="friday">Friday (full week)</option>
+              <option value="friday">The whole week</option>
             </select></div>
           <div class="set-line"><span class="grow">Sync with ClickUp every</span>
             <select id="cuSyncMin">
@@ -1441,14 +1457,31 @@
           <div class="set-line col"><label for="cuDeadlineUrls">Recurring or multi-day tasks <span class="hint">- ClickUp links, one per line</span></label>
             <textarea id="cuDeadlineUrls" rows="3" placeholder="https://app.clickup.com/t/..."></textarea>
             <details class="set-more"><summary>How are their estimates split across days?</summary><div>
-              A task with a <b>start and due date</b> has its estimate divided across the working days (Mon-Fri) in that range,
-              so a Tue to Thu task counts a third on each day. A task with <b>no date range</b> (like the weekly Extra Task) counts a
-              fifth of its estimate every weekday. A task with only a <b>due date</b> counts in full on that day.</div></details></div>
-          <div class="set-line"><span class="grow">Split multi-day estimates across</span>
-            <select id="cuExtendedMode">
-              <option value="days">All working days</option>
-              <option value="excl0">Only days I tracked time</option>
-            </select></div>
+              A recurring task with <b>no date range</b> (like the weekly Extra Task) counts a fifth of its estimate every weekday.
+              A configured task with a <b>start and due date</b> has its estimate divided across the working days (Mon-Fri) in that range.</div></details></div>
+          <div class="set-line col"><span class="grow">Multi-day tasks (a start and a due date) count</span>
+            <select id="cuMultiDay">
+              <option value="due">Whole estimate on the due date</option>
+              <option value="days">Spread across the working days they cover</option>
+              <option value="excl0">Spread across the days I tracked time on them</option>
+            </select>
+            <div class="md-ex" id="cuMultiDayEx">
+              <div class="md-ex-h">Example: <b>“Site audit”</b> - 20h estimate, start <b>Monday</b>, due <b>Thursday</b></div>
+              <table>
+                <thead><tr><th></th><th>Mon</th><th>Tue</th><th>Wed</th><th>Thu</th></tr></thead>
+                <tbody>
+                  <tr data-md="due"><th>Whole estimate on the due date</th><td>-</td><td>-</td><td>-</td><td class="v">20h</td></tr>
+                  <tr data-md="days"><th>Spread across the working days</th><td class="v">5h</td><td class="v">5h</td><td class="v">5h</td><td class="v">5h</td></tr>
+                  <tr data-md="excl0"><th>Spread across the days I tracked time<small>tracked on Mon and Tue only</small></th><td class="v">10h</td><td class="v">10h</td><td>-</td><td>-</td></tr>
+                </tbody>
+              </table>
+              <ul class="md-ex-n">
+                <li data-md="due">Due today shows the task only on Thursday, with its whole 20h. Answers <i>what is due on this day?</i></li>
+                <li data-md="days">On Monday to Wednesday the task also shows in Due today with its real due date (Thu) and only that day's 5h. Weekends are skipped. Answers <i>how much work do I have each day?</i></li>
+                <li data-md="excl0">Only days with time tracked on the task count; tracking on Wednesday too re-balances it to 6h 40m on Mon, Tue and Wed. With no time tracked yet it works like spreading across the working days. Early in a day, before you start the timer, the task counts 0h today.</li>
+              </ul>
+              <p class="hint">Applies everywhere - Due today, This week and the Due this week / next week / tomorrow filters - so they always agree. The week runs Sunday to Saturday, so tasks due on a weekend are counted too. Recurring tasks added by link (like the Extra Task) keep their daily share.</p>
+            </div></div>
           <div class="set-line"><span class="grow">Client name comes from</span>
             <select id="cuClientLevel">
               <option value="auto">Auto-detect</option>

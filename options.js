@@ -2204,7 +2204,8 @@ function renderClickupSettings(cu) {
   $("cuNudge").value = cu.nudgeHour != null ? String(cu.nudgeHour) : "15";
   $("cuWorkdayEnd").value = cu.workdayEndHour != null ? String(cu.workdayEndHour) : "16";
   $("cuDeadlineUrls").value = Array.isArray(cu.deadlineTaskUrls) ? cu.deadlineTaskUrls.join("\n") : "";
-  $("cuExtendedMode") && ($("cuExtendedMode").value = cu.extendedMode === "excl0" ? "excl0" : "days");
+  $("cuMultiDay") && ($("cuMultiDay").value = cu.multiDay === "days" || cu.multiDay === "excl0" ? cu.multiDay : "due");
+  paintMultiDayExample();
   $("cuWeeklyTo") && ($("cuWeeklyTo").value = cu.weeklyTo === "friday" ? "friday" : "today");
   const extra = (cu.state && cu.state.extraTask) || null;
   const running = (cu.state && cu.state.running) || null;
@@ -2324,10 +2325,20 @@ function cuPaintChartBanner() {
 }
 // Calendar (calendar.js): clicking a day lists that day's tasks, like the chart.
 window.pcmPickDay = (ts) => cuShowChartDay(ts, "calendar");
+// The worked example under ClickUp setup › Advanced › Multi-day tasks: highlight
+// the row (and its explanation) of the option chosen in the dropdown.
+function paintMultiDayExample() {
+  const sel = $("cuMultiDay"), box = $("cuMultiDayEx");
+  if (!sel || !box) return;
+  box.querySelectorAll("[data-md]").forEach((el) => el.classList.toggle("on", el.getAttribute("data-md") === sel.value));
+}
+if ($("cuMultiDay")) $("cuMultiDay").addEventListener("change", paintMultiDayExample);
+// Mon-Fri (the week's working days; a weekend day only shows when it has something).
+function cuIsWorkday(ts) { const g = new Date(ts).getDay(); return g >= 1 && g <= 5; }
 function renderWeekChartOpt(w, targetMs) {
   const box = $("optWeekChart");
   if (!box) return;
-  const days = (Array.isArray(w && w.perDay) ? w.perDay : []).filter((d) => d && d.ts).slice(0, 5);
+  const days = (Array.isArray(w && w.perDay) ? w.perDay : []).filter((d) => d && d.ts && (cuIsWorkday(d.ts) || Number(d.estimateMs) > 0 || Number(d.spentMs) > 0));
   if (!days.length) { box.hidden = true; box.textContent = ""; return; }
   const today = new Date().setHours(0, 0, 0, 0);
   const max = Math.max(targetMs, ...days.map((d) => Math.max(Number(d.estimateMs) || 0, Number(d.spentMs) || 0))) || 1;
@@ -2433,6 +2444,12 @@ function renderOptionsWeekly(cu) {
     setBar("optWeekEstFill", "optWeekEstOf", Number(agg.estimateMs) || 0);
     setBar("optWeekTrkFill", "optWeekTrkOf", Number(agg.spentMs) || 0);
   }
+  // Click either number: the tasks behind it (each task's share added up over these days).
+  if (window.PcmBreakdown && PcmBreakdown.fromWeek) {
+    const bd = () => PcmBreakdown.fromWeek(w, agg, to === "friday" ? "this week, Monday to Friday" : "this week so far", fmtDurOpt);
+    PcmBreakdown.attach($("optWeekEst"), "est", bd);
+    PcmBreakdown.attach($("optWeekTrk"), "trk", bd);
+  }
   renderWeekChartOpt(w, Number(cu.state && cu.state.targetMs) || 0);
   const fromD = new Date(agg.fromTs);
   const toD = new Date(agg.toTs);
@@ -2440,7 +2457,22 @@ function renderOptionsWeekly(cu) {
   $("optWeekSub").textContent =
     "Accumulated " + fromD.toLocaleDateString(undefined, { month: "short", day: "numeric" }) +
     " → " + toD.toLocaleDateString(undefined, { month: "short", day: "numeric" }) +
-    " · " + n + (n === 1 ? " weekday" : " weekdays");
+    " · " + n + (n === 1 ? " working day" : " working days");
+  // How multi-day tasks count (same setting as ClickUp setup › Advanced) - flip it here to compare.
+  const modeBox = $("optWeekMode");
+  if (modeBox) {
+    const md = cu.multiDay === "days" || cu.multiDay === "excl0" ? cu.multiDay : "due";
+    modeBox.innerHTML = '<span>Multi-day tasks:</span><span class="opt-toggle sm"><button type="button" data-md="due" class="' + (md === "due" ? "on" : "") + '" title="A task\'s whole estimate counts on its due date">By due date</button><button type="button" data-md="days" class="' + (md !== "due" ? "on" : "") + '" title="A task\'s estimate is divided over the working days it covers (start to due)">Spread over days</button></span>';
+    modeBox.querySelectorAll("[data-md]").forEach((b) => {
+      b.onclick = async () => {
+        const want = b.getAttribute("data-md");
+        if ((want === "due") === (md === "due")) return;
+        modeBox.querySelectorAll("button").forEach((x) => { x.disabled = true; });
+        try { await send({ type: "CLICKUP_SET", patch: { clickupMultiDay: want } }); if ($("cuMultiDay")) $("cuMultiDay").value = want; } catch (e) {}
+        setTimeout(() => load().catch(() => {}), 400);
+      };
+    });
+  }
   document.querySelectorAll("#optWeekToggle button").forEach((b) => {
     const on = b.dataset.to === to;
     b.className = on ? "on" : "";
@@ -2458,7 +2490,7 @@ function renderOptionsWeekly(cu) {
   // keeps just the total + tracked). Reuses the cached perDay breakdown.
   const listBox = $("optWeekList");
   const days = Array.isArray(w.perDay) ? w.perDay : [];
-  const showDays = days.filter((d) => d.ts <= agg.toTs);
+  const showDays = days.filter((d) => d.ts <= agg.toTs && (cuIsWorkday(d.ts) || Number(d.estimateMs) > 0 || Number(d.spentMs) > 0));
   if (listBox) {
     listBox.innerHTML = "";
     if (!showDays.length) {
@@ -4890,7 +4922,7 @@ $("cuSave").onclick = async () => {
         clickupTargetHours: target,
         clickupNudgeHour: nudge,
         clickupWorkdayEndHour: end,
-        clickupExtendedMode: ($("cuExtendedMode") && $("cuExtendedMode").value === "excl0") ? "excl0" : "days",
+        clickupMultiDay: $("cuMultiDay") ? $("cuMultiDay").value : "due",
         clickupWeeklyTo: ($("cuWeeklyTo") && $("cuWeeklyTo").value === "friday") ? "friday" : "today",
         clickupBadge: $("cuBadge").checked,
         clickupNotify: $("cuNotify").checked,

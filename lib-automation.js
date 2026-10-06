@@ -103,10 +103,10 @@ async function getTab(tabId) {
 // injected function to finish, and an async one that awaits a request which never
 // answers would otherwise hold the whole login forever.
 const INJECT_TIMEOUT_MS = 20000;
-async function inject(tabId, func, args = []) {
+async function inject(tabId, func, args = [], timeoutMs = INJECT_TIMEOUT_MS) {
   let timer = null;
   const timeout = new Promise((resolve) => {
-    timer = setTimeout(() => resolve({ ok: false, error: "the page didn't respond in time" }), INJECT_TIMEOUT_MS);
+    timer = setTimeout(() => resolve({ ok: false, error: "the page didn't respond in time" }), timeoutMs);
   });
   try {
     const run = chrome.scripting.executeScript({ target: { tabId }, func, args })
@@ -894,10 +894,22 @@ export async function runAccountLogin(account, opts = {}) {
     }, 500);
     cap = setTimeout(() => resolve({ result: "needs-attention", note: "Timed out - finish in the open tab." }), capMs + 30000);
   });
+  // Set when a paused background tab had to be brought to the front (see wakeTab).
+  const wake = { woke: false, prevTabId: null, prevWindowId: null };
   try {
-    const run = runAccountLoginInner(account, opts, isStopped)
+    const run = runAccountLoginInner(account, { ...opts, _wake: wake }, isStopped)
       .catch((e) => ({ result: "failed", note: String(e && e.message ? e.message : e) }));
-    return await Promise.race([run, guard]);
+    const res = await Promise.race([run, guard]);
+    if (wake.woke && res) {
+      res.note = (res.note ? res.note + " · " : "") + "Chrome had paused the background tab, so it was brought to the front";
+      // Logged in: give the person back the tab / window they were using. A tab
+      // that still needs them stays in front.
+      if (res.result === "success") {
+        if (wake.prevTabId != null) await chrome.tabs.update(wake.prevTabId, { active: true }).catch(() => {});
+        if (wake.prevWindowId != null) await chrome.windows.update(wake.prevWindowId, { focused: true }).catch(() => {});
+      }
+    }
+    return res;
   } finally {
     stopped = true;
     clearInterval(poll);
@@ -961,9 +973,36 @@ async function runAccountLoginInner(account, opts, isStopped) {
     return { result: "failed", note: "could not open tab: " + e.message };
   }
   let tabId = tab.id;
+  // Run / automatic runs work in a background tab. Chrome may discard (Memory
+  // Saver) or freeze (Energy Saver) such a tab - common on low-end laptops - and
+  // then nothing can run in it: the login sat on Agent Router's page and stopped,
+  // while Test login (a tab in front) worked. Never discard it, and if the page
+  // doesn't answer, bring it to the front once to wake it (the user's tab comes
+  // back after a successful login - see runAccountLogin).
+  try { await chrome.tabs.update(tabId, { autoDiscardable: false }); } catch (e) {}
+  const wake = opts._wake || { woke: false };
+  const wakeTab = async () => {
+    if (opts.active || wake.woke) return false;
+    try {
+      const t = await chrome.tabs.get(tabId);
+      const [prev] = await chrome.tabs.query({ active: true, lastFocusedWindow: true }).catch(() => []);
+      const win = await chrome.windows.getLastFocused().catch(() => null);
+      wake.prevTabId = prev && prev.id !== tabId ? prev.id : null;
+      wake.prevWindowId = win && win.id !== t.windowId ? win.id : null;
+      await chrome.tabs.update(tabId, { active: true });
+      await chrome.windows.update(t.windowId, { focused: true }).catch(() => {});
+      wake.woke = true;
+      try { await chrome.tabs.reload(tabId); } catch (e) {}
+      await waitForTab(tabId, (u) => classifyUrl(u) === "ar-login" || classifyUrl(u) === "ar-app", T(25000));
+      return true;
+    } catch (e) { return false; }
+  };
+  const answers = async () => { const r = await inject(tabId, () => ({ ok: true }), [], 6000); return !!(r && r.ok); };
 
   // Wait for the login SPA to be ready.
   await waitForTab(tabId, (u) => classifyUrl(u) === "ar-login" || classifyUrl(u) === "ar-app", T(25000));
+  if (await isStopped()) return { ...stopped(), tabId };
+  if (!opts.active && !(await answers())) await wakeTab();
   if (await isStopped()) return { ...stopped(), tabId };
 
   // CRITICAL for account switching: clearing cookies (above) ends the session
@@ -1019,10 +1058,14 @@ async function runAccountLoginInner(account, opts, isStopped) {
     if (!(await getTab(tabId))) return { result: "failed", note: "Tab was closed during login." };
     // Try direct navigation to GitHub OAuth URL (bypasses popup blocker)
     const directNav = await inject(tabId, inj_getAndNavigateToGithubOAuth, [pickArg]);
-    // The page did not answer at all (not "button missing" - frozen or stalled):
-    // say so now rather than retrying a dead page for minutes.
-    if (directNav && directNav.error === "the page didn't respond in time")
-      return { result: "needs-attention", note: "Agent Router's page stopped responding - reload it and try again.", tabId };
+    // The page did not answer at all (not "button missing" - frozen, stalled or
+    // discarded): wake a background tab once, otherwise say so now rather than
+    // retrying a dead page for minutes.
+    if (directNav && directNav.error) {
+      if (await wakeTab()) continue;
+      if (directNav.error === "the page didn't respond in time")
+        return { result: "needs-attention", note: "Agent Router's page stopped responding - reload it and try again.", tabId };
+    }
     if (directNav && directNav.ok) {
       clicked = { ok: true, via: "direct-nav", navigated: true };
       usedDirectNav = true;

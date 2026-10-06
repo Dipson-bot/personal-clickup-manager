@@ -1804,13 +1804,18 @@ function renderWeekly() {
   $("weekEst").textContent = fmtDur(est);
   $("weekEstTarget").textContent = targetMs > 0 ? "of " + fmtDur(targetMs) + "/day" : "";
   $("weekTrk").textContent = fmtDur(spent);
+  if (window.PcmBreakdown && PcmBreakdown.fromWeek) {
+    const bd = () => PcmBreakdown.fromWeek(w, agg, to === "friday" ? "this week, Monday to Friday" : "this week so far", fmtDur);
+    PcmBreakdown.attach($("weekEst"), "est", bd);
+    PcmBreakdown.attach($("weekTrk"), "trk", bd);
+  }
   const fromD = new Date(agg.fromTs);
   const toD = new Date(agg.toTs);
   const cnt = agg.count || 0;
   $("weekSub").textContent =
     "Accumulated " + fromD.toLocaleDateString(undefined, { month: "short", day: "numeric" }) +
     " → " + toD.toLocaleDateString(undefined, { month: "short", day: "numeric" }) +
-    " · " + cnt + (cnt === 1 ? " weekday" : " weekdays");
+    " · " + cnt + (cnt === 1 ? " working day" : " working days");
   document.querySelectorAll("#weekToggle button").forEach((b) => {
     const on = b.dataset.to === to;
     b.className = on ? "on" : "";
@@ -1831,7 +1836,7 @@ function renderWeekDetail(w, agg) {
   if (!box) return;
   box.innerHTML = "";
   const days = Array.isArray(w.perDay)
-    ? w.perDay.filter((d) => d.ts <= agg.toTs)
+    ? w.perDay.filter((d) => d.ts <= agg.toTs && ([1, 2, 3, 4, 5].includes(new Date(d.ts).getDay()) || Number(d.estimateMs) > 0 || Number(d.spentMs) > 0))
     : [];
   if (!days.length) { box.style.display = "none"; return; }
   box.style.display = "block";
