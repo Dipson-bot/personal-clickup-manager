@@ -94,9 +94,6 @@
     { id: "clientfiles", title: "Keep files and attachments organised by client", tab: "files", card: "Clients - files & notes",
       keys: "organize sort folder documents audit pdf screenshot upload store client name list drive copy preview thumbnail image picture view enlarge",
       a: "Open Clients: every client (its ClickUp List name) has its own card. Add files there (audits, PDFs, screenshots). Pictures show a thumbnail you can click to see them big over the page (with \"Open in a new tab\", and Esc or a click outside to close); other files keep their icon. Each file has Open and Show in folder (saves a copy to Downloads › Personal ClickUp Manager › Clients › client), and ☁ Copy to Drive puts a client's files in My Drive › Personal ClickUp Manager › Clients." },
-    { id: "autocomplete", title: "Complete a task automatically when it reaches its estimate", tab: "clickup", here: false,
-      keys: "auto complete automatically complete task estimate reached stop timer automatically finish task when time is up",
-      a: "ClickUp setup › Notifications: tick Complete a task automatically when its tracked time reaches its estimate (off by default). When the running task reaches its estimate, the timer stops and the task is marked complete, with a notice. Never the Extra Task, recurring / multi-day tasks, shared tasks or tasks without an estimate." },
     { id: "addclient", title: "Add a client I'm not assigned to (Clients tab)", tab: "files", card: "Clients - files & notes",
       keys: "add client new client folder not assigned other client missing client search workspace clients add folder",
       a: "Clients tab: type in + Add a client… - it suggests every client in the workspace (or type any name) - and press Add. The client stays in your list with its own files and notes. ✕ next to it takes it off your list (files and notes are kept). All workspace clients shows every client for a quick look." },
@@ -304,6 +301,54 @@
     if (cardId) setTimeout(() => flash(document.getElementById(cardId)), 80);
   }
   // Open a tab and point at a card by its title (from the popup: via ?find=).
+  // Exact spot for a How-to entry (options page). Entries not listed here find
+  // the best-matching control in their tab by their own words (locate()).
+  const GUIDE_TO = {
+    overest: "#cuRunningNotify", idle: "#cuIdleNotify", target: "#cuTarget",
+    extraclose: "#cuExtraAutoClose", tidyreminder: "#cuTidyNotify", update: "#autoUpdate", multiday: "#optWeekMode",
+    addclient: "#tfAddClient", newtask: "#ltBox .lt-new", filter: "#optCuFilterBtn", export: "#optCuExportBtn",
+    shortcuts: "#shortcutsCard", dept: "#deptCard", diag: "#diagCopy", sites: "#siteMonitorUrls",
+  };
+  const GSTOP = new Set("task tasks with when your that this from what into them their each have about change make show turn more then also only just like does need want".split(" "));
+  const wordsOf = (t) => (String(t || "").toLowerCase().match(/[a-z0-9]{4,}/g) || []).filter((w) => !GSTOP.has(w));
+  // The control in the tab that best matches a How-to entry's title (and keys).
+  function locate(g) {
+    if (!isOptions) return null;
+    const sel = g.to || GUIDE_TO[g.id];
+    if (sel) { const el = document.querySelector(sel); if (el) return el; }
+    // "insights/plan" -> the Insights section (its sub-tab is drawn inside it).
+    const panel = document.querySelector('.panel[data-panel="' + String(g.tab).split("/")[0] + '"]');
+    if (!panel) return null;
+    const want = new Set(wordsOf(g.title));
+    const extra = new Set(wordsOf(g.keys));
+    let best = null, bestScore = 0;
+    for (const el of panel.querySelectorAll("label, .set-line > span.grow, .set-line > span, summary, h2, h3, .dash-h h3, .bar-label > span, button")) {
+      const t = textOf(el);
+      if (!t || t.length < 3 || t.length > 170) continue;
+      const tw = wordsOf(t);
+      if (!tw.length) continue;
+      let sc = 0;
+      for (const w of tw) sc += want.has(w) ? 1 : extra.has(w) ? 0.35 : 0;
+      const score = sc / Math.sqrt(tw.length);
+      if (score > bestScore) { bestScore = score; best = el; }
+    }
+    if (best && bestScore >= 1) return best;
+    if (g.card) { const h = [...panel.querySelectorAll("h2")].find((x) => textOf(x) === g.card); if (h) return h.closest(".card") || h; }
+    return null;
+  }
+  // Open the tab, wait until it has drawn the spot, then show it.
+  function goGuide(g) {
+    if (!isOptions) { chrome.tabs.create({ url: chrome.runtime.getURL("options.html") + "?guide=" + encodeURIComponent(g.id) + "#" + g.tab }); window.close(); return; }
+    if (location.hash !== "#" + g.tab) location.hash = "#" + g.tab;
+    let n = 0;
+    const tryIt = () => {
+      const el = locate(g);
+      if (el && (el.offsetParent || el.closest("details:not([open])") || ++n > 12)) { flash(el, g.title); return; }
+      if (++n <= 14) setTimeout(tryIt, 150);
+      else window.scrollTo({ top: 0 });
+    };
+    setTimeout(tryIt, 60);
+  }
   function goCard(tab, title) {
     if (!isOptions) { chrome.tabs.create({ url: optUrl(title || "", tab) }); window.close(); return; }
     location.hash = "#" + tab;
@@ -313,14 +358,30 @@
       flash(h ? h.closest(".card") || h : null);
     }, 80);
   }
-  function flash(el) {
+  function flash(el, label) {
     if (!el) return;
-    const target = el.closest(".set-line, .checkbox, .card") || el;
+    // A closed "More" / Advanced section: open it first.
+    for (let d = el.closest("details"); d; d = d.parentElement && d.parentElement.closest("details")) d.open = true;
+    const target = el.closest(".set-line, .checkbox, .tf-addc, .wk-mode") || (el.matches("input, select, textarea, button") ? el.parentElement || el : el);
     target.scrollIntoView({ block: "center", behavior: "smooth" });
-    target.classList.add("pcm-flash");
-    setTimeout(() => target.classList.remove("pcm-flash"), 1700);
-    const input = target.querySelector("input:not([type=hidden]), select, textarea");
-    if (input) setTimeout(() => { try { input.focus({ preventScroll: true }); } catch (e) {} }, 400);
+    target.classList.add("pcm-flash", "pcs-here");
+    setTimeout(() => target.classList.remove("pcm-flash", "pcs-here"), 3600);
+    if (label) {
+      const tip = document.createElement("div");
+      tip.className = "pcs-tip";
+      tip.textContent = "Here: " + label;
+      document.body.appendChild(tip);
+      const place = () => {
+        const r = target.getBoundingClientRect();
+        tip.style.top = Math.max(8, r.top - tip.offsetHeight - 8) + "px";
+        tip.style.left = Math.max(8, Math.min(window.innerWidth - tip.offsetWidth - 8, r.left)) + "px";
+      };
+      place();
+      const iv = setInterval(place, 60); // follows the smooth scroll
+      setTimeout(() => { clearInterval(iv); tip.remove(); }, 3600);
+    }
+    const input = el.matches("input:not([type=hidden]), select, textarea") ? el : target.querySelector("input:not([type=hidden]), select, textarea");
+    if (input) setTimeout(() => { try { input.focus({ preventScroll: true }); } catch (e) {} }, 500);
   }
 
   // ---------- matching ----------
@@ -726,6 +787,9 @@
   // ---------- UI ----------
   const css = document.createElement("style");
   css.textContent = `
+    .pcs-here { position: relative; outline: 3px solid var(--indigo, #6366f1) !important; outline-offset: 4px; border-radius: 8px; animation: pcs-pulse 1.1s ease-in-out 3; }
+    @keyframes pcs-pulse { 0%, 100% { outline-color: var(--indigo, #6366f1); } 50% { outline-color: rgba(99,102,241,.25); } }
+    .pcs-tip { position: fixed; z-index: 3100; max-width: min(420px, calc(100vw - 16px)); padding: 6px 10px; border-radius: 8px; background: var(--indigo, #6366f1); color: #fff; font-size: 12px; font-weight: 600; box-shadow: 0 8px 20px rgba(0,0,0,.25); pointer-events: none; }
     .pcs-back { position: fixed; inset: 0; z-index: 3000; background: rgba(0,0,0,.35); display: flex; justify-content: center; align-items: flex-start; padding-top: 10vh; }
     .pcs-box { width: min(600px, calc(100vw - 24px)); background: var(--card); color: var(--text); border: 1px solid var(--border); border-radius: 12px; box-shadow: 0 18px 40px rgba(0,0,0,.3); overflow: hidden; }
     .pcs-in { display: flex; align-items: center; gap: 8px; padding: 10px 12px; border-bottom: 1px solid var(--border); }
@@ -845,8 +909,8 @@
       const act = it.action && ACTIONS.find((a) => (it.action === "float" ? /Float/ : /wrap-up/).test(a.text));
       close();
       if (act) { act.run(); return; }
-      if (it.here && !isOptions) return; // it's right here in the popup
-      goCard(it.tab, it.card);
+      if (it.here && !isOptions && !GUIDE_TO[it.id] && !it.to) return; // it's right here in the popup
+      goGuide(it);
       return;
     }
     close();
@@ -855,10 +919,16 @@
     if (!isOptions) { chrome.tabs.create({ url: optUrl(it.section ? "" : it.text, it.tab) }); window.close(); return; }
     location.hash = "#" + it.tab;
     if (it.section) window.scrollTo({ top: 0 });
-    else setTimeout(() => flash(it.el), 80);
+    else setTimeout(() => flash(it.el, it.text), 80);
   }
 
-  // Opened from the popup with ?find=: highlight that setting once the page is ready.
+  // Opened from the popup with ?guide= (a How-to entry) or ?find= (a setting):
+  // go to that spot once the page is ready.
+  if (isOptions) {
+    const gid = new URLSearchParams(location.search).get("guide");
+    const g = gid && GUIDES.find((x) => x.id === gid);
+    if (g) setTimeout(() => { goGuide(g); history.replaceState(null, "", location.pathname + location.hash); }, 500);
+  }
   if (isOptions) {
     const find = new URLSearchParams(location.search).get("find");
     if (find) setTimeout(async () => {

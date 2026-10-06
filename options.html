@@ -1375,8 +1375,6 @@
           <div class="set-line indent"><input type="checkbox" id="cuHalfway" /><label for="cuHalfway">Also at halfway</label></div>
           <div class="set-line indent"><input type="checkbox" id="cuAlmostThere" /><label for="cuAlmostThere">Also when almost there</label></div>
           <div class="set-line" id="cuRunningThresholdRow"><input type="checkbox" id="cuRunningNotify" /><label for="cuRunningNotify">Warn me</label><input type="text" id="cuRunningThreshold" inputmode="numeric" placeholder="10" /><span>minutes before a running task reaches its estimate</span></div>
-          <div class="set-line col"><span><input type="checkbox" id="cuAutoComplete" /> <label for="cuAutoComplete">Complete a task automatically when its tracked time reaches its estimate</label></span>
-            <p class="hint">The timer stops and the task is marked complete in ClickUp the moment the running task's tracked time reaches its estimate, and you get a notice. Never for the Extra Task or your recurring / multi-day tasks, for a task shared with other people, or for a task without an estimate. Off by default.</p></div>
           <div class="set-line"><input type="checkbox" id="cuIdleNotify" /><label for="cuIdleNotify">Remind me when no timer is running, every</label><input type="text" id="cuIdleRepeat" inputmode="numeric" placeholder="60" /><span>minutes</span></div>
           <div class="set-line" id="cuIdleRow"><span class="grow">Office hours</span><input type="text" id="cuIdleStart" inputmode="numeric" placeholder="8" /><span>to</span><input type="text" id="cuIdleEnd" inputmode="numeric" placeholder="17" /><span>o'clock</span>
             <p class="hint" id="officeHoursNote">All reminders stay quiet outside these hours and at weekends.</p></div>
@@ -1614,7 +1612,7 @@
     <p class="hint" style="margin:0 0 12px;line-height:1.55;">Add each client's audit and reference files once. <b>Explain this task</b> then uses the parts of that client's files that are about the task (and says which file they came from), and the client report can use the client's HTML audit. Works with HTML, Word, Excel, PowerPoint, PDF, CSV, Markdown, text and screenshots. Old .doc / .xls files: save them as .docx / .xlsx first. Google Docs / Sheets: download them (File &gt; Download) and add the file.</p>
     <div class="tf-bar">
       <input type="search" id="tfSearch" placeholder="Search clients" />
-      <span class="tf-addc" title="Add a client you're not assigned to - search the workspace's clients, or type any name. It stays in your list."><input type="search" id="tfAddClient" list="tfAddList" placeholder="+ Add a client…" autocomplete="off" /><datalist id="tfAddList"></datalist><button type="button" class="tf-btn" id="tfAddClientBtn">Add</button></span>
+      <span class="tf-addc"><input type="search" id="tfAddClient" placeholder="+ Add a client from ClickUp…" autocomplete="off" title="Pick any client in your ClickUp workspace - also ones you aren't assigned to. It stays in your list." role="combobox" aria-expanded="false" aria-controls="tfAddPop" /><button type="button" class="tf-btn" id="tfAddClientBtn">Add</button><div class="tf-addpop" id="tfAddPop" role="listbox" hidden></div></span>
       <label><input type="checkbox" id="tfAll" /> All workspace clients</label>
       <label title="The files' text is kept in your Google Drive's hidden app data, so a new computer or a reinstall gets them back. Screenshots stay on this computer."><input type="checkbox" id="tfDrive" /> Back up to Google Drive</label>
     </div>
@@ -2337,6 +2335,7 @@
 <script src="md-notes.js"></script>
 <script src="task-notes.js"></script>
 <script src="local-tasks.js"></script>
+<script src="ui-extras.js"></script>
 <script src="celebrate.js"></script>
 <script src="pcm-help.js"></script>
 <script src="pcm-search.js"></script>

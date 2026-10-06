@@ -2236,7 +2236,6 @@ function renderClickupSettings(cu) {
   $("cuHalfway").checked = cu.halfwayNotify !== false;
   $("cuAlmostThere").checked = cu.almostThereNotify !== false;
   $("cuRunningNotify").checked = cu.runningNotify !== false;
-  if ($("cuAutoComplete")) $("cuAutoComplete").checked = cu.autoComplete === true;
   $("cuRunningThreshold").value = cu.runningThresholdMin != null ? String(cu.runningThresholdMin) : "10";
   $("cuIdleNotify").checked = cu.idleNotify !== false;
   $("cuIdleStart").value = cu.idleStartHour != null ? String(cu.idleStartHour) : "8";
@@ -4959,7 +4958,6 @@ $("cuSave").onclick = async () => {
         clickupHalfwayNotify: $("cuHalfway").checked,
         clickupAlmostThereNotify: $("cuAlmostThere").checked,
         clickupRunningNotify: $("cuRunningNotify").checked,
-        clickupAutoComplete: !!($("cuAutoComplete") && $("cuAutoComplete").checked),
         clickupRunningThresholdMin: runningThreshold,
         clickupIdleNotify: $("cuIdleNotify").checked,
         clickupIdleStartHour: idleStart,
@@ -7242,7 +7240,7 @@ const ADMIN_FILES = [
   "manifest.json", "background.js", "popup.html", "popup.js", "options.html", "options.js", "phone-timer.js",
   "offscreen.html", "offscreen.js", "update.html", "update.js", "auto-update.html", "auto-update.js", "wrapup.html", "wrapup.js",
   "notify-menu.js", "export-tasks.js", "lib-zip.js", "lib-unzip.js", "lib-automation.js",
-  "lib-availability.js", "lib-clickup.js", "lib-crypto.js", "lib-tidy.js", "lib-drive.js", "task-panel.js", "lib-updater.js", "offscreen-updater.js", "celebrate.js", "celebrate.html", "celebrate-window.js", "fx.js", "pcm-help.js", "tracker.html", "tracker.js", "bulk-edit.js", "pcm-search.js", "lib-taskfiles.js", "task-files.js", "reminders.js", "hub.js", "task-sort.js", "breakdown.js", "calendar.js", "notices.js", "insights-plus.js", "header-ui.js", "plan-apply.js", "task-notes.js", "md-notes.js", "local-tasks.js", "team-hub.gs", "vendor/pdf.min.js", "vendor/pdf.worker.min.js", "vendor/pdfjs-LICENSE.txt",
+  "lib-availability.js", "lib-clickup.js", "lib-crypto.js", "lib-tidy.js", "lib-drive.js", "task-panel.js", "lib-updater.js", "offscreen-updater.js", "celebrate.js", "celebrate.html", "celebrate-window.js", "fx.js", "pcm-help.js", "tracker.html", "tracker.js", "bulk-edit.js", "pcm-search.js", "lib-taskfiles.js", "task-files.js", "reminders.js", "hub.js", "task-sort.js", "breakdown.js", "calendar.js", "notices.js", "insights-plus.js", "header-ui.js", "plan-apply.js", "task-notes.js", "md-notes.js", "local-tasks.js", "ui-extras.js", "team-hub.gs", "vendor/pdf.min.js", "vendor/pdf.worker.min.js", "vendor/pdfjs-LICENSE.txt",
   "icons/icon16.png", "icons/icon48.png", "icons/icon128.png", "icons/celebrate.png", "icons/sad.png",
   "sounds/notify.wav", "sounds/danger.mp3", "sounds/winner.wav",
   "README.md", "CHANGELOG.md",

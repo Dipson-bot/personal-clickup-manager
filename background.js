@@ -25,7 +25,7 @@ import {
   driveQuota,
 } from "./lib-drive.js";
 import { runAllAccounts, runAccountLogin, readAgentRouterLogin, URLS, GITHUB_KEEP_COOKIES } from "./lib-automation.js";
-import { getUser, verifyToken, getTeams, fetchTodayEstimate, fetchWeeklySummary, fetchDateRangeEstimate, createTaskCache, fetchTeamMembers, fetchWorkspaceTags, cuTagNames, fmtDuration, findExtraTaskByName, parseTaskIdFromUrl, getCurrentTimeEntry, getRunningTaskProgress, startTimer, stopTimer, getTaskById, setTaskStatus, taskUrlFor, clientLabelFromContainer, resolveSpaceNamesFor, taskContainer, cuPriorityName, isTaskDone, getSubtasksOfParent, getTaskTree, getTaskDetail, updateTimeEntry, setTaskDueDate, clearTaskTreeCache, listWorkspaceClients, cuRowAssignees, fetchDoneBetween, fetchDoneLite, fetchTrackedHistory, getTaskPanel, addTaskComment, postTaskComment, setTaskDescription, getTaskCommentLinks, createTask, weeklyWithToday } from "./lib-clickup.js";
+import { getUser, verifyToken, getTeams, fetchTodayEstimate, fetchWeeklySummary, fetchDateRangeEstimate, createTaskCache, fetchTeamMembers, fetchWorkspaceTags, cuTagNames, fmtDuration, findExtraTaskByName, parseTaskIdFromUrl, getCurrentTimeEntry, getRunningTaskProgress, startTimer, stopTimer, getTaskById, setTaskStatus, taskUrlFor, clientLabelFromContainer, resolveSpaceNamesFor, taskContainer, cuPriorityName, isTaskDone, getSubtasksOfParent, getTaskTree, getTaskDetail, updateTimeEntry, setTaskDueDate, clearTaskTreeCache, listWorkspaceClients, cuRowAssignees, fetchDoneBetween, fetchDoneLite, fetchTrackedHistory, getTaskPanel, addTaskComment, postTaskComment, setTaskDescription, getTaskCommentLinks, createTask, weeklyWithToday, listClientFieldOptions, listReachableClients } from "./lib-clickup.js";
 import { resolveRelayKey, pickProbeModel, probeRelay } from "./lib-availability.js";
 import { tidyCollect, tidyLines, tidyResolved, tidyDayOk, tidyUrgent } from "./lib-tidy.js";
 
@@ -2247,7 +2247,6 @@ async function clickupPublic() {
     halfwayNotify: settings.clickupHalfwayNotify !== false,
     almostThereNotify: settings.clickupAlmostThereNotify !== false,
     runningNotify: settings.clickupRunningNotify !== false,
-    autoComplete: settings.clickupAutoComplete === true,
     runningThresholdMin: Number(settings.clickupRunningThresholdMin) || 10,
     idleNotify: settings.clickupIdleNotify !== false,
     idleStartHour: Number.isFinite(Number(settings.clickupIdleStartHour)) ? Number(settings.clickupIdleStartHour) : 8,
@@ -3554,12 +3553,57 @@ async function maybeNotifyClickup(state, { viaAlarm }) {
 // and "reached" are just arithmetic, so local chrome.alarms are set for them
 // (see scheduleEstimateAlarms). No ClickUp requests while waiting; when one
 // fires, this runs once more to confirm with ClickUp and notify.
+// ---------- auto-run queue (console /autorun) ----------
+// autoRunQueue { ids: [taskId...] (the current one first), names: {id: name},
+// total, current }. Each task runs until its tracked time reaches its estimate,
+// is completed (the auto-complete path below), and the next one starts. Every
+// time entry it starts is labelled "Auto-run queue (k of n)", so ClickUp's
+// timesheet shows it was started automatically.
+async function startQueuedTask(cfg, taskId, label) {
+  const cur = await getCurrentTimeEntry(cfg.token, cfg.teamId).catch(() => null);
+  if (cur && String(cur.taskId) !== String(taskId)) await stopTimer(cfg.token, cfg.teamId).catch(() => {});
+  await setTaskStatus(cfg.token, taskId, "in progress").catch(() => {});
+  await startTimer(cfg.token, cfg.teamId, taskId, label);
+  // A task already warned about today must still complete when it reaches its estimate.
+  const { clickupNotified: cn } = await chrome.storage.local.get("clickupNotified");
+  if (cn && cn.runningMet && cn.runningMet[String(taskId)]) { delete cn.runningMet[String(taskId)]; await chrome.storage.local.set({ clickupNotified: cn }); }
+  const st = (await getClickupState().catch(() => null)) || {};
+  await setClickupState({ ...st, activeTaskId: String(taskId) });
+}
+// The queue's current task was just completed (automatically or by hand): start the next.
+async function advanceAutoRun(cfg, doneId) {
+  try {
+    const { autoRunQueue: q } = await chrome.storage.local.get("autoRunQueue");
+    if (!q || !Array.isArray(q.ids) || !q.ids.length || String(q.current || "") !== String(doneId)) return;
+    const rest = q.ids.filter((id) => String(id) !== String(doneId));
+    if (!rest.length) {
+      await chrome.storage.local.remove("autoRunQueue");
+      await notify("autorun-done-" + Date.now(), "Queue finished ✓", "All " + q.total + " queued task" + (q.total === 1 ? "" : "s") + " ran and were completed.");
+      return;
+    }
+    const next = rest[0], k = q.total - rest.length + 1;
+    const { autoCompleteTasks: ac } = await chrome.storage.local.get("autoCompleteTasks");
+    const marks = { ...(ac || {}) };
+    if (!marks[next]) marks[next] = { name: (q.names && q.names[next]) || "", at: Date.now() };
+    await chrome.storage.local.set({ autoRunQueue: { ...q, ids: rest, current: next }, autoCompleteTasks: marks });
+    try {
+      await startQueuedTask(cfg, next, "Auto-run queue (" + k + " of " + q.total + ")");
+      await notify("autorun-next-" + Date.now(), "Started next (" + k + " of " + q.total + ")", "\"" + ((q.names && q.names[next]) || "next task") + "\" is running and completes at its estimate.", undefined, taskUrlFor(next));
+    } catch (e) {
+      await chrome.storage.local.set({ autoRunQueue: { ...q, ids: rest, current: next, paused: true } });
+      await notify("autorun-fail-" + Date.now(), "Queue paused", "Couldn't start \"" + ((q.names && q.names[next]) || "the next task") + "\": " + String(e && e.message ? e.message : e), "danger", taskUrlFor(next));
+    }
+  } catch (e) { diagLog("auto-run", String(e && e.message ? e.message : e)); }
+}
 const EST_ALARM_NEAR = "cu-est-near", EST_ALARM_MET = "cu-est-met";
 async function scheduleEstimateAlarms(entry, progress, settings, seenNear, seenMet) {
   await chrome.alarms.clear(EST_ALARM_NEAR).catch(() => {});
   await chrome.alarms.clear(EST_ALARM_MET).catch(() => {});
   // (Called with no arguments to just clear them - settings may be missing then.)
-  const notifyOn = !!settings && settings.clickupRunningNotify !== false, autoOn = !!settings && settings.clickupAutoComplete === true;
+  // autoOn: this running task is marked to complete itself (autoCompleteTasks).
+  let marked = {};
+  if (entry) { try { const g = await chrome.storage.local.get("autoCompleteTasks"); marked = (g && g.autoCompleteTasks) || {}; } catch (e) {} }
+  const notifyOn = !!settings && settings.clickupRunningNotify !== false, autoOn = !!(entry && marked[String(entry.taskId)]);
   if (!entry || !progress || !(progress.estimateMs > 0) || (!notifyOn && !autoOn)) return;
   const now = Date.now();
   const crossAt = now + (progress.estimateMs - progress.trackedMs) + 3000; // a few seconds late, so ClickUp agrees it's crossed
@@ -3602,27 +3646,29 @@ async function maybeNotifyRunningTask(cfg) {
   const today = todayString();
   const key = String(entry.taskId);
   await scheduleEstimateAlarms(entry, progress, settings, runningNear[key] === today, runningMet[key] === today).catch(() => {});
-  // Optional (off by default): when the running task's tracked time reaches its
-  // estimate, stop the timer and mark the task complete. Never the Extra Task or a
-  // configured recurring / multi-day task (daily buckets), and never a task shared
-  // with someone else (completing it would finish it for them too).
-  if (settings.clickupAutoComplete === true && progress && progress.estimateMs > 0 && progress.trackedMs >= progress.estimateMs && runningMet[key] !== today) {
+  // A task marked to complete itself (autoCompleteTasks, chosen per task): when
+  // the running task's tracked time reaches its estimate, stop the timer and mark
+  // it complete. Never the Extra Task or a configured recurring / multi-day task
+  // (daily buckets). A task shared with others can be marked - the person chose it.
+  const { autoCompleteTasks: acMarked } = await chrome.storage.local.get("autoCompleteTasks").catch(() => ({}));
+  if (acMarked && acMarked[key] && progress && progress.estimateMs > 0 && progress.trackedMs >= progress.estimateMs && runningMet[key] !== today) {
     const name0 = progress.taskName || entry.taskName || "this task";
     const configured = (Array.isArray(settings.clickupDeadlineTaskUrls) ? settings.clickupDeadlineTaskUrls : []).some((u) => parseTaskIdFromUrl(u) === key);
     const isExtra = /\bextra\s*\(?s?\)?\s*tasks?\b/i.test(name0);
     let task = null;
     try { task = await getTaskById(cfg.token, key); } catch (e) {}
-    const shared = !!(task && Number(task.assigneeCount) > 1);
-    if (!configured && !isExtra && !shared && task) {
+    if (!configured && !isExtra && task) {
       try {
         await stopTimer(cfg.token, cfg.teamId);
         await setTaskStatus(cfg.token, key, "complete");
         const st = (await getClickupState().catch(() => null)) || {};
         if (String(st.activeTaskId || "") === key) await setClickupState({ ...st, activeTaskId: null });
-        await chrome.storage.local.set({ runningProgress: null, clickupNotified: { ...seen, runningMet: { ...runningMet, [key]: today } } });
+        const left = { ...acMarked }; delete left[key]; // done: no longer marked
+        await chrome.storage.local.set({ runningProgress: null, autoCompleteTasks: left, clickupNotified: { ...seen, runningMet: { ...runningMet, [key]: today } } });
         await scheduleEstimateAlarms(null);
+        await advanceAutoRun(cfg, key);
         await notify("clickup-autocomplete-" + Date.now(), "Completed automatically ✓",
-          "\"" + name0 + "\" reached its " + fmtDuration(progress.estimateMs) + " estimate, so the timer was stopped and the task marked complete. (Turn this off in ClickUp setup.)",
+          "\"" + name0 + "\" reached its " + fmtDuration(progress.estimateMs) + " estimate, so the timer was stopped and the task marked complete.",
           undefined, taskUrlFor(key));
         clearFilterCache();
         // Not awaited: this can run inside a refresh, which must finish first.
@@ -6962,6 +7008,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
           if (cur && String(cur.taskId) === taskId) await stopTimer(cfg.token, cfg.teamId).catch(() => {});
           const st = (await getClickupState().catch(() => null)) || {};
           if (String(st.activeTaskId || "") === taskId) await setClickupState({ ...st, activeTaskId: null });
+          await advanceAutoRun(cfg, taskId); // the auto-run queue's current task: start the next
           clearFilterCache();
           const r = await refreshClickup({ includeTasks: true }).catch(() => ({}));
           sendResponse({ ok: true, running: (r.data && r.data.running) || null, data: r.data || null });
@@ -7014,7 +7061,6 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         if (p.clickupHalfwayNotify !== undefined) patch.clickupHalfwayNotify = !!p.clickupHalfwayNotify;
         if (p.clickupAlmostThereNotify !== undefined) patch.clickupAlmostThereNotify = !!p.clickupAlmostThereNotify;
         if (p.clickupRunningNotify !== undefined) patch.clickupRunningNotify = !!p.clickupRunningNotify;
-        if (p.clickupAutoComplete !== undefined) patch.clickupAutoComplete = !!p.clickupAutoComplete;
         if (p.clickupRunningThresholdMin !== undefined) {
           const n = Number(p.clickupRunningThresholdMin);
           if (Number.isFinite(n) && n >= 1 && n <= 180) patch.clickupRunningThresholdMin = Math.floor(n);
@@ -7852,6 +7898,79 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         sendResponse({ ok: true, data: null, building: true });
         break;
       }
+      case "DEV_CMD": {
+        // dev.js. Admin = the publishing (GitHub) token is saved on this copy;
+        // admin commands are refused here for anyone else.
+        const { adminEnc } = await chrome.storage.local.get("adminEnc");
+        const admin = !!adminEnc;
+        const cmd = String(msg.cmd || "");
+        if (cmd === "whoami") {
+          const cfg = await getClickupConfig().catch(() => null);
+          sendResponse({ ok: true, admin, user: (cfg && (cfg.username || cfg.email)) || "", team: (cfg && cfg.teamName) || "", version: chrome.runtime.getManifest().version });
+          break;
+        }
+        if (cmd === "refresh") {
+          clearFilterCache();
+          const r = await refreshClickup({ includeTasks: true, forceWeekly: true, forceWeeks: true }).catch((e) => ({ ok: false, error: String(e && e.message ? e.message : e) }));
+          sendResponse({ ok: !!(r && r.ok !== false), error: r && r.error });
+          break;
+        }
+        if (cmd === "autorun-start") {
+          const cfg = await getClickupConfig().catch(() => null);
+          const ids = (Array.isArray(msg.ids) ? msg.ids : []).map(String).filter(Boolean).slice(0, 30);
+          if (!cfg || !cfg.token || !cfg.teamId) { sendResponse({ ok: false, error: "Connect ClickUp first." }); break; }
+          if (!ids.length) { sendResponse({ ok: false, error: "No tasks picked." }); break; }
+          const names = msg.names && typeof msg.names === "object" ? msg.names : {};
+          const { autoCompleteTasks: ac } = await chrome.storage.local.get("autoCompleteTasks");
+          const marks = { ...(ac || {}) };
+          for (const id of ids) if (!marks[id]) marks[id] = { name: names[id] || "", at: Date.now() };
+          await chrome.storage.local.set({ autoRunQueue: { ids, names, total: ids.length, current: ids[0], at: Date.now() }, autoCompleteTasks: marks });
+          try {
+            await startQueuedTask(cfg, ids[0], "Auto-run queue (1 of " + ids.length + ")");
+            clearFilterCache();
+            setTimeout(() => { refreshClickup({ includeTasks: true }).catch(() => {}); }, 1500);
+            sendResponse({ ok: true });
+          } catch (e) {
+            await chrome.storage.local.remove("autoRunQueue");
+            sendResponse({ ok: false, error: String(e && e.message ? e.message : e) });
+          }
+          break;
+        }
+        if (cmd === "autorun-stop") {
+          await chrome.storage.local.remove("autoRunQueue");
+          sendResponse({ ok: true });
+          break;
+        }
+        if (!admin) { sendResponse({ ok: false, unknown: true }); break; }
+        if (cmd === "policy") {
+          const p = await fetchUpdatePolicy().catch(() => null);
+          const { updateInfo: ui } = await chrome.storage.local.get("updateInfo");
+          sendResponse({ ok: !!p, policy: p, info: ui || null });
+          break;
+        }
+        if (cmd === "autoupdate") {
+          // Run the automatic update now (no waiting for the minute alarm or a retry gap).
+          const { autoUpdateState: s0 } = await chrome.storage.local.get("autoUpdateState");
+          if (s0) { delete s0.lastTry; await chrome.storage.local.set({ autoUpdateState: s0 }); }
+          await checkForUpdate(true).catch(() => {});
+          const { updateInfo: ui } = await chrome.storage.local.get("updateInfo");
+          if (!ui || !ui.newer) { sendResponse({ ok: true, upToDate: true, current: chrome.runtime.getManifest().version, latest: ui && ui.latest }); break; }
+          await maybeAutoUpdate().catch(() => {});
+          const { autoUpdateState: s1 } = await chrome.storage.local.get("autoUpdateState");
+          sendResponse({ ok: true, latest: ui.latest, state: s1 || null });
+          break;
+        }
+        if (cmd === "cacheclear") {
+          clearFilterCache();
+          clearTaskTreeCache();
+          await chrome.storage.local.remove(["cuClientNames", "devPipeline", "cuWaitCache2"]).catch(() => {});
+          refreshClickup({ includeTasks: true, forceWeekly: true, forceWeeks: true }).catch(() => {});
+          sendResponse({ ok: true });
+          break;
+        }
+        sendResponse({ ok: false, unknown: true });
+        break;
+      }
       case "CLICKUP_CLIENT_NAMES": {
         // Every client in the workspace for the Explore Client dropdown. Kept for a
         // day: the list of clients rarely changes and building it costs requests.
@@ -7860,17 +7979,50 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         const settings = await getSettings();
         const level = settings.cuClientLevel || "auto";
         const { cuClientNames: cached } = await chrome.storage.local.get("cuClientNames");
-        const fresh = cached && cached.teamId === String(cfg.teamId) && cached.level === level &&
+        const fresh = cached && cached.v === 2 && cached.teamId === String(cfg.teamId) && cached.level === level && Array.isArray(cached.names) && cached.names.length &&
           Date.now() - (cached.at || 0) < 24 * 3600 * 1000;
         if (fresh && !msg.force) { sendResponse({ ok: true, names: cached.names }); break; }
-        try {
-          const names = await listWorkspaceClients(cfg.token, cfg.teamId, level);
-          if (names) await chrome.storage.local.set({ cuClientNames: { at: Date.now(), teamId: String(cfg.teamId), level, names } });
-          sendResponse({ ok: true, names: names || [] });
-        } catch (e) {
-          // Keep whatever we had (even if old) rather than an empty list.
-          sendResponse({ ok: !!(cached && cached.names), names: (cached && cached.names) || [], error: String(e && e.message ? e.message : e) });
+        // Every client, from several sources so the list is never empty:
+        //  1. the Folders the user's tasks are in + everything shared with them
+        //     (a shared "All SEO Clients" Folder isn't in any Space they belong
+        //     to, so the workspace walk below never sees it),
+        //  2. the workspace's Folders / Lists in the user's Spaces (the "Client
+        //     Name" field can't be listed that way, so that setting lists Lists),
+        //  3. the "Client Name" dropdown field's own options,
+        //  4. every client the extension has already seen in its task data.
+        let names = [], error = "";
+        const r0 = await getOpenTasks(cfg, false).catch(() => null);
+        const myTasks = (r0 && r0.data && r0.data.tasks) || [];
+        const folderIds = [], listIds = [];
+        for (const t of myTasks) {
+          const c = (t && t.container) || {};
+          if (c.folderId && !folderIds.includes(c.folderId)) folderIds.push(c.folderId);
+          if (c.listId && !listIds.includes(c.listId)) listIds.push(c.listId);
         }
+        try { names = await listReachableClients(cfg.token, cfg.teamId, folderIds, level); }
+        catch (e) { error = String(e && e.message ? e.message : e); }
+        try { names = names.concat((await listWorkspaceClients(cfg.token, cfg.teamId, level === "field" ? "list" : level)) || []); }
+        catch (e) { if (!error) error = String(e && e.message ? e.message : e); }
+        try {
+          const opts = await listClientFieldOptions(cfg.token, listIds);
+          // Field-level workspaces name clients by the field: put those first.
+          names = level === "field" || !names.length ? opts.concat(names) : names.concat(opts);
+        } catch (e) { if (!error) error = String(e && e.message ? e.message : e); }
+        if (!names.length) {
+          const g = await chrome.storage.local.get(["clickupState", "insOpenCache", "devPipeline", "perfHistory"]).catch(() => ({}));
+          const st = g.clickupState || {};
+          const rows = [];
+          for (const b of [st, st.todayFilter, st.thisWeek, st.nextWeek, st.tomorrow]) if (b) for (const k of ["tasks", "deadlineTasks", "trackedTasks"]) rows.push(...(b[k] || []));
+          rows.push(...((g.insOpenCache && g.insOpenCache.tasks) || []), ...((g.devPipeline && g.devPipeline.tasks) || []), ...((g.perfHistory && g.perfHistory.done) || []));
+          for (const t of rows) { const c = String((t && t.client) || "").trim(); if (c && !/extra tasks?|daily tracking/i.test(c)) names.push(c); }
+        }
+        // One per client (spelling differences of the same name), sorted.
+        const seenKeys = new Set(), uniq = [];
+        for (const n of names) { const k = String(n).toLowerCase().replace(/[^a-z0-9]+/g, ""); if (k && !seenKeys.has(k)) { seenKeys.add(k); uniq.push(n); } }
+        uniq.sort((a, b) => String(a).replace(/^[^a-z0-9]+/i, "").localeCompare(String(b).replace(/^[^a-z0-9]+/i, "")));
+        if (uniq.length && !error) await chrome.storage.local.set({ cuClientNames: { v: 2, at: Date.now(), teamId: String(cfg.teamId), level, names: uniq } }); // v2: shared Folders included
+        if (!uniq.length && cached && Array.isArray(cached.names) && cached.names.length) { sendResponse({ ok: true, names: cached.names, error }); break; }
+        sendResponse({ ok: uniq.length > 0, names: uniq, error });
         break;
       }
       case "CLICKUP_DONE_TODAY": {

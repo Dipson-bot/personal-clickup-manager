@@ -122,8 +122,17 @@
     #tfList .tf-nrow label { display: flex; gap: 6px; align-items: center; margin: 0; font-weight: 400; }
     #tfList .tf-nrow input[type=datetime-local] { font: inherit; font-size: 12px; padding: 3px 6px; }
     #tfList .tf-nrow .sp { flex: 1; }
-    .tf-addc { display: inline-flex; gap: 4px; align-items: center; }
-    .tf-addc input { width: 190px; }
+    .tf-addc { display: inline-flex; gap: 4px; align-items: center; position: relative; }
+    .tf-addc input { width: 230px; }
+    .tf-addpop { position: absolute; top: calc(100% + 4px); left: 0; z-index: 50; width: min(380px, 90vw); max-height: 320px; overflow: auto; background: var(--card); color: var(--text); border: 1px solid var(--border); border-radius: 10px; box-shadow: 0 12px 30px rgba(0,0,0,.18); padding: 4px; font-size: 12.5px; }
+    .tf-addpop[hidden] { display: none; }
+    .tf-addpop .it { display: flex; align-items: center; gap: 8px; width: 100%; text-align: left; font: inherit; padding: 6px 9px; border: 0; border-radius: 7px; background: none; color: inherit; cursor: pointer; }
+    .tf-addpop .it:hover, .tf-addpop .it.on { background: var(--bg2, rgba(99,102,241,.1)); }
+    .tf-addpop .it .nm { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .tf-addpop .it .tag { font-size: 10.5px; color: var(--muted); }
+    .tf-addpop .it:disabled { cursor: default; opacity: .55; }
+    .tf-addpop .msg { padding: 8px 9px; color: var(--muted); line-height: 1.45; }
+    .tf-addpop .msg a { color: var(--indigo, #6366f1); cursor: pointer; }
     #tfList .tf-unadd { border: 0; background: none; cursor: pointer; color: var(--muted); font-size: 12px; padding: 2px 5px; border-radius: 6px; }
     #tfList .tf-unadd:hover { color: var(--red, #dc2626); background: var(--bg2); }
     #tfList .tf-pin { border: 0; background: none; cursor: pointer; font-size: 14px; line-height: 1; padding: 2px 4px; border-radius: 6px; filter: grayscale(1); opacity: .35; }
@@ -713,45 +722,96 @@
     else addTo(b.dataset.ck, b.dataset.name, fl);
   });
 
-  // ---- add a client you aren't assigned to ----
-  // Suggestions come from every client in the workspace (the same list as "All
-  // workspace clients", read once); any other name can be typed too.
-  async function workspaceClients() {
-    if (!allClients.length) {
-      const r = await send({ type: "CLICKUP_CLIENT_NAMES" }, 60000);
-      allClients = (r && Array.isArray(r.names) ? r.names : []).map((n) => (typeof n === "string" ? n : n && n.name) || "").filter(Boolean);
-    }
+  // ---- add a client from ClickUp (also one you aren't assigned to) ----
+  // A list of every client in the workspace (the same list as "All workspace
+  // clients", read from ClickUp once a day) opens as soon as the box is clicked;
+  // typing narrows it. Only real ClickUp clients can be added.
+  let wsState = "idle", wsErr = ""; // idle | loading | ok | error
+  async function workspaceClients(force) {
+    if (allClients.length && !force) return allClients;
+    wsState = "loading"; paintPop();
+    const r = await send({ type: "CLICKUP_CLIENT_NAMES", force: !!force }, 90000).catch(() => null);
+    allClients = (r && Array.isArray(r.names) ? r.names : []).map((n) => (typeof n === "string" ? n : n && n.name) || "").filter(Boolean);
+    wsState = allClients.length ? "ok" : "error";
+    wsErr = allClients.length ? "" : !r ? "the extension's background didn't answer - reload the extension (chrome://extensions › ⟳) and try again."
+      : (r.reason === "not-configured" ? "Connect ClickUp first (ClickUp setup)." : r.error) || "ClickUp didn't send any clients.";
+    paintPop();
     return allClients;
   }
-  let suggested = false;
-  $("tfAddClient").addEventListener("focus", async () => {
-    if (suggested) return;
-    suggested = true;
-    const dl = $("tfAddList");
-    const all = await workspaceClients().catch(() => []);
-    dl.textContent = "";
-    for (const c of all.slice().sort((a, b) => sortName(a).localeCompare(sortName(b)))) { const o = document.createElement("option"); o.value = c; dl.appendChild(o); }
-  });
-  async function addClient() {
-    const typed = $("tfAddClient").value.trim();
-    if (!typed) { $("tfAddClient").focus(); return; }
-    const all = await workspaceClients().catch(() => []);
-    const name = all.find((c) => F.key(c) === F.key(typed)) || typed; // the workspace's own spelling
+  const inList = (ck) => myClients.some((c) => F.key(c) === ck) || added.some((c) => F.key(c) === ck);
+  let hi = 0, popItems = [];
+  function paintPop() {
+    const pop = $("tfAddPop"), inp = $("tfAddClient");
+    if (!pop || pop.hidden) return;
+    pop.textContent = "";
+    const msg = (html) => { const d = document.createElement("div"); d.className = "msg"; d.innerHTML = html; pop.appendChild(d); return d; };
+    if (wsState === "loading" && !allClients.length) { msg("Loading every client from ClickUp… (the first time takes a few seconds)"); return; }
+    if (wsState === "error" && !allClients.length) {
+      const d = msg("Couldn't read the clients from ClickUp: " + esc(wsErr) + " <a data-retry>Try again</a>");
+      d.querySelector("[data-retry]").onclick = (e) => { e.preventDefault(); workspaceClients(true); };
+      return;
+    }
+    const q = F.key(inp.value);
+    popItems = allClients.slice().sort((a, b) => sortName(a).localeCompare(sortName(b))).filter((c) => !q || F.key(c).includes(q));
+    if (!popItems.length) { msg("No ClickUp client matches “" + esc(inp.value.trim()) + "”."); return; }
+    hi = Math.min(hi, popItems.length - 1);
+    popItems.slice(0, 300).forEach((c, i) => {
+      const there = inList(F.key(c));
+      const b = document.createElement("button");
+      b.type = "button"; b.className = "it" + (i === hi ? " on" : ""); b.setAttribute("role", "option");
+      b.disabled = there;
+      b.innerHTML = '<span class="nm">' + esc(c) + "</span>" + (there ? '<span class="tag">in your list</span>' : "");
+      b.onmousedown = (e) => e.preventDefault(); // keep the box focused
+      b.onclick = () => addClient(c);
+      pop.appendChild(b);
+    });
+  }
+  function openPop() {
+    const pop = $("tfAddPop");
+    pop.hidden = false; $("tfAddClient").setAttribute("aria-expanded", "true");
+    hi = 0;
+    paintPop();
+    if (!allClients.length && wsState !== "loading") workspaceClients();
+  }
+  function closePop() { $("tfAddPop").hidden = true; $("tfAddClient").setAttribute("aria-expanded", "false"); }
+  async function addClient(pick) {
+    let name = pick;
+    if (!name) {
+      // Add button / Enter: the highlighted client, or the one exact match.
+      const all = await workspaceClients();
+      const typed = F.key($("tfAddClient").value);
+      name = all.find((c) => F.key(c) === typed) || (popItems.length && !$("tfAddPop").hidden ? popItems[hi] : "");
+      if (!name) { openPop(); if (typed) say("Pick a client from the list - only clients in your ClickUp workspace can be added.", "var(--amber, #d97706)"); return; }
+    }
     const ck = F.key(name);
     $("tfAddClient").value = "";
+    closePop();
     open.add(ck);
-    if (myClients.some((c) => F.key(c) === ck) || added.some((c) => F.key(c) === ck)) { say(name + " is already in your list."); render(); return; }
+    if (inList(ck)) { say(name + " is already in your list."); render(); return; }
     added = [name].concat(added).slice(0, 200);
     send({ type: "SET_SETTINGS", patch: { tfAdded: added } });
-    const known = all.some((c) => F.key(c) === ck);
-    say(name + " added to your list - add its files and notes below." + (known || !all.length ? " Its tasks pick them up automatically (Ask, Explain, Verify)." :
-      " It isn't a client name in ClickUp, so a task picks up its files only when the task's List, client or Folder name matches it (or starts the same way)."), known || !all.length ? "" : "var(--amber, #d97706)");
+    say(name + " added to your list - add its files and notes below. Its tasks pick them up automatically (Explain, Ask with, Verify).");
     render();
     const el = [...document.querySelectorAll("#tfList .tf-client")].find((b) => b.dataset.ck === ck);
     if (el) try { el.scrollIntoView({ block: "nearest", behavior: "smooth" }); } catch (e) {}
   }
-  $("tfAddClientBtn").onclick = addClient;
-  $("tfAddClient").addEventListener("keydown", (e) => { if (e.key === "Enter") { e.preventDefault(); addClient(); } });
+  $("tfAddClient").addEventListener("focus", openPop);
+  $("tfAddClient").addEventListener("click", openPop);
+  $("tfAddClient").addEventListener("input", () => { hi = 0; if ($("tfAddPop").hidden) openPop(); else paintPop(); });
+  $("tfAddClient").addEventListener("keydown", (e) => {
+    if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+      e.preventDefault();
+      if ($("tfAddPop").hidden) { openPop(); return; }
+      const n = Math.min(popItems.length, 300);
+      if (!n) return;
+      hi = (hi + (e.key === "ArrowDown" ? 1 : n - 1)) % n;
+      paintPop();
+      const on = $("tfAddPop").querySelector(".it.on"); if (on) on.scrollIntoView({ block: "nearest" });
+    } else if (e.key === "Enter") { e.preventDefault(); addClient(); }
+    else if (e.key === "Escape") closePop();
+  });
+  $("tfAddClient").addEventListener("blur", () => setTimeout(closePop, 150));
+  $("tfAddClientBtn").onclick = () => addClient();
 
   // ---- filters ----
   $("tfSearch").oninput = render;

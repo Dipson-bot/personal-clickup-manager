@@ -1166,6 +1166,53 @@ export function taskClientField(t) {
   return "";
 }
 
+// Every client in places the user can see but may not be a member of: the
+// Lists of the Folders their tasks are in (e.g. a shared "All SEO Clients"
+// Folder - one GET /folder/{id}/list each, at most 6), plus everything shared
+// with them (GET /team/{id}/shared: shared Folders' and Lists' names). The
+// workspace walk (listWorkspaceClients) only sees Spaces they belong to.
+export async function listReachableClients(token, teamId, folderIds, level = "auto") {
+  const names = new Set();
+  const add = (ctr) => { const n = String(clientLabelFromContainer(ctr, level === "field" ? "list" : level, null) || "").trim(); if (n) names.add(n); };
+  const folders = new Map(); // id -> name
+  for (const id of folderIds || []) if (id) folders.set(String(id), "");
+  try {
+    const sj = await cuFetch(token, "/team/" + encodeURIComponent(teamId) + "/shared");
+    const sh = (sj && sj.shared) || {};
+    for (const f of Array.isArray(sh.folders) ? sh.folders : []) if (f && f.id != null) folders.set(String(f.id), f.name || "");
+    for (const l of Array.isArray(sh.lists) ? sh.lists : []) if (l && l.name) add({ listName: l.name, folderName: "" });
+  } catch (e) { if (e && e.status === 429) throw e; }
+  let n = 0;
+  for (const [id, fname] of folders) {
+    if (++n > 6) break;
+    try {
+      const lj = await cuFetch(token, "/folder/" + encodeURIComponent(id) + "/list", [["archived", "false"]]);
+      for (const l of Array.isArray(lj && lj.lists) ? lj.lists : []) if (l && l.name) add({ listName: l.name, folderName: fname });
+    } catch (e) { if (e && e.status === 429) throw e; }
+  }
+  return [...names];
+}
+
+// Every option of the "Client Name" dropdown custom field - the full list of
+// clients when the workspace keeps them in that field. Read from the fields of a
+// few Lists the user's tasks are in (GET /list/{id}/field), so it costs at most
+// that many requests; the first List that has the field answers.
+export async function listClientFieldOptions(token, listIds) {
+  const out = new Set();
+  for (const id of (listIds || []).slice(0, 4)) {
+    let j;
+    try { j = await cuFetch(token, "/list/" + encodeURIComponent(id) + "/field"); } catch (e) { if (e && e.status === 429) throw e; continue; }
+    for (const f of Array.isArray(j && j.fields) ? j.fields : []) {
+      const nm = String((f && f.name) || "").trim().toLowerCase();
+      if (!CLIENT_FIELD_NAMES.includes(nm)) continue;
+      const opts = (f.type_config && Array.isArray(f.type_config.options)) ? f.type_config.options : [];
+      for (const o of opts) { const n = String((o && (o.name || o.label)) || "").trim(); if (n) out.add(n); }
+    }
+    if (out.size) break;
+  }
+  return [...out];
+}
+
 // A ClickUp task lives in Space ▸ Folder ▸ List ▸ Task. Different agencies put
 // the client name at different levels, so we capture all three from the raw task
 // payload. `folder.name` and `list.name` come free in every task response; a
@@ -1183,6 +1230,8 @@ export function taskContainer(t) {
     listName: (list && list.name) || "",
     // The List's id: where "Create a task" (local-tasks.js) can put a new task.
     listId: list && list.id != null ? String(list.id) : "",
+    // The Folder's id: every List in it is a client to offer ("+ Add a client").
+    folderId: folder && folder.hidden !== true && folder.id != null ? String(folder.id) : "",
     spaceId: space && space.id != null ? String(space.id) : "",
     clientField: taskClientField(t),
   };
