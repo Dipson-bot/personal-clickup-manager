@@ -8342,7 +8342,7 @@ if ($("driveSettingsBtn")) $("driveSettingsBtn").onclick = () => chrome.tabs.cre
 // ---- General: floating tracker (tracker.html) ----
 const FLOAT_KEYS = ["floatTracker", "floatAutoOpen", "floatAutoAnywhere", "floatHover", "floatToday"];
 if ($("floatSize")) {
-  chrome.storage.local.get("settings").then((g) => { $("floatSize").value = (g.settings && g.settings.floatSize) === "compact" ? "compact" : "normal"; }).catch(() => {});
+  chrome.storage.local.get("settings").then((g) => { const fs0 = (g.settings && g.settings.floatSize) || "slim"; $("floatSize").value = fs0 === "compact" || fs0 === "normal" ? fs0 : "slim"; }).catch(() => {});
   $("floatSize").onchange = () => { send({ type: "SET_SETTINGS", patch: { floatSize: $("floatSize").value } }).catch(() => {}); };
 }
 (async () => {

@@ -1465,7 +1465,7 @@ const DEFAULT_SETTINGS = {
   // Visual effects (Options > General > Animations and effects).
   fxLiquid: true, fxChart: true, fxCount: true, fxIconRing: true,
   // Floating tracker (tracker.html): the Float button, full view on hover, today's total.
-  floatTracker: true, floatAutoOpen: true, floatAutoAnywhere: true, floatHover: true, floatToday: true, floatSize: "normal",
+  floatTracker: true, floatAutoOpen: true, floatAutoAnywhere: true, floatHover: true, floatToday: true, floatSize: "slim",
   // Task files: back the files' text up to Drive (hidden app data).
   taskFilesDrive: true,
   clickupWrapUpTime: "16:45", // local "HH:MM"
@@ -6135,7 +6135,17 @@ async function notifyAgentRouterQuota() {
   await maybeNotifyQuotaCredit();
 }
 
+// Slim became the floating window's default size: copies still on Normal
+// switch once (Compact, a deliberate choice, is kept). Later changes stay.
+async function slimDefaultOnce() {
+  const { floatSlimDefault } = await chrome.storage.local.get("floatSlimDefault");
+  if (floatSlimDefault) return;
+  const s = await getSettings();
+  if (!s.floatSize || s.floatSize === "normal") await setSettings({ floatSize: "slim" });
+  await chrome.storage.local.set({ floatSlimDefault: Date.now() });
+}
 chrome.runtime.onInstalled.addListener((details) => {
+  slimDefaultOnce().catch(() => {});
   // A reload / update closes every floating window (its page went away) - and
   // the page doesn't always get to say so. Clear the flag, then float the
   // running timer again shortly (a reload is not "you closed it").
@@ -8069,6 +8079,14 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         } catch (e) {
           sendResponse({ ok: false, error: String(e && e.message ? e.message : e) });
         }
+        break;
+      }
+      case "FLOAT_REOPEN": {
+        // The floating window was dragged partly behind the taskbar / off the
+        // screen and closed itself: open it again (at Chrome's own spot - see
+        // tracker.js watchPlacement) through the pinned Tracker tab.
+        sendResponse({ ok: true });
+        setTimeout(() => { autoFloatNow().catch((e) => diagLog("auto-float", "reopen: " + (e && e.message ? e.message : e))); }, 400);
         break;
       }
       case "TRACKER_PROGRESS": {

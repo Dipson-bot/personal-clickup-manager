@@ -65,14 +65,35 @@
     try { pinned = !!(await chrome.action.getUserSettings()).isOnToolbar; } catch (e) {}
     const autoOff = settings.autoUpdate === false;
     const folder = autoOff ? true : await updateFolderReady();
+    // Set up isn't the same as working: an update that has been waiting more than
+    // 2 hours means automatic updates aren't installing here (folder permission
+    // only "this time", a failed download, Chrome waiting for a click...). Then
+    // the step is not done, says why, and the card shows even if it was hidden.
+    let stuck = null;
+    try {
+      const g = await chrome.storage.local.get(["updateInfo", "autoUpdateState"]);
+      const ui = g.updateInfo || {}, as = g.autoUpdateState || {};
+      const waited = Date.now() - (Number(ui.autoFirstSeen) || Date.now());
+      if (!autoOff && ui.newer && ui.latest && waited > 2 * 3600000) {
+        const why = {
+          "needs-click": "Chrome is waiting for one click to finish it",
+          permission: "Chrome needs permission to the extension's folder again (pick \"Allow on every visit\")",
+          "no-folder": "the extension's folder was never chosen",
+          moved: "the extension's folder has moved",
+          "tab-timeout": "the update tab didn't finish",
+        }[as.reason] || (as.reason ? "the last try didn't finish (" + as.reason + ")" : "it hasn't been able to install");
+        const h = Math.round(waited / 3600000);
+        stuck = "v" + ui.latest + " came out " + (h < 48 ? h + " hours" : Math.round(h / 24) + " days") + " ago and hasn't installed itself here - " + why + ". Press Fix it.";
+      }
+    } catch (e) {}
     return [
       { id: "clickup", label: "Connect ClickUp", done: !!(cu.configured && cu.teamId),
         hint: "Your tasks, estimates and timers come from ClickUp.", btn: "Connect", run: () => goTo("clickup") },
       { id: "drive", label: "Turn on Drive sync", done: !!st.signedIn,
         hint: "Keeps your settings and site list safe if you reinstall or use another computer.", btn: "Sign in", run: () => goTo("general", "driveSyncCard") },
-      { id: "updates", label: "Set up automatic updates", done: folder,
-        hint: autoOff ? "" : "Choose the extension's folder once and pick \"Allow on every visit\" when Chrome asks.", btn: "Set up",
-        run: () => chrome.tabs.create({ url: chrome.runtime.getURL("update.html?setup=1") }).catch(() => {}) },
+      { id: "updates", label: stuck ? "Automatic updates aren't working" : "Set up automatic updates", done: folder && !stuck, urgent: !!stuck,
+        hint: stuck || (autoOff ? "" : "Choose the extension's folder once and pick \"Allow on every visit\" when Chrome asks."), btn: stuck ? "Fix it" : "Set up",
+        run: () => chrome.tabs.create({ url: chrome.runtime.getURL(stuck && folder ? "update.html" : "update.html?setup=1") }).catch(() => {}) },
       { id: "notify", label: "Allow notifications", done: notifyLevel === "granted",
         hint: "Chrome is blocking this extension's notifications. Windows: Settings > System > Notifications > turn on Google Chrome. Mac: System Settings > Notifications > Google Chrome." },
       { id: "pin", label: "Pin the extension to the toolbar", done: pinned,
@@ -111,7 +132,8 @@
     const items = await checks();
     const done = items.filter((i) => i.done).length;
     const complete = done === items.length;
-    if (setupHidden || complete) { if (box) { box.remove(); box = null; } return; }
+    // Hidden by you - unless updates are stuck: an old version is worth a word.
+    if ((setupHidden && !items.some((i) => i.urgent && !i.done)) || complete) { if (box) { box.remove(); box = null; } return; }
     if (isOptions) {
       const panel = document.querySelector('.panel[data-panel="dashboard"]');
       if (!panel) return;
@@ -145,7 +167,7 @@
       const header = document.querySelector(".header");
       if (!header) return;
       if (!box) { box = document.createElement("div"); box.className = "pcm-setupline"; header.after(box); box.onclick = () => goTo("dashboard"); }
-      const next = items.find((i) => !i.done);
+      const next = items.find((i) => i.urgent && !i.done) || items.find((i) => !i.done);
       box.innerHTML = "";
       const b = document.createElement("b"); b.textContent = "Setup " + done + " of " + items.length;
       const t = document.createElement("em"); t.style.fontStyle = "normal"; t.textContent = "Next: " + next.label.toLowerCase();
@@ -159,7 +181,7 @@
   document.addEventListener("visibilitychange", () => { if (document.visibilityState === "visible") soon(); });
   window.addEventListener("focus", soon);
   chrome.storage.onChanged.addListener((ch, area) => {
-    if (area === "local" && (ch.setupHidden || ch.clickupEnc || ch.driveLastSync || ch.settings)) soon();
+    if (area === "local" && (ch.setupHidden || ch.clickupEnc || ch.driveLastSync || ch.settings || ch.updateInfo || ch.autoUpdateState)) soon();
   });
 
   // ---- floating tracker button (for the "Tracking now" strips) ----

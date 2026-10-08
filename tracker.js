@@ -144,6 +144,15 @@
     button.next { max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; text-align: left; }
     #cBadge { position: fixed; top: 3px; left: 3px; z-index: 5; font: 700 10.5px/1.2 -apple-system, "Segoe UI", sans-serif; padding: 2px 6px; border-radius: 999px; background: #ef4444; border: 0; color: #fff; cursor: pointer; box-shadow: 0 1px 3px rgba(0,0,0,.3); }
     #cBadge[hidden] { display: none; }
+    /* Slim (Options › Floating tracker › Size): one line at rest - face, bar,
+       time - and on hover the task name over Stop / Done. */
+    #root.slim:not(.big) { padding: 1px 8px; gap: 6px; }
+    #root.slim:not(.big) .col { gap: 1px; }
+    #root.slim:not(.big) .face svg { width: 22px; height: 22px; }
+    #root.slim:not(.big) .lab:not(.idle), #root.slim:not(.big) .sub:not(#fToday) { display: none; }
+    #root.slim:not(.big) .row:has(#fBar), #root.slim:not(.big) .row:has(#fCmt), #root.slim:not(.big) .row:has(.next) { display: none; }
+    #root.slim button { padding: 0 7px; font-size: 11px; line-height: 18px; }
+    #root.slim .nm { font-size: 12px; }
     /* A window made very small (drag its corner): the content gets tighter, then
        the least important lines step aside, so what is left is never cut off at
        the top or bottom. Resting view keeps the bar longest; the hover view keeps
@@ -278,6 +287,7 @@
     if (!pip) return;
     const root = pip.document.getElementById("root");
     if (!root || xPanel) return;
+    root.classList.toggle("slim", slim());
     const st = data.st || {};
     const run = st.running && st.running.taskId ? st.running : null;
     const now = Date.now();
@@ -294,7 +304,7 @@
       // Built only when something changed: redrawing every second replaced the
       // buttons between a press and its release, so clicks got lost.
       const idleHtml = '<div class="face">' + faceSVG("sleep", full || compact() ? 38 : 50) + '</div><div class="col">' +
-        '<div class="lab" style="color:var(--amber)">No timer running</div>' +
+        '<div class="lab idle" style="color:var(--amber)">No timer running</div>' +
         (full
           ? nexts.map((t) => '<div class="row"><button class="x next" data-act="startid" data-id="' + esc(t.id) + '" title="Start: ' + esc(t.name) + '">&#9654; ' + esc(t.name) + "</button></div>").join("") +
             '<div class="row"><span class="btns" style="margin-left:0">' +
@@ -633,7 +643,12 @@
   // Options > Floating tracker > Size: Compact covers less of the screen (no
   // comment box on hover - ⤢ has it), applied when the tracker is (re)opened.
   const COMPACT = [300, 96];
-  const compact = () => data.settings.floatSize === "compact";
+  // Slim: one line (bar + time), made to rest right on top of the taskbar.
+  // Counts as compact too (no client chip, no comment box on hover).
+  const SLIM = [300, 46];
+  const slim = () => (data.settings.floatSize || "slim") === "slim"; // the default size
+  const compact = () => data.settings.floatSize === "compact" || slim();
+  const sizeNow = () => (slim() ? SLIM : compact() ? COMPACT : SMALL);
   let savedPos = null, savedOuter = null;
   const tryResize = (w, h) => { try { pip.resizeTo(w, h); } catch (e) {} };
   // Opened from a page that isn't in front (the automatic open), Chrome ignores
@@ -643,10 +658,10 @@
   // refused the window asks (storage floatNeedsFit) and the background clicks
   // it once through the debugger; that one click only resizes (fitPending).
   let fitPending = false, hoverMuteUntil = 0;
-  const wrongSize = () => { const [w, h] = compact() ? COMPACT : SMALL; return pip && (Math.abs(pip.innerWidth - w) > 24 || Math.abs(pip.innerHeight - h) > 24); };
+  const wrongSize = () => { const [w, h] = sizeNow(); return pip && (Math.abs(pip.innerWidth - w) > 24 || Math.abs(pip.innerHeight - h) > 24); };
   function fitSmall() {
     if (!pip) return;
-    const [w, h] = compact() ? COMPACT : SMALL;
+    const [w, h] = sizeNow();
     const fw = Math.max(0, pip.outerWidth - pip.innerWidth), fh = Math.max(0, pip.outerHeight - pip.innerHeight);
     if (!wrongSize()) { fitPending = false; chrome.storage.local.set({ floatNeedsFit: 0 }).catch(() => {}); return; }
     tryResize(w + fw, h + fh);
@@ -733,7 +748,7 @@
   function closeBig() {
     expanded = false;
     bigKey = "";
-    if (savedOuter) tryResize(savedOuter.w, savedOuter.h); else tryResize(SMALL[0], SMALL[1] + 32);
+    if (savedOuter) tryResize(savedOuter.w, savedOuter.h); else tryResize(sizeNow()[0], sizeNow()[1] + 32);
     // Back where it was. Chrome may ignore this for floating windows; then it
     // stays put and can be dragged back by its top bar.
     if (savedPos) { const p = savedPos; setTimeout(() => { try { pip.moveTo(p.x, p.y); } catch (e) {} }, 60); }
@@ -954,7 +969,12 @@
   async function openPip() {
     if (pip || !supported) return;
     try {
-      pip = await window.documentPictureInPicture.requestWindow({ width: (compact() ? COMPACT : SMALL)[0], height: (compact() ? COMPACT : SMALL)[1] });
+      // Coming back from behind the taskbar (see watchPlacement): open at
+      // Chrome's own spot - the corner of the usable screen - not where it was.
+      let home = false;
+      try { const g = await chrome.storage.local.get("floatPlaceHome"); home = Date.now() - (Number(g.floatPlaceHome) || 0) < 30000; if (home) chrome.storage.local.set({ floatPlaceHome: 0 }).catch(() => {}); } catch (e) {}
+      const size = { width: sizeNow()[0], height: sizeNow()[1] };
+      pip = await window.documentPictureInPicture.requestWindow(home ? { ...size, preferInitialWindowPlacement: true } : size);
     } catch (e) {
       if (isHost) $("lead").textContent = "Chrome didn't open it (" + (e && e.message ? e.message : e) + "). Click again.";
       return false;
@@ -1006,6 +1026,44 @@
     if (ch.clickupState || ch.runningProgress || ch.settings || ch.lastStoppedTask || ch.resumeTask || ch.theme) load().then(() => { theme(); paint(); });
   });
   setInterval(paint, 1000);
+  // ---------- keep it in view (taskbar / dock / screen edge) ----------
+  // A page can't move its own floating window (Chrome ignores moveTo), but it
+  // can see where it is and the screen's usable area (screen.avail*, which
+  // leaves out the Windows taskbar wherever it sits, the Mac dock and menu bar,
+  // and nothing for an auto-hidden taskbar). Dragged so part of it is hidden,
+  // once it has stopped moving, it reopens at Chrome's own spot - the corner of
+  // the usable area - through the background (the same click as the automatic
+  // open). Once per position, so a screen where even that spot is hidden can't
+  // make it loop.
+  let lastPos = "", still = 0, rehomedFor = "";
+  function hiddenPx() {
+    if (!pip || !pip.screen) return 0;
+    const s = pip.screen;
+    const L = Number(s.availLeft) || 0, T = Number(s.availTop) || 0, R = L + (Number(s.availWidth) || 0), B = T + (Number(s.availHeight) || 0);
+    if (!(R > L && B > T)) return 0;
+    const x = pip.screenX, y = pip.screenY, w = pip.outerWidth, h = pip.outerHeight;
+    return Math.max(0, L - x) + Math.max(0, T - y) + Math.max(0, x + w - R) + Math.max(0, y + h - B);
+  }
+  function rehome() {
+    if (!pip) return false;
+    chrome.storage.local.set({ floatPlaceHome: Date.now() }).catch(() => {});
+    try { pip.close(); } catch (e) {}
+    send({ type: "FLOAT_REOPEN" });
+    return true;
+  }
+  function watchPlacement() {
+    if (!pip || expanded || xPanel) { still = 0; return; }
+    const pos = pip.screenX + "," + pip.screenY + "," + pip.outerWidth + "," + pip.outerHeight;
+    if (pos !== lastPos) { lastPos = pos; still = 0; return; }
+    if (++still !== 2) return; // stopped moving for ~2 s: judge it once
+    if (hiddenPx() <= 30 || rehomedFor === pos) return;
+    const s = data.settings || {};
+    if (s.floatAutoAnywhere === false || s.floatTracker === false) return;
+    rehomedFor = pos;
+    rehome();
+  }
+  setInterval(watchPlacement, 1000);
+  if (window.PcmFloat) { window.PcmFloat.rehome = rehome; window.PcmFloat.hiddenPx = hiddenPx; }
   setInterval(() => { pollComments(false); }, 30000); // each task is checked at most every 3 minutes
   // A timer started or stopped in ClickUp itself shows up within a minute.
   setInterval(() => { if (pip) send({ type: "CLICKUP_SYNC_RUNNING" }); }, 60000);

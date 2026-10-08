@@ -545,6 +545,87 @@
   const OLD_HUB = "Your Team hub script is older than this extension - it doesn't know how to remove a user yet. Copy team-hub.gs again (the button above), paste it into Apps Script and deploy a new version.";
   const hubErr = (r) => (r && r.ok) ? "" : (r && /thread not found|unknown op/i.test(String(r.error || "")) ? OLD_HUB : ((r && r.error) || "Didn't work."));
 
+  // 🔔 to many at once: everyone, only those not on this version, or people you
+  // tick. Same pipe as each row's Notify (one hub "nudge" per person, sent one
+  // after another), so the hub's own limits and the "no extension yet" answer
+  // apply per person and are reported per person.
+  function bulkNotify(people, myInstall) {
+    const wrap = el("div", "hb-bulk");
+    wrap.style.cssText = "margin:4px 0 10px;";
+    const others = people.map((g) => g.row).filter((u) => !(myInstall && u.install === myInstall) && String(u.cuUserId || "").trim());
+    const behind = others.filter((u) => u.version && cmpV(u.version, VERSION) < 0);
+    const bar = el("div");
+    bar.style.cssText = "display:flex;gap:6px;flex-wrap:wrap;align-items:center;";
+    const panel = el("div");
+    panel.style.cssText = "display:none;margin-top:8px;padding:10px;border:1px solid var(--border);border-radius:10px;background:var(--card);";
+    let mode = "";
+    const open = (m) => {
+      if (mode === m && panel.style.display !== "none") { panel.style.display = "none"; mode = ""; return; }
+      mode = m;
+      panel.style.display = "";
+      panel.textContent = "";
+      const head = el("div", "", m === "all" ? "Message to everyone (" + others.length + ")" : m === "behind" ? "Message to the " + behind.length + " not on v" + VERSION : "Message to the people you tick");
+      head.style.cssText = "font-weight:600;font-size:13px;margin-bottom:6px;";
+      panel.appendChild(head);
+      let picks = null;
+      if (m === "pick") {
+        picks = el("div");
+        picks.style.cssText = "display:flex;flex-wrap:wrap;gap:4px 14px;margin:0 0 8px;font-size:12.5px;max-height:160px;overflow:auto;";
+        for (const u of others) {
+          const lab = el("label");
+          lab.style.cssText = "display:inline-flex;gap:5px;align-items:center;margin:0;font-weight:400;";
+          const cb = el("input"); cb.type = "checkbox"; cb.value = String(u.cuUserId); cb._u = u;
+          lab.append(cb, (u.name || "Someone") + (u.version ? " · v" + u.version : ""));
+          picks.appendChild(lab);
+        }
+        const tick = el("div"); tick.style.cssText = "display:flex;gap:8px;margin:-2px 0 8px;";
+        const allB = el("button", "hb-mini", "Tick all"); allB.type = "button"; allB.onclick = () => picks.querySelectorAll("input").forEach((c) => { c.checked = true; });
+        const behB = el("button", "hb-mini", "Tick those not on v" + VERSION); behB.type = "button"; behB.onclick = () => picks.querySelectorAll("input").forEach((c) => { c.checked = !!(c._u.version && cmpV(c._u.version, VERSION) < 0); });
+        const noneB = el("button", "hb-mini", "None"); noneB.type = "button"; noneB.onclick = () => picks.querySelectorAll("input").forEach((c) => { c.checked = false; });
+        tick.append(allB, behB, noneB);
+        panel.append(picks, tick);
+      }
+      const ta = el("textarea");
+      ta.rows = 2; ta.maxLength = 300;
+      ta.style.cssText = "width:100%;box-sizing:border-box;font:inherit;font-size:12.5px;";
+      ta.value = m === "behind" ? "Please open Personal ClickUp Manager (click its icon) so it updates to v" + VERSION + " - if it doesn't, go to General › Version and updates and press Check for updates." : "";
+      ta.placeholder = "What should they see? e.g. please log your hours before you finish today";
+      const row = el("div"); row.style.cssText = "display:flex;gap:8px;align-items:center;margin-top:6px;flex-wrap:wrap;";
+      const go = el("button", "hb-mini", "Send"); go.type = "button";
+      const no = el("button", "hb-mini", "Cancel"); no.type = "button";
+      const out = el("span", "hint", "");
+      no.onclick = () => { panel.style.display = "none"; mode = ""; };
+      go.onclick = async () => {
+        const text = ta.value.trim();
+        if (!text) { ta.focus(); out.textContent = "Write the message first."; return; }
+        const list = m === "all" ? others : m === "behind" ? behind : [...picks.querySelectorAll("input:checked")].map((c) => c._u);
+        if (!list.length) { out.textContent = m === "pick" ? "Tick at least one person." : "Nobody to send it to."; return; }
+        if (list.length > 20) out.textContent = "Note: the Team hub takes up to 20 messages an hour from one computer - the rest will be refused for now.";
+        go.disabled = true; no.disabled = true;
+        const sent = [], missed = [];
+        for (let i = 0; i < list.length; i++) {
+          const u = list[i];
+          go.textContent = "Sending " + (i + 1) + " of " + list.length + "…";
+          const rr = await hub("nudge", { toUser: String(u.cuUserId || ""), taskId: "", taskName: "", taskUrl: "", text }, false);
+          if (rr && rr.ok) sent.push(u.name || "someone");
+          else missed.push((u.name || "someone") + " (" + (rr && rr.reason === "no-extension" ? "hasn't opened the extension since the hub was set up" : hubErr(rr)) + ")");
+        }
+        go.disabled = false; no.disabled = false; go.textContent = "Send";
+        out.textContent = (sent.length ? "Sent to " + sent.length + " ✓ - each sees it within a few minutes as a notification." : "") +
+          (missed.length ? (sent.length ? " " : "") + "Not sent: " + missed.join(", ") + "." : "");
+        out.style.color = missed.length && !sent.length ? "var(--red)" : "";
+      };
+      row.append(go, no, out);
+      panel.append(ta, row);
+      ta.focus();
+    };
+    const mk = (label, title, m, disabled) => { const b = el("button", "hb-mini", label); b.type = "button"; b.title = title; b.disabled = !!disabled; b.onclick = () => open(m); bar.appendChild(b); return b; };
+    mk("🔔 Notify everyone", "Send everyone (except you) a message in their extension", "all", !others.length);
+    mk("🔔 Notify those not on v" + VERSION + " (" + behind.length + ")", "Only the people whose copy last reported an older version - with a ready-made 'please update' message you can change", "behind", !behind.length);
+    mk("🔔 Choose people…", "Tick who should get the message", "pick", !others.length);
+    wrap.append(bar, panel);
+    return wrap;
+  }
   async function loadUsers() {
     const box = $("hubAdmUsers");
     if (!box) return;
@@ -575,6 +656,7 @@
     if (extra) nums.push([extra, extra === 1 ? "older copy" : "older copies"]);
     for (const [n, l] of nums) { const s = el("span"); s.appendChild(el("b", "", String(n))); s.append(l); stats.appendChild(s); }
     box.appendChild(stats);
+    box.appendChild(bulkNotify(people, myInstall));
     const set = el("div", "hb-bar");
     const slow = el("select");
     for (const [v, l] of [[0, "Slow mode off"], [1, "1 message / min"], [5, "1 message / 5 min"], [15, "1 message / 15 min"], [60, "1 message / hour"]]) { const o = el("option", "", l); o.value = String(v); if (Number(st.slowMin || 0) === v) o.selected = true; slow.appendChild(o); }
