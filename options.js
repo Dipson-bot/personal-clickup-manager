@@ -3140,7 +3140,7 @@ async function loadWorkspaceClients() {
   } catch (e) {}
 }
 
-// Explore tasks reads from ClickUp only after "Show tasks" is pressed; changing a
+// Explore tasks reads from ClickUp only after "Load tasks" is pressed; changing a
 // filter afterwards asks for it again instead of loading by itself.
 let optFltArmed = false;
 async function renderOptionsFilter() {
@@ -3153,7 +3153,7 @@ async function renderOptionsFilter() {
   if (!optFltArmed) {
     ++optFltSeq;
     box.style.display = "block";
-    box.innerHTML = '<div class="flt-tot">Choose the view, people, client and the rest, then press <b>Show tasks</b>. Nothing is read from ClickUp before that.</div>';
+    box.innerHTML = '<div class="flt-tot">Choose the view, people, client and the rest, then press <b>Load tasks</b>. Nothing is read from ClickUp before that.</div>';
     return;
   }
   const seq = ++optFltSeq;
@@ -6203,6 +6203,7 @@ function insBuildModel(rows, st) {
       due: Number(r.dueDateMs) || 0, est: Number(r.estimateMs) || 0,
       client: (r.client && String(r.client)) || "(no client)",
       isSubtask: !!r.isSubtask, parentId: r.parentId || null,
+      dependsOn: Array.isArray(r.dependsOn) ? r.dependsOn.map(String) : [], // ClickUp "waiting on" tasks
     });
   }
   function mk() { return { n: 0, est: 0 }; }
@@ -6239,16 +6240,32 @@ function insBuildModel(rows, st) {
     var subBlock = sb && (sb.later || sb.parentOverdue);
     if (!personBlock && !subBlock) continue;
     var row = byId[key], reason;
+    var kind;
     if (personBlock) {
-      var uniq = [];
-      e2.blockers.forEach(function (x) { var nm = x.who || x.name; if (nm && uniq.indexOf(nm) < 0) uniq.push(nm); });
-      reason = "Waiting on " + (uniq.slice(0, 2).join(", ") || "someone") + (uniq.length > 2 ? " +" + (uniq.length - 2) : "");
+      // Waiting on a teammate: whose subtask, which one, and whether it's late.
+      kind = "teammate";
+      var b0 = e2.blockers[0], more = e2.blockers.length - 1;
+      reason = "Waiting on a teammate: " + (b0.who || "someone") + "'s subtask “" + String(b0.name || "").slice(0, 70) + "”" +
+        (b0.due ? " (due " + insDateShort(b0.due) + (b0.overdue ? ", overdue" : "") + ")" : " (no due date)") + (more > 0 ? " + " + more + " more" : "");
     } else if (sb.parentOverdue) {
-      reason = "Overdue · " + sb.open + " subtask" + (sb.open === 1 ? "" : "s") + " still open";
+      kind = "subtasks";
+      reason = "Its own subtasks: " + sb.open + " still open, and the task is past its due date";
     } else {
-      reason = sb.later + " subtask" + (sb.later === 1 ? "" : "s") + " due after it" + (sb.latestDueMs ? " (to " + insDateShort(sb.latestDueMs) + ")" : "");
+      kind = "schedule";
+      reason = "Schedule: " + sb.later + " subtask" + (sb.later === 1 ? " is" : "s are") + " due after this task" + (sb.latestDueMs ? " (until " + insDateShort(sb.latestDueMs) + ")" : "");
     }
-    blockedList.push({ id: key, name: row ? row.name : "(task " + key + ")", url: row ? row.url : insTaskUrl(key), client: row ? row.client : "", reason: reason });
+    blockedList.push({ id: key, name: row ? row.name : "(task " + key + ")", url: row ? row.url : insTaskUrl(key), client: row ? row.client : "", reason: reason, kind: kind });
+  }
+  // A ClickUp dependency ("waiting on" another task) that is still open.
+  var blockedIds = Object.create(null);
+  blockedList.forEach(function (b) { blockedIds[b.id] = 1; });
+  for (i = 0; i < list.length; i++) {
+    var dr = list[i];
+    if (!dr || blockedIds[dr.id] || !Array.isArray(dr.dependsOn) || !dr.dependsOn.length) continue;
+    var waitsOn = dr.dependsOn.map(function (x) { return byId[String(x)]; }).filter(Boolean);
+    if (!waitsOn.length) continue;
+    blockedList.push({ id: dr.id, name: dr.name, url: dr.url, client: dr.client || "", kind: "dependency",
+      reason: "Waiting on another task (ClickUp dependency): “" + String(waitsOn[0].name || "").slice(0, 70) + "”, still open" + (waitsOn.length > 1 ? " + " + (waitsOn.length - 1) + " more" : "") });
   }
   overdueList.sort(function (a, z) { return a.due - z.due; });
   // Per-client blocked count, so a By client row can jump into the Blocked /
@@ -6424,16 +6441,28 @@ function insLateFrom(perf, now) {
   var DAY = 86400000, from = (now || Date.now()) - 28 * DAY, out = [];
   perf.done.forEach(function (t) {
     if (!t || !(Number(t.dueDateMs) > 0) || !(Number(t.doneAt) > 0) || t.doneAt < from) return;
+    // The weekly Extra Task is your own time bucket, often closed a day late: not a deadline.
+    if (/\bextra(?:\(s\)|s)?\s+task(?:\(s\)|s)?\b/i.test(t.name || "") || /^daily tracking$/i.test(String(t.client || "").trim())) return;
     var d = new Date(Number(t.dueDateMs)); d.setHours(0, 0, 0, 0);
     var end = d.getTime() + DAY;
     if (t.doneAt < end) return;
-    out.push({ id: String(t.id || ""), name: t.name || "(task)", url: t.url || (t.id ? "https://app.clickup.com/t/" + t.id : ""), client: t.client || "", due: Number(t.dueDateMs), doneAt: Number(t.doneAt), late: Math.max(1, Math.ceil((t.doneAt - end) / DAY)) });
+    out.push({ id: String(t.id || ""), name: t.name || "(task)", url: t.url || (t.id ? "https://app.clickup.com/t/" + t.id : ""), client: t.client || "", due: Number(t.dueDateMs), doneAt: Number(t.doneAt), late: Math.max(1, Math.ceil((t.doneAt - end) / DAY)), state: "done" });
   });
   return out.sort(function (a, b) { return b.doneAt - a.doneAt; });
 }
 function insPaint(m, st, meta) {
   var k = m.k, problems = k.overdue + k.noEst + k.noDue + k.blocked, html = "";
-  m.lateList = insLateList || [];
+  // Deadlines missed = still open past the due date (the Overdue ones) AND
+  // finished after it (last 4 weeks), each marked which it is.
+  var openLate = (m.overdueList || []).filter(function (r) { return !/\bextra(?:\(s\)|s)?\s+task(?:\(s\)|s)?\b/i.test(r.name || ""); })
+    .map(function (r) { return { id: r.id, name: r.name, url: r.url, client: r.client, due: r.due, late: Math.max(0, insDaysAgo(r.due, m.todayStart)), state: "open" }; });
+  m.lateDone = insLateList || [];
+  m.lateList = openLate.concat(m.lateDone);
+  m.lateOpenN = openLate.length;
+  // Unread comments (task-notes.js reads what the background found).
+  m.unreadList = (window.PcmComments ? window.PcmComments.unreadAll() : []).map(function (u) {
+    return { id: u.id, name: (u.task && u.task.name) || "(task " + u.id + ")", url: (u.task && u.task.url) || insTaskUrl(u.id), client: (u.task && u.task.client) || "", n: u.n, mention: u.mention, latest: u.latest };
+  });
   html += '<div class="page-h" style="display:flex;align-items:center;gap:10px;margin:0 0 4px;"><h2 style="margin:0;font-size:18px;">Insights</h2></div>';
   html += '<p class="ins-sub">A weekly health check of everything assigned to you — the things that are easy to miss until it’s too late. Every number is a shortcut into the details, including the ones in the By client table.</p>';
   if (problems) {
@@ -6462,7 +6491,7 @@ function insPaint(m, st, meta) {
     kpi("red", k.overdue, "Overdue", k.overdue ? "overdue" : "", "Past their due date and not done") +
     (insLateList === false
       ? '<div class="kpi red" title="Open Insights › Performance once - it reads your finished tasks, and this counts the late ones."><div class="n">—</div><div class="l">Deadlines missed</div><div class="bar"><i style="width:6%;background:var(--red)"></i></div></div>'
-      : kpi("red", m.lateList.length, "Deadlines missed", m.lateList.length ? "late" : "", "Finished after their due date in the last 4 weeks")) +
+      : kpi("red", m.lateList.length, "Deadlines missed", m.lateList.length ? "late" : "", m.lateOpenN + " still open past their due date + " + m.lateDone.length + " finished after it (last 4 weeks). Extra Tasks don't count.")) +
     kpi("blue", k.week, "Due this week", "", "Due between today and the end of this week") +
     kpi("amber", k.noEst, "No estimate", k.noEst ? "noest" : "", "Open tasks with no time estimate") +
     kpi("amber", k.noDue, "No due date", k.noDue ? "nodue" : "", "Open tasks with no due date") +
@@ -6515,7 +6544,8 @@ function insHygieneCard(m) {
     row("amber", k.noEst, "Missing a time estimate", "Not counted in your daily target", "noest") +
     row("amber", k.noDue, "Missing a due date", "Won’t show in any day / week view", "nodue") +
     row("red", k.overdue, "Overdue and not done", oldest, "overdue") +
-    row("red", k.blocked, "Blocked / waiting", "Held by someone else or their own open subtasks", "blocked") + "</div>";
+    row("red", k.blocked, "Blocked / waiting", "Waiting on a teammate, another task, or its own subtasks", "blocked") +
+    row((m.unreadList || []).some(function (u) { return u.mention; }) ? "red" : "amber", (m.unreadList || []).length, "Comments you haven't read", (m.unreadList || []).some(function (u) { return u.mention; }) ? "Someone @mentioned you" : "Teammates wrote on your tasks", "unread") + "</div>";
 }
 function insClientCard(m) {
   if (!m.clients.length) return "";
@@ -6568,9 +6598,14 @@ function insFilterBar(m) {
     '<button type="button" class="lnk" id="insFClear" hidden>Clear</button></div>';
 }
 function insDrillsHtml(m) {
-  var lateOut = insDrill("late", "Deadlines missed · last 4 weeks", m.lateList || [], function (r) {
-    return { badge: '<span class="badge red">' + r.late + "d late</span>",
-      plain: "due " + insDateShort(r.due) + " · done " + insDateShort(r.doneAt), action: "Open" };
+  var lateOut = insDrill("late", "Deadlines missed · " + (m.lateOpenN || 0) + " still open, " + ((m.lateDone || []).length) + " finished late (last 4 weeks)", m.lateList || [], function (r) {
+    return r.state === "open"
+      ? { badge: '<span class="badge red">open · ' + (r.late > 0 ? r.late + "d over" : "due") + "</span>", plain: "still not done · was due " + insDateShort(r.due), action: "Change due date", act: "due" }
+      : { badge: '<span class="badge amber">done · ' + r.late + "d late</span>", plain: "due " + insDateShort(r.due) + " · finished " + insDateShort(r.doneAt), action: "Open" };
+  });
+  var cmtOut = insDrill("unread", "Unread comments", m.unreadList || [], function (r) {
+    return { badge: r.mention ? '<span class="badge red">@ you</span>' : '<span class="badge amber">💬 ' + r.n + "</span>",
+      plain: (r.latest ? r.latest.who + ": " + r.latest.text : "") + (r.n > 1 ? " (+" + (r.n - 1) + " more)" : ""), action: "Mark read", act: "seen" };
   });
   // fmt returns `plain`: the sub-line as RAW text. insDrill escapes it once for
   // display and lower-cases it into the search haystack, so searching matches
@@ -6582,9 +6617,11 @@ function insDrillsHtml(m) {
     return { badge: '<span class="badge red">' + (d > 0 ? d + "d" : "due") + "</span>",
       plain: "due " + insDateShort(r.due) + (r.est ? " · " + insHrs(r.est) : " · no est"), action: "Change due date", act: "due" };
   });
+  out += cmtOut;
   out += lateOut;
   out += insDrill("blocked", "Blocked / waiting", m.blockedList, function (r) {
-    return { badge: '<span class="badge red">held</span>', plain: r.reason, action: "Open" };
+    var lab = { teammate: "teammate", subtasks: "subtasks", schedule: "schedule", dependency: "dependency" }[r.kind] || "held";
+    return { badge: '<span class="badge red" title="Why it\'s blocked">' + lab + "</span>", plain: r.reason, action: "Open" };
   });
   out += insDrill("noest", "Missing an estimate", m.noEstList, function (r) {
     return { badge: '<span class="badge amber">no est</span>',
@@ -6762,6 +6799,11 @@ function insRowAction(btn) {
   if (!row || row._busy) return;
   var id = row.getAttribute("data-id");
   if (!id) return;
+  if (btn.getAttribute("data-act") === "seen") {
+    row._busy = true;
+    (window.PcmComments ? window.PcmComments.markRead(id) : Promise.resolve()).then(function () { insRowDone(row, "marked read"); });
+    return;
+  }
   if (btn.getAttribute("data-act") === "est") {
     var box = document.createElement("span");
     box.className = "ins-estbox";
@@ -7526,7 +7568,7 @@ if ($("optFltGo")) $("optFltGo").onclick = () => {
   if (coll && tog && (coll.hidden || coll.style.display === "none" || coll.classList.contains("collapsed"))) tog.click();
   renderOptionsFilter();
 };
-// Changing a choice (not something inside the task list) waits for Show tasks again.
+// Changing a choice (not something inside the task list) waits for Load tasks again.
 if ($("optFltColl")) for (const ev of ["change", "input"]) $("optFltColl").addEventListener(ev, (e) => {
   if (!e.target || !e.target.closest || e.target.closest("#optFltResult")) return;
   optFltArmed = false;
@@ -8444,6 +8486,18 @@ function applyAdminVisibility(st) {
   document.body.classList.toggle("no-admin", !on);
   if (!on && document.querySelector('.panel.on[data-panel="admin"]') && typeof showOptTab === "function") showOptTab("dashboard");
   if (on) admRefresh();
+}
+// Only on the copy that holds the Team hub's admin key (the hub's owner).
+if ($("hubRoleColRow")) {
+  send({ type: "HUB_INFO" }).then((r) => {
+    if (!(r && r.adminKey)) return;
+    $("hubRoleColRow").hidden = false;
+    if ($("hubPerfColRow")) $("hubPerfColRow").hidden = false;
+    chrome.storage.local.get("settings").then((g) => { $("hubRoleCol").checked = !(g && g.settings && g.settings.hubRoleCol === false); if ($("hubPerfCol")) $("hubPerfCol").checked = !!(g && g.settings && g.settings.hubPerfCol === true); }).catch(() => {});
+  }).catch(() => {});
+  $("hubRoleCol").onchange = () => { send({ type: "SET_SETTINGS", patch: { hubRoleCol: $("hubRoleCol").checked } }).catch(() => {}); };
+  if ($("hubPerfCol")) $("hubPerfCol").onchange = () => { send({ type: "SET_SETTINGS", patch: { hubPerfCol: $("hubPerfCol").checked } }).catch(() => {}); };
+  try { chrome.storage.onChanged.addListener((ch, area) => { if (area === "local" && ch.settings && ch.settings.newValue && $("hubRoleCol")) { $("hubRoleCol").checked = ch.settings.newValue.hubRoleCol !== false; if ($("hubPerfCol")) $("hubPerfCol").checked = ch.settings.newValue.hubPerfCol === true; } }); } catch (e) {}
 }
 if ($("showAdmin")) $("showAdmin").onchange = async () => {
   const on = $("showAdmin").checked;

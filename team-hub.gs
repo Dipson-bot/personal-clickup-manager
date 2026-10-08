@@ -26,7 +26,7 @@ const POSTS_PER_HOUR = 30; // per install (slow mode can tighten it)
 const ALL_CALLS_PER_MIN = 240; // whole hub, a safety valve
 
 const SHEETS = {
-  Users: ["install", "cuUserId", "name", "avatar", "color", "initials", "version", "firstSeen", "lastSeen", "status", "mutedUntil", "role"],
+  Users: ["install", "cuUserId", "name", "avatar", "color", "initials", "version", "firstSeen", "lastSeen", "status", "mutedUntil", "role", "perf"],
   Threads: ["id", "title", "status", "pinned", "locked", "fixedIn", "byInstall", "byName", "byAvatar", "createdAt", "lastAt", "lastRole", "count", "metoo", "deleted"],
   Messages: ["id", "threadId", "install", "name", "avatar", "color", "initials", "role", "text", "at", "editedAt", "files", "diag", "deleted", "reactions", "replyTo"],
   // Announcements from the admin (maintenance break, sudden holiday...), shown to everyone until "until".
@@ -184,6 +184,7 @@ function hello(q) {
   u.color = /^#[0-9a-f]{3,8}$/i.test(String(q.color || "")) ? String(q.color) : (u.color || "");
   u.initials = String(q.initials || u.initials || "").slice(0, 4);
   u.version = String(q.version || u.version || "").slice(0, 20);
+  if (typeof q.perf === "string" && q.perf.length <= 900) u.perf = q.perf; // scores + counts, shown to admins
   u.lastSeen = t;
   writeRow("Users", u);
   return { ok: true, state: userState(u), mutedUntil: Number(u.mutedUntil) || 0, settings: pub(), role: install === setting("OWNER_INSTALL", "") ? "owner" : (u.role === "admin" ? "admin" : "user") };
@@ -194,6 +195,7 @@ function users() {
     install: String(u.install), cuUserId: String(u.cuUserId), name: String(u.name), avatar: String(u.avatar), color: String(u.color), initials: String(u.initials),
     version: String(u.version), firstSeen: Number(u.firstSeen) || 0, lastSeen: Number(u.lastSeen) || 0, state: userState(u), mutedUntil: Number(u.mutedUntil) || 0,
     role: String(u.install) === setting("OWNER_INSTALL", "") ? "owner" : (u.role === "admin" ? "admin" : "user"),
+    perf: js(String(u.perf || ""), null),
   })).sort((a, b) => b.lastSeen - a.lastSeen);
   const day = 86400000;
   return { ok: true, users: list, total: list.length, activeToday: list.filter((u) => t - u.lastSeen < day).length, activeWeek: list.filter((u) => t - u.lastSeen < 7 * day).length, settings: pub() };

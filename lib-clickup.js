@@ -866,6 +866,22 @@ export function commentOpsToMd(parts) {
 }
 // Every link in a task's comments (typed addresses and linked text), for the
 // client report's Reference column.
+// A task's comments, light: who, when, a short plain text, and the people
+// @mentioned in each - for "Unread comments" (background scanComments).
+export async function getTaskCommentsLite(token, taskId) {
+  const cj = await cuFetch(token, "/task/" + encodeURIComponent(String(taskId)) + "/comment");
+  return (Array.isArray(cj && cj.comments) ? cj.comments : []).map((c) => {
+    const parts = Array.isArray(c && c.comment) ? c.comment : [];
+    const mentions = parts.filter((p) => isMention(p) && p.user && p.user.id != null).map((p) => String(p.user.id));
+    const text = String(commentText(c) || "").replace(/\s+/g, " ").trim();
+    return {
+      id: String((c && c.id) || ""), at: Number(c && c.date) || 0,
+      userId: c && c.user && c.user.id != null ? String(c.user.id) : "",
+      who: String((c && c.user && (c.user.username || c.user.email)) || "Someone"),
+      text: text.length > 220 ? text.slice(0, 218) + "…" : text, mentions,
+    };
+  }).filter((c) => c.at > 0);
+}
 export async function getTaskCommentLinks(token, taskId) {
   const cj = await cuFetch(token, "/task/" + encodeURIComponent(String(taskId)) + "/comment");
   const parts = [];

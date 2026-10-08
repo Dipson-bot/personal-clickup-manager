@@ -976,6 +976,8 @@
     more.textContent = "Show all " + comments.length + " comments";
   }
   function buildComments(sec, d) {
+    // Seen: the comments are on screen now (Unread comments counts them as read).
+    send({ type: "COMMENTS_SEEN", taskId: d.id }).catch(() => {});
     const list = el("div");
     const more = el("button", "pcm-link");
     more.type = "button";

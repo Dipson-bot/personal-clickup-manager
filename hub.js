@@ -47,6 +47,11 @@
     .hb-acts { display: flex; gap: 6px; flex-wrap: wrap; margin: 6px 0 10px; }
     .hb-acts button, .hb-mini { font: inherit; font-size: 11.5px; padding: 3px 9px; border-radius: 7px; border: 1px solid var(--border); background: var(--bg2); color: var(--text); cursor: pointer; }
     .hb-role { font-size: 11.5px; color: var(--muted); }
+    .hb-users.hb-norole .c-role, .hb-users.hb-noperf .c-perf { display: none; }
+    .hb-score { font-size: 15px; font-variant-numeric: tabular-nums; margin-right: 6px; }
+    .hb-sub { color: var(--muted); font-size: 10.5px; white-space: nowrap; }
+    .hb-hc { display: inline-block; margin: 1px 3px 1px 0; padding: 0 6px; border-radius: 999px; font-size: 10.5px; background: var(--bg2); color: var(--muted); white-space: nowrap; }
+    .hb-hc.bad { background: rgba(220,38,38,.12); color: #b91c1c; font-weight: 600; }
     .hb-role.adm { color: var(--indigo, #6366f1); font-weight: 700; }
     .hb-rolesel { font: inherit; font-size: 11.5px; padding: 2px 6px; width: auto; }
     .hb-msgs { display: flex; flex-direction: column; gap: 12px; margin: 8px 0 12px; }
@@ -632,6 +637,11 @@
     return wrap;
   }
   let youOwner = false; // this copy holds the hub's admin key (sets roles)
+  // The Role column can be hidden (settings.hubRoleCol = false): a class on the table.
+  function paintRoleCol(tbl) {
+    try { chrome.storage.local.get("settings").then((g) => { const s = (g && g.settings) || {}; tbl.classList.toggle("hb-norole", s.hubRoleCol === false); tbl.classList.toggle("hb-noperf", s.hubPerfCol !== true); }).catch(() => {}); } catch (e) {}
+  }
+  try { chrome.storage.onChanged.addListener((ch, area) => { if (area === "local" && ch.settings) document.querySelectorAll("table.hb-users").forEach(paintRoleCol); }); } catch (e) {}
   async function loadUsers() {
     const box = $("hubAdmUsers");
     if (!box) return;
@@ -681,7 +691,9 @@
     const say = (t, bad) => { msg.style.display = t ? "" : "none"; msg.textContent = t || ""; msg.className = "hb-msg" + (bad ? " err" : ""); };
     const tbl = el("table", "hb-users");
     tbl.dataset.long = "hub-users"; tbl.dataset.longRows = "tr.hb-urow"; tbl.dataset.longMax = "15";
-    const hr = el("tr"); for (const h of ["", "Name", "Role", "Version (reported)", "Last active", "", ""]) hr.appendChild(el("th", "", h));
+    paintRoleCol(tbl);
+    const hr = el("tr");
+    for (const [h, cls] of [["", ""], ["Name", ""], ["Role", "c-role"], ["Performance", "c-perf"], ["Health", "c-perf"], ["Version (reported)", ""], ["Last active", ""], ["", ""], ["", ""]]) hr.appendChild(el("th", cls, h));
     youOwner = !!r.youOwner;
     tbl.appendChild(hr);
     for (const g of people) drawUser(tbl, g, myInstall, say);
@@ -736,7 +748,7 @@
     tr.appendChild(cn);
     // Role: the owner (who holds the admin key) sets User / Admin; shows "Admin"
     // for the owner's own row, which can't be changed.
-    const cr = el("td");
+    const cr = el("td", "c-role");
     if (u.role === "owner") cr.appendChild(el("span", "hb-role adm", "Admin"));
     else if (youOwner) {
       const sel = el("select", "hb-rolesel");
@@ -755,6 +767,27 @@
       cr.appendChild(sel);
     } else cr.appendChild(el("span", "hb-role" + (u.role === "admin" ? " adm" : ""), u.role === "admin" ? "Admin" : "User"));
     tr.appendChild(cr);
+    // Performance / Health: the summary that person's copy sent with its check-in.
+    const sm = u.perf || null, p = sm && sm.p, hh = sm && sm.h;
+    const col = (s) => s == null ? "var(--muted)" : s >= 80 ? "#16a34a" : s >= 60 ? "#d97706" : "#dc2626";
+    const cpf = el("td", "c-perf");
+    if (p && (p.m || p.a)) {
+      const main = (p.m && p.m.s != null ? p.m : p.a);
+      const big = el("b", "hb-score", main.s == null ? "—" : String(main.s)); big.style.color = col(main.s);
+      cpf.appendChild(big);
+      cpf.appendChild(el("small", "hb-sub", "wk " + (p.w && p.w.s != null ? p.w.s : "—") + " · mo " + (p.m && p.m.s != null ? p.m.s : "—") + " · all " + (p.a && p.a.s != null ? p.a.s : "—")));
+      const pt = (o) => o ? [o.h != null ? "time " + o.h : "", o.d != null ? "deadlines " + o.d : "", o.e != null ? "estimates " + o.e : ""].filter(Boolean).join(", ") : "";
+      cpf.title = "Rating out of 100 (time tracked 40%, deadlines met 35%, estimates held 25%).\nThis month: " + pt(p.m) + "\nAll 12 weeks: " + pt(p.a) + "\nLast 4 weeks: " + (p.fin4 || 0) + " finished, " + (p.late4 || 0) + " of them late" + (sm.at ? "\nAs of " + new Date(sm.at).toLocaleString() : "");
+    } else { cpf.appendChild(el("span", "hint", "-")); cpf.title = "Not reported yet - it comes with their next check-in on v4.1.4 or newer."; }
+    tr.appendChild(cpf);
+    const chl = el("td", "c-perf");
+    if (hh) {
+      const chip = (n, label, bad) => { const c = el("span", "hb-hc" + (n && bad ? " bad" : ""), n + " " + label); chl.appendChild(c); };
+      chip(hh.od || 0, "overdue", true); chip(hh.ne || 0, "no est", true); chip(hh.bl || 0, "blocked", true);
+      if (p && p.late4) chip(p.late4, "late", true);
+      chl.title = (hh.open || 0) + " open tasks · " + (hh.od || 0) + " overdue · " + (hh.ne || 0) + " without an estimate · " + (hh.nd || 0) + " without a due date · " + (hh.bl || 0) + " blocked / waiting" + (p ? " · " + (p.late4 || 0) + " finished late (4 weeks)" : "") + (sm.at ? "\nAs of " + new Date(sm.at).toLocaleString() : "");
+    } else { chl.appendChild(el("span", "hint", "-")); }
+    tr.appendChild(chl);
     const cv = el("td", "", u.version ? "v" + u.version : "-"); if (u.version && cmpV(u.version, VERSION) < 0) cv.style.color = "#b45309";
     if (u.lastSeen) cv.title = "Reported " + ago(u.lastSeen) + " (" + new Date(u.lastSeen).toLocaleString() + ")";
     tr.appendChild(cv);
@@ -816,7 +849,7 @@
     tbl.appendChild(tr);
 
     if (g.dupes.length) {
-      const dc = el("td"); dc.colSpan = 7; dc.style.paddingTop = "0";
+      const dc = el("td"); dc.colSpan = 9; dc.style.paddingTop = "0";
       for (const d of g.dupes) {
         const line = el("div");
         line.style.cssText = "display:flex;gap:8px;align-items:center;font-size:12px;color:var(--muted);padding:2px 0;";
@@ -847,7 +880,7 @@
 
     if (mine) return;
     const behind = u.version && cmpV(u.version, VERSION) < 0;
-    const nc = el("td"); nc.colSpan = 7; nc.style.paddingTop = "0";
+    const nc = el("td"); nc.colSpan = 9; nc.style.paddingTop = "0";
     const form = el("div");
     form.style.cssText = "display:flex;gap:6px;flex-wrap:wrap;align-items:flex-start;padding:2px 0 8px;";
     const ta = el("textarea");

@@ -185,6 +185,9 @@
   const css = document.createElement("style");
   css.textContent = `
   .tn-marks { display: inline-flex; align-items: center; gap: 2px; flex: none; margin-left: 2px; }
+  .tn-b.tn-cmt { font-size: 10.5px; font-weight: 700; color: #b45309; background: rgba(217,119,6,.14); border-radius: 999px; padding: 0 6px; }
+  .tn-b.tn-cmt.men { color: #fff; background: #dc2626; }
+  .tn-b.tn-cmt[hidden] { display: none; }
   .tn-b { border: 0; background: none; cursor: pointer; padding: 0 3px; font-size: 11px; line-height: 16px; border-radius: 5px; color: var(--muted); opacity: 0; transition: opacity .12s; font-family: inherit; }
   .cu-task:hover .tn-b, .tn-b:focus-visible, .tn-b.on { opacity: 1; }
   .tn-b:hover { background: var(--bg2, rgba(0,0,0,.06)); color: var(--text); }
@@ -245,6 +248,31 @@
   `;
   document.head.appendChild(css);
 
+  // ---------- unread comments (background scanComments) ----------
+  // A comment by someone else newer than when you last opened the task's
+  // details (and under 60 days old) is unread; one that @mentions you is marked.
+  let cmtCache = {}, cmtSeen = {};
+  function unreadOf(id) {
+    const c = cmtCache[String(id)];
+    if (!c || !Array.isArray(c.list)) return { n: 0, mention: false, latest: null };
+    const since = Math.max(Number(cmtSeen[String(id)]) || 0, Date.now() - 60 * 86400000);
+    const fresh = c.list.filter((x) => x.at > since);
+    return { n: fresh.length, mention: fresh.some((x) => x.mention), latest: fresh[0] || null, task: c };
+  }
+  function unreadAll() {
+    return Object.keys(cmtCache).map((id) => ({ id, ...unreadOf(id) })).filter((x) => x.n > 0).sort((a, b) => (b.mention - a.mention) || (b.latest.at - a.latest.at));
+  }
+  try {
+    chrome.storage.local.get(["cuComments", "cuCommentSeen"]).then((g) => { cmtCache = g.cuComments || {}; cmtSeen = g.cuCommentSeen || {}; decorateAll(); }).catch(() => {});
+    chrome.storage.onChanged.addListener((ch, area) => {
+      if (area !== "local" || (!ch.cuComments && !ch.cuCommentSeen)) return;
+      if (ch.cuComments) cmtCache = ch.cuComments.newValue || {};
+      if (ch.cuCommentSeen) cmtSeen = ch.cuCommentSeen.newValue || {};
+      decorateAll();
+    });
+  } catch (e) {}
+  window.PcmComments = { unreadOf, unreadAll, markRead: (ids) => new Promise((ok) => { try { chrome.runtime.sendMessage({ type: "COMMENTS_SEEN", taskIds: [].concat(ids) }, () => { void chrome.runtime.lastError; ok(); }); } catch (e) { ok(); } }) };
+
   // ---------- task rows: 📌 + 📝 ----------
   let focusNotesFor = "";
   function decorate(row) {
@@ -256,10 +284,17 @@
     if (!box) {
       box = document.createElement("span");
       box.className = "tn-marks";
-      box.innerHTML = '<button type="button" class="tn-b tn-pin"></button><button type="button" class="tn-b tn-note"></button>';
+      box.innerHTML = '<button type="button" class="tn-b tn-cmt" hidden></button><button type="button" class="tn-b tn-pin"></button><button type="button" class="tn-b tn-note"></button>';
       const nm = wrap.querySelector(".nm");
       if (nm && nm.nextSibling) wrap.insertBefore(box, nm.nextSibling); else wrap.appendChild(box);
       box.querySelector(".tn-pin").addEventListener("click", (e) => { e.preventDefault(); e.stopPropagation(); setPin(id, !isPinned(id)); });
+      // 💬: open the task's details - its comments are there (and that marks them read).
+      box.querySelector(".tn-cmt").addEventListener("click", (e) => {
+        e.preventDefault(); e.stopPropagation();
+        const chev = row.querySelector(".pcm-chev");
+        if (chev && chev.getAttribute("aria-expanded") !== "true") chev.click();
+        else window.PcmComments.markRead(id);
+      });
       box.querySelector(".tn-note").addEventListener("click", (e) => {
         e.preventDefault(); e.stopPropagation();
         focusNotesFor = id;
@@ -282,6 +317,15 @@
     nb.classList.toggle("on", n > 0);
     nb.title = n ? n + " personal note" + (n === 1 ? "" : "s") + " - click to read or add (only in this extension, not in ClickUp)" : "Add a personal note (only in this extension, not in ClickUp)";
     row.classList.toggle("tn-pinned", pinOn);
+    const u = unreadOf(id), cb = box.querySelector(".tn-cmt");
+    if (cb) {
+      const ct = u.n ? (u.mention ? "@" : "💬") + " " + u.n : "";
+      if (cb.textContent !== ct) cb.textContent = ct;
+      if (cb.hidden !== !u.n) cb.hidden = !u.n;
+      cb.classList.toggle("men", u.mention);
+      const tt = u.n ? u.n + " comment" + (u.n === 1 ? "" : "s") + " you haven't read" + (u.mention ? ", mentioning you" : "") + (u.latest ? " - latest from " + u.latest.who + ": “" + u.latest.text.slice(0, 120) + "”" : "") + ". Click to read them." : "";
+      if (cb.title !== tt) cb.title = tt;
+    }
   }
   function decorateAll() { document.querySelectorAll(".cu-task").forEach(decorate); }
   let pending = 0;

@@ -745,7 +745,7 @@
   }
   function renderPerf(el) {
     const head = '<div class="ip-head"><h2>Performance</h2></div>' +
-      '<p class="ip-sub">Only you see this: your own tracked time, deadlines and workload over the last ' + ((perf && perf.weeks) || 12) + " weeks. Weekends and company holidays don't count against you. Click any number, bar or day to see what's behind it.</p>";
+      '<p class="ip-sub">Your tracked time, deadlines and workload over the last ' + ((perf && perf.weeks) || 12) + " weeks. Weekends and company holidays don't count against you. Click any number, bar or day to see what's behind it. Your overall score and Health counts are shared with your admin.</p>";
     if (!perf) { el.innerHTML = head + '<div class="ip-empty">' + (perfErr ? "Couldn't read your history: " + esc(perfErr) : "Reading your last 12 weeks from ClickUp (first time only, one short read)…") + "</div>"; wire(el); return; }
     const tMs = targetMs(), today = dayStart(Date.now());
     const weeks = [];
@@ -764,7 +764,8 @@
     const recent = pastWork.filter((x) => x.d >= addDays(today, -28));
     const onT = (xs) => xs.filter((x) => x.ms >= tMs * 0.98).length;
     const avg = (xs) => xs.length ? xs.reduce((a, x) => a + x.ms, 0) / xs.length : 0;
-    const done = (perf.done || []).filter((t) => t.doneAt);
+    // The weekly Extra Task is your own time bucket (often closed a day late): not a deadline or a deliverable.
+    const done = (perf.done || []).filter((t) => t.doneAt && !/\bextra(?:\(s\)|s)?\s+task(?:\(s\)|s)?\b/i.test(t.name || ""));
     const dated = done.filter((t) => t.dueDateMs > 0);
     const late = (t) => t.doneAt > dayStart(t.dueDateMs) + DAY - 1;
     const daysLate = (t) => Math.max(1, Math.ceil((t.doneAt - (dayStart(t.dueDateMs) + DAY)) / DAY));

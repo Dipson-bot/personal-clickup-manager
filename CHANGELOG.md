@@ -1,5 +1,12 @@
 # Changelog
 
+## v4.1.4
+- New (Admin › Team hub): each person's overall performance score (this week, this month, 12 weeks) and Health counts (overdue, no estimate, blocked, finished late) can be shown in the users list; their extension sends them with its check-in. The Performance tab's description says so. Needs the Team hub script's new version deployed.
+- Changed: Explore tasks' "Show tasks" button is now "Load tasks", like Bulk edit's - it reads the tasks for your filters from ClickUp (▸ Show / ▾ Hide only opens and closes the card).
+- New: comments you haven't read. The extension reads your open tasks' comments a few at a time in the background (tasks ClickUp says changed first, every task at least every few hours, gently on ClickUp's limits). A task with comments from others you haven't opened shows 💬 N next to its name (red @ when someone mentioned you); click it to read them in the task's details. Insights › Health lists them under "Comments you haven't read" with who wrote what and Mark read, and a new comment that @mentions you pops up a notification.
+- Improved: Insights › Health › Deadlines missed now shows both kinds, marked: still open past the due date ("open · 5d over") and finished after it ("done · 2d late"). The Extra Task is never counted - it's your own weekly time bucket - and it's left out of the performance rating too.
+- Improved: Blocked / waiting says why, with a label: teammate (whose subtask, which one, its due date and whether it's late), subtasks (its own subtasks still open while it's overdue), schedule (subtasks due after it) - and new: dependency, when it waits on another task (a ClickUp "waiting on") that is still open.
+
 ## v4.1.3
 - Improved: a task row no longer shows a bare "0m" when time was tracked on it on another day. A view only counts the time tracked on its own dates - "Due tomorrow" reads 0m for a task you worked on today - so the row now also says how much is tracked in all (for example "0m / 30m · 12m in all"; point at it for the explanation).
 - New: see how much of your weekly Extra task is used. Under the Extra task in the Due today card (and in the popup): "This week: 3h 12m of 7h used · 3h 48m left" with a thin bar, turning red with "… over" once you pass it. Built from what the extension already loaded - no extra ClickUp requests.

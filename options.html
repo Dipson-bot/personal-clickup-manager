@@ -1281,7 +1281,7 @@
 
     <div class="card cu-needs-config" id="dashExploreCard" style="display:none;">
       <div class="dash-h"><h3>Explore tasks</h3><span class="hint">any date range, client, department or teammate</span><span class="spacer"></span>
-        <button type="button" class="cu-filter-btn primary" id="optFltGo" title="Read the tasks for these choices from ClickUp (pressed again: read them again)">Show tasks</button>
+        <button type="button" class="cu-filter-btn primary" id="optFltGo" title="Read the tasks for these choices from ClickUp (pressed again: read them again)">Load tasks</button>
         <button type="button" class="cu-filter-btn" id="optFltClearBtn" title="Clear the tick boxes, client and department">Clear filters</button>
         <button type="button" class="cu-filter-btn" id="optFltExportBtn" title="Export these tasks (CSV, Excel, Google Sheets/Docs)">&#10515; Export</button>
         <button type="button" class="cu-collapse-btn" data-optcollapse="filter" data-optcolltarget="optFltColl" title="Show / hide">▸ Show</button>
@@ -2286,6 +2286,14 @@
     <div class="checkbox" style="margin-top:0;">
       <input type="checkbox" id="showAdmin" />
       <label for="showAdmin" style="margin:0;font-weight:400;">Show <b>Admin tools</b> (publish new versions) <span class="hint">- for whoever maintains this extension. Off for everyone else; it only hides the section, so anyone can turn it on, but publishing still needs your GitHub token.</span></label>
+    </div>
+    <div class="checkbox" id="hubRoleColRow" hidden>
+      <input type="checkbox" id="hubRoleCol" />
+      <label for="hubRoleCol" style="margin:0;font-weight:400;">Show the <b>Role</b> column in Admin › Team hub</label>
+    </div>
+    <div class="checkbox" id="hubPerfColRow" hidden>
+      <input type="checkbox" id="hubPerfCol" />
+      <label for="hubPerfCol" style="margin:0;font-weight:400;">Show the <b>Performance</b> and <b>Health</b> columns in Admin › Team hub</label>
     </div>
     <div class="checkbox">
       <input type="checkbox" id="showAgentRouter" />

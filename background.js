@@ -25,7 +25,7 @@ import {
   driveQuota,
 } from "./lib-drive.js";
 import { runAllAccounts, runAccountLogin, readAgentRouterLogin, URLS, GITHUB_KEEP_COOKIES } from "./lib-automation.js";
-import { getUserGroups, getUser, verifyToken, getTeams, fetchTodayEstimate, fetchWeeklySummary, fetchDateRangeEstimate, createTaskCache, fetchTeamMembers, fetchWorkspaceTags, cuTagNames, fmtDuration, findExtraTaskByName, parseTaskIdFromUrl, getCurrentTimeEntry, getRunningTaskProgress, startTimer, stopTimer, getTaskById, setTaskStatus, taskUrlFor, clientLabelFromContainer, resolveSpaceNamesFor, taskContainer, cuPriorityName, isTaskDone, getSubtasksOfParent, getTaskTree, getTaskDetail, updateTimeEntry, setTaskDueDate, clearTaskTreeCache, listWorkspaceClients, cuRowAssignees, fetchDoneBetween, fetchDoneLite, fetchTrackedHistory, getTaskPanel, addTaskComment, postTaskComment, setTaskDescription, getTaskCommentLinks, createTask, removeTaskAssignee, postAssignedComment, addTimeEntry, weeklyWithToday, listClientFieldOptions, listReachableClients } from "./lib-clickup.js";
+import { getTaskCommentsLite, getUserGroups, getUser, verifyToken, getTeams, fetchTodayEstimate, fetchWeeklySummary, fetchDateRangeEstimate, createTaskCache, fetchTeamMembers, fetchWorkspaceTags, cuTagNames, fmtDuration, findExtraTaskByName, parseTaskIdFromUrl, getCurrentTimeEntry, getRunningTaskProgress, startTimer, stopTimer, getTaskById, setTaskStatus, taskUrlFor, clientLabelFromContainer, resolveSpaceNamesFor, taskContainer, cuPriorityName, isTaskDone, getSubtasksOfParent, getTaskTree, getTaskDetail, updateTimeEntry, setTaskDueDate, clearTaskTreeCache, listWorkspaceClients, cuRowAssignees, fetchDoneBetween, fetchDoneLite, fetchTrackedHistory, getTaskPanel, addTaskComment, postTaskComment, setTaskDescription, getTaskCommentLinks, createTask, removeTaskAssignee, postAssignedComment, addTimeEntry, weeklyWithToday, listClientFieldOptions, listReachableClients } from "./lib-clickup.js";
 import { resolveRelayKey, pickProbeModel, probeRelay } from "./lib-availability.js";
 import { tidyCollect, tidyLines, tidyResolved, tidyDayOk, tidyUrgent } from "./lib-tidy.js";
 
@@ -1343,6 +1343,8 @@ async function getOpenTasks(cfg, force, tag, assignee) {
       assigneeCount: Array.isArray(t.assignees) ? t.assignees.length : 0,
       // What it waits on (ClickUp dependencies) - Insights > Plan orders by it.
       dependsOn: (Array.isArray(t.dependencies) ? t.dependencies : []).filter((d) => d && String(d.task_id) === String(t.id) && d.depends_on).map((d) => String(d.depends_on)),
+      // When ClickUp last changed it (a new comment counts) - Unread comments rechecks those first.
+      updatedMs: Number(t.date_updated) || 0,
     };
   });
   const data = { tasks, deadlineTasks: [], trackedTasks: [] };
@@ -2651,6 +2653,68 @@ async function heldStartReminder(taskId) {
   await notify("held-" + taskId, "\uD83D\uDCAC " + (held.length === 1 ? "A comment is" : held.length + " comments are") + " waiting on this task",
     "“" + (first.length > 120 ? first.slice(0, 118) + "…" : first) + "” - " + (held.every((c) => c.auto) ? "it's sent by itself when you complete the task." : "you'll be asked to send it when you complete the task."),
     undefined, chrome.runtime.getURL("options.html#dashboard"));
+}
+
+// ---------- Unread comments ----------
+// Teammates explain things in task comments ("moved to you because…") that are
+// easy to miss. Every 5 minutes (after the ClickUp refresh) a few of your open
+// tasks have their comments read: tasks ClickUp says changed since the last
+// look first, then any not looked at for 3 hours - at most 6 reads a run, never
+// while ClickUp is rate-limiting. cuComments { taskId: { checkedAt, upd, list:
+// [last 6 comments by others] } }; cuCommentSeen { taskId: when you looked }.
+// The pages count a comment as unread when it's newer than that look (and less
+// than 60 days old). A new comment that @mentions you pops up a notification.
+const CMT_PER_RUN = 6, CMT_RECHECK_MS = 3 * 3600000;
+let cmtScanning = false;
+async function scanComments(more) {
+  if (cmtScanning) return;
+  const st = (await getClickupState().catch(() => null)) || {};
+  if (st.rateLimitedUntil > Date.now()) return;
+  const cfg = await getClickupConfig().catch(() => null);
+  if (!cfg || !cfg.token) return;
+  const s = await getSettings().catch(() => ({}));
+  if (s.commentWatch === false) return;
+  cmtScanning = true;
+  try {
+    const g = await chrome.storage.local.get(["insOpenCache", "cuComments"]);
+    const rows = new Map();
+    const add = (t) => { if (t && t.id && !t.done && !/\bextra(?:\(s\)|s)?\s+task(?:\(s\)|s)?\b/i.test(t.name || "")) { const k = String(t.id); if (!rows.has(k)) rows.set(k, t); } };
+    for (const t of (g.insOpenCache && g.insOpenCache.tasks) || []) add(t);
+    for (const b of [st, st.todayFilter, st.thisWeek, st.nextWeek]) if (b) for (const k of ["tasks", "deadlineTasks", "trackedTasks"]) for (const t of b[k] || []) add(t);
+    const cache = g.cuComments && typeof g.cuComments === "object" ? { ...g.cuComments } : {};
+    const now = Date.now();
+    const due = [...rows.values()].filter((t) => {
+      const c = cache[String(t.id)];
+      return !c || (Number(t.updatedMs) > (c.upd || 0) + 1000) || now - (c.checkedAt || 0) > CMT_RECHECK_MS;
+    }).sort((a, b) => {
+      const ca = cache[String(a.id)], cb = cache[String(b.id)];
+      const pa = !ca ? 0 : Number(a.updatedMs) > (ca.upd || 0) ? 1 : 2, pb = !cb ? 0 : Number(b.updatedMs) > (cb.upd || 0) ? 1 : 2;
+      return pa - pb || (Number(b.updatedMs) || 0) - (Number(a.updatedMs) || 0);
+    }).slice(0, more ? CMT_PER_RUN * 3 : CMT_PER_RUN);
+    const me = String(cfg.userId || "");
+    const pings = [];
+    for (const t of due) {
+      const id = String(t.id);
+      let list;
+      try { list = await getTaskCommentsLite(cfg.token, id); }
+      catch (e) { if (e && e.status === 429) break; cache[id] = { ...(cache[id] || {}), checkedAt: now }; continue; }
+      const others = list.filter((c) => c.userId !== me).sort((a, b) => b.at - a.at).slice(0, 6)
+        .map((c) => ({ at: c.at, who: c.who, text: c.text, mention: c.mentions.includes(me) }));
+      const prev = cache[id];
+      if (prev && prev.list) {
+        const before = prev.list.reduce((mx, c) => Math.max(mx, c.at), 0);
+        for (const c of others) if (c.at > before && c.mention) pings.push({ id, name: t.name, url: t.url || taskUrlFor(id), c });
+      }
+      cache[id] = { checkedAt: now, upd: Number(t.updatedMs) || 0, name: String(t.name || "").slice(0, 200), url: t.url || taskUrlFor(id), client: t.client || "", list: others };
+      await new Promise((r) => setTimeout(r, 250));
+    }
+    // Forget tasks that are no longer open (kept a day in case the list was partial).
+    for (const k of Object.keys(cache)) if (!rows.has(k) && now - (cache[k].checkedAt || 0) > 24 * 3600000) delete cache[k];
+    await chrome.storage.local.set({ cuComments: cache });
+    for (const p of pings.slice(0, 3)) {
+      await notify("cmt-" + p.id + "-" + p.c.at, "\uD83D\uDCAC " + p.c.who + " mentioned you", "“" + p.name + "”: " + p.c.text, undefined, p.url).catch(() => {});
+    }
+  } finally { cmtScanning = false; }
 }
 
 // ---------- draft tasks (local-tasks.js) ----------
@@ -5570,6 +5634,67 @@ async function hubProfile(force) {
   }
   return { cuUserId: String(c.userId || ""), name: c.username || "", avatar: c.avatar || "", color: c.color || "", initials: c.initials || "" };
 }
+// What the Team hub's users list shows for each person (Admin › Team hub,
+// Performance / Health columns): built from what this copy already has - the
+// stored performance history (rebuilt at most every 6 h) and the open tasks -
+// at most every 3 hours, and sent with the check-in. Small: scores and counts.
+const EXTRA_TASK_RE = /\bextra(?:\(s\)|s)?\s+task(?:\(s\)|s)?\b/i;
+function perfScores(perf, targetMs, now = Date.now()) {
+  const DAY = 86400000;
+  const dayStartOf = (ts) => { const d = new Date(ts); d.setHours(0, 0, 0, 0); return d.getTime(); };
+  const today = dayStartOf(now);
+  const mon = (() => { const d = new Date(today); d.setDate(d.getDate() - ((d.getDay() + 6) % 7)); return d.getTime(); })();
+  const monthStart = new Date(new Date(today).getFullYear(), new Date(today).getMonth(), 1).getTime();
+  const done = (perf.done || []).filter((t) => t && t.doneAt && !EXTRA_TASK_RE.test(t.name || ""));
+  const lateDays = (t) => Math.ceil((t.doneAt - (dayStartOf(t.dueDateMs) + DAY)) / DAY);
+  const score = (from) => {
+    let tracked = 0, work = 0;
+    for (let d = dayStartOf(from); d < today; d += DAY) {
+      const g = new Date(d).getDay();
+      if (g === 0 || g === 6 || isCompanyHoliday(d)) continue;
+      work++; tracked += Number(perf.days && (perf.days[d] || perf.days[String(d)])) || 0;
+    }
+    const parts = [];
+    if (work && targetMs) parts.push({ k: "h", w: 40, s: Math.min(100, (tracked / (work * targetMs)) * 100) });
+    const dated = done.filter((t) => t.doneAt >= from && Number(t.dueDateMs) > 0);
+    if (dated.length) parts.push({ k: "d", w: 35, s: (1 - dated.reduce((a, t) => a + (lateDays(t) >= 1 ? Math.min(1, lateDays(t) / 7) : 0), 0) / dated.length) * 100 });
+    const acc = done.filter((t) => t.doneAt >= from && t.estimateMs > 0 && t.spentMs > 0);
+    if (acc.length) parts.push({ k: "e", w: 25, s: (acc.reduce((a, t) => a + Math.max(0, 1 - Math.abs(t.spentMs / t.estimateMs - 1)), 0) / acc.length) * 100 });
+    const ws = parts.reduce((a, p) => a + p.w, 0);
+    const o = { s: ws ? Math.round(parts.reduce((a, p) => a + p.s * p.w, 0) / ws) : null };
+    for (const p of parts) o[p.k] = Math.round(p.s);
+    return o;
+  };
+  const late4 = done.filter((t) => t.doneAt >= today - 28 * DAY && Number(t.dueDateMs) > 0 && lateDays(t) >= 1).length;
+  const fin4 = done.filter((t) => t.doneAt >= today - 28 * DAY).length;
+  return { w: score(mon), m: score(monthStart), a: score(Number(perf.fromTs) || today), late4, fin4 };
+}
+async function teamSummary() {
+  const { teamSummaryCache } = await chrome.storage.local.get("teamSummaryCache");
+  if (teamSummaryCache && Date.now() - (teamSummaryCache.at || 0) < 3 * 3600000) return teamSummaryCache;
+  const cfg = await getClickupConfig().catch(() => null);
+  if (!cfg || !cfg.token || cfg.userId == null) return null;
+  const settings = await getSettings().catch(() => ({}));
+  const targetMs = (Number(settings.clickupTargetHours) || 7) * 3600000;
+  const out = { at: Date.now() };
+  try { const r = await getPerfHistory(false); if (r && r.data) out.p = perfScores(r.data, targetMs); } catch (e) {}
+  try {
+    const g = await chrome.storage.local.get("insOpenCache");
+    let rows = g.insOpenCache && Date.now() - (g.insOpenCache.at || 0) < 24 * 3600000 ? g.insOpenCache.tasks : null;
+    if (!rows) { const r = await getOpenTasks(cfg, false).catch(() => null); rows = r && r.ok && r.data ? r.data.tasks : null; }
+    if (Array.isArray(rows)) {
+      const today = new Date().setHours(0, 0, 0, 0);
+      const open = rows.filter((t) => t && !t.done && !EXTRA_TASK_RE.test(t.name || ""));
+      const st = (await getClickupState().catch(() => null)) || {};
+      out.h = { open: open.length, od: open.filter((t) => Number(t.dueDateMs) > 0 && new Date(Number(t.dueDateMs)).setHours(0, 0, 0, 0) < today).length,
+        ne: open.filter((t) => !(Number(t.estimateMs) > 0)).length, nd: open.filter((t) => !(Number(t.dueDateMs) > 0)).length,
+        bl: Object.keys(st.waiting || {}).length };
+    }
+  } catch (e) {}
+  if (!out.p && !out.h) return null;
+  await chrome.storage.local.set({ teamSummaryCache: out });
+  return out;
+}
 async function hubAdminKey() {
   const { adminHubEnc } = await chrome.storage.local.get("adminHubEnc");
   const a = await decryptJSON(adminHubEnc, null);
@@ -5614,7 +5739,8 @@ async function hubHello(force, gapMs = HUB_HELLO_MS) {
   const p = await hubProfile();
   if (!p) return null; // not connected to ClickUp: nothing to say who this is
   await chrome.storage.local.set({ hubHelloAt: Date.now() });
-  const r = await hubCall("hello", { ...p, version });
+  const sum = await teamSummary().catch(() => null);
+  const r = await hubCall("hello", { ...p, version, ...(sum ? { perf: JSON.stringify(sum).slice(0, 900) } : {}) });
   if (r && r.ok) await chrome.storage.local.set({ hubHelloVer: version });
   if (r && r.ok) await chrome.storage.local.set({ hubMe: { state: r.state, mutedUntil: r.mutedUntil || 0, settings: r.settings || {}, role: r.role === "owner" || r.role === "admin" ? r.role : "user", at: Date.now() } });
   return r;
@@ -6630,7 +6756,7 @@ chrome.alarms.onAlarm.addListener(async (alarm) => {
     // reads only unless it acts; not awaited (it waits a few seconds first).
     getClickupState().then((st) => maybeAutoFloat(st)).catch(() => {});
   } else if (alarm.name === CLICKUP_ALARM) {
-    refreshClickup({ viaAlarm: true }).catch(() => {});
+    refreshClickup({ viaAlarm: true }).then(() => scanComments()).catch(() => {});
   } else if (alarm.name === EST_ALARM_NEAR || alarm.name === EST_ALARM_MET) {
     // The running task's estimate is (almost) up: one check with ClickUp (is the
     // timer still on, exact time) and the alert. Skipped while ClickUp is
@@ -6890,6 +7016,17 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         } catch (e) { sendResponse({ ok: false, error: String(e && e.message ? e.message : e), status: e && e.status }); }
         break;
       }
+      case "COMMENTS_SEEN": {
+        // A task's comments were looked at (its ▸ details opened, or "Mark read").
+        const ids = (Array.isArray(msg.taskIds) ? msg.taskIds : [msg.taskId]).map((x) => String(x || "")).filter(Boolean);
+        const { cuCommentSeen } = await chrome.storage.local.get("cuCommentSeen");
+        const seen = cuCommentSeen && typeof cuCommentSeen === "object" ? { ...cuCommentSeen } : {};
+        for (const id of ids) seen[id] = Date.now();
+        await chrome.storage.local.set({ cuCommentSeen: seen });
+        sendResponse({ ok: true });
+        break;
+      }
+      case "COMMENTS_SCAN": { sendResponse({ ok: true }); scanComments(!!msg.more).catch(() => {}); break; }
       case "CLICKUP_TASK_COMMENT": {
         try {
           const cfg = await getClickupConfig();

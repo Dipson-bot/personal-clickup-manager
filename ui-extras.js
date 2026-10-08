@@ -291,6 +291,8 @@
     { name: "/policy", about: "the live update policy", admin: true },
     { name: "/autoupdate", about: "run the automatic update now, step by step", admin: true },
     { name: "/cacheclear", about: "clear every saved copy and refresh", admin: true },
+    { name: "/roles", about: "show or hide the Role column in Admin › Team hub  (/roles on | off)", admin: true },
+    { name: "/perf", about: "show or hide the Performance and Health columns in Admin › Team hub  (/perf on | off)", admin: true },
   ];
   async function run(v) {
     const [cmd, ...rest] = v.split(/\s+/);
@@ -323,6 +325,22 @@
       return;
     }
     if (c === "/off") { await allOff(); line("everything switched off", "ok"); return; }
+    if (c === "/roles") {
+      const g = await chrome.storage.local.get("settings").catch(() => ({}));
+      const shown = !(g && g.settings && g.settings.hubRoleCol === false);
+      const want = arg === "on" ? true : arg === "off" ? false : !shown;
+      await send({ type: "SET_SETTINGS", patch: { hubRoleCol: want } }, 8000);
+      line("Role column " + (want ? "shown" : "hidden") + " in Admin › Team hub", "ok");
+      return;
+    }
+    if (c === "/perf") {
+      const g = await chrome.storage.local.get("settings").catch(() => ({}));
+      const shown = !!(g && g.settings && g.settings.hubPerfCol === true);
+      const want = arg === "on" ? true : arg === "off" ? false : !shown;
+      await send({ type: "SET_SETTINGS", patch: { hubPerfCol: want } }, 8000);
+      line("Performance and Health columns " + (want ? "shown" : "hidden") + " in Admin › Team hub", "ok");
+      return;
+    }
     if (c === "/autocomplete") return autocomplete(arg);
     if (c === "/autorun") return autorun(arg);
     const r = await send({ type: "DEV_CMD", cmd: c.slice(1) }, 180000);
