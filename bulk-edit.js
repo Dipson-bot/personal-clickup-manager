@@ -268,6 +268,10 @@ function bkMergePeople(current, found, selfId) {
   function renderWho(q) {
     const box = $("bkWhoList");
     if (!box) return;
+    // Only ever (re)draw a list that is open or about to be (you're in the box).
+    // The member list arriving in the background on the first visit used to pop
+    // it open by itself, as if something had broken.
+    if (box.hidden && document.activeElement !== $("bkWhoSearch")) return;
     const list = whoMatches(q);
     whoHi = -1;
     // Still waiting on ClickUp for this very name? Then a miss is not a miss yet,

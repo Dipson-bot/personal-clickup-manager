@@ -83,6 +83,10 @@
       rose: { name: "Rose", v: { bg: "#f8eff1", card: "#fffafb", bg2: "#f1e2e6", border: "#e6cfd6", field: "#ffffff", text: "#2e2226", muted: "#75606a", indigo: "#be185d", "indigo-dark": "#9d174d" } },
       lavender: { name: "Lavender", v: { bg: "#f1eff8", card: "#fcfbff", bg2: "#e6e2f3", border: "#d7d0ea", field: "#ffffff", text: "#25213a", muted: "#655e7c", indigo: "#6d28d9", "indigo-dark": "#5b21b6" } },
       slate: { name: "Slate", v: { bg: "#eef0f3", card: "#fafbfc", bg2: "#e3e7ec", border: "#d1d7df", field: "#ffffff", text: "#1e2530", muted: "#5c6675", indigo: "#2563eb", "indigo-dark": "#1d4ed8" } },
+      sand: { name: "Sand", v: { bg: "#f6f1e7", card: "#fffdf8", bg2: "#ece4d4", border: "#e0d5c0", field: "#ffffff", text: "#2b261d", muted: "#6f6656", indigo: "#b45309", "indigo-dark": "#92400e" } },
+      mint: { name: "Mint", v: { bg: "#ecf6f3", card: "#f8fdfb", bg2: "#dcefe9", border: "#c7e2da", field: "#ffffff", text: "#1b2b27", muted: "#58706a", indigo: "#0f766e", "indigo-dark": "#115e59" } },
+      coral: { name: "Coral", v: { bg: "#fbf0ec", card: "#fffaf8", bg2: "#f4e1da", border: "#ead0c6", field: "#ffffff", text: "#2e2420", muted: "#77625a", indigo: "#c2410c", "indigo-dark": "#9a3412" } },
+      mono: { name: "Mono", v: { bg: "#f2f2f2", card: "#fbfbfb", bg2: "#e7e7e7", border: "#d6d6d6", field: "#ffffff", text: "#1f1f1f", muted: "#636363", indigo: "#374151", "indigo-dark": "#1f2937" } },
     },
     dark: {
       classic: { name: "Classic", sw: ["#0f1115", "#6366f1"] },
@@ -90,8 +94,40 @@
       pine: { name: "Pine", v: { bg: "#0d1411", card: "#142019", bg2: "#1b2a21", border: "#2a3b30", field: "#142019", text: "#e3ede6", muted: "#95a99b", indigo: "#059669", "indigo-dark": "#047857" } },
       plum: { name: "Plum", v: { bg: "#140f1b", card: "#1d1626", bg2: "#261d32", border: "#372a47", field: "#1d1626", text: "#ece6f5", muted: "#a597b8", indigo: "#a855f7", "indigo-dark": "#9333ea" } },
       mocha: { name: "Mocha", v: { bg: "#16120f", card: "#201a16", bg2: "#2a231d", border: "#3a3129", field: "#201a16", text: "#f0e8e0", muted: "#b0a191", indigo: "#ea580c", "indigo-dark": "#c2410c" } },
+      graphite: { name: "Graphite", v: { bg: "#121212", card: "#1b1b1b", bg2: "#242424", border: "#333333", field: "#1b1b1b", text: "#ececec", muted: "#a3a3a3", indigo: "#64748b", "indigo-dark": "#475569" } },
+      deepsea: { name: "Deep sea", v: { bg: "#0a1618", card: "#102226", bg2: "#162e33", border: "#24434b", field: "#102226", text: "#e2f0f1", muted: "#8fb0b4", indigo: "#0891b2", "indigo-dark": "#0e7490" } },
+      wine: { name: "Wine", v: { bg: "#170d10", card: "#221418", bg2: "#2d1a20", border: "#40252d", field: "#221418", text: "#f3e6ea", muted: "#b7959f", indigo: "#e11d48", "indigo-dark": "#be123c" } },
+      nord: { name: "Nord", v: { bg: "#1f242d", card: "#272d38", bg2: "#2e3542", border: "#3b4252", field: "#272d38", text: "#e5e9f0", muted: "#a3adbf", indigo: "#5e81ac", "indigo-dark": "#4c6a94" } },
     },
   };
+  // ---------- your own palette ----------
+  // Three colours per mode (background, cards, accent); everything else is
+  // worked out from them so text, borders and buttons stay readable whatever
+  // is picked. Kept in storage themeCustomLight / themeCustomDark.
+  const hexOk = (s) => (/^#[0-9a-f]{6}$/i.test(String(s || "")) ? String(s).toLowerCase() : null);
+  const rgbOf = (h) => [1, 3, 5].map((i) => parseInt(h.slice(i, i + 2), 16));
+  const toHex = (a) => "#" + a.map((x) => Math.round(Math.max(0, Math.min(255, x))).toString(16).padStart(2, "0")).join("");
+  const mixHex = (a, b, t) => { const x = rgbOf(a), y = rgbOf(b); return toHex(x.map((v, i) => v + (y[i] - v) * t)); };
+  const lumOf = (h) => { const c = rgbOf(h).map((v) => { v /= 255; return v <= 0.03928 ? v / 12.92 : Math.pow((v + 0.055) / 1.055, 2.4); }); return 0.2126 * c[0] + 0.7152 * c[1] + 0.0722 * c[2]; };
+  const contrastOf = (a, b) => { const x = lumOf(a), y = lumOf(b); return (Math.max(x, y) + 0.05) / (Math.min(x, y) + 0.05); };
+  const CUSTOM_DEFAULT = { light: { bg: "#eef1f6", card: "#ffffff", accent: "#4f46e5" }, dark: { bg: "#101318", card: "#181c23", accent: "#6366f1" } };
+  function deriveCustom(c, mode) {
+    const d = CUSTOM_DEFAULT[mode] || CUSTOM_DEFAULT.light;
+    const bg = hexOk(c && c.bg) || d.bg, card = hexOk(c && c.card) || d.card;
+    let acc = hexOk(c && c.accent) || d.accent;
+    // White button text has to stay readable on the accent: darken until it is.
+    for (let i = 0; i < 14 && contrastOf(acc, "#ffffff") < 3.2; i++) acc = mixHex(acc, "#000000", 0.12);
+    const darkCard = lumOf(card) < 0.3;
+    // On a dark card the accent has to show as a link too.
+    for (let i = 0; i < 8 && darkCard && contrastOf(acc, card) < 2.4; i++) acc = mixHex(acc, "#ffffff", 0.1);
+    const text = darkCard ? "#ececf1" : "#1f1d24";
+    return { bg, card, bg2: mixHex(card, text, 0.06), border: mixHex(card, text, 0.16), field: darkCard ? card : "#ffffff", text, muted: mixHex(text, card, 0.42), indigo: acc, "indigo-dark": mixHex(acc, "#000000", 0.15) };
+  }
+  let customs = { light: null, dark: null };
+  // The Appearance card's colour boxes, refilled whenever the saved palettes
+  // arrive (they load a moment after the page) - otherwise the boxes showed the
+  // defaults and changing one colour saved the other two as defaults.
+  const apRefills = [];
   const vars = (v) => Object.entries(v).map(([k, x]) => "--" + k + ": " + x + ";").join(" ");
   const pcss = document.createElement("style");
   pcss.textContent = Object.entries(PALETTES.light).filter(([, p]) => p.v).map(([k, p]) => `html[data-pal-light="${k}"]:not([data-theme="dark"]) { ${vars(p.v)} }`).join("\n") + "\n" +
@@ -107,19 +143,44 @@
   .pcm-thm .sw:hover { border-color: var(--indigo); }
   .pcm-thm .sw.on { border-color: var(--indigo); box-shadow: 0 0 0 1px var(--indigo); }
   .pcm-thm .sw i { width: 34px; height: 16px; border-radius: 5px; border: 1px solid rgba(127,127,127,.35); background: linear-gradient(90deg, var(--a) 0 58%, var(--b) 58% 100%); }
+  .pcm-thm { overflow-y: auto; }
+  .pcm-thm .thm-more { display: block; width: 100%; margin-top: 2px; font: inherit; font-size: 12.5px; padding: 7px; border: 1px dashed var(--border); border-radius: 8px; background: none; color: var(--indigo); cursor: pointer; }
+  .pcm-thm .thm-more:hover { border-color: var(--indigo); }
+  /* Wallpaper (Options › General › Appearance): behind everything, sized to any
+     screen - "cover" crops the edges, "contain" shows the whole picture. */
+  html.pcm-wall { background: var(--bg); }
+  html.pcm-wall body { background: transparent !important; }
+  #pcmWall { position: fixed; inset: 0; z-index: -1; pointer-events: none; overflow: hidden; }
+  #pcmWall .wimg { position: absolute; inset: -40px; background-position: center; background-repeat: no-repeat; background-size: var(--wfit, cover); filter: blur(var(--wblur, 0px)); }
+  #pcmWall .wdim { position: absolute; inset: 0; background: var(--bg); opacity: var(--wdim, .35); }
+  html.pcm-wall.pcm-glass .card, html.pcm-wall.pcm-glass .sidenav { background: color-mix(in srgb, var(--card) 84%, transparent) !important; backdrop-filter: blur(10px); }
   `;
   document.head.appendChild(pcss);
+  const ccss = document.createElement("style"); // your own palettes (rewritten when they change)
+  document.head.appendChild(ccss);
   const root = document.documentElement;
-  function setPal(g) {
-    const l = g && g.themePaletteLight, d = g && g.themePaletteDark;
-    if (l && PALETTES.light[l] && PALETTES.light[l].v) root.dataset.palLight = l; else delete root.dataset.palLight;
-    if (d && PALETTES.dark[d] && PALETTES.dark[d].v) root.dataset.palDark = d; else delete root.dataset.palDark;
+  const okPal = (m, k) => (k === "custom" ? !!customs[m] : !!(k && PALETTES[m][k] && PALETTES[m][k].v));
+  function paintCustomCss() {
+    ccss.textContent = (customs.light ? 'html[data-pal-light="custom"]:not([data-theme="dark"]) { ' + vars(deriveCustom(customs.light, "light")) + " }\n" : "") +
+      (customs.dark ? 'html[data-theme="dark"][data-pal-dark="custom"] { ' + vars(deriveCustom(customs.dark, "dark")) + " }" : "");
   }
+  function setPal(g) {
+    if (g && ("themeCustomLight" in g || "themeCustomDark" in g)) {
+      customs = { light: (g.themeCustomLight && typeof g.themeCustomLight === "object") ? g.themeCustomLight : null, dark: (g.themeCustomDark && typeof g.themeCustomDark === "object") ? g.themeCustomDark : null };
+      paintCustomCss();
+      apRefills.forEach((f) => { try { f(); } catch (e) {} });
+    }
+    const l = g && g.themePaletteLight, d = g && g.themePaletteDark;
+    if (okPal("light", l)) root.dataset.palLight = l; else delete root.dataset.palLight;
+    if (okPal("dark", d)) root.dataset.palDark = d; else delete root.dataset.palDark;
+  }
+  const PAL_KEYS = ["themePaletteLight", "themePaletteDark", "themeCustomLight", "themeCustomDark"];
   try {
-    chrome.storage.local.get(["themePaletteLight", "themePaletteDark"]).then(setPal).catch(() => {});
+    chrome.storage.local.get(PAL_KEYS).then(setPal).catch(() => {});
     chrome.storage.onChanged.addListener((ch, area) => {
       if (area !== "local") return;
-      if (ch.themePaletteLight || ch.themePaletteDark) chrome.storage.local.get(["themePaletteLight", "themePaletteDark"]).then(setPal).catch(() => {});
+      if (PAL_KEYS.some((k) => ch[k])) chrome.storage.local.get(PAL_KEYS).then(setPal).catch(() => {});
+      if (ch.themeWall || ch.themeWallImg) loadWall();
       if (ch.theme && ch.theme.newValue && typeof window.applyTheme === "function" && root.dataset.theme !== ch.theme.newValue) window.applyTheme(ch.theme.newValue);
     });
   } catch (e) {}
@@ -141,9 +202,17 @@
       const sws = (m) => Object.entries(PALETTES[m]).map(([k, p]) => {
         const [a, b] = p.sw || [p.v.bg, p.v.indigo];
         return '<button type="button" class="sw' + (cur[m] === k && mode === m ? " on" : "") + '" data-m="' + m + '" data-p="' + k + '"><i style="--a:' + a + ";--b:" + b + '"></i>' + p.name + "</button>";
-      }).join("");
+      }).join("") + (() => {
+        // Your own palette: pick it, or (not made yet) go and make it.
+        const c = customs[m];
+        if (!c) return '<button type="button" class="sw" data-edit="1" title="Make your own palette (Options › General › Appearance)"><i style="--a:transparent;--b:transparent;border-style:dashed"></i>+ Custom</button>';
+        const v = deriveCustom(c, m);
+        return '<button type="button" class="sw' + (cur[m] === "custom" && mode === m ? " on" : "") + '" data-m="' + m + '" data-p="custom" title="Your own palette"><i style="--a:' + v.bg + ";--b:" + v.indigo + '"></i>Custom</button>';
+      })();
       menu.innerHTML = '<div class="seg"><button type="button" data-mode="light" class="' + (mode === "light" ? "on" : "") + '">☀ Light</button><button type="button" data-mode="dark" class="' + (mode === "dark" ? "on" : "") + '">☾ Dark</button></div>' +
-        "<h4>Light palettes</h4><div class=\"sws\">" + sws("light") + "</div><h4>Dark palettes</h4><div class=\"sws\">" + sws("dark") + "</div>";
+        "<h4>Light palettes</h4><div class=\"sws\">" + sws("light") + "</div><h4>Dark palettes</h4><div class=\"sws\">" + sws("dark") + "</div>" +
+        '<button type="button" class="thm-more" data-edit="1">🎨 Custom colours &amp; wallpaper…</button>';
+      menu.querySelectorAll("[data-edit]").forEach((b) => { b.onclick = () => { closeMenu(); openAppearance(); }; });
       menu.querySelectorAll("[data-mode]").forEach((b) => { b.onclick = async () => { await setMode(b.dataset.mode); paint(); }; });
       menu.querySelectorAll("[data-p]").forEach((b) => {
         b.onclick = async () => {
@@ -160,6 +229,7 @@
     document.body.appendChild(menu);
     const r = btn.getBoundingClientRect();
     menu.style.top = Math.round(r.bottom + 6) + "px";
+    menu.style.maxHeight = Math.max(160, (window.innerHeight || 600) - Math.round(r.bottom + 6) - 8) + "px";
     const vw = window.innerWidth || document.documentElement.clientWidth || 800;
     menu.style.left = Math.round(Math.max(8, Math.min(vw - 256, r.right - 248))) + "px";
   }
@@ -174,6 +244,160 @@
   }
   document.addEventListener("click", (e) => { if (menu && !menu.contains(e.target) && e.target.id !== "themeToggle") closeMenu(); });
   document.addEventListener("keydown", (e) => { if (e.key === "Escape") closeMenu(); });
+
+  // ---------- wallpaper ----------
+  // themeWall { fit: "cover" | "contain", dim 0-85, blur 0-20, glass, popup }
+  // themeWallImg: the picture as a data URL, shrunk to at most 2560 px on its
+  // long side when it was chosen (so any size or shape of image works, and it
+  // stays small), kept separately so moving a slider doesn't rewrite it.
+  const WALL_DEF = { fit: "cover", dim: 35, blur: 0, glass: true, popup: true };
+  const inToolbarPopup = /\/popup\.html$/.test(location.pathname) && !root.classList.contains("in-panel");
+  let wallEl = null;
+  function paintWall(w, img) {
+    const on = !!img && !(inToolbarPopup && w.popup === false) && !(/\/popup\.html$/.test(location.pathname) && w.popup === false);
+    root.classList.toggle("pcm-wall", on);
+    root.classList.toggle("pcm-glass", on && w.glass !== false);
+    if (!on) { if (wallEl) { wallEl.remove(); wallEl = null; } return; }
+    if (!wallEl) {
+      wallEl = document.createElement("div");
+      wallEl.id = "pcmWall";
+      wallEl.setAttribute("aria-hidden", "true");
+      wallEl.innerHTML = '<div class="wimg"></div><div class="wdim"></div>';
+      (document.body || document.documentElement).appendChild(wallEl);
+    }
+    const im = wallEl.querySelector(".wimg");
+    const url = 'url("' + img + '")';
+    if (im._url !== url) { im._url = url; im.style.backgroundImage = url; }
+    wallEl.style.setProperty("--wfit", w.fit === "contain" ? "contain" : "cover");
+    wallEl.style.setProperty("--wblur", Math.max(0, Math.min(20, Number(w.blur) || 0)) + "px");
+    wallEl.style.setProperty("--wdim", String(Math.max(0, Math.min(85, Number(w.dim != null ? w.dim : 35))) / 100));
+  }
+  function loadWall() {
+    try {
+      chrome.storage.local.get(["themeWall", "themeWallImg"]).then((g) => {
+        const w = { ...WALL_DEF, ...((g && g.themeWall) || {}) };
+        const img = typeof (g && g.themeWallImg) === "string" && /^data:image\//.test(g.themeWallImg) ? g.themeWallImg : "";
+        const go = () => { paintWall(w, img); paintAppearance(w, img); };
+        if (document.body) go(); else document.addEventListener("DOMContentLoaded", go, { once: true });
+      }).catch(() => {});
+    } catch (e) {}
+  }
+  // Any picture -> at most 2560 px on its long side, WebP (keeps transparency),
+  // smaller again if it is still large.
+  async function shrinkImage(file) {
+    const bmp = await createImageBitmap(file);
+    let side = 2560, q = 0.86, out = "";
+    for (let pass = 0; pass < 5; pass++) {
+      const k = Math.min(1, side / Math.max(bmp.width, bmp.height));
+      const cv = document.createElement("canvas");
+      cv.width = Math.max(1, Math.round(bmp.width * k)); cv.height = Math.max(1, Math.round(bmp.height * k));
+      cv.getContext("2d").drawImage(bmp, 0, 0, cv.width, cv.height);
+      out = cv.toDataURL("image/webp", q);
+      if (!/^data:image\/webp/.test(out)) out = cv.toDataURL("image/jpeg", q);
+      if (out.length < 1.4e6) return { data: out, w: cv.width, h: cv.height, src: [bmp.width, bmp.height] }; // ~1 MB at most: storage is shared with everything else
+      side = Math.round(side * 0.8); q = Math.max(0.6, q - 0.08);
+    }
+    return { data: out, w: 0, h: 0, src: [bmp.width, bmp.height] };
+  }
+
+  // ---------- Appearance card (Options › General) ----------
+  function openAppearance() {
+    const card = document.getElementById("appearanceCard");
+    if (card) {
+      if (typeof window.showOptTab === "function") window.showOptTab("general");
+      setTimeout(() => { try { card.scrollIntoView({ behavior: "smooth", block: "start" }); } catch (e) { card.scrollIntoView(); } }, 60);
+      return;
+    }
+    try { chrome.tabs.create({ url: chrome.runtime.getURL("options.html?appearance=1#general") }); } catch (e) {}
+  }
+  let lastWall = { ...WALL_DEF }, lastImg = "";
+  function paintAppearance(w, img) {
+    lastWall = w; lastImg = img;
+    const c = document.getElementById("appearanceCard");
+    if (!c) return;
+    const $c = (id) => document.getElementById(id);
+    if ($c("apWallFit")) $c("apWallFit").value = w.fit === "contain" ? "contain" : "cover";
+    if ($c("apWallDim")) $c("apWallDim").value = String(w.dim != null ? w.dim : 35);
+    if ($c("apWallBlur")) $c("apWallBlur").value = String(w.blur || 0);
+    if ($c("apWallGlass")) $c("apWallGlass").checked = w.glass !== false;
+    if ($c("apWallPopup")) $c("apWallPopup").checked = w.popup !== false;
+    if ($c("apWallRemove")) $c("apWallRemove").hidden = !img;
+    if ($c("apWallThumb")) { $c("apWallThumb").style.backgroundImage = img ? 'url("' + img + '")' : ""; $c("apWallThumb").hidden = !img; }
+    c.querySelectorAll("[data-wall-on]").forEach((el) => { el.hidden = !img; });
+  }
+  function wireAppearance() {
+    const c = document.getElementById("appearanceCard");
+    if (!c || c._wired) return;
+    c._wired = true;
+    const $c = (id) => document.getElementById(id);
+    const say = (t, bad) => { const m = $c("apMsg"); if (m) { m.textContent = t || ""; m.style.color = bad ? "var(--red)" : ""; } };
+    // Your own palettes: three colour boxes per mode, live while you pick.
+    for (const m of ["light", "dark"]) {
+      const key = m === "light" ? "themeCustomLight" : "themeCustomDark";
+      const ins = ["bg", "card", "accent"].map((f) => $c("apC_" + m + "_" + f));
+      const fill = () => { const v = customs[m] || CUSTOM_DEFAULT[m]; ins.forEach((el, i) => { if (el && document.activeElement !== el) el.value = v[["bg", "card", "accent"][i]]; }); };
+      fill();
+      apRefills.push(fill);
+      let t = 0;
+      const save = (use) => {
+        const v = { bg: ins[0].value, card: ins[1].value, accent: ins[2].value };
+        customs[m] = v; paintCustomCss();
+        clearTimeout(t);
+        t = setTimeout(() => {
+          const patch = { [key]: v };
+          if (use) { patch[m === "light" ? "themePaletteLight" : "themePaletteDark"] = "custom"; patch.theme = m; }
+          chrome.storage.local.set(patch).catch(() => {});
+          if (use) { root.dataset[m === "light" ? "palLight" : "palDark"] = "custom"; if (typeof window.applyTheme === "function") window.applyTheme(m); else root.dataset.theme = m; }
+        }, use ? 0 : 150);
+      };
+      ins.forEach((el) => el && el.addEventListener("input", () => save(true)));
+      const reset = $c("apReset_" + m);
+      if (reset) reset.onclick = async () => {
+        customs[m] = null; paintCustomCss();
+        const pk = m === "light" ? "themePaletteLight" : "themePaletteDark";
+        const g = await chrome.storage.local.get(pk).catch(() => ({}));
+        const patch = { [key]: null };
+        if (g && g[pk] === "custom") patch[pk] = "classic";
+        await chrome.storage.local.set(patch).catch(() => {});
+        fill();
+        say(m === "light" ? "Light palette back to Classic." : "Dark palette back to Classic.");
+      };
+      const use = $c("apUse_" + m);
+      if (use) use.onclick = () => { save(true); say("Your " + m + " palette is on."); };
+    }
+    // Wallpaper.
+    const setWall = (patch) => { const w = { ...lastWall, ...patch }; lastWall = w; paintWall(w, lastImg); chrome.storage.local.set({ themeWall: w }).catch(() => {}); };
+    if ($c("apWallPick")) $c("apWallPick").onclick = () => $c("apWallFile") && $c("apWallFile").click();
+    if ($c("apWallFile")) $c("apWallFile").onchange = async () => {
+      const f = $c("apWallFile").files && $c("apWallFile").files[0];
+      $c("apWallFile").value = "";
+      if (!f) return;
+      if (!/^image\//.test(f.type || "")) { say("That isn't a picture - choose a JPG, PNG, WebP or GIF.", true); return; }
+      say("Getting the picture ready…");
+      try {
+        const r = await shrinkImage(f);
+        await chrome.storage.local.set({ themeWallImg: r.data, themeWall: { ...lastWall } });
+        lastImg = r.data;
+        paintWall(lastWall, lastImg); paintAppearance(lastWall, lastImg);
+        say("Wallpaper set (" + r.src[0] + "×" + r.src[1] + (r.w && (r.w !== r.src[0]) ? ", shrunk to " + r.w + "×" + r.h : "") + ", " + Math.round(r.data.length * 0.75 / 1024) + " KB). It fills any screen size.");
+      } catch (e) { say("Couldn't use that picture: " + ((e && e.message) || e), true); }
+    };
+    if ($c("apWallRemove")) $c("apWallRemove").onclick = async () => {
+      await chrome.storage.local.remove("themeWallImg").catch(() => {});
+      lastImg = ""; paintWall(lastWall, ""); paintAppearance(lastWall, "");
+      say("Wallpaper removed.");
+    };
+    if ($c("apWallFit")) $c("apWallFit").onchange = () => setWall({ fit: $c("apWallFit").value });
+    if ($c("apWallDim")) $c("apWallDim").oninput = () => setWall({ dim: Number($c("apWallDim").value) });
+    if ($c("apWallBlur")) $c("apWallBlur").oninput = () => setWall({ blur: Number($c("apWallBlur").value) });
+    if ($c("apWallGlass")) $c("apWallGlass").onchange = () => setWall({ glass: $c("apWallGlass").checked });
+    if ($c("apWallPopup")) $c("apWallPopup").onchange = () => setWall({ popup: $c("apWallPopup").checked });
+    paintAppearance(lastWall, lastImg);
+    if (/[?&]appearance=1/.test(location.search)) setTimeout(openAppearance, 500);
+  }
+  loadWall();
+  window.PcmTheme = { deriveCustom, contrastOf, openAppearance };
+  if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", wireAppearance); else wireAppearance();
 
   apply();
   hookTheme();

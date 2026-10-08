@@ -648,7 +648,7 @@
     if (!pip) return;
     const [w, h] = compact() ? COMPACT : SMALL;
     const fw = Math.max(0, pip.outerWidth - pip.innerWidth), fh = Math.max(0, pip.outerHeight - pip.innerHeight);
-    if (!wrongSize()) return;
+    if (!wrongSize()) { fitPending = false; chrome.storage.local.set({ floatNeedsFit: 0 }).catch(() => {}); return; }
     tryResize(w + fw, h + fh);
     setTimeout(() => {
       if (!wrongSize()) { fitPending = false; chrome.storage.local.set({ floatNeedsFit: 0 }).catch(() => {}); return; }

@@ -6418,18 +6418,18 @@ function insDrillsHtml(m) {
   out += insDrill("overdue", "Overdue tasks", m.overdueList, function (r) {
     var d = insDaysAgo(r.due, m.todayStart);
     return { badge: '<span class="badge red">' + (d > 0 ? d + "d" : "due") + "</span>",
-      plain: "due " + insDateShort(r.due) + (r.est ? " · " + insHrs(r.est) : " · no est"), action: "Open" };
+      plain: "due " + insDateShort(r.due) + (r.est ? " · " + insHrs(r.est) : " · no est"), action: "Change due date", act: "due" };
   });
   out += insDrill("blocked", "Blocked / waiting", m.blockedList, function (r) {
     return { badge: '<span class="badge red">held</span>', plain: r.reason, action: "Open" };
   });
   out += insDrill("noest", "Missing an estimate", m.noEstList, function (r) {
     return { badge: '<span class="badge amber">no est</span>',
-      plain: r.due ? "due " + insDateShort(r.due) : "no due date", action: "Add estimate" };
+      plain: r.due ? "due " + insDateShort(r.due) : "no due date", action: "Add estimate", act: "est" };
   });
   out += insDrill("nodue", "Missing a due date", m.noDueList, function (r) {
     return { badge: '<span class="badge amber">no date</span>',
-      plain: r.est ? insHrs(r.est) : "no estimate", action: "Set due date" };
+      plain: r.est ? insHrs(r.est) : "no estimate", action: "Set due date", act: "due" };
   });
   return out;
 }
@@ -6441,10 +6441,14 @@ function insDrill(id, label, listArr, fmt) {
   for (i = 0; i < rendered; i++) {
     var r = listArr[i], f = fmt(r), plain = f.plain || "", client = r.client || "";
     var hay = ((r.name || "") + " " + client + " " + plain).toLowerCase();
-    body += '<div class="trow" data-client="' + insEsc(client) + '" data-hay="' + insEsc(hay) + '">' +
-      f.badge + '<div class="ttl"><b>' + insEsc(r.name) + "</b><small>" +
+    // The name opens the task in ClickUp; the action does the fix right here
+    // (an estimate box, or the extension's own calendar) - see insRowAction.
+    body += '<div class="trow" data-client="' + insEsc(client) + '" data-hay="' + insEsc(hay) + '"' + (r.id ? ' data-id="' + insEsc(r.id) + '"' : "") + ' data-due="' + (Number(r.due) || 0) + '">' +
+      f.badge + '<div class="ttl"><b>' + (r.url ? '<a class="ttl-a" href="' + insEsc(r.url) + '" target="_blank" rel="noopener" title="Open in ClickUp">' + insEsc(r.name) + "</a>" : insEsc(r.name)) + "</b><small>" +
       (client ? insEsc(client) + " · " : "") + insEsc(plain) + "</small></div>" +
-      '<a class="lnk" href="' + insEsc(r.url) + '" target="_blank" rel="noopener">' + f.action + "</a></div>";
+      (f.act && r.id
+        ? '<button type="button" class="lnk ins-act" data-act="' + f.act + '">' + f.action + "</button>"
+        : '<a class="lnk" href="' + insEsc(r.url) + '" target="_blank" rel="noopener">' + f.action + "</a>") + "</div>";
   }
   body += '<div class="det-more" data-more hidden></div>' +
     '<div class="det-more" data-none hidden>No task in this list matches the filter above.</div>';
@@ -6543,8 +6547,94 @@ function insWire(view) {
   }
   var clr = document.getElementById("insFClear");
   if (clr) clr.onclick = function () { insSetFilter("", ""); };
+  view.querySelectorAll(".ins-act").forEach(function (b) { b.onclick = function (e) { e.preventDefault(); insRowAction(b); }; });
   insApplyFilter();
   if (insPendingDrill) { var p = insPendingDrill; insPendingDrill = ""; insOpenDrill(p, ""); }
+}
+// "Add estimate" / "Set due date" / "Change due date" in the Insights lists:
+// done right here instead of opening ClickUp. Saved with the same messages the
+// task lists use; the row then says what was saved and leaves its list.
+function insRowDone(row, text) {
+  row.classList.add("ins-fixed");
+  var a = row.querySelector(".ins-act, .ins-estbox");
+  var ok = document.createElement("span");
+  ok.className = "ins-ok";
+  ok.textContent = "✓ " + text;
+  if (a) a.replaceWith(ok); else row.appendChild(ok);
+  var det = row.closest("details.ins-det");
+  setTimeout(function () {
+    row.remove();
+    if (!det) return;
+    var c = det.querySelector("[data-count]"), body = det.querySelector(".det-body");
+    var n = Math.max(0, (Number(body && body.getAttribute("data-total")) || 1) - 1);
+    if (body) body.setAttribute("data-total", String(n));
+    if (c) c.textContent = "(" + n + ")";
+    insApplyFilter();
+  }, 1800);
+}
+// The fix is also written into the cached task list Insights is drawn from, or
+// the next repaint (a background refresh lands within seconds) put the row back.
+function insPatchCache(id, patch) {
+  if (!insCache || !Array.isArray(insCache.data)) return;
+  for (var i = 0; i < insCache.data.length; i++) {
+    var t = insCache.data[i];
+    if (t && String(t.id) === String(id)) { for (var k in patch) t[k] = patch[k]; }
+  }
+}
+function insRowAction(btn) {
+  var row = btn.closest(".trow");
+  if (!row || row._busy) return;
+  var id = row.getAttribute("data-id");
+  if (!id) return;
+  if (btn.getAttribute("data-act") === "est") {
+    var box = document.createElement("span");
+    box.className = "ins-estbox";
+    box.innerHTML = '<input type="text" class="est-input" placeholder="e.g. 1h 30m" aria-label="Estimate"><button type="button" class="lnk">Save</button>';
+    btn.replaceWith(box);
+    var inp = box.querySelector("input"), go = box.querySelector("button");
+    var back = function () { if (!row._busy && box.isConnected) box.replaceWith(btn); };
+    var save = async function () {
+      var ms = parseFlexDurationOpt(inp.value.trim());
+      if (ms == null || ms <= 0) { inp.title = "Type a time like 20m, 1h 30m or 1.5"; inp.focus(); inp.select(); return; }
+      row._busy = true; inp.disabled = true; go.disabled = true; go.textContent = "Saving…";
+      var r = await send({ type: "SET_CLICKUP_ESTIMATE", taskId: String(id), estimateMs: ms }, 15000).catch(function () { return null; });
+      if (r && r.ok) { insPatchCache(id, { estimateMs: ms, totalEstimateMs: ms }); insRowDone(row, "estimate " + fmtDurOpt(ms) + " saved"); return; }
+      row._busy = false; inp.disabled = false; go.disabled = false; go.textContent = "Save";
+      inp.title = "Couldn't save" + (r && r.status ? " (HTTP " + r.status + ")" : "") + " - try again";
+      inp.style.borderColor = "var(--red)";
+    };
+    go.onclick = save;
+    inp.onkeydown = function (e) { if (e.key === "Enter") { e.preventDefault(); save(); } else if (e.key === "Escape") { e.preventDefault(); back(); } };
+    inp.onblur = function () { setTimeout(function () { if (!inp.value.trim() && document.activeElement !== go) back(); }, 150); };
+    inp.focus();
+    return;
+  }
+  // Due date: the extension's own calendar (holidays, work-from-home, how full
+  // each day is); keeps the task's time of day, midday if it had none.
+  var prev = Number(row.getAttribute("data-due")) || 0;
+  var saveDue = async function (dayMs) {
+    if (!dayMs) return;
+    var d = new Date(dayMs), k = prev ? new Date(prev) : null;
+    var at = new Date(d.getFullYear(), d.getMonth(), d.getDate(), k ? k.getHours() : 12, k ? k.getMinutes() : 0, 0, 0).getTime();
+    row._busy = true; btn.disabled = true; btn.textContent = "Saving…";
+    var r = await send({ type: "CLICKUP_SET_DUE", taskId: String(id), dueMs: at }, 15000).catch(function () { return null; });
+    if (r && r.ok) {
+      insPatchCache(id, { dueDateMs: at });
+      var stillLate = at < new Date().setHours(0, 0, 0, 0);
+      if (stillLate) { prev = at; row.setAttribute("data-due", String(at)); row._busy = false; btn.disabled = false; btn.textContent = "Saved - still overdue, change again"; return; }
+      insRowDone(row, "due " + insDateShort(at) + " saved"); return;
+    }
+    row._busy = false; btn.disabled = false; btn.textContent = "Couldn't save - try again";
+  };
+  if (window.PcmCalendar && typeof window.PcmCalendar.pick === "function") {
+    window.PcmCalendar.pick(btn, { value: prev, canClear: false, onPick: saveDue, onClose: function () {} });
+    return;
+  }
+  var di = document.createElement("input");
+  di.type = "date";
+  di.onchange = function () { if (di.value) saveDue(new Date(di.value + "T00:00:00").getTime()); };
+  btn.after(di);
+  try { di.showPicker(); } catch (e) { di.focus(); }
 }
 // client "" (a KPI card, the hygiene card, a Dashboard chip) means the whole
 // board. Either way the shortcut sets the filter outright, including clearing

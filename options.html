@@ -90,6 +90,13 @@
   @media (max-width: 720px) {
     .acct-row { grid-template-columns: 1fr; }
   }
+  #appearanceCard .ap-row { display: flex; align-items: center; flex-wrap: wrap; gap: 8px 12px; margin: 0 0 8px; }
+  #appearanceCard .ap-lab { min-width: 44px; font-weight: 600; font-size: 13px; }
+  #appearanceCard .ap-c { display: inline-flex; align-items: center; gap: 6px; margin: 0; font-weight: 400; font-size: 12.5px; }
+  #appearanceCard input[type="color"] { width: 36px; height: 26px; padding: 0 2px; border: 1px solid var(--border); border-radius: 6px; background: none; cursor: pointer; }
+  #appearanceCard .ap-lnk { background: none; border: 0; color: var(--indigo); padding: 0 2px; cursor: pointer; font: inherit; font-size: 12.5px; }
+  #appearanceCard .ap-thumb { width: 96px; height: 54px; border-radius: 8px; border: 1px solid var(--border); background-size: cover; background-position: center; }
+  #appearanceCard input[type="range"] { width: 180px; }
   .card {
     background: var(--card); border: 1px solid var(--border);
     border-radius: 14px; padding: 22px;
@@ -1031,6 +1038,15 @@
   #insView .trow .ttl { flex: 1; min-width: 0; }
   #insView .trow .ttl b { font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; display: block; }
   #insView .trow .ttl small { display: block; color: var(--muted); font-size: 11px; }
+  #insView .trow .ttl-a { color: inherit; text-decoration: none; }
+  #insView .trow .ttl-a:hover { color: var(--indigo); text-decoration: underline; }
+  #insView .trow button.ins-act { background: none; border: 0; padding: 0; font: inherit; font-size: 12px; cursor: pointer; white-space: nowrap; }
+  #insView .trow button.ins-act:disabled { opacity: .6; cursor: default; }
+  #insView .ins-estbox { display: inline-flex; align-items: center; gap: 6px; flex: none; }
+  #insView .ins-estbox .est-input { width: 96px; font: inherit; font-size: 12px; padding: 3px 7px; border: 1px solid var(--border); border-radius: 6px; background: var(--card); color: var(--text); }
+  #insView .ins-estbox button { background: none; border: 0; padding: 0; font: inherit; font-size: 12px; cursor: pointer; }
+  #insView .ins-ok { flex: none; font-size: 12px; font-weight: 600; color: var(--green); white-space: nowrap; }
+  #insView .trow.ins-fixed { opacity: .75; transition: opacity .3s; }
   #insView .det-more { padding: 8px 0 2px; text-align: center; color: var(--muted); font-size: 12px; }
   #insView .ins-empty { padding: 30px 0; text-align: center; color: var(--muted); font-size: 13px; }
 
@@ -2321,6 +2337,40 @@
         <button type="button" id="driveSettingsBtn">Open Google Drive settings</button>
       </div>
     </details>
+  </div>
+
+  <div class="card" id="appearanceCard">
+    <h2>Appearance</h2>
+    <p class="hint" style="margin:0 0 12px;line-height:1.5;">Light / dark and the ready-made palettes are in the <b>☀</b> button at the top of every page. Here you can make your own palette and put a picture behind the dashboard.</p>
+    <h3 style="font-size:13px;margin:0 0 6px;">Your own palette</h3>
+    <div class="ap-row"><span class="ap-lab">Light</span>
+      <label class="ap-c">Background <input type="color" id="apC_light_bg" /></label>
+      <label class="ap-c">Cards <input type="color" id="apC_light_card" /></label>
+      <label class="ap-c">Accent <input type="color" id="apC_light_accent" /></label>
+      <button type="button" id="apUse_light">Use it</button><button type="button" class="ap-lnk" id="apReset_light">Reset</button></div>
+    <div class="ap-row"><span class="ap-lab">Dark</span>
+      <label class="ap-c">Background <input type="color" id="apC_dark_bg" /></label>
+      <label class="ap-c">Cards <input type="color" id="apC_dark_card" /></label>
+      <label class="ap-c">Accent <input type="color" id="apC_dark_accent" /></label>
+      <button type="button" id="apUse_dark">Use it</button><button type="button" class="ap-lnk" id="apReset_dark">Reset</button></div>
+    <p class="hint" style="margin:4px 0 14px;">Text, borders and lines are worked out from these so everything stays readable; an accent that's too light for white button text is darkened just enough.</p>
+    <h3 style="font-size:13px;margin:0 0 6px;">Wallpaper</h3>
+    <div class="ap-row">
+      <div class="ap-thumb" id="apWallThumb" hidden></div>
+      <button type="button" id="apWallPick">Choose a picture…</button>
+      <button type="button" class="ap-lnk" id="apWallRemove" hidden>Remove</button>
+      <input type="file" id="apWallFile" accept="image/*" hidden />
+    </div>
+    <div data-wall-on hidden>
+      <div class="ap-row"><span class="ap-lab">Fit</span>
+        <select id="apWallFit" style="width:auto;padding:3px 6px;"><option value="cover">Fill the screen (crops the edges)</option><option value="contain">Show the whole picture</option></select></div>
+      <div class="ap-row"><span class="ap-lab">Dim</span><input type="range" id="apWallDim" min="0" max="85" step="5" /><span class="hint">more = easier to read</span></div>
+      <div class="ap-row"><span class="ap-lab">Blur</span><input type="range" id="apWallBlur" min="0" max="20" step="1" /></div>
+      <div class="checkbox" style="margin:2px 0 4px;"><input type="checkbox" id="apWallGlass" /><label for="apWallGlass" style="margin:0;font-weight:400;">See-through cards</label></div>
+      <div class="checkbox" style="margin:0 0 4px;"><input type="checkbox" id="apWallPopup" /><label for="apWallPopup" style="margin:0;font-weight:400;">Also in the popup and side panel</label></div>
+    </div>
+    <p class="hint" style="margin:6px 0 0;">Any picture works, whatever its size or shape: it's shrunk to fit (at most 2560 px wide) and kept only on this computer.</p>
+    <p class="hint" id="apMsg" style="margin:6px 0 0;"></p>
   </div>
 
   <div class="card" id="floatCard">

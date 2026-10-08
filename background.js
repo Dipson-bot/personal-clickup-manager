@@ -308,8 +308,23 @@ function remNextWeekdayAt(h, m, now = Date.now()) {
   while (d.getTime() <= now || d.getDay() === 0 || d.getDay() === 6) d.setDate(d.getDate() + 1);
   return d.getTime();
 }
+// Copies from before the office reminders said "Rigo" still show "Check in?" /
+// "Check out?": bring those up to date. Only that exact old text is changed - a
+// reminder someone rewrote themselves is left as it is.
+async function renameOldCheckReminders() {
+  const { reminders } = await chrome.storage.local.get("reminders");
+  if (!Array.isArray(reminders)) return;
+  const want = { "check in?": "Check in? Rigo", "check out?": "Check out? Rigo" };
+  let changed = false;
+  for (const r of reminders) {
+    const t = String((r && r.text) || "").trim().toLowerCase();
+    if (r && want[t]) { r.text = want[t]; changed = true; }
+  }
+  if (changed) await chrome.storage.local.set({ reminders });
+}
 async function ensureDefaultReminders() {
   await retireOldReminders().catch(() => {});
+  await renameOldCheckReminders().catch(() => {});
   // Which defaults were already added here (older copies kept one yes/no flag,
   // which covered only the check-in / check-out pair).
   const { remDefaultsSeeded, remDefaultsDone } = await chrome.storage.local.get(["remDefaultsSeeded", "remDefaultsDone"]);
@@ -2358,11 +2373,12 @@ async function realClick(tabId) {
 // as the browser window and won't let the page shrink it without a click IN it.
 // The window says so (storage floatNeedsFit); one debugger click inside it lets
 // it put itself back to its small size (tracker.js only resizes on that click).
-async function fitFloatWindow() {
-  const until = Date.now() + 1500;
+async function fitFloatWindow(since) {
+  const until = Date.now() + 1500, from = Number(since) || Date.now() - 8000;
   let need = 0;
   while (Date.now() < until && !need) {
     need = Number((await chrome.storage.local.get("floatNeedsFit")).floatNeedsFit) || 0;
+    if (need && need < from) need = 0; // left over from an earlier window: ignore
     if (!need) await new Promise((r) => setTimeout(r, 150));
   }
   if (!need) return;
@@ -2388,11 +2404,13 @@ async function waitFloatOpen(ms) {
   return false;
 }
 async function autoFloatNow() {
+  const since = Date.now();
+  await chrome.storage.local.set({ floatNeedsFit: 0 }).catch(() => {});
   const tab = await floatTrackerTab();
   if (!tab || tab.id == null) return false;
   // 1) In the background - you stay where you are.
   try { await realClick(tab.id); } catch (e) { diagLog("auto-float", "click: " + (e && e.message ? e.message : e)); }
-  if (await waitFloatOpen(2500)) { await fitFloatWindow(); return true; }
+  if (await waitFloatOpen(2500)) { await fitFloatWindow(since); return true; }
   // 2) Chrome wouldn't take it from a hidden tab: show the Tracker tab for a
   //    moment, click, and go straight back to the tab you were on.
   const [back] = await chrome.tabs.query({ active: true, windowId: tab.windowId }).catch(() => []);
@@ -2403,7 +2421,7 @@ async function autoFloatNow() {
   } catch (e) { diagLog("auto-float", "front click: " + (e && e.message ? e.message : e)); }
   const ok = await waitFloatOpen(2500);
   if (back && back.id !== tab.id) await chrome.tabs.update(back.id, { active: true }).catch(() => {});
-  if (ok) await fitFloatWindow();
+  if (ok) await fitFloatWindow(since);
   if (!ok) {
     diagLog("auto-float", "the floating window did not open");
     // Chrome wouldn't let it open by itself here: one click on this opens it.
@@ -5551,10 +5569,21 @@ async function checkForUpdate(force, forceNotify = false) {
     // No "Update now" pop-up when the admin published it quietly, or when this
     // copy's automatic updates are set up and working (it installs by itself and
     // says "Updated" afterwards). "Check for updates" always shows it.
+    // Automatic updates ON (the default): no "Update available" pop-ups at all -
+    // it installs by itself, and if Chrome needs a click to finish, that one
+    // notice comes from the installer. Only an Important update still left
+    // uninstalled a day after it appeared speaks up, so nobody is stuck on a
+    // broken version. (It used to stay quiet only when the install could be
+    // confirmed to work right then, so some copies were reminded every few hours.)
     let quiet = "";
     if (!forceNotify) {
       if (policy.quietFor && policy.quietFor === info.latest && !nonceNew) quiet = "admin";
-      else if ((await getSettings()).autoUpdate !== false && (await autoUpdateReady())) quiet = "auto";
+      else if ((await getSettings()).autoUpdate !== false) {
+        // Still not installed a day after it appeared - whatever the reason
+        // (no folder, a failed download, a tab that timed out) - for an Important one.
+        const stuck = info.critical && now - (info.autoFirstSeen || now) > 24 * 3600000;
+        if (!stuck) quiet = "auto";
+      }
     }
     info.quiet = quiet;
     await chrome.storage.local.set({ updateInfo: info });
