@@ -70,7 +70,14 @@ export const SELECTORS = {
 export const GITHUB_KEEP_COOKIES = ["_device_id"];
 // =============================================================================
 
-const MAX_STEPS = 30;
+// A runaway guard, NOT the real limit on a login run - that's PER_ACCOUNT_CAP_MS
+// below. It used to be 30, which quietly became the real limit: the steps that
+// only wait for a page to settle (the OAuth code exchange waited 1.5s and
+// started over) used up the 30 in about 45 seconds, and the run gave up with
+// "Login didn't complete in time" while minutes of its own time limit were still
+// unused. The loop is bounded by time now; this only stops a flow that really is
+// going round in circles.
+const MAX_STEPS = 200;
 const STEP_TIMEOUT_MS = 40000; // per navigation wait
 const PER_ACCOUNT_CAP_MS = 240000; // 4 min hard cap per account
 
@@ -1104,6 +1111,8 @@ async function runAccountLoginInner(account, opts, isStopped) {
   let passkeyAttempted = false;
   let googlePasskeyAttempted = false;
   let pickTries = 0;
+  let lastUrl = "";
+  let sameUrl = 0;
   for (let step = 0; step < MAX_STEPS; step++) {
     // Respect an external "stop" signal (Debug → Stop). Bails out of the loop so
     // a run never keeps going after the user asks it to stop.
@@ -1111,10 +1120,16 @@ async function runAccountLoginInner(account, opts, isStopped) {
       return { result: "needs-attention", note: "Stopped by user.", tabId };
     if (Date.now() - runStart > capMs)
       return { result: "needs-attention", note: "Timed out - finish in the open tab.", tabId };
+    // The page hasn't moved since the last pass, so give it a moment rather than
+    // hammering it: with the loop bounded by time instead of a step count, a
+    // state that keeps re-trying the same page could otherwise spin flat out.
+    if (sameUrl > 1) await sleep(Math.min(3000, 250 * sameUrl));
 
     const t = await getTab(tabId);
     if (!t) return { result: "failed", note: "Tab was closed during login." };
     const cls = classifyUrl(t.url || "");
+    if ((t.url || "") === lastUrl) sameUrl++;
+    else { sameUrl = 0; lastUrl = t.url || ""; }
 
     // GitHub's account picker (several accounts signed in): choose this one.
     if (keepGithub && cls.startsWith("gh-") && cls !== "gh-2fa" && cls !== "gh-passkey" && pickTries < 4) {
@@ -1403,8 +1418,16 @@ async function runAccountLoginInner(account, opts, isStopped) {
     }
 
     if (cls === "ar-callback") {
-      // SPA is exchanging the code; wait for it to settle.
-      await sleep(1500);
+      // The site is exchanging the OAuth code for a session. This used to be a
+      // blind 1.5-second sleep that cost a step every time, so a slow exchange
+      // ate the step budget and the whole login was abandoned after ~45s. Wait
+      // for the page to actually leave the callback instead, and never wait past
+      // the time this account has left.
+      const left = Math.max(0, capMs - (Date.now() - runStart));
+      if (!left) continue; // the cap check at the top of the loop reports it
+      await waitForTab(tabId, (u) => classifyUrl(u) !== "ar-callback", Math.min(T(30000), left));
+      const still = await getTab(tabId);
+      if (still && classifyUrl(still.url || "") === "ar-callback") await sleep(1000);
       continue;
     }
 
@@ -1450,7 +1473,10 @@ async function runAccountLoginInner(account, opts, isStopped) {
       return { result: "needs-attention", note: "Unexpected page (possibly a CAPTCHA) - finish in the open tab.", tabId };
   }
 
-  return { result: "needs-attention", note: "Login didn't complete in time - finish in the open tab.", tabId };
+  // Only reachable when the flow really did go round in circles (MAX_STEPS is a
+  // runaway guard, not a time limit - running out of time is reported by the cap
+  // check at the top of the loop).
+  return { result: "needs-attention", note: "Login kept going round in circles - finish in the open tab.", tabId };
 }
 
 // Is this Agent Router tab logged in? Same checks as the end of a login run,

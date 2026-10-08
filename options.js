@@ -1062,6 +1062,7 @@ let cuRenderPendingOpt = false;
 function flushDeferredRenderOpt() {
   if (cuEstEditingOpt || !cuRenderPendingOpt) return;
   cuRenderPendingOpt = false;
+  cuLastPaintSig = ""; // a postponed redraw must really redraw
   scheduleClickupUiRefresh(0);
 }
 
@@ -1158,7 +1159,7 @@ function markEstPendingOpt(taskId, ms, isShare) {
   const prev = cuEstPendingOpt.get(id);
   if (prev) clearTimeout(prev.timer);
   // Safety net: never spin forever if the sync message is missed.
-  const timer = setTimeout(() => { cuEstPendingOpt.delete(id); scheduleClickupUiRefresh(0); }, 120000);
+  const timer = setTimeout(() => { cuEstPendingOpt.delete(id); cuLastPaintSig = ""; scheduleClickupUiRefresh(0); }, 120000);
   cuEstPendingOpt.set(id, { ms, isShare, timer });
   applyEstPendingOpt();
 }
@@ -1195,6 +1196,7 @@ chrome.runtime.onMessage.addListener((msg) => {
   const id = String(msg.taskId || "");
   const p = cuEstPendingOpt.get(id);
   if (p) { clearTimeout(p.timer); cuEstPendingOpt.delete(id); }
+  cuLastPaintSig = ""; // clear the row's syncing spinner even if nothing else changed
   scheduleClickupUiRefresh(0);
 });
 
@@ -1503,6 +1505,10 @@ function cuExportRowsOpt(tasks, deadlineTasks, trackedTasks, scope) {
 }
 
 // ---------- due date: click the chip to set / change / clear it ----------
+// The calendar that opens is the extension's own (calendar.js): it shows the
+// company holidays, the work-from-home days and how many tasks are already due
+// on each day, so a date can be chosen for a reason instead of guessed. The
+// browser's plain date box is only used if that calendar isn't loaded.
 function startEditDueOpt(chip, task) {
   if (chip._editing) return;
   const taskId = task.id || task.taskId;
@@ -1512,21 +1518,6 @@ function startEditDueOpt(chip, task) {
   const prevClass = chip.className;
   const prevTitle = chip.title;
   const ms = Number(task.dueDateMs) || 0;
-  const input = document.createElement("input");
-  input.type = "date";
-  input.className = "due-input";
-  input.title = "Pick a date to save it, or type it and press Enter. Esc = cancel. Clear = no due date.";
-  if (ms) {
-    const d = new Date(ms);
-    input.value = d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0") + "-" + String(d.getDate()).padStart(2, "0");
-  }
-  chip.textContent = "";
-  chip.appendChild(input);
-  input.focus();
-  // Open the calendar straight away - the click that started the edit counts
-  // as the user gesture showPicker() needs. (Before, you got a mm/dd/yyyy box
-  // to type into and had to find the tiny calendar icon yourself.)
-  try { input.showPicker(); } catch (e) {}
   let done = false;
   let saving = false;
   const finish = (text, cls, title) => {
@@ -1535,21 +1526,25 @@ function startEditDueOpt(chip, task) {
     chip.textContent = text;
     chip.className = cls;
     chip.title = title;
+    chip.style.boxShadow = "";
     chip._editing = false;
+    cuEstEditingOpt = false;
+    flushDeferredRenderOpt();
   };
   const cancel = () => finish(prevText, prevClass, prevTitle);
-  const save = async () => {
+  // The time of day the task already had is kept, so only the day changes; a
+  // task that had no due date gets midday.
+  const atMs = (dayMs) => {
+    if (!dayMs) return null;
+    const d = new Date(dayMs);
+    const keep = ms ? new Date(ms) : null;
+    return new Date(d.getFullYear(), d.getMonth(), d.getDate(), keep ? keep.getHours() : 12, keep ? keep.getMinutes() : 0, 0, 0).getTime();
+  };
+  const save = async (newMs) => {
     if (done || saving) return;
     saving = true;
-    const v = input.value;
-    let newMs = null;
-    if (v) {
-      const [y, m, d] = v.split("-").map(Number);
-      const keep = ms ? new Date(ms) : null;
-      newMs = new Date(y, m - 1, d, keep ? keep.getHours() : 12, keep ? keep.getMinutes() : 0, 0, 0).getTime();
-    }
     if ((newMs || 0) === ms) { cancel(); return; }
-    input.disabled = true;
+    chip.style.boxShadow = "";
     try {
       const r = await send({ type: "CLICKUP_SET_DUE", taskId: String(taskId), dueMs: newMs }, 15000);
       if (!r || !r.ok) throw new Error((r && (r.error || r.reason)) || "save failed");
@@ -1561,16 +1556,49 @@ function startEditDueOpt(chip, task) {
       cuDueToastOpt("Couldn't save the due date: " + (e && e.message ? e.message : e));
     }
   };
-  input.addEventListener("blur", save);
+  if (window.PcmCalendar && typeof window.PcmCalendar.pick === "function") {
+    // pick() first: it closes any calendar already open, whose cancel would
+    // otherwise clear the redraw guard set for THIS chip.
+    window.PcmCalendar.pick(chip, {
+      value: ms,
+      canClear: ms > 0,
+      onPick: (dayMs) => save(atMs(dayMs)),
+      onClose: cancel,
+    });
+    cuEstEditingOpt = true; // a background redraw would take the chip away mid-pick
+    chip.style.boxShadow = "0 0 0 2px var(--indigo, #6366f1)";
+    chip.title = "Pick the new due date in the calendar. Esc = keep this one.";
+    return;
+  }
+  const input = document.createElement("input");
+  input.type = "date";
+  input.className = "due-input";
+  input.title = "Pick a date to save it, or type it and press Enter. Esc = cancel. Clear = no due date.";
+  if (ms) {
+    const d = new Date(ms);
+    input.value = d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0") + "-" + String(d.getDate()).padStart(2, "0");
+  }
+  chip.textContent = "";
+  chip.appendChild(input);
+  input.focus();
+  try { input.showPicker(); } catch (e) {}
+  const saveInput = () => {
+    const v = input.value;
+    let day = null;
+    if (v) { const [y, m, d] = v.split("-").map(Number); day = new Date(y, m - 1, d).getTime(); }
+    input.disabled = true;
+    save(atMs(day));
+  };
+  input.addEventListener("blur", saveInput);
   // A date picked in the calendar (or its Clear button) saves at once. Typing
   // also fires change after each part of the date, so a change that follows a
   // keystroke waits for Enter / leaving the box instead of saving half-typed.
   let lastKeyAt = 0;
   input.addEventListener("keydown", () => { lastKeyAt = Date.now(); });
-  input.addEventListener("change", () => { if (Date.now() - lastKeyAt > 400) save(); });
+  input.addEventListener("change", () => { if (Date.now() - lastKeyAt > 400) saveInput(); });
   input.addEventListener("keydown", (e) => {
-    if (e.key === "Enter") { e.preventDefault(); save(); }
-    else if (e.key === "Escape") { e.preventDefault(); input.removeEventListener("blur", save); cancel(); }
+    if (e.key === "Enter") { e.preventDefault(); saveInput(); }
+    else if (e.key === "Escape") { e.preventDefault(); input.removeEventListener("blur", saveInput); cancel(); }
   });
   input.addEventListener("click", (e) => e.stopPropagation());
 }
@@ -1617,10 +1645,10 @@ function whoSlot(t) {
   return slot;
 }
 
-// Drag the bottom-right corner of a task list to make it taller or shorter,
-// like the box on the wrap-up page; the height is remembered per list and a
-// double-click on that corner puts it back to normal. The normal cap on the
-// list's height is lifted the moment a drag starts, so it can grow past it.
+// A bar under each task list: click it to show every task or go back to the
+// normal height, drag it to pick any height in between. The chosen height is
+// remembered per list. The normal cap on the list's height is lifted the moment
+// it is opened or dragged, so it can grow past it.
 // Height of a list's rows (plus its bottom padding/border), independent of how
 // tall the box is stretched. 0 when it can't be measured (hidden page).
 function listContentHeight(el) {
@@ -1637,62 +1665,187 @@ function capListToContent(el) {
   const h = listContentHeight(el);
   if (h > 0) el.style.maxHeight = h + "px";
 }
+// Keep the page still while the task lists are rebuilt.
+// Rebuilding empties their boxes for an instant (every refresh, every timer
+// action, and once a minute while the dashboard is open). The page gets shorter,
+// the browser pulls the scroll position up to fit, and you end up back near the
+// top while you were reading a task. Noting the position and putting it back
+// afterwards can't fix that on its own: by then the remembered position has
+// already been overwritten with the pulled-up one.
+// So the containers hold their height while the rows are swapped, every
+// stretched list is given its FINAL height in the same go (they used to shrink
+// to their rows a tick later, which moved the page again - the stretch bar
+// "closing by itself"), and the scroll position is put back before the page is
+// painted, so none of it is ever visible.
+function keepPageStill(rebuild) {
+  const pins = [];
+  for (const el of [$("dashTasks"), $("cuPreview")]) {
+    const h = el ? el.offsetHeight : 0;
+    if (h > 0) { el.style.minHeight = h + "px"; pins.push({ el, h }); }
+  }
+  const x = window.scrollX || 0, y = window.scrollY || 0;
+  try {
+    rebuild();
+  } finally {
+    document.querySelectorAll(".cu-tasklist.cu-resizable").forEach(capListToContent);
+    // The rows are in, but the other scripts dress them a moment later (tick
+    // boxes, avatars, the add-time link), so a list measured right now can come
+    // out a little short and grow again on the next tick. Letting go of the
+    // heights at that exact moment is what still cost the last few pixels of
+    // scroll: the page was briefly shorter than it ended up being, and the
+    // browser had already pulled the view up by then. So each box is only
+    // released once it is back to the height it had - and after a second at the
+    // latest, in case the list really did get shorter (fewer tasks). While a box
+    // is held the page can only be too tall, never too short, so nothing moves.
+    const until = Date.now() + 1000;
+    const release = () => {
+      let holding = false;
+      for (const p of pins) {
+        if (p.done) continue;
+        if (!p.el.isConnected) { p.done = true; continue; }
+        p.el.style.minHeight = "";
+        if (Date.now() < until && p.el.offsetHeight < p.h - 1) { p.el.style.minHeight = p.h + "px"; holding = true; }
+        else p.done = true;
+      }
+      if (holding) setTimeout(release, 50);
+    };
+    release();
+    if (Math.abs((window.scrollY || 0) - y) > 1) window.scrollTo(x, y);
+  }
+}
 function makeListResizable(el, key) {
   if (!el || el._pcmResizable) return;
   el._pcmResizable = true;
   el.classList.add("cu-resizable");
   const store = "pcm.listH." + key;
-  let saved = 0;
-  try { saved = Number(localStorage.getItem(store)) || 0; } catch (e) {}
-  if (saved > 40) { el.style.height = saved + "px"; el.style.maxHeight = "none"; }
+  // "Show every task" is a MODE, not a height: the list grows with whatever is
+  // in it (an opened task's details, notes, more rows after a refresh). A fixed
+  // height taken at click time brought the scroll bar straight back the moment
+  // anything inside got taller. A height you DRAG to is still remembered as px.
+  let saved = 0, all = false;
+  try { const v = localStorage.getItem(store); all = v === "all"; saved = Number(v) || 0; } catch (e) {}
+  if (all) { el.dataset.all = "1"; el.style.maxHeight = "none"; }
+  else if (saved > 40) { el.style.height = saved + "px"; el.style.maxHeight = "none"; }
   // Never let the list be taller than its rows: with fewer tasks than the saved
   // height it shrinks to fit, and dragging stops at the last task. Re-measured
   // whenever the rows change (the popup refills the same list on every refresh).
+  // Measured at once (this runs right after the rows are in, still before the
+  // page is painted, so the box never flashes at its old height and the page
+  // never moves), and again on the next tick in case the rows arrive in batches.
   // A timer, not requestAnimationFrame: rAF never fires while the page is hidden.
-  const recap = () => setTimeout(() => capListToContent(el), 0);
+  const recap = () => { capListToContent(el); setTimeout(() => capListToContent(el), 0); };
   recap();
   new MutationObserver(recap).observe(el, { childList: true });
   const save = () => {
-    if (!el.style.height || !el.isConnected || !el.offsetHeight) return; // only after the user dragged it
+    if (!el.style.height || !el.isConnected || !el.offsetHeight) return; // only after the user resized it
     try { localStorage.setItem(store, String(el.offsetHeight)); } catch (e) {}
   };
-  // A full-width drag bar UNDER the list (the browser's own corner handle sat
-  // on top of the last row's buttons and was hard to grab). It's placed next to
-  // the list once the list is in the page.
+  // A full-width bar UNDER the list (the browser's own corner handle sat on top
+  // of the last row's buttons and was hard to grab). Click it to show every task
+  // or go back to the normal height; drag it to pick any height in between.
+  // It's placed next to the list once the list is in the page.
   const grip = document.createElement("div");
   grip.className = "cu-grip";
-  grip.title = "Drag to make the list taller or shorter \u00b7 double-click to reset";
   grip.setAttribute("role", "separator");
   grip.setAttribute("aria-orientation", "horizontal");
+  grip.tabIndex = 0;
+  const lab = document.createElement("span");
+  lab.className = "cu-griplab";
+  grip.appendChild(lab);
+  let sayTimer = 0;
+  const say = (text, ms) => {
+    lab.textContent = text || "";
+    clearTimeout(sayTimer);
+    if (text && ms) sayTimer = setTimeout(() => { if (lab.textContent === text) lab.textContent = ""; }, ms);
+  };
+  const stretched = () => !!el.style.height || el.dataset.all === "1";
+  const retitle = () => {
+    const t = stretched()
+      ? "Click to go back to the normal height \u00b7 or drag to set your own"
+      : "Click to show every task \u00b7 or drag to set your own height";
+    grip.title = t;
+    grip.setAttribute("aria-label", t);
+  };
+  retitle();
+  const collapse = () => {
+    delete el.dataset.all;
+    el.style.height = "";
+    el.style.maxHeight = "";
+    try { localStorage.removeItem(store); } catch (e) {}
+    retitle();
+    say("Normal height", 1200);
+  };
+  // Expanding needs the height of the rows, and that can't be measured while the
+  // page is hidden or before the rows are in - exactly the moments a click used
+  // to do nothing at all, so the list only ever opened after enough random
+  // clicking that one of them landed on a ready list. Now the bar says it's
+  // loading and keeps measuring, so one click is always enough.
+  let waiting = 0;
+  const expand = (tries) => {
+    const h = listContentHeight(el);
+    if (h > 0) {
+      clearTimeout(waiting); waiting = 0;
+      grip.classList.remove("busy");
+      // Even when everything fits right now: an opened task or a refresh with
+      // more rows must not bring a scroll bar back, which is what this mode is for.
+      el.dataset.all = "1";
+      el.style.height = "";
+      el.style.maxHeight = "none";
+      try { localStorage.setItem(store, "all"); } catch (e) {}
+      retitle();
+      say("Showing every task", 1200);
+      return;
+    }
+    if (tries <= 0) {
+      grip.classList.remove("busy");
+      say("Nothing to show yet", 1600);
+      return;
+    }
+    grip.classList.add("busy");
+    say("Loading the list\u2026", 0);
+    clearTimeout(waiting);
+    waiting = setTimeout(() => expand(tries - 1), 200);
+  };
+  const toggle = () => { if (stretched()) collapse(); else expand(10); };
   const place = () => { if (el.isConnected && grip.previousElementSibling !== el) el.after(grip); };
   setTimeout(place, 0);
   new MutationObserver(place).observe(el, { childList: true });
   grip.addEventListener("pointerdown", (e) => {
     e.preventDefault();
     const startY = e.clientY;
+    const startT = Date.now();
     const startH = el.getBoundingClientRect().height;
     const maxH = listContentHeight(el) || Infinity;
-    el.style.maxHeight = "none";
+    let moved = 0;
     grip.classList.add("active");
     try { grip.setPointerCapture(e.pointerId); } catch (e2) {}
     const move = (ev) => {
-      const h = Math.max(60, Math.min(maxH, startH + ev.clientY - startY));
-      el.style.height = Math.round(h) + "px";
+      const dy = ev.clientY - startY;
+      moved = Math.max(moved, Math.abs(dy));
+      if (moved < 4) return; // a click wobbles a pixel or two: that's not a drag
+      delete el.dataset.all; // dragging sets your own height instead of "every task"
+      el.style.maxHeight = "none"; // lift the normal cap only once it IS a drag
+      el.style.height = Math.round(Math.max(60, Math.min(maxH, startH + dy))) + "px";
     };
     const up = () => {
       grip.removeEventListener("pointermove", move);
       grip.classList.remove("active");
+      // A press that didn't go anywhere is a CLICK, and a click opens or closes
+      // the list in one go - the whole point of the bar for anyone who doesn't
+      // realise it can be dragged.
+      if (moved < 4 && Date.now() - startT < 400) { toggle(); return; }
       capListToContent(el);
       save();
+      retitle();
     };
     grip.addEventListener("pointermove", move);
     grip.addEventListener("pointerup", up, { once: true });
     grip.addEventListener("pointercancel", up, { once: true });
   });
-  grip.addEventListener("dblclick", () => {
-    el.style.height = "";
-    el.style.maxHeight = "";
-    try { localStorage.removeItem(store); } catch (e2) {}
+  grip.addEventListener("keydown", (e) => {
+    if (e.key !== "Enter" && e.key !== " " && e.key !== "Spacebar") return;
+    e.preventDefault();
+    toggle();
   });
 }
 
@@ -2236,6 +2389,14 @@ function renderClickupSettings(cu) {
     } else {
       autoExtra.style.display = "none";
       autoNote.style.display = "";
+      // Never an empty space: say whether it's still looking, couldn't look this
+      // time, or really found nothing - and what to do about the last one.
+      const hint = autoNote.querySelector(".hint") || autoNote;
+      hint.textContent = !cu.state
+        ? "Looking for your Extra task…"
+        : cu.state.extraLookup === "failed"
+          ? "Couldn't check for your Extra task just now (ClickUp was busy) - it tries again on the next refresh."
+          : "No Extra task found for this week. It's found by its name - something like \"Extra Tasks - " + ((cu.user && cu.user.username) || "Your Name") + "\", assigned to you, with this week's dates. Or paste its link in ClickUp setup › Configured tasks.";
     }
   }
   $("cuBadge").checked = cu.badge !== false;
@@ -2351,6 +2512,9 @@ function renderWeekChartOpt(w, targetMs) {
   const max = Math.max(targetMs, ...days.map((d) => Math.max(Number(d.estimateMs) || 0, Number(d.spentMs) || 0))) || 1;
   const pct = (v) => Math.min(100, Math.round(((Number(v) || 0) / max) * 100)) + "%";
   box.textContent = "";
+  // One column per day actually drawn (5 on a plain Mon-Fri week, up to 7 when a
+  // weekend day carries time) - the stylesheet's fixed 5 wrapped the extras.
+  box.style.gridTemplateColumns = "repeat(" + days.length + ", 1fr)";
   for (const d of days) {
     const dayStart = new Date(d.ts).setHours(0, 0, 0, 0);
     const col = document.createElement("div");
@@ -2399,7 +2563,19 @@ function renderWeekChartOpt(w, targetMs) {
     lab.textContent = new Date(d.ts).toLocaleDateString(undefined, { weekday: "short" });
     const val = document.createElement("div");
     val.className = "wk-val";
-    val.textContent = dayStart > today ? (est ? fmtDurOpt(est) : "-") : fmtDurOpt(trk);
+    // A future day is labelled with what it's estimated to take. Today and past
+    // days are labelled with what was tracked - but when nothing is tracked yet
+    // that read "0m" however many estimates were added, which looked like the
+    // chart was stuck. Fall back to the estimate (amber, like the bar) instead.
+    if (dayStart > today) {
+      val.textContent = est ? fmtDurOpt(est) : "-";
+    } else if (trk > 0 || !est) {
+      val.textContent = fmtDurOpt(trk);
+    } else {
+      val.textContent = fmtDurOpt(est);
+      val.style.color = "var(--amber, #f5b400)";
+      val.title = "Estimated - nothing tracked yet";
+    }
     col.append(bars, lab, val);
     box.appendChild(col);
   }
@@ -2424,6 +2600,7 @@ function renderOptionsWeekly(cu) {
     $("optWeekTrk").textContent = "-";
     ["optWeekEstFill", "optWeekTrkFill"].forEach((id) => { if ($(id)) $(id).style.width = "0%"; });
     $("optWeekSub").textContent = "";
+    if ($("optWeekRange")) { $("optWeekRange").textContent = ""; $("optWeekRange").removeAttribute("title"); }
     const listBox0 = $("optWeekList");
     if (listBox0) { listBox0.style.display = "none"; listBox0.innerHTML = ""; }
     document.querySelectorAll("#optWeekToggle button").forEach((b) => (b.className = ""));
@@ -2453,11 +2630,28 @@ function renderOptionsWeekly(cu) {
   }
   // Click either number: the tasks behind it (each task's share added up over these days).
   if (window.PcmBreakdown && PcmBreakdown.fromWeek) {
-    const bd = () => PcmBreakdown.fromWeek(w, agg, to === "friday" ? "this week, Monday to Friday" : "this week so far", fmtDurOpt);
+    const bd = () => PcmBreakdown.fromWeek(w, agg, to === "friday" ? "the whole week" : "this week so far", fmtDurOpt);
     PcmBreakdown.attach($("optWeekEst"), "est", bd);
     PcmBreakdown.attach($("optWeekTrk"), "trk", bd);
   }
   renderWeekChartOpt(w, Number(cu.state && cu.state.targetMs) || 0);
+  // When the week was last rebuilt. The card paints from persisted state, which
+  // the background only recomputes every ~30 min (and skips while rate-limited),
+  // so without this a snapshot that's merely old looked like a chart that had
+  // stopped updating. Hit ↻ on the Tasks card to rebuild it now.
+  {
+    const stamp = $("optWeekRange");
+    const at = Number(w.at) || 0;
+    if (stamp) {
+      if (!at) { stamp.textContent = ""; stamp.removeAttribute("title"); }
+      else {
+        const mins = Math.max(0, Math.round((Date.now() - at) / 60000));
+        stamp.textContent = "Updated " + (mins < 1 ? "just now" : mins < 60 ? mins + "m ago" : new Date(at).toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" }));
+        stamp.title = "This week was last rebuilt at " + new Date(at).toLocaleString() +
+          (mins >= 35 ? "\nIt's older than the 30-minute refresh window - use ↻ on the Tasks card to rebuild it now." : "");
+      }
+    }
+  }
   const fromD = new Date(agg.fromTs);
   const toD = new Date(agg.toTs);
   const n = agg.count || 0;
@@ -3072,12 +3266,20 @@ async function renderOptionsFilter() {
       overdue: "deadline crossed",
       span: "start ≠ due",
     }[k] || k)).join(" · ");
+    // Tracked time for someone ELSE can only be read with a workspace Admin API
+    // token (ClickUp refuses the assignee filter otherwise). When that read was
+    // refused, the number above is not "they tracked nothing" - it's unknown - so
+    // say which of the two it is instead of letting "0m" speak for itself.
+    const trackedHint = (d.trackedScoped === false)
+      ? " <span class=\"hint\">· tracked time for other people needs a workspace <b>Admin API token</b> in Settings</span>"
+      : "";
     box.innerHTML =
       '<div class="flt-tot"><b>' + label + "</b> · est <b>" + fmtDurOpt(estShown == null ? est : estShown) +
       "</b> · tracked <b>" + fmtDurOpt(spentShown == null ? spent : spentShown) + "</b>" +
       " · " + total + " task" + (total === 1 ? "" : "s") +
       (clientPick ? " <span class=\"hint\">· client: " + escapeHtml(clientPick) + "</span>" : "") +
-      (active.length ? " <span class=\"hint\">(filter: " + filterTags + ")</span>" : "") + "</div>";
+      (active.length ? " <span class=\"hint\">(filter: " + filterTags + ")</span>" : "") +
+      trackedHint + "</div>";
     const list = document.createElement("div");
     list.className = "cu-tasklist";
     makeListResizable(list, "explore");
@@ -3681,13 +3883,15 @@ function cuTrkTodayMs(st, t, spentShown, prior, now) {
 // entries, kept by the background in runningProgress), so "Tracking now" goes
 // on from 30m instead of starting at 0m after a stop / complete and restart.
 // `today` is the share of that earlier time tracked today, for the today pill.
-let cuRunPrior = { key: "", ms: 0, today: 0 };
+let cuRunPrior = { key: "", ms: 0, today: 0, est: 0 };
+let cuNowTick = null; // the "Tracking now" line's repaint, run again when the earlier time arrives
 function cuLoadRunPrior() {
   try {
     chrome.storage.local.get("runningProgress").then(({ runningProgress: rp }) => {
       cuRunPrior = rp && rp.taskId
-        ? { key: String(rp.taskId) + ":" + String(rp.startMs || ""), ms: Math.max(0, Number(rp.closedMs) || 0), today: Math.max(0, Number(rp.closedTodayMs) || 0) }
-        : { key: "", ms: 0, today: 0 };
+        ? { key: String(rp.taskId) + ":" + String(rp.startMs || ""), ms: Math.max(0, Number(rp.closedMs) || 0), today: Math.max(0, Number(rp.closedTodayMs) || 0), est: Math.max(0, Number(rp.estimateMs) || 0) }
+        : { key: "", ms: 0, today: 0, est: 0 };
+      if (cuNowTick) cuNowTick();
     }).catch(() => {});
   } catch (e) {}
 }
@@ -4016,11 +4220,24 @@ function renderNowTracking() {
   todayPill.className = "trk-today";
   todayPill.title = CU_TRK_TODAY_TIP;
   todayPill.hidden = true;
+  // This session on its own, next to the total: after a pause the timer is a new
+  // entry, and showing only it ("9m") hid the 30m already tracked on the task.
+  const sess = document.createElement("span");
+  sess.className = "cu-now-sess";
+  let askedFor = "";
   const tick = () => {
-    if (!run.startMs) { time.textContent = ""; return; }
+    if (!run.startMs) { time.textContent = ""; sess.textContent = ""; return; }
     const live = Math.max(0, Date.now() - run.startMs);
-    const prior = cuRunPrior.key === key ? cuRunPrior.ms : 0;
-    time.textContent = fmtDurOpt(prior + live);
+    const known = cuRunPrior.key === key;
+    // The earlier time is worked out by the background for each new timer; if it
+    // hasn't been for this one yet (a restart is often between full refreshes),
+    // ask for it once instead of showing just this session.
+    if (!known && askedFor !== key) { askedFor = key; send({ type: "TRACKER_PROGRESS" }).catch(() => {}); }
+    const prior = known ? cuRunPrior.ms : 0;
+    const est = known ? cuRunPrior.est : 0;
+    time.textContent = fmtDurOpt(prior + live) + (est > 0 ? " / " + fmtDurOpt(est) : "");
+    sess.textContent = !known ? "adding earlier time…" : prior > 0 ? "(" + fmtDurOpt(prior) + " before + " + fmtDurOpt(live) + " now)" : "";
+    sess.title = !known ? "Looking up how much was tracked on this task before this timer" : prior > 0 ? "Tracked on this task before this timer: " + fmtDurOpt(prior) + " · this timer: " + fmtDurOpt(live) + " · total " + fmtDurOpt(prior + live) : "";
     // Today's own share, when this task was also worked on an earlier day: the
     // big figure is everything ever tracked on it, which on a task that runs for
     // days (a weekly recurring one) is nothing like today's work.
@@ -4032,6 +4249,7 @@ function renderNowTracking() {
       : "This session";
   };
   tick();
+  cuNowTick = tick;
   cuNowTimer = setInterval(tick, 15000);
 
   // Note = this time entry's Description in ClickUp. Saved on Enter / leaving the
@@ -4100,8 +4318,8 @@ function renderNowTracking() {
   // still be completed from its row in the task list below.
   const isExtra = !!((st.extraTask && st.extraTask.id && String(st.extraTask.id) === String(run.taskId))
     || /\bextra(?:\(s\)|s)?\s+task(?:\(s\)|s)?\b/i.test(String(run.taskName || run.name || "")));
-  if (isExtra) top.append(dot, lab, nm, time, todayPill, stop);
-  else top.append(dot, lab, nm, time, todayPill, stop, done);
+  if (isExtra) top.append(dot, lab, nm, time, sess, todayPill, stop);
+  else top.append(dot, lab, nm, time, sess, todayPill, stop, done);
   const fl = window.PcmHelp && window.PcmHelp.floatButton();
   if (fl) top.insertBefore(fl, stop);
   const noteRow = document.createElement("div");
@@ -4137,6 +4355,147 @@ let cuDragSectionOpt = null;
 let cuDropTargetOpt = null;
 let cuDropAfterOpt = false;
 let cuRevokeDraggableOpt = null;
+
+// ---------- Task search (dashboard Tasks card) ----------
+// A plain local narrowing of the rows the dashboard already has, so it costs no
+// ClickUp requests at all. Deliberately NOT persisted: a search box that is
+// still filtering after a reload silently hides tasks, and someone who had
+// forgotten about it would think work had gone missing.
+let cuSearchOpt = "";
+// Letters and digits only, so "Acme" matches "🔥 ACME HVAC" and a typed
+// hyphen or apostrophe can't make a task unfindable (same key idea as
+// canonicalizeClientLabels in background.js).
+const cuSearchKey = (s) => String(s == null ? "" : s).toLowerCase().replace(/[^a-z0-9]+/g, "");
+// Everything worth matching on one row: its name, client, status and the people
+// on it (assignees are objects in some views, plain names in others).
+function cuSearchHaystack(t) {
+  if (!t) return "";
+  const who = Array.isArray(t.assignees)
+    ? t.assignees.map((a) => (a && typeof a === "object" ? (a.username || a.name || a.initials || "") : a)).join(" ")
+    : (t.assignee || "");
+  return cuSearchKey([t.name, t.client, t.status, who].join(" "));
+}
+function cuSearchMatches(t, key) { return !key || cuSearchHaystack(t).includes(key); }
+
+// ---------- Recently completed (dashboard history card) ----------
+// Reads the local history background.js builds out of refreshes it already made
+// (see recordDoneHistory there): no ClickUp request is issued from this card at
+// all, neither to fill it nor to search it, which is the whole point of it.
+let cuDoneRowsOpt = null;   // null = never loaded, [] = loaded and empty
+let cuDoneSearchOpt = "";
+let cuDoneDays = 60;
+// What the card is waiting for, so it never just looks empty: "loading" (asking
+// the background), "nosync" (no ClickUp data has arrived yet), "ok", "error".
+let cuDoneState = "loading";
+// "today" / "yesterday" / a weekday for the last week / a plain date beyond that -
+// the same ladder a person would use out loud, so a glance tells you how recent
+// the work was without doing arithmetic on a timestamp.
+function cuWhenLabelOpt(ts) {
+  const n = Number(ts) || 0;
+  if (!n) return "";
+  const d = new Date(n);
+  const today = new Date().setHours(0, 0, 0, 0);
+  const day = new Date(n).setHours(0, 0, 0, 0);
+  const days = Math.round((today - day) / 86400000);
+  const time = d.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+  if (days === 0) return "today " + time;
+  if (days === 1) return "yesterday " + time;
+  if (days > 1 && days < 7) return d.toLocaleDateString([], { weekday: "long" }) + " " + time;
+  return d.toLocaleDateString([], { month: "short", day: "numeric" }) + " " + time;
+}
+async function cuLoadDoneHistory() {
+  try {
+    const r = await chrome.runtime.sendMessage({ type: "CLICKUP_DONE_HISTORY" });
+    if (r && r.ok) {
+      cuDoneRowsOpt = Array.isArray(r.rows) ? r.rows : [];
+      if (Number(r.days) > 0) cuDoneDays = Number(r.days);
+      cuDoneState = r.synced === false && !cuDoneRowsOpt.length ? "nosync" : "ok";
+      return;
+    }
+  } catch (e) {}
+  // No answer (the background was waking up): say so, and try again shortly.
+  if (!Array.isArray(cuDoneRowsOpt)) cuDoneRowsOpt = [];
+  cuDoneState = cuDoneRowsOpt.length ? "ok" : "error";
+  setTimeout(() => cuLoadDoneHistory().then(renderDoneHistory), 4000);
+}
+function renderDoneHistory() {
+  const list = $("dashDoneList");
+  const sub = $("dashDoneSub");
+  if (!list) return;
+  const rows = Array.isArray(cuDoneRowsOpt) ? cuDoneRowsOpt : [];
+  const key = cuSearchKey(cuDoneSearchOpt);
+  const shown = key ? rows.filter((t) => cuSearchMatches(t, key)) : rows;
+  if (sub) {
+    sub.textContent = !rows.length
+      ? (cuDoneState === "loading" ? "loading…" : cuDoneState === "nosync" ? "waiting for ClickUp…" : cuDoneState === "error" ? "loading…" : "nothing saved yet")
+      : key
+        ? shown.length + " of " + rows.length + " match"
+        : rows.length + (rows.length === 1 ? " task" : " tasks") + ", last " + cuDoneDays + " days";
+  }
+  list.textContent = "";
+  if (!shown.length) {
+    const e = document.createElement("div");
+    e.className = "dash-empty";
+    e.textContent = rows.length
+      ? "No completed task matches “" + cuDoneSearchOpt.trim() + "”."
+      : cuDoneState === "loading"
+        ? "Loading the completed tasks…"
+        : cuDoneState === "nosync"
+          ? "Waiting for the first sync with ClickUp - completed tasks appear here as soon as it lands (no need to reload)."
+          : cuDoneState === "error"
+            ? "Still loading - the extension is waking up. Trying again in a few seconds…"
+            : "No completed tasks in the last " + cuDoneDays + " days yet. A task shows here as soon as it is completed - by you in the extension, or by anyone in ClickUp.";
+    if (!rows.length && cuDoneState !== "ok") { const sp = document.createElement("span"); sp.className = "cu-spin"; sp.style.marginRight = "6px"; e.prepend(sp); }
+    list.appendChild(e);
+    return;
+  }
+  for (const t of shown) {
+    const row = document.createElement("div");
+    row.className = "cu-task";
+    const wrap = document.createElement("span");
+    wrap.className = "nmwrap";
+    const nm = document.createElement("a");
+    nm.className = "nm";
+    nm.textContent = t.name || "(untitled task)";
+    nm.title = nm.textContent;
+    if (t.url) { nm.href = t.url; nm.target = "_blank"; nm.rel = "noopener"; }
+    wrap.appendChild(nm);
+    if (t.client) {
+      const pill = document.createElement("span");
+      pill.className = "cu-client";
+      pill.textContent = String(t.client);
+      pill.title = "Client: " + t.client;
+      wrap.appendChild(pill);
+    }
+    row.appendChild(wrap);
+    const spans = document.createElement("span");
+    spans.className = "estpairs";
+    const when = document.createElement("span");
+    when.className = "hint";
+    when.textContent = cuWhenLabelOpt(t.doneAt);
+    // Only ClickUp's own date_done is a real completion time. When it didn't give
+    // one, this is when the extension first SAW the task done, which can be up to
+    // a refresh later - say so rather than imply a precision we don't have.
+    when.title = (t.exact ? "Completed " : "First seen completed ") + new Date(Number(t.doneAt) || 0).toLocaleString() +
+      (t.exact ? "" : " - ClickUp didn't report a completion time for this task, so this is when the extension noticed.") +
+      (t.status ? "\nStatus: " + t.status : "");
+    spans.appendChild(when);
+    const est = document.createElement("span");
+    est.className = "est" + (t.estimateMs ? "" : " zero");
+    est.textContent = t.estimateMs ? fmtDurOpt(t.estimateMs) : "no est";
+    est.title = t.estimateMs ? "Estimate: " + fmtDurOpt(t.estimateMs) : "No estimate was set on this task";
+    spans.appendChild(est);
+    if (Number(t.spentMs) > 0) {
+      const trk = document.createElement("span");
+      trk.className = "trk";
+      trk.textContent = fmtDurOpt(t.spentMs);
+      trk.title = "Tracked: " + fmtDurOpt(t.spentMs);
+      spans.appendChild(trk);
+    }
+    row.appendChild(spans);
+    list.appendChild(row);
+  }
+}
 
 function cuOrderForOpt(scope, section) {
   const s = cuManualOrderOpt && cuManualOrderOpt[scope];
@@ -4253,7 +4612,34 @@ function cuSetupDragOpt(container) {
   });
 }
 
+// Every rebuild of the Today card and the task lists goes through keepPageStill,
+// so emptying and refilling them can't move the page under the reader.
+// The automatic repaints (every clickupState write: the 60-second timer sync, the
+// 5-minute refresh, other tabs) rebuilt the whole table even when nothing in it
+// had changed - a visible flicker every time. They now compare what they would
+// draw with what is on screen (everything but the "Updated" time) and, when it is
+// the same, only refresh that time. Any repaint the user causes always redraws.
+let cuAutoPaint = false, cuLastPaintSig = "";
+function cuPaintSig(st) {
+  try {
+    return JSON.stringify(st, (k, v) => (k === "at" || k === "membersAt" || k === "errorAt" ? undefined : v)) +
+      "|" + JSON.stringify(cuFilter) + "|" + (typeof cuSearchOpt === "string" ? cuSearchOpt : "");
+  } catch (e) { return String(Math.random()); }
+}
 function renderClickupPreview(st) {
+  const sig = cuPaintSig(st);
+  const box = $("cuPreview");
+  if (cuAutoPaint && sig === cuLastPaintSig && box && box.childElementCount) {
+    const upd = box.querySelector("[data-upd]");
+    if (upd && st && st.at) upd.textContent = upd.textContent.replace(/Updated [^·]*$/, "Updated " + fmtClock(st.at));
+    return;
+  }
+  // Mid-edit / mid-drag the body postpones the redraw: then nothing is on screen
+  // for this state yet, so don't remember it as drawn.
+  cuLastPaintSig = cuEstEditingOpt || cuDraggingOpt ? "" : sig;
+  keepPageStill(() => renderClickupPreviewBody(st));
+}
+function renderClickupPreviewBody(st) {
   if (cuEstEditingOpt || cuDraggingOpt) { cuRenderPendingOpt = true; return; }
   const box = $("cuPreview");
   if (!box) return;
@@ -4359,6 +4745,19 @@ function renderClickupPreview(st) {
         spent: viewTasks.concat(viewDeadline, viewTracked).reduce((a, t) => a + (Number(t.spentMs) || 0), 0),
       };
     }
+  }
+  // Task search. Goes AFTER the client narrowing and BEFORE cuExportDataOpt, so
+  // what you export is always what you can see - the same rule the client filter
+  // follows. Pure local filtering of rows already in memory: no request, so it
+  // can be typed in freely without spending any of the ClickUp rate limit.
+  const searchKey = cuSearchKey(cuSearchOpt);
+  let searchHidden = 0;
+  if (searchKey) {
+    const before = viewTasks.length + viewDeadline.length + viewTracked.length;
+    viewTasks = viewTasks.filter((t) => cuSearchMatches(t, searchKey));
+    viewDeadline = viewDeadline.filter((t) => cuSearchMatches(t, searchKey));
+    viewTracked = viewTracked.filter((t) => cuSearchMatches(t, searchKey));
+    searchHidden = before - (viewTasks.length + viewDeadline.length + viewTracked.length);
   }
   cuExportDataOpt = cuExportRowsOpt(viewTasks, viewDeadline, viewTracked,
     (CU_SCOPE_LABEL[view.scope] || "tasks") + (clientsSel.length ? " - " + clientsSel.join(", ") : ""));
@@ -4492,6 +4891,7 @@ function renderClickupPreview(st) {
   if (clientsSel.length) spentBits.push(clientsSel.length === 1 ? "1 client" : clientsSel.length + " clients");
   if (st.at) spentBits.push("Updated " + fmtClock(st.at));
   line2.textContent = spentBits.join("  ·  ");
+  line2.dataset.upd = "1";
   meta.appendChild(line2);
   if (clientShare) {
     const line3 = document.createElement("div");
@@ -4742,8 +5142,18 @@ function renderClickupPreview(st) {
   if (lists !== box && !lists.children.length) {
     const e = document.createElement("div");
     e.className = "dash-empty";
-    e.textContent = view.loading ? "Loading tasks for these dates…" : "No tasks in this view.";
+    // An empty list while a search is typed is the search's doing, not an empty
+    // day - say which, or it reads as "my tasks have vanished".
+    e.textContent = searchKey
+      ? "No task here matches “" + cuSearchOpt.trim() + "”."
+      : view.loading ? "Loading tasks for these dates…" : "No tasks in this view.";
     lists.appendChild(e);
+  } else if (lists !== box && searchHidden > 0) {
+    const n = document.createElement("div");
+    n.className = "dash-nores";
+    n.textContent = searchHidden + (searchHidden === 1 ? " task is" : " tasks are") +
+      " hidden by the search “" + cuSearchOpt.trim() + "”.";
+    lists.appendChild(n);
   }
 }
 
@@ -5251,7 +5661,7 @@ chrome.runtime.onMessage.addListener((msg) => {
 // card collapse). Each subhead keeps a ▸/▾ button; the chevron persists and
 // both sections default to collapsed - the weekly SUMMARY (toggle + numbers +
 // accumulated line) stays visible, only the per-day detail list is hidden.
-const OPT_COLLAPSE_KEYS = { weekly: "cuOptCollapseWeekly", filter: "cuOptCollapseFilter", connection: "cuOptCollapseConnection", settings: "cuOptCollapseSettings" };
+const OPT_COLLAPSE_KEYS = { weekly: "cuOptCollapseWeekly", filter: "cuOptCollapseFilter", connection: "cuOptCollapseConnection", settings: "cuOptCollapseSettings", done: "cuOptCollapseDone" };
 function initOptCollapse() {
   chrome.storage.local.get(Object.values(OPT_COLLAPSE_KEYS)).then((stored) => {
     stored = stored || {};
@@ -5286,6 +5696,25 @@ initOptionsFilterControls();
 initDeptCreator();
 resetForm();
 load();
+
+// The dashboard's cards paint from persisted clickupState - nothing on this page
+// ever asked the background to rebuild the week, so estimates added in ClickUp
+// could sit out the whole 30-minute window and the bar chart looked frozen.
+// Nudge a rebuild on open, but ONLY when the snapshot is actually stale, so
+// re-opening the dashboard doesn't re-pay the API calls (the popup's equivalent
+// nudge is unconditional; this one is deliberately cheaper). Fire-and-forget:
+// the clickupState listener below repaints when it lands, so first paint is
+// never blocked and the page height never changes underneath a scroll.
+const OPT_WEEKLY_NUDGE_MS = 5 * 60000;
+(async function nudgeWeeklyIfStale() {
+  try {
+    const { clickupState: st } = await chrome.storage.local.get("clickupState");
+    if (!st) return; // ClickUp isn't set up yet - nothing to rebuild
+    const at = Number(st.weekly && st.weekly.at) || 0;
+    if (at && Date.now() - at < OPT_WEEKLY_NUDGE_MS) return; // still fresh
+    send({ type: "CLICKUP_REFRESH", forceWeekly: true, forceWeeks: true }).catch(() => {});
+  } catch (e) {}
+})();
 
 // Filter dropdown on the options Today preview (replaces the old "Due today
 // only" checkbox). Shares the `cuFilter` storage key with the popup, so ticking
@@ -6266,7 +6695,12 @@ function scheduleClickupUiRefresh(delay) {
     if (_isEditingField()) { scheduleClickupUiRefresh(1500); return; }
     try {
       const st = await send({ type: "GET_STATE" });
-      if (st) { optClickup = st.clickup || {}; renderClickupSettings(optClickup); try { renderDashStrip(); } catch (e) {} try { if (insTabActive()) renderInsights(); } catch (e) {} }
+      if (st) {
+        optClickup = st.clickup || {};
+        cuAutoPaint = true;
+        try { renderClickupSettings(optClickup); } finally { cuAutoPaint = false; }
+        try { renderDashStrip(); } catch (e) {} try { if (insTabActive()) renderInsights(); } catch (e) {}
+      }
     } catch (e) {}
   }, delay == null ? 300 : delay);
 }
@@ -6296,6 +6730,13 @@ chrome.storage.onChanged.addListener((changes, area) => {
   // ClickUp data refreshed (periodic poll, a timer start/stop, or a running-state
   // sync) -> light repaint of just the ClickUp card.
   if (changes.clickupState) { cuOverdueInvalidate(); cuTomorrowInvalidate(); scheduleClickupUiRefresh(); }
+  // Recently completed: a refresh recorded new completions (or the first sync
+  // landed) - repaint the card straight from storage.
+  if (changes.cuDoneHistory) {
+    cuDoneRowsOpt = Array.isArray(changes.cuDoneHistory.newValue) ? changes.cuDoneHistory.newValue : [];
+    cuDoneState = "ok";
+    renderDoneHistory();
+  } else if (changes.clickupState && cuDoneState !== "ok") cuLoadDoneHistory().then(renderDoneHistory);
   // Filter toggled in the popup (or another options tab) -> mirror it here and
   // repaint the preview so the pages stay in sync. Guarded so a change this page
   // itself made (identical values) is a no-op.
@@ -6601,7 +7042,8 @@ function renderSiteMonitorStatus(cfg) {
       const statusText = st.up === true ? "✅ Up" : st.up === false ? (st.blank || st.kind === "blank" ? "⚠️ Blank page" : st.kind === "5xx" ? "🔥 Server error" + (st.status ? " (HTTP " + st.status + ")" : "") : "🚨 Down") : "⚪ Not checked yet";
       const lastCheckText = st.lastCheck ? new Date(st.lastCheck).toLocaleString() : "never";
       const label = s.name && s.name !== s.url ? escapeHtml(s.name) + ' <span class="hint">' + escapeHtml(s.url) + "</span>" : escapeHtml(s.url);
-      const why = st.lastError ? ' · <span class="sm-err">' + escapeHtml(st.lastError) + "</span>" : "";
+      const why = st.lastError ? ' · <span class="sm-err">' + escapeHtml(st.lastError) + "</span>"
+        : st.blocked ? ' · <span class="sm-err" title="The site is up, but its security is blocking or challenging this computer (it fetches the page every few minutes, which can look like a bot). No alarm is raised for this. If it keeps happening, ask whoever manages the site to allow this office\'s IP.">' + escapeHtml(st.blocked) + " (site is up - not an outage)</span>" : "";
       const speed = st.up === true && st.lastMs ? " · " + (st.lastMs < 1000 ? st.lastMs + "ms" : (st.lastMs / 1000).toFixed(1) + "s") : "";
       const u = escapeHtml(s.url);
       return '<div class="imp-row" data-sm-row="' + u + '"><div class="imp-entry"><b>' + label + '</b><br><span class="hint">' + statusText + speed + " · last check: " + lastCheckText + (st.fails && st.up !== false ? " · " + st.fails + " failed check(s)" : "") + why + "</span></div>"
@@ -6924,7 +7366,75 @@ if ($("dashRefresh")) $("dashRefresh").onclick = async () => {
     return;
   }
   b.classList.remove("spin"); b.disabled = false;
+  // That refresh recorded every task that came back done, so the history card may
+  // have gained rows. Re-read it from storage - no ClickUp request (see
+  // cuLoadDoneHistory).
+  cuLoadDoneHistory().then(renderDoneHistory);
 };
+
+// Task search box. Repaints from the state already in memory (optRepaintCuPreview
+// never fetches), debounced only so a fast typist doesn't redraw on every key.
+if ($("dashSearch")) {
+  const inp = $("dashSearch");
+  let t = null;
+  inp.oninput = () => {
+    cuSearchOpt = inp.value || "";
+    clearTimeout(t);
+    t = setTimeout(() => optRepaintCuPreview(), 120);
+  };
+  // Esc clears it. Without this the only way back to the full list is to select
+  // the text and delete it, which is easy to miss.
+  inp.onkeydown = (e) => {
+    if (e.key !== "Escape" || !inp.value) return;
+    e.preventDefault();
+    e.stopPropagation();
+    inp.value = "";
+    cuSearchOpt = "";
+    clearTimeout(t);
+    optRepaintCuPreview();
+  };
+}
+
+// Recently completed card: its own search over the saved history, a Clear, and a
+// first load. All three are storage-only - the card can be searched and emptied
+// without spending any of the ClickUp rate limit, which is what was asked for.
+if ($("dashDoneSearch")) {
+  const inp = $("dashDoneSearch");
+  let t = null;
+  inp.oninput = () => {
+    cuDoneSearchOpt = inp.value || "";
+    clearTimeout(t);
+    t = setTimeout(() => renderDoneHistory(), 120);
+  };
+  inp.onkeydown = (e) => {
+    if (e.key !== "Escape" || !inp.value) return;
+    e.preventDefault();
+    e.stopPropagation();
+    inp.value = "";
+    cuDoneSearchOpt = "";
+    clearTimeout(t);
+    renderDoneHistory();
+  };
+}
+if ($("dashDoneClear")) $("dashDoneClear").onclick = async () => {
+  const b = $("dashDoneClear");
+  const n = Array.isArray(cuDoneRowsOpt) ? cuDoneRowsOpt.length : 0;
+  if (!n) return;
+  // Forgetting the history can't be undone (the rows only existed here), so ask -
+  // but say plainly that ClickUp itself is untouched, or it reads like it might
+  // un-complete the tasks.
+  if (!confirm("Forget the " + n + (n === 1 ? " completed task" : " completed tasks") + " saved here?\n\nNothing changes in ClickUp - this only empties this list. It fills up again from the completed tasks the extension sees.")) return;
+  b.disabled = true;
+  try { await chrome.runtime.sendMessage({ type: "CLICKUP_DONE_HISTORY_CLEAR" }); } catch (e) {}
+  cuDoneRowsOpt = [];
+  cuDoneSearchOpt = "";
+  if ($("dashDoneSearch")) $("dashDoneSearch").value = "";
+  renderDoneHistory();
+  b.disabled = false;
+};
+// One storage read at boot, so the card is already right when it's expanded for
+// the first time (it starts collapsed, and reading it costs nothing).
+cuLoadDoneHistory().then(renderDoneHistory);
 if ($("saveSettings2")) $("saveSettings2").onclick = async () => {
   try { await $("saveSettings").onclick(); } catch (e) {}
   const m = $("settingsSaved2");
@@ -7740,7 +8250,7 @@ if ($("driveWhere")) $("driveWhere").addEventListener("toggle", async () => {
 if ($("driveSettingsBtn")) $("driveSettingsBtn").onclick = () => chrome.tabs.create({ url: "https://drive.google.com/drive/settings" }).catch(() => {});
 
 // ---- General: floating tracker (tracker.html) ----
-const FLOAT_KEYS = ["floatTracker", "floatHover", "floatToday"];
+const FLOAT_KEYS = ["floatTracker", "floatAutoOpen", "floatAutoAnywhere", "floatHover", "floatToday"];
 if ($("floatSize")) {
   chrome.storage.local.get("settings").then((g) => { $("floatSize").value = (g.settings && g.settings.floatSize) === "compact" ? "compact" : "normal"; }).catch(() => {});
   $("floatSize").onchange = () => { send({ type: "SET_SETTINGS", patch: { floatSize: $("floatSize").value } }).catch(() => {}); };

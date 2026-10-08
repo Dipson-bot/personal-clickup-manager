@@ -84,6 +84,21 @@ Drive).
 5. Click the extension's icon → **Manage**, open **ClickUp setup**, paste your ClickUp
    personal API token (ClickUp → avatar → Settings → Apps → API Token) and pick your workspace.
 
+### If Windows Defender says the download is a virus
+
+A freshly published zip is something no one has downloaded before, and it isn't
+code-signed, so Windows Defender sometimes guesses. A name ending in `!cl` (such
+as `Trojan:Win32/Fauppod.A!cl`) is a cloud guess, not a known virus. To check your
+download is the real one, compare its SHA-256 with the one printed at the bottom
+of that version's Releases page:
+
+```powershell
+Get-FileHash .\personal-clickup-manager-vX.Y.Z.zip -Algorithm SHA256
+```
+
+If they match, the file is exactly what was published. Only download it from this
+repository's Releases page, or let the extension update itself.
+
 ## Updating to a new version (one click)
 
 ![Updating Personal ClickUp Manager: Update now, Install, choose the folder once, Allow - the extension installs the new version and restarts](docs/update-demo.gif)

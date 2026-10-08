@@ -264,7 +264,7 @@ chrome.notifications.onClicked.addListener((id) => {
 const REM_PREFIX = "rem-";
 async function remList() {
   const { reminders } = await chrome.storage.local.get("reminders");
-  return Array.isArray(reminders) ? reminders : [];
+  return Array.isArray(reminders) ? reminders.filter((r) => !(r && REM_RETIRED.has(r.id))) : [];
 }
 // Next time a repeating reminder is due, after `now` (local time kept).
 function remNext(at, repeat, now) {
@@ -277,18 +277,30 @@ function remNext(at, repeat, now) {
   return t.getTime();
 }
 // Office reminders everyone starts with: check-in / check-out (the team uses
-// the Rigo app) and returning the kitchen cups before 2:15 PM. Ordinary weekday
+// the Rigo app) and returning your cup to the kitchen at noon. Ordinary weekday
 // reminders, each added once: they show in Options > Reminders, where they can
 // be edited, paused or deleted like any other; a deleted one isn't added back.
 // A new entry here reaches existing users too (tracked per id).
 // Office reminders stay quiet on company days off: check-in/out on holidays
 // (work from home still checks in), the cup reminder on holidays and WFH days.
-const REM_SKIP = { "default-checkin": ["holiday"], "default-checkout": ["holiday"], "default-cups": ["holiday", "wfh"] };
+const REM_SKIP = { "default-checkin": ["holiday"], "default-checkout": ["holiday"], "default-cups-noon": ["holiday", "wfh"] };
 const REM_DEFAULTS = [
   { id: "default-checkin", text: "Check in? Rigo", h: 8, m: 10, sound: "danger" },
   { id: "default-checkout", text: "Check out? Rigo", h: 17, m: 0, sound: "danger" },
-  { id: "default-cups", text: "Return your cup to the kitchen (before 2:15 PM)", h: 14, m: 0, sound: "normal" },
+  // A NEW id (the 2:00 PM "default-cups" is retired below), so everyone gets
+  // the 12:00 PM one once; deleting it keeps it deleted, like the others.
+  { id: "default-cups-noon", text: "Return your cup to the kitchen", h: 12, m: 0, sound: "normal" },
 ];
+// Office reminders that were handed out once and are now withdrawn for
+// everyone: taken off every copy's list on update (and if a Drive restore
+// brings one back), and never fired again.
+const REM_RETIRED = new Set(["default-cups"]);
+async function retireOldReminders() {
+  const { reminders } = await chrome.storage.local.get("reminders");
+  if (!Array.isArray(reminders) || !reminders.some((r) => r && REM_RETIRED.has(r.id))) return;
+  await chrome.storage.local.set({ reminders: reminders.filter((r) => !(r && REM_RETIRED.has(r.id))) });
+  for (const id of REM_RETIRED) await chrome.alarms.clear(REM_PREFIX + id).catch(() => {});
+}
 // The next weekday at h:m that's still ahead.
 function remNextWeekdayAt(h, m, now = Date.now()) {
   const d = new Date(now);
@@ -297,6 +309,7 @@ function remNextWeekdayAt(h, m, now = Date.now()) {
   return d.getTime();
 }
 async function ensureDefaultReminders() {
+  await retireOldReminders().catch(() => {});
   // Which defaults were already added here (older copies kept one yes/no flag,
   // which covered only the check-in / check-out pair).
   const { remDefaultsSeeded, remDefaultsDone } = await chrome.storage.local.get(["remDefaultsSeeded", "remDefaultsDone"]);
@@ -592,6 +605,26 @@ const SITE_ERROR_PAGES = [
   [/(<b>)?(PHP )?(Fatal|Parse) error(<\/b>)?:\s/i, "PHP fatal error"],
   [/Briefly unavailable for scheduled maintenance/i, "stuck in WordPress maintenance mode"],
 ];
+// The page a security plugin / firewall shows a visitor it has blocked or wants
+// to challenge. Only on a short page (a real page that merely mentions one of
+// these words must not match).
+const SITE_BLOCK_PAGES = [
+  [/Your access to this site has been limited|wordfence/i, "Wordfence blocked this computer"],
+  [/imunify360|bot-protection|has been blocked by Imunify/i, "Imunify360 blocked this computer"],
+  [/Access Denied - Sucuri Website Firewall|sucuri\.net\/privacy-policy/i, "Sucuri firewall blocked this computer"],
+  [/sgcaptcha|SiteGround[^<]{0,80}(captcha|bot)/i, "SiteGround's bot check stopped this computer"],
+  [/Attention Required! \| Cloudflare|Just a moment\.\.\.|cf-browser-verification|cf_chl_opt/i, "Cloudflare's check stopped this computer"],
+  [/Request (was )?rejected|Mod_?Security|Not Acceptable!/i, "the server's firewall rejected this computer"],
+  [/Too Many Requests|rate limit(ed)?/i, "the site is rate-limiting this computer"],
+];
+function firewallBlockReason(res, html) {
+  const st = Number(res && res.status) || 0;
+  const raw = String(html || "");
+  if (st === 429) return "the site is rate-limiting this computer";
+  if (raw.length > 60000) return "";
+  for (const [re, why] of SITE_BLOCK_PAGES) if (re.test(raw)) return (st >= 400 || raw.length < 20000) ? why : "";
+  return "";
+}
 function blankPageReason(html) {
   const raw = String(html || "");
   if (raw.trim().length < 64) return raw.trim().length ? "almost empty page (" + raw.trim().length + " bytes)" : "blank page - the server sent 0 bytes";
@@ -667,6 +700,11 @@ async function readOneSite(url, timeoutMs) {
     const ms = Date.now() - t0;
     // A Cloudflare "checking your browser" page isn't an outage.
     if (res.headers.get("cf-mitigated") === "challenge") return { ok: true, status: res.status, ms, read: true };
+    // Nor is the site's security plugin / firewall blocking THIS computer (it saw
+    // a page being fetched every few minutes and took it for a bot): the site is
+    // up for everyone else. Shown in Site monitor as a note, no alarm.
+    const block = firewallBlockReason(res, html);
+    if (block) return { ok: true, status: res.status, ms, read: true, blocked: block };
     if (res.status >= 500) return { ok: false, status: res.status, ms, read: true, error: "HTTP " + res.status + ((blankPageReason(html) && " - " + blankPageReason(html)) || "") };
     if (res.status >= 400) return { ok: true, status: res.status, ms, read: true }; // as before: only 5xx counts as down
     const why = blankPageReason(html);
@@ -733,6 +771,8 @@ function siteDecide(prevIn, result, o) {
     prev.up = true;
     prev.fails = 0;
     prev.lastError = "";
+    // Up for everyone, but the site's security is blocking this computer.
+    prev.blocked = result.blocked || "";
     prev.lastMs = result.ms || 0;
     prev.kind = "";
     prev.status = 0;
@@ -749,7 +789,8 @@ function siteDecide(prevIn, result, o) {
   const head = k.icon + " " + k.level + " - " + siteKindLabel(kind, result.status) + ": " + o.name;
   const why = kind === "blank" ? o.name + " answers, but the page is broken. " + prev.lastError
     : kind === "5xx" ? o.name + " answers with a server error (HTTP " + result.status + "). " + prev.lastError
-    : o.name + " doesn't answer at all. " + prev.lastError;
+    : o.name + " doesn't answer at all. " + prev.lastError +
+      " If it opens fine for others, the site's security (a firewall or security plugin) may be blocking this computer - ask whoever manages the site to allow this office's IP.";
   if (prev.up === false) {
     // Already known to be down: news only when it gets WORSE than anything seen
     // in this outage (blank -> server error -> no answer). A server flapping
@@ -1409,7 +1450,7 @@ const DEFAULT_SETTINGS = {
   // Visual effects (Options > General > Animations and effects).
   fxLiquid: true, fxChart: true, fxCount: true, fxIconRing: true,
   // Floating tracker (tracker.html): the Float button, full view on hover, today's total.
-  floatTracker: true, floatHover: true, floatToday: true, floatSize: "normal",
+  floatTracker: true, floatAutoOpen: true, floatAutoAnywhere: true, floatHover: true, floatToday: true, floatSize: "normal",
   // Task files: back the files' text up to Drive (hidden app data).
   taskFilesDrive: true,
   clickupWrapUpTime: "16:45", // local "HH:MM"
@@ -2250,7 +2291,205 @@ async function getClickupState() {
 async function setClickupState(state) {
   await chrome.storage.local.set({ clickupState: state });
   updateBadge().catch(() => {});
+  maybeAutoFloat(state).catch((e) => diagLog("auto-float", String(e && e.message ? e.message : e)));
   return state;
+}
+
+// ---------- floating tracker: open it by itself when a timer starts ----------
+// Chrome opens a floating window only during a REAL click on the page that
+// hosts it. A click made by a script (like Agent Router's) doesn't count; one
+// sent through the debugger does. So when a timer is found running that hasn't
+// been floated yet - started in the popup, in ClickUp, with the shortcut - the
+// background opens the pinned Tracker tab without switching to it, clicks it
+// once through the debugger and lets go straight away (Chrome shows its
+// "started debugging this browser" bar for that moment). Each timer is floated
+// at most once: closing the window keeps it closed until the next timer.
+// Setting: floatAutoAnywhere (General › Floating tracker).
+let autoFloatBusy = false;
+const floatRunKey = (r) => (r && r.taskId ? String(r.taskId) + ":" + String(r.startMs || "") : "");
+async function maybeAutoFloat(state) {
+  const key = floatRunKey(state && state.running);
+  if (!key || autoFloatBusy) return;
+  const s = await getSettings();
+  if (s.floatTracker === false || s.floatAutoAnywhere === false || !chrome.debugger) return;
+  const g = await chrome.storage.local.get(["floatAutoKey", "floatOpen"]);
+  if (g.floatAutoKey === key) return; // this timer was handled already (opened, or closed by you)
+  await chrome.storage.local.set({ floatAutoKey: key });
+  if (g.floatOpen) return;
+  autoFloatBusy = true;
+  try {
+    // A Start pressed in the dashboard / side panel opens it in that click
+    // itself - give that a moment before stepping in.
+    await new Promise((r) => setTimeout(r, 3000));
+    const now = await chrome.storage.local.get(["floatOpen", "clickupState"]);
+    if (now.floatOpen || floatRunKey(now.clickupState && now.clickupState.running) !== key) return;
+    await autoFloatNow();
+  } finally { autoFloatBusy = false; }
+}
+async function floatTrackerTab() {
+  const url = chrome.runtime.getURL("tracker.html");
+  const found = await chrome.tabs.query({ url: url + "*" }).catch(() => []);
+  if (found[0]) return found[0];
+  const [cur] = await chrome.tabs.query({ active: true, lastFocusedWindow: true }).catch(() => []);
+  const tab = await chrome.tabs.create({ url: url + "?auto=1", pinned: true, index: 0, active: false, windowId: cur ? cur.windowId : undefined });
+  // Wait for it to load (its script adds the click handler).
+  await new Promise((resolve) => {
+    const done = () => { chrome.tabs.onUpdated.removeListener(on); clearTimeout(t); resolve(); };
+    const on = (id, info) => { if (id === tab.id && info.status === "complete") done(); };
+    const t = setTimeout(done, 8000);
+    chrome.tabs.onUpdated.addListener(on);
+  });
+  await new Promise((r) => setTimeout(r, 400));
+  return tab;
+}
+async function realClick(tabId) {
+  const target = { tabId };
+  await chrome.debugger.attach(target, "1.3");
+  try {
+    const ev = { x: 12, y: 12, button: "left", clickCount: 1 };
+    await chrome.debugger.sendCommand(target, "Input.dispatchMouseEvent", { type: "mouseMoved", x: 12, y: 12 });
+    await chrome.debugger.sendCommand(target, "Input.dispatchMouseEvent", { type: "mousePressed", ...ev });
+    await chrome.debugger.sendCommand(target, "Input.dispatchMouseEvent", { type: "mouseReleased", ...ev });
+  } finally {
+    await chrome.debugger.detach(target).catch(() => {});
+  }
+}
+// Opened from a tab that isn't in front, Chrome makes the floating window as big
+// as the browser window and won't let the page shrink it without a click IN it.
+// The window says so (storage floatNeedsFit); one debugger click inside it lets
+// it put itself back to its small size (tracker.js only resizes on that click).
+async function fitFloatWindow() {
+  const until = Date.now() + 1500;
+  let need = 0;
+  while (Date.now() < until && !need) {
+    need = Number((await chrome.storage.local.get("floatNeedsFit")).floatNeedsFit) || 0;
+    if (!need) await new Promise((r) => setTimeout(r, 150));
+  }
+  if (!need) return;
+  try {
+    const targets = await chrome.debugger.getTargets();
+    const t = targets.find((x) => x.type === "page" && x.title === "Tracker" && /^about:blank/.test(x.url || ""));
+    if (!t) { diagLog("auto-float", "fit: floating window not found"); return; }
+    const target = { targetId: t.id };
+    await chrome.debugger.attach(target, "1.3");
+    try {
+      const ev = { x: 3, y: 3, button: "left", clickCount: 1 };
+      await chrome.debugger.sendCommand(target, "Input.dispatchMouseEvent", { type: "mousePressed", ...ev });
+      await chrome.debugger.sendCommand(target, "Input.dispatchMouseEvent", { type: "mouseReleased", ...ev });
+    } finally { await chrome.debugger.detach(target).catch(() => {}); }
+  } catch (e) { diagLog("auto-float", "fit: " + (e && e.message ? e.message : e)); }
+}
+async function waitFloatOpen(ms) {
+  const until = Date.now() + ms;
+  while (Date.now() < until) {
+    if ((await chrome.storage.local.get("floatOpen")).floatOpen) return true;
+    await new Promise((r) => setTimeout(r, 250));
+  }
+  return false;
+}
+async function autoFloatNow() {
+  const tab = await floatTrackerTab();
+  if (!tab || tab.id == null) return false;
+  // 1) In the background - you stay where you are.
+  try { await realClick(tab.id); } catch (e) { diagLog("auto-float", "click: " + (e && e.message ? e.message : e)); }
+  if (await waitFloatOpen(2500)) { await fitFloatWindow(); return true; }
+  // 2) Chrome wouldn't take it from a hidden tab: show the Tracker tab for a
+  //    moment, click, and go straight back to the tab you were on.
+  const [back] = await chrome.tabs.query({ active: true, windowId: tab.windowId }).catch(() => []);
+  try {
+    await chrome.tabs.update(tab.id, { active: true });
+    await new Promise((r) => setTimeout(r, 300));
+    await realClick(tab.id);
+  } catch (e) { diagLog("auto-float", "front click: " + (e && e.message ? e.message : e)); }
+  const ok = await waitFloatOpen(2500);
+  if (back && back.id !== tab.id) await chrome.tabs.update(back.id, { active: true }).catch(() => {});
+  if (ok) await fitFloatWindow();
+  if (!ok) {
+    diagLog("auto-float", "the floating window did not open");
+    // Chrome wouldn't let it open by itself here: one click on this opens it.
+    await notify("float-ask", "Float your timer?", "Chrome didn't let the floating timer open by itself this time. Click here, then click once in the Tracker tab.", null, chrome.runtime.getURL("tracker.html")).catch(() => {});
+  }
+  return ok;
+}
+
+// ---------- Recently completed: a local history that costs no ClickUp calls ----------
+// Every refresh already fetches tasks WITH their status (the due-date queries all
+// pass include_closed=true), so a task that comes back done is a completion we
+// can record for free. That is the whole point of this: the ask was for a
+// completed-task history that "doesnt impact the clickup rate limit", so nothing
+// here ever issues a request - it only reads rows the refresh already has in
+// hand. A side benefit is that completions made directly in ClickUp are caught
+// too, not just the ones made with the extension's own Complete button.
+const DONE_HISTORY_KEY = "cuDoneHistory";
+const DONE_HISTORY_MAX = 200;      // plenty for "what did I finish recently", bounded storage
+const DONE_HISTORY_DAYS = 60;      // older entries are dropped on the next refresh
+// Each bundle in clickupState carries the same three row arrays. Walk the lot so
+// a task completed in any view (today, this week, next week, a custom range,
+// the configured URLs) is recorded once.
+function cuDoneRowsOf(state) {
+  const out = [];
+  const eat = (b) => {
+    if (!b || typeof b !== "object") return;
+    for (const key of ["tasks", "deadlineTasks", "trackedTasks"]) {
+      const rows = b[key];
+      if (Array.isArray(rows)) for (const r of rows) if (r && r.done && r.id != null) out.push(r);
+    }
+  };
+  eat(state);
+  for (const key of ["todayFilter", "thisWeek", "thisWorkweek", "nextWeek", "tomorrow", "custom", "overdue"]) eat(state && state[key]);
+  const perDay = state && state.weekly && state.weekly.perDay;
+  if (Array.isArray(perDay)) for (const d of perDay) eat(d);
+  return out;
+}
+async function recordDoneHistory(state) {
+  const rows = cuDoneRowsOf(state);
+  const store = await chrome.storage.local.get(DONE_HISTORY_KEY);
+  const prev = Array.isArray(store && store[DONE_HISTORY_KEY]) ? store[DONE_HISTORY_KEY] : [];
+  const byId = new Map(prev.map((e) => [String(e.id), e]));
+  const now = Date.now();
+  let added = 0;
+  for (const r of rows) {
+    const id = String(r.id);
+    const been = byId.get(id);
+    if (been) {
+      // Already recorded: keep the ORIGINAL timestamp (a later refresh must not
+      // be able to move a completion forward) but let the details stay current.
+      been.name = r.name || been.name;
+      been.client = r.client || been.client;
+      been.url = r.url || been.url;
+      been.status = r.status || been.status;
+      been.spentMs = Number(r.spentMs) || been.spentMs || 0;
+      been.estimateMs = Number(r.totalEstimateMs) || Number(r.estimateMs) || been.estimateMs || 0;
+      continue;
+    }
+    const exact = Number(r.doneAt) || 0;
+    byId.set(id, {
+      id,
+      name: r.name || "(untitled task)",
+      url: r.url || "",
+      client: r.client || "",
+      status: r.status || "",
+      // ClickUp's own completion time when it gave one; otherwise the moment we
+      // first saw it done. `exact` says which, so the card never claims a
+      // precision it doesn't have.
+      doneAt: exact || now,
+      exact: !!exact,
+      estimateMs: Number(r.totalEstimateMs) || Number(r.estimateMs) || 0,
+      spentMs: Number(r.spentMs) || 0,
+    });
+    added++;
+  }
+  const cutoff = now - DONE_HISTORY_DAYS * 86400000;
+  const next = [...byId.values()]
+    .filter((e) => Number(e.doneAt) > cutoff)
+    .sort((a, b) => Number(b.doneAt) - Number(a.doneAt))
+    .slice(0, DONE_HISTORY_MAX);
+  // Only write when something actually changed, so an idle refresh doesn't churn
+  // storage (and doesn't wake every storage listener in the UI).
+  if (added || next.length !== prev.length || JSON.stringify(next) !== JSON.stringify(prev)) {
+    await chrome.storage.local.set({ [DONE_HISTORY_KEY]: next });
+  }
+  return next;
 }
 
 // Safe view for the UI - reports whether a token is configured, never the token.
@@ -2342,6 +2581,9 @@ async function discoverExtraTaskFor(cfg, userId, hint, range) {
   if (hit && Date.now() - hit.at < EXTRA_TASK_CACHE_MS) return hit.value;
   let value = null;
   try {
+    // A lookup that FAILED (ClickUp rate limit, network) is not "this person has
+    // no Extra task": it used to be cached as null for an hour, which emptied the
+    // Extra task section for anyone who hit the limit at the wrong moment.
     value = await findExtraTaskByName({
       token: cfg.token,
       teamId: cfg.teamId,
@@ -2353,7 +2595,9 @@ async function discoverExtraTaskFor(cfg, userId, hint, range) {
       toTs: to,
     });
   } catch (e) {
-    value = null;
+    // Keep the last answer we had (even if old); otherwise "unknown" (undefined),
+    // and don't cache the failure - the next refresh tries again.
+    return hit ? hit.value : undefined;
   }
   extraTaskCache.set(key, { at: Date.now(), value });
   return value;
@@ -3087,7 +3331,15 @@ async function refreshClickupImpl({ includeTasks = false, viaAlarm = false, forc
   const targetHours = Number(settings.clickupTargetHours) || 0;
   // Auto-detect the "Extra(s) Task(s)" task by name (no manual URL needed) and
   // fold it into the configured-task set, so today / weekly / filter all see it.
-  const extraTask = await discoverExtraTask(cfg);
+  let extraTask = await discoverExtraTask(cfg);
+  // Couldn't look (rate limit / network): keep the Extra task from the last
+  // refresh rather than dropping it, and remember that this one couldn't check.
+  let extraLookup = "ok";
+  if (extraTask === undefined) {
+    extraLookup = "failed";
+    const last = await getClickupState().catch(() => null);
+    extraTask = (last && last.extraTask) || null;
+  }
   const deadlineTaskUrls = mergeExtraTaskUrl(
     Array.isArray(settings.clickupDeadlineTaskUrls) ? settings.clickupDeadlineTaskUrls : [],
     extraTask
@@ -3309,6 +3561,7 @@ async function refreshClickupImpl({ includeTasks = false, viaAlarm = false, forc
       tomorrow, // tomorrow's one-day bundle (see buildDay) - popup AND badge read this
       custom, // the saved filter's custom range / chart day (buildRangeBundle) - every page + badge
       extraTask: extraTask || null, // auto-detected "Extra(s) Task(s)"
+      extraLookup, // "failed" = couldn't check this time (the dashboard says so instead of "not found")
       running: running || null, // live timer (taskId/taskName/startMs) or null
       at: data.at,
       error: null,
@@ -3323,6 +3576,10 @@ async function refreshClickupImpl({ includeTasks = false, viaAlarm = false, forc
     // Stamp client names on every row (today tasks / deadline / weekly / filter)
     // so the popup + options can show a client tag and filter by client.
     await annotateClients(cfg.token, state, settings.cuClientLevel || "auto");
+    // Note every task that came back done, for the dashboard's "Recently
+    // completed" card. Costs no requests (see recordDoneHistory) and must never
+    // be able to sink a refresh, hence the catch.
+    await recordDoneHistory(state).catch(() => {});
     await setClickupState(state);
     await maybeNotifyClickup(state, { viaAlarm });
     await maybeNotifyRunningTask(cfg).catch(() => {});
@@ -5040,12 +5297,16 @@ async function hubPollNudges(force) {
   for (const n of r.nudges.slice(0, 10)) {
     const id = "nudge-" + n.id;
     const url = /^https:\/\/app\.clickup\.com\//.test(n.taskUrl || "") ? n.taskUrl : (n.taskId ? taskUrlFor(n.taskId) : null);
+    // Most of these are about a task. The admin's "open your extension please"
+    // is not, so a reminder with no task reads as its own message instead of
+    // "A task - ...", and only a real task promises a link to click.
+    const head = n.taskName || (n.taskId ? "A task" : "");
     try {
       await chrome.notifications.create(id, {
         type: "basic", iconUrl: chrome.runtime.getURL("icons/icon128.png"),
         title: ("\u23F0 Reminder from " + (n.fromName || "a teammate")).slice(0, 120),
-        message: ((n.taskName || "A task") + (n.text ? " - \u201C" + n.text + "\u201D" : "")).slice(0, 300),
-        contextMessage: "Click to open the task in ClickUp", priority: 2, requireInteraction: true,
+        message: (head ? head + (n.text ? " - \u201C" + n.text + "\u201D" : "") : (n.text || "A reminder for you")).slice(0, 300),
+        contextMessage: url ? "Click to open the task in ClickUp" : "From your team - see the Reminders tab", priority: 2, requireInteraction: true,
       });
       if (url) notifTargetUrls.set(id, url);
     } catch (e) {}
@@ -5624,6 +5885,9 @@ chrome.notifications.onButtonClicked.addListener((id, btn) => {
 });
 
 chrome.runtime.onStartup.addListener(() => {
+  // No floating window survives a browser restart: a leftover "open" flag would
+  // stop it opening by itself for the running timer.
+  chrome.storage.local.set({ floatOpen: false }).catch(() => {});
   // Reminders that came due while Chrome was closed show now as "Missed".
   ensureDefaultReminders().catch(() => {}).then(() => fireDueReminders()).then(() => scheduleReminders()).catch(() => {});
   checkForUpdate().catch(() => {});
@@ -5843,6 +6107,11 @@ async function notifyAgentRouterQuota() {
 }
 
 chrome.runtime.onInstalled.addListener((details) => {
+  // A reload / update closes every floating window (its page went away) - and
+  // the page doesn't always get to say so. Clear the flag, then float the
+  // running timer again shortly (a reload is not "you closed it").
+  chrome.storage.local.set({ floatOpen: false, floatAutoKey: "" }).catch(() => {});
+  setTimeout(() => { getClickupState().then((st) => maybeAutoFloat(st)).catch(() => {}); }, 4000);
   // Alarms don't survive an update / reload: put the reminders' back.
   ensureDefaultReminders().catch(() => {}).then(() => fireDueReminders()).then(() => scheduleReminders()).catch(() => {});
   // Brand-new install: offer one-click update setup while the folder is fresh in mind.
@@ -5949,6 +6218,10 @@ chrome.alarms.onAlarm.addListener(async (alarm) => {
     await hubPollReplies().catch(() => {});
     await hubPollNotices().catch(() => {});
     await hubPollNudges().catch(() => {});
+    // Floating tracker: a timer that is running but was never floated (started
+    // before a reload, or between refreshes) is noticed within a minute. Storage
+    // reads only unless it acts; not awaited (it waits a few seconds first).
+    getClickupState().then((st) => maybeAutoFloat(st)).catch(() => {});
   } else if (alarm.name === CLICKUP_ALARM) {
     refreshClickup({ viaAlarm: true }).catch(() => {});
   } else if (alarm.name === EST_ALARM_NEAR || alarm.name === EST_ALARM_MET) {
@@ -6067,7 +6340,12 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         try {
           const cfg = await getClickupConfig();
           if (!cfg || !cfg.token) { sendResponse({ ok: false, error: "ClickUp isn't connected." }); break; }
-          sendResponse({ ok: true, data: await getTaskPanel(cfg.token, msg.taskId, !!msg.force) });
+          const data = await getTaskPanel(cfg.token, msg.taskId, !!msg.force);
+          // Which of the assignees is me. The panel is cached per task and the id
+          // lives in the config, not in ClickUp's answer, so it is stamped on here:
+          // the note sender needs it to leave you out of the people it offers.
+          data.meUserId = cfg.userId == null ? "" : String(cfg.userId);
+          sendResponse({ ok: true, data });
         } catch (e) { sendResponse({ ok: false, error: String(e && e.message ? e.message : e), status: e && e.status }); }
         break;
       }
@@ -6099,8 +6377,9 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
           // Description editor: only upload, the links go into the description.
           if (msg.noComment) { sendResponse({ ok: true, files: uploaded }); break; }
           const text = [String(msg.text || "").trim(), links.length ? "Attached: " + links.join("\n") : ""].filter(Boolean).join("\n\n");
-          const data = text ? await addTaskComment(cfg.token, taskId, text.slice(0, 5000)) : null;
-          sendResponse({ ok: true, data, uploaded: links.length });
+          const members = ((await getClickupState().catch(() => null)) || {}).members;
+          const data = text ? await addTaskComment(cfg.token, taskId, text.slice(0, 5000), members) : null;
+          sendResponse({ ok: true, data, uploaded: links.length, mentioned: data && data.mentioned, unmatched: data && data.unmatched });
         } catch (e) { sendResponse({ ok: false, error: String(e && e.message ? e.message : e) }); }
         break;
       }
@@ -6180,7 +6459,10 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
           const text = String(msg.text || "").trim();
           if (!cfg || !cfg.token) { sendResponse({ ok: false, error: "ClickUp isn't connected." }); break; }
           if (!text) { sendResponse({ ok: false, error: "Write a comment first." }); break; }
-          sendResponse({ ok: true, data: await addTaskComment(cfg.token, msg.taskId, text.slice(0, 5000)) });
+          // @names are matched to the workspace people already loaded (no request).
+          const members = ((await getClickupState().catch(() => null)) || {}).members;
+          const data = await addTaskComment(cfg.token, msg.taskId, text.slice(0, 5000), members);
+          sendResponse({ ok: true, data, mentioned: data && data.mentioned, unmatched: data && data.unmatched });
         } catch (e) { sendResponse({ ok: false, error: String(e && e.message ? e.message : e), status: e && e.status }); }
         break;
       }
@@ -6936,6 +7218,9 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
           const keyOf = (x) => (x ? String(x.taskId || "") + ":" + String(x.startMs || "") : "");
           const changed = keyOf(prev.running) !== keyOf(running);
           if (changed) await setClickupState({ ...prev, running: running || null });
+          // A new timer (started in ClickUp, or restarted after a pause): work out
+          // the task's earlier time now, so "Tracking now" shows the total.
+          if (changed && running) maybeNotifyRunningTask(cfg).catch(() => {});
           sendResponse({ ok: true, running: running || null, changed });
         } catch (e) {
           sendResponse({ ok: false, error: String(e && e.message ? e.message : e) });
@@ -7078,6 +7363,25 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         } catch (e) {
           sendResponse({ ok: false, error: String(e && e.message ? e.message : e) });
         }
+        break;
+      }
+      case "CLICKUP_DONE_HISTORY": {
+        // Pure storage read - no ClickUp request, so the Recently completed card
+        // can be opened and searched as often as you like without touching the
+        // rate limit. The list is built during each refresh (recordDoneHistory).
+        // It also records from the data already loaded right now (still no
+        // request), so the card isn't empty until the next full refresh - which
+        // after a reload or a rate-limit pause can be a while.
+        const cur = await getClickupState().catch(() => null);
+        if (cur) await recordDoneHistory(cur).catch(() => {});
+        const store = await chrome.storage.local.get(DONE_HISTORY_KEY).catch(() => ({}));
+        const rows = Array.isArray(store && store[DONE_HISTORY_KEY]) ? store[DONE_HISTORY_KEY] : [];
+        sendResponse({ ok: true, rows, days: DONE_HISTORY_DAYS, max: DONE_HISTORY_MAX, synced: !!(cur && cur.at), syncedAt: (cur && cur.at) || 0 });
+        break;
+      }
+      case "CLICKUP_DONE_HISTORY_CLEAR": {
+        await chrome.storage.local.set({ [DONE_HISTORY_KEY]: [] }).catch(() => {});
+        sendResponse({ ok: true, rows: [] });
         break;
       }
       case "CLICKUP_GET_TEAMS": {
@@ -7399,9 +7703,26 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         }
         if (!(await hubUrl())) { sendResponse({ ok: false, reason: "no-hub", error: "The Team hub isn't set up, so reminders can't reach their extension." }); break; }
         await hubHello(true).catch(() => {});
-        const r = await hubCall("nudge", { toUser: userId, taskId, taskName: String(msg.taskName || "").slice(0, 200), taskUrl: taskUrlFor(taskId), text });
+        const nPayload = { toUser: userId, taskId, taskName: String(msg.taskName || "").slice(0, 200), taskUrl: taskUrlFor(taskId), text };
+        let r = await hubCall("nudge", nPayload);
+        // "admin only" comes back from a hub whose DEPLOYED copy still has
+        // reminders behind its admin gate (the gate has since moved below the
+        // public actions). If this person really is an admin - their key is
+        // saved - send it again with the key, so "I am already an admin" means
+        // what it says instead of being refused.
+        if (r && String(r.error || "").toLowerCase() === "admin only" && (await hubAdminKey()))
+          r = await hubCall("nudge", nPayload, true);
         if (r && r.ok) { sendResponse({ ok: true, via: "hub" }); break; }
-        if (r && r.error === "unknown action") { sendResponse({ ok: false, reason: "old-hub", error: "The Team hub script needs updating before reminders can reach their extension." }); break; }
+        // An older Team hub script doesn't know the "nudge" action. It says so in
+        // one of two ways: "unknown action" if it predates reminders entirely, or
+        // "admin only" if it has them but still gated. Either way the answer for
+        // the user is the same: the hub needs its new version deploying, and
+        // meanwhile the reminder can still go as a ClickUp comment.
+        const he = r && r.error ? String(r.error).toLowerCase() : "";
+        if (he === "unknown action" || he === "admin only") {
+          sendResponse({ ok: false, reason: "old-hub", error: "The Team hub script needs updating (deploy its new version) before reminders can reach their extension." });
+          break;
+        }
         sendResponse(r || { ok: false, error: "No answer from the Team hub." });
         break;
       }

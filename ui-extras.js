@@ -4,7 +4,9 @@
 //  - a small console (Ctrl+Shift+`) for advanced commands. Admin commands are
 //    also checked by the background (DEV_CMD).
 // Storage: autoCompleteTasks { [taskId]: { name, at } }; acBoxes (true = a tick
-// box on every task row that can be marked).
+// box on every task row that can be marked); arBoxes (true = a NUMBERED box
+// instead, and autoRunPick { ids, names } is the order those tasks will run in).
+// acBoxes and arBoxes are never both on - switching one on switches the other off.
 (() => {
   "use strict";
   const esc = (s) => String(s == null ? "" : s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
@@ -18,11 +20,14 @@
   const EXTRA_RE = /\bextra\s*\(?s?\)?\s*tasks?\b/i;
 
   // ---------- marked rows ----------
-  let marked = {}, boxes = false, cfgIds = new Set(), queue = null;
-  const load = () => chrome.storage.local.get(["autoCompleteTasks", "acBoxes", "settings", "autoRunQueue"]).then((g) => {
+  let marked = {}, boxes = false, cfgIds = new Set(), queue = null, arBoxes = false, picks = { ids: [], names: {} };
+  const asPick = (v) => ({ ids: Array.isArray(v && v.ids) ? v.ids.map(String) : [], names: (v && v.names) || {} });
+  const load = () => chrome.storage.local.get(["autoCompleteTasks", "acBoxes", "settings", "autoRunQueue", "arBoxes", "autoRunPick"]).then((g) => {
     marked = (g && g.autoCompleteTasks) || {};
     queue = (g && g.autoRunQueue) || null;
     boxes = !!(g && g.acBoxes);
+    arBoxes = !!(g && g.arBoxes);
+    picks = asPick(g && g.autoRunPick);
     cfgIds = new Set(((g && g.settings && g.settings.clickupDeadlineTaskUrls) || []).map((u) => (String(u).match(/\/t\/([^/?#]+)/) || [])[1]).filter(Boolean));
     paintRows();
   }).catch(() => {});
@@ -32,7 +37,9 @@
       if (ch.autoCompleteTasks) marked = ch.autoCompleteTasks.newValue || {};
       if (ch.acBoxes) boxes = !!ch.acBoxes.newValue;
       if (ch.autoRunQueue) queue = ch.autoRunQueue.newValue || null;
-      if (ch.autoCompleteTasks || ch.acBoxes || ch.autoRunQueue) paintRows();
+      if (ch.arBoxes) arBoxes = !!ch.arBoxes.newValue;
+      if (ch.autoRunPick) picks = asPick(ch.autoRunPick.newValue);
+      if (ch.autoCompleteTasks || ch.acBoxes || ch.autoRunQueue || ch.arBoxes || ch.autoRunPick) paintRows();
       if (ch.settings) load();
     });
   } catch (e) {}
@@ -58,6 +65,10 @@
   .xa-bar button:hover:not(:disabled) { background: #8b5cf6; color: #fff; }
   .xa-bar .xa-all { margin-left: auto; }
   .ac-box { flex: none; width: 15px; height: 15px; margin: 0 6px 0 0; accent-color: #8b5cf6; cursor: pointer; }
+  .ar-box { flex: none; display: inline-flex; align-items: center; justify-content: center; width: 17px; height: 17px; margin: 0 6px 0 0; padding: 0; border: 1.5px solid #8b5cf6; border-radius: 5px; background: transparent; color: #7c3aed; font: inherit; font-size: 10px; font-weight: 800; line-height: 1; cursor: pointer; }
+  .ar-box:hover { background: rgba(139,92,246,.18); }
+  .ar-box.on { background: #8b5cf6; color: #fff; }
+  .xa-bar .xa-note { color: #7c3aed; font-weight: 600; }
   .ac-q { flex: none; font-size: 10px; font-weight: 700; padding: 1px 7px; border-radius: 999px; background: #8b5cf6; color: #fff; white-space: nowrap; }
   .ac-chip { flex: none; font-size: 10px; font-weight: 700; padding: 1px 7px; border-radius: 999px; background: rgba(139,92,246,.15); color: #7c3aed; white-space: nowrap; }
   .xt-back { position: fixed; inset: auto 0 0 0; z-index: 2147482500; display: flex; justify-content: center; padding: 0 12px 12px; pointer-events: none; }
@@ -73,13 +84,73 @@
   async function stopQueue() { await send({ type: "DEV_CMD", cmd: "autorun-stop" }, 8000); queue = null; paintRows(); }
   async function clearMarks() { await chrome.storage.local.set({ autoCompleteTasks: {} }); marked = {}; paintRows(); }
   async function hideBoxes() { await chrome.storage.local.set({ acBoxes: false }); boxes = false; paintRows(); }
-  async function allOff() { if (queue) await stopQueue(); await clearMarks(); await hideBoxes(); }
+  // ---------- the run order (numbered boxes) ----------
+  // A number in the box instead of a tick: the order the tasks will run in, one
+  // after another - each starts, completes at its estimate, then the next starts.
+  // Clicking a box adds the task at the end; clicking it again takes it out and
+  // the rest renumber. Start hands the list to the same queue the console starts.
+  const AR_MAX = 30; // the background takes at most this many in one queue
+  let note = "", noteTimer = 0;
+  function setNote(text) {
+    note = text || "";
+    clearTimeout(noteTimer);
+    if (note) noteTimer = setTimeout(() => { note = ""; paintRows(); }, 8000);
+    paintRows();
+  }
+  const pickAt = (id) => picks.ids.indexOf(String(id));
+  async function savePicks(ids, names) {
+    picks = { ids, names };
+    await chrome.storage.local.set({ autoRunPick: picks });
+    paintRows();
+  }
+  async function togglePick(t) {
+    if (!t || t.id == null) return;
+    const id = String(t.id);
+    const ids = picks.ids.slice(), names = { ...picks.names };
+    const i = ids.indexOf(id);
+    if (i >= 0) { ids.splice(i, 1); delete names[id]; }
+    else {
+      if (ids.length >= AR_MAX) { setNote(AR_MAX + " tasks is the most one run can hold"); return; }
+      ids.push(id);
+      names[id] = t.name || "";
+    }
+    await savePicks(ids, names);
+  }
+  async function clearPicks() { await savePicks([], {}); }
+  async function hideArBoxes() { await chrome.storage.local.set({ arBoxes: false }); arBoxes = false; paintRows(); }
+  // Returns a message to show, or "" when the run started. The background does
+  // not refuse a second queue, so the check for one already running is here.
+  async function startArPick() {
+    const ids = picks.ids.slice();
+    if (!ids.length) return "click the box on the tasks you want to run first";
+    const g = await chrome.storage.local.get("autoRunQueue").catch(() => ({}));
+    const q = g && g.autoRunQueue;
+    if (q && Array.isArray(q.ids) && q.ids.length) return "a run is already going (" + (q.total - q.ids.length) + " of " + q.total + " done) - stop that one first";
+    const r = await send({ type: "DEV_CMD", cmd: "autorun-start", ids, names: picks.names }, 30000);
+    if (!r || !r.ok) return "couldn't start: " + ((r && r.error) || "no answer from the extension");
+    // The queue owns the order now, and shows it on the rows itself.
+    picks = { ids: [], names: {} };
+    arBoxes = false;
+    await chrome.storage.local.set({ autoRunPick: picks, arBoxes: false });
+    return "";
+  }
+  async function allOff() {
+    if (queue) await stopQueue();
+    await clearMarks();
+    await hideBoxes();
+    await clearPicks();
+    await hideArBoxes();
+    setNote(""); // a message about something that is now off would only mislead
+  }
   function activeItems() {
     const out = [];
     const n = Object.keys(marked).length;
     if (queue && Array.isArray(queue.ids) && queue.ids.length) out.push({ key: "queue", text: "▶ Queue " + (queue.total - queue.ids.length + 1) + " of " + queue.total + " running" + (queue.paused ? " (paused)" : ""), btn: "Stop", run: stopQueue, tip: "Tasks run one after another: each completes at its estimate, then the next starts" });
+    if (picks.ids.length) out.push({ key: "arpick", text: "▶ " + picks.ids.length + " task" + (picks.ids.length === 1 ? "" : "s") + " in run order", btn: "Start", run: async () => setNote(await startArPick()), tip: picks.ids.map((id, i) => i + 1 + ". " + (picks.names[id] || id)).join("\n") });
     if (n) out.push({ key: "marks", text: "⏱ " + n + " task" + (n === 1 ? "" : "s") + " complete at " + (n === 1 ? "its" : "their") + " estimate", btn: "Turn off", run: clearMarks, tip: Object.values(marked).map((m) => m.name).filter(Boolean).join("\n") });
     if (boxes) out.push({ key: "boxes", text: "☑ Tick boxes in the task list", btn: "Hide", run: hideBoxes, tip: "Tick a task to have it complete at its estimate" });
+    if (arBoxes) out.push({ key: "arboxes", text: "① Numbered boxes in the task list", btn: "Hide", run: hideArBoxes, tip: "Click a task's box to put it in the run order, click it again to take it out" });
+    if (note) out.push({ key: "note", text: note, btn: "", run: null, tip: "" });
     return out;
   }
   function paintBar() {
@@ -97,11 +168,12 @@
     for (const it of items) {
       const p = document.createElement("span"); p.className = "xa-i"; p.title = it.tip || "";
       const t = document.createElement("span"); t.textContent = it.text;
+      if (!it.btn) { t.className = "xa-note"; p.append(t); bar.appendChild(p); continue; } // a message, nothing to switch off
       const b = document.createElement("button"); b.type = "button"; b.textContent = it.btn;
       b.onclick = async (e) => { e.preventDefault(); e.stopPropagation(); b.disabled = true; await it.run(); };
       p.append(t, b); bar.appendChild(p);
     }
-    if (items.length > 1) { const all = document.createElement("button"); all.type = "button"; all.className = "xa-all"; all.textContent = "Turn all off"; all.onclick = async () => { all.disabled = true; await allOff(); }; bar.appendChild(all); }
+    if (items.filter((i) => i.btn).length > 1) { const all = document.createElement("button"); all.type = "button"; all.className = "xa-all"; all.textContent = "Turn all off"; all.onclick = async () => { all.disabled = true; await allOff(); }; bar.appendChild(all); }
   }
   function paintRows() {
     paintBar();
@@ -126,7 +198,7 @@
         const k = queue.total - queue.ids.length + qi + 1;
         const txt = (qi === 0 ? "▶ running " : "▶ queue ") + k + "/" + queue.total;
         if (!qc) { qc = document.createElement("span"); qc.className = "ac-q"; const nm = wrap.querySelector(".nm"); if (nm && nm.nextSibling) wrap.insertBefore(qc, nm.nextSibling); else wrap.appendChild(qc); }
-        qc.textContent = txt;
+        if (qc.textContent !== txt) qc.textContent = txt; // unchanged writes re-wake the row observer
         qc.title = qi === 0 ? "Running now in the auto-run queue - completes at its estimate, then the next one starts" : "Waiting in the auto-run queue - starts when the one before it completes";
       } else if (qc) qc.remove();
       // The tick box (shown while acBoxes is on).
@@ -140,10 +212,37 @@
         wrap.insertBefore(cb, wrap.firstChild);
       } else if (!want && cb) { cb.remove(); cb = null; }
       if (cb) { cb.checked = on; cb.title = on ? "Marked: completes itself (and stops the timer) when its tracked time reaches its estimate - untick to stop" : "Tick to complete this task automatically when its tracked time reaches its estimate"; }
+      // The numbered box (shown while arBoxes is on) - its place in the run order.
+      // A task already in a running queue shows its queue chip instead.
+      let nb = wrap && wrap.querySelector(".ar-box");
+      const wantN = arBoxes && wrap && qi < 0 && canMark(t);
+      if (wantN && !nb) {
+        nb = document.createElement("button");
+        nb.type = "button";
+        nb.className = "ar-box";
+        nb.addEventListener("click", (e) => { e.preventDefault(); e.stopPropagation(); togglePick(row._cuTask); });
+        wrap.insertBefore(nb, wrap.firstChild);
+      } else if (!wantN && nb) { nb.remove(); nb = null; }
+      if (nb) {
+        const pi = t ? pickAt(t.id) : -1;
+        const nbt = pi >= 0 ? String(pi + 1) : "";
+        if (nb.textContent !== nbt) nb.textContent = nbt;
+        nb.classList.toggle("on", pi >= 0);
+        nb.title = pi >= 0
+          ? "Runs " + (pi + 1) + " of " + picks.ids.length + " - click to take it out of the run order"
+          : "Click to put this task in the run order (number " + (picks.ids.length + 1) + ") - it starts when the one before it completes";
+      }
     });
   }
   let pend = 0;
-  new MutationObserver(() => { if (!pend) pend = setTimeout(() => { pend = 0; paintRows(); }, 40); }).observe(document.documentElement, { childList: true, subtree: true });
+  // Marked in the same frame the rows were drawn (a timer let the bare rows show first).
+  let burst = 0;
+  new MutationObserver(() => {
+    if (pend) return;
+    pend = 1;
+    const run = () => { pend = 0; paintRows(); };
+    if (burst++ < 3) { queueMicrotask(run); setTimeout(() => { burst = 0; }, 0); } else setTimeout(run, 40);
+  }).observe(document.documentElement, { childList: true, subtree: true });
   load();
 
   // ---------- console ----------
@@ -181,11 +280,12 @@
     { name: "/cheats", about: "list the commands you can use" },
     { name: "/autocomplete", about: "choose tasks that complete themselves when their tracked time reaches the estimate  (/autocomplete list | clear | off <n>)" },
     { name: "/autocomplete boxes", about: "a tick box on every task row to mark them right in the table  (/autocomplete boxes off to hide)" },
-    { name: "/autorun", about: "run tasks one after another: each starts, completes at its estimate, then the next starts  (/autorun list | stop)" },
+    { name: "/autorun", about: "run tasks one after another: each starts, completes at its estimate, then the next starts  (/autorun list | stop | clear)" },
+    { name: "/autorun boxes", about: "a numbered box on every task row: click them in the order you want the tasks to run, then Start  (/autorun boxes off to hide)" },
     { name: "/refresh", about: "read everything from ClickUp again now" },
     { name: "/whoami", about: "who and where you are" },
     { name: "/active", about: "what's switched on, and how to switch each off" },
-    { name: "/off", about: "switch everything off (queue, auto-complete marks, tick boxes)" },
+    { name: "/off", about: "switch everything off (queue, run order, auto-complete marks, boxes)" },
     { name: "/clear", about: "clear this box" },
     { name: "/exit", about: "close (or Esc)" },
     { name: "/policy", about: "the live update policy", admin: true },
@@ -217,8 +317,8 @@
     if (c === "/active") {
       const items = activeItems();
       if (!items.length) { line("nothing switched on", "mu"); return; }
-      const how = { queue: "/autorun stop", marks: "/autocomplete clear  (one: /autocomplete off <n> from /autocomplete list)", boxes: "/autocomplete boxes off" };
-      for (const it of items) line(it.text.padEnd(42) + "off: " + how[it.key], "hl");
+      const how = { queue: "/autorun stop", arpick: "/autorun clear  (or Start above the list to run them)", marks: "/autocomplete clear  (one: /autocomplete off <n> from /autocomplete list)", boxes: "/autocomplete boxes off", arboxes: "/autorun boxes off" };
+      for (const it of items) line(how[it.key] ? it.text.padEnd(42) + "off: " + how[it.key] : it.text, how[it.key] ? "hl" : "mu");
       line("/off switches all of it off", "mu");
       return;
     }
@@ -280,8 +380,11 @@
       return;
     }
     if (arg === "boxes" || arg === "boxes on") {
-      await chrome.storage.local.set({ acBoxes: true }); boxes = true; paintRows();
+      // Only one kind of box at a time, or a row would carry both a tick and a number.
+      await chrome.storage.local.set({ acBoxes: true, arBoxes: false });
+      boxes = true; arBoxes = false; paintRows();
       line("tick boxes on - tick a task in the table to mark it (/autocomplete boxes off to hide them)", "ok");
+      if (picks.ids.length) line("the numbered run-order boxes are off while these are on - the order you picked is kept (/autorun clear forgets it)", "mu");
       return;
     }
     if (arg === "boxes off") {
@@ -342,6 +445,33 @@
     if (arg === "stop") {
       await send({ type: "DEV_CMD", cmd: "autorun-stop" }, 8000);
       line("queue stopped - the running timer keeps going; queued tasks stay marked for auto-complete (/autocomplete clear unmarks them)", "ok");
+      return;
+    }
+    if (arg === "boxes" || arg === "boxes on") {
+      // Only one kind of box at a time, so this switches /autocomplete's ticks off.
+      await chrome.storage.local.set({ arBoxes: true, acBoxes: false });
+      arBoxes = true; boxes = false; paintRows();
+      line("numbered boxes on - click them in the table in the order you want the tasks to run, then Start above the list (/autorun boxes off to hide)", "ok");
+      line("the tick boxes are off while these are on; tasks already marked for auto-complete stay marked", "mu");
+      return;
+    }
+    if (arg === "boxes off") {
+      await chrome.storage.local.set({ arBoxes: false });
+      arBoxes = false; paintRows();
+      line("numbered boxes hidden - the order you picked is kept (/autorun clear forgets it)", "ok");
+      return;
+    }
+    if (arg === "clear") {
+      await clearPicks();
+      line("run order forgotten", "ok");
+      return;
+    }
+    if (arg === "start") {
+      if (!picks.ids.length) { line("nothing picked yet - /autorun boxes, then click the tasks in the order you want them to run", "e"); return; }
+      const first = picks.names[picks.ids[0]] || picks.ids[0];
+      const n = picks.ids.length;
+      const err = await startArPick();
+      line(err || "started - " + n + " task" + (n === 1 ? "" : "s") + ", \"" + String(first).slice(0, 60) + "\" is running (/autorun list to follow it)", err ? "e" : "ok");
       return;
     }
     if (q && q.ids && q.ids.length) { line("a queue is already running (" + (q.total - q.ids.length) + " of " + q.total + " done) - /autorun stop first", "e"); return; }

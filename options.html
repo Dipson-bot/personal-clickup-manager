@@ -338,10 +338,19 @@
   .cu-done-pill { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; border-radius: 6px; background: #15803d; color: #fff; font-size: 10.5px; font-weight: 700; letter-spacing: .01em; white-space: nowrap; }
   /* Task lists stretch from their bottom-right corner (makeListResizable). */
   .cu-tasklist.cu-resizable { min-height: 60px; }
+  .cu-tasklist[data-all="1"] { max-height: none !important; height: auto !important; overflow: visible !important; }
   /* Drag bar under a stretchable list: full width, above nothing clickable. */
-  .cu-grip { height: 10px; margin: 2px 0 4px; cursor: ns-resize; display: flex; align-items: center; justify-content: center; border-radius: 6px; touch-action: none; user-select: none; }
+  .cu-grip { height: 10px; margin: 2px 0 4px; cursor: ns-resize; display: flex; align-items: center; justify-content: center; gap: 6px; border-radius: 6px; touch-action: none; user-select: none; }
   .cu-grip::before { content: ""; width: 42px; height: 4px; border-radius: 3px; background: var(--border); transition: background .15s, width .15s; }
   .cu-grip:hover::before, .cu-grip.active::before { background: var(--indigo); width: 64px; }
+  .cu-grip:focus-visible { outline: 2px solid var(--indigo); outline-offset: 1px; }
+  /* Click-state word ("Loading the list…", "Everything already fits"): sized to
+     fit the bar's own 10px, so showing it never moves the page a pixel. */
+  .cu-griplab { font-size: 9.5px; line-height: 10px; white-space: nowrap; color: var(--muted); pointer-events: none; }
+  .cu-grip:hover .cu-griplab { color: var(--indigo); }
+  .cu-grip.busy { cursor: progress; }
+  .cu-grip.busy::before { width: 64px; background: var(--amber); animation: cu-gripwait .9s ease-in-out infinite; }
+  @keyframes cu-gripwait { 0%, 100% { opacity: 1; } 50% { opacity: .35; } }
   .cu-iconbtn.done { font-weight: 700;color: var(--green); border-color: var(--green); }
   .cu-iconbtn.done:hover:not(:disabled) { color: #fff; background: var(--green); }
   .cu-iconbtn:disabled { opacity: 0.55; cursor: not-allowed; }
@@ -672,6 +681,11 @@
   .dash-h { display: flex; align-items: center; gap: 10px; margin-bottom: 12px; flex-wrap: wrap; }
   .dash-h h3 { margin: 0; font-size: 16px; }
   .dash-h .spacer, .dash-sub .spacer { flex: 1; }
+  /* Task search. Narrow in a card header (the ↻ and Filter buttons have to stay
+     on the same line) and full width above the completed list. */
+  .dash-search { width: 170px; min-width: 120px; padding: 5px 9px; font-weight: 400; font-size: 12.5px; }
+  .dash-search.wide { width: 100%; margin: 2px 0 6px; }
+  .dash-nores { padding: 8px 0 2px; font-size: 12.5px; color: var(--muted); }
   .dash-sub { display: flex; align-items: center; gap: 8px; margin-top: 12px; padding-top: 10px; border-top: 1px dashed var(--border); font-size: 12.5px; font-weight: 600; color: var(--muted); }
   .dash-chip { font-size: 11.5px; font-weight: 700; padding: 3px 10px; border-radius: 999px; background: rgba(217, 119, 6, 0.13); color: var(--amber); }
   .dash-chip.met { background: rgba(22, 163, 74, 0.13); color: var(--green); }
@@ -755,6 +769,8 @@
   .cu-now-name { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text); text-decoration: none; font-weight: 600; }
   .cu-now-name:hover { text-decoration: underline; }
   .cu-now-time { flex: none; font-variant-numeric: tabular-nums; color: var(--green); font-weight: 700; }
+  .cu-now-sess { flex: none; font-size: .86em; color: var(--muted); font-variant-numeric: tabular-nums; white-space: nowrap; }
+  .cu-now-sess:empty { display: none; }
   /* Today's share of the running task's time, beside the all-days total. The row
      and the strip already space their items, so the pill drops its own margin. */
   .cu-now .trk-today, .cu-task .trk-today { flex: none; margin-left: 0; }
@@ -821,7 +837,10 @@
 
   .cu-filter-clear { margin: 0 4px 6px; }
   .cu-meta { margin-top: 2px; }
-  /* This week: per-day estimated vs tracked, Mon-Fri. */
+  /* This week: per-day estimated vs tracked. The column count is set inline from
+     the number of days actually drawn - a Sunday→Saturday week can show up to 7
+     (a weekend day appears when it carries time), and a fixed 5 wrapped those
+     onto a second row. The 5 here is only the pre-paint fallback. */
   .wk-chart { display: grid; grid-template-columns: repeat(5, 1fr); gap: 10px; margin-top: 14px; }
   .wk-day { display: flex; flex-direction: column; align-items: center; gap: 5px; min-width: 0; }
   .wk-bars { position: relative; width: 100%; max-width: 46px; height: 78px; display: flex; align-items: flex-end; justify-content: center; gap: 3px; border-bottom: 1px solid var(--border); }
@@ -1125,6 +1144,7 @@
 
     <div class="card cu-needs-config" id="dashTasksCard" style="display:none;">
       <div class="dash-h"><h3>Tasks</h3><span class="hint" id="dashTasksScope"></span><span class="spacer"></span>
+        <input type="search" id="dashSearch" class="dash-search" placeholder="Search these tasks" title="Narrows the lists below to the tasks whose name, client, status or assignee matches. It only filters what is already loaded - it never asks ClickUp for anything, so it costs none of your rate limit. Esc clears it." autocomplete="off" />
         <button type="button" class="icon-btn" id="dashRefresh" title="Refresh from ClickUp now">↻</button>
         <div class="cu-filter">
           <button type="button" class="cu-filter-btn" id="optCuExportBtn" title="Export the tasks shown here (CSV, Excel, Google Sheets/Docs)">&#10515; Export</button>
@@ -1181,6 +1201,17 @@
       </div>
       <div id="cuNow" class="cu-now" hidden></div>
       <div id="dashTasks" class="dash-tasks"></div>
+    </div>
+
+    <div class="card cu-needs-config" id="dashDoneCard" style="display:none;">
+      <div class="dash-h"><h3>Recently completed</h3><span class="hint" id="dashDoneSub"></span><span class="spacer"></span>
+        <button type="button" class="cu-filter-btn" id="dashDoneClear" title="Forget the completed tasks saved here. It does not change anything in ClickUp - the list fills up again as tasks are completed.">Clear</button>
+        <button type="button" class="cu-collapse-btn" data-optcollapse="done" data-optcolltarget="dashDoneColl" title="Show / hide the tasks you finished recently">▸ Show</button>
+      </div>
+      <div class="opt-coll" id="dashDoneColl">
+        <input type="search" id="dashDoneSearch" class="dash-search wide" placeholder="Search completed tasks" title="Searches the saved history only - it never asks ClickUp for anything." autocomplete="off" />
+        <div id="dashDoneList" class="cu-tasklist"></div>
+      </div>
     </div>
 
     <div class="card cu-needs-config" id="dashWeekDaysCard" style="display:none;">
@@ -1610,6 +1641,7 @@
     </div></details>
     <div id="remForm" style="max-width:460px;"></div>
     <div id="remList"></div>
+    <div id="nudgeList"></div>
   </div>
   </section>
 
@@ -2294,9 +2326,12 @@
   <div class="card" id="floatCard">
     <h2>Floating tracker</h2>
     <p class="hint" style="margin:0 0 10px;line-height:1.5;">A small window that stays on top of every app, showing the task you're tracking, how close it is to the
-      estimate, and a face that goes from sad to happy as you reach it (and grumpy once you go over). Open it with <b>&#10697; Float</b> in the
-      Tracking now bar, or the button below. Chrome needs one click in a small pinned tab to show it.</p>
+      estimate, and a face that goes from sad to happy as you reach it (and grumpy once you go over). It opens by itself when you start a task
+      in the dashboard or the side panel, or with <b>&#10697; Float</b> in the Tracking now bar, or the button below. It stays open as long as the
+      page it was opened from (the dashboard tab or the side panel); from the toolbar popup it uses a small pinned tab instead.</p>
     <div class="checkbox" style="margin:0 0 4px;"><input type="checkbox" id="floatTracker" /><label for="floatTracker" style="margin:0;font-weight:400;">Show the Float button</label></div>
+    <div class="checkbox" style="margin:0 0 4px;"><input type="checkbox" id="floatAutoOpen" /><label for="floatAutoOpen" style="margin:0;font-weight:400;">Open it by itself when I start a task in the dashboard or the side panel</label></div>
+    <div class="checkbox" style="margin:0 0 4px;"><input type="checkbox" id="floatAutoAnywhere" /><label for="floatAutoAnywhere" style="margin:0;font-weight:400;">Also open it when a timer starts anywhere else <span class="hint">- the toolbar popup, ClickUp itself or the keyboard shortcut. Chrome shows a "started debugging this browser" bar for a moment while it does, because that is the only way Chrome lets an extension open it without your click.</span></label></div>
     <div class="checkbox" style="margin:0 0 4px;"><input type="checkbox" id="floatHover" /><label for="floatHover" style="margin:0;font-weight:400;">Show the full view when I point at it <span class="hint">- off: click it to switch</span></label></div>
     <div class="checkbox" style="margin:0 0 4px;"><input type="checkbox" id="floatToday" /><label for="floatToday" style="margin:0;font-weight:400;">Show today's total</label></div>
     <div class="checkbox" style="margin:6px 0 4px;align-items:center;"><label for="floatSize" style="margin:0;font-weight:400;">Size</label>
@@ -2339,6 +2374,7 @@
 <script src="lib-zip.js"></script>
 <script src="task-panel.js"></script>
 <script src="assignees.js"></script>
+<script src="tracker.js"></script>
 <script src="add-time.js"></script>
 <script src="lib-taskfiles.js"></script>
 <script src="md-notes.js"></script>

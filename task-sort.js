@@ -246,10 +246,15 @@
   // Lists are redrawn often (refresh, filter, timer ticks): set up again shortly
   // after a change (a timer, not a frame: hidden side panels draw no frames).
   let queued = false;
+  // Sorted in the same frame the list was redrawn in: on a 40 ms timer the rows
+  // were painted in their normal order first and jumped into the sorted order a
+  // moment later, which was the dashboard's flicker on every background refresh.
+  let burst = 0;
   const mo = new MutationObserver(() => {
     if (busy || queued) return;
     queued = true;
-    setTimeout(() => { queued = false; refreshAll(); }, 40);
+    const run = () => { queued = false; refreshAll(); };
+    if (burst++ < 3) { queueMicrotask(run); setTimeout(() => { burst = 0; }, 0); } else setTimeout(run, 40);
   });
   // Keep where you were when a list is redrawn (every few minutes, or when
   // something changes): emptying and refilling a task list put its scroll box -
@@ -260,17 +265,39 @@
   // among the lists there), because a redraw can swap in a brand-new list element.
   const lastTop = new Map();
   const listKey = (l) => { const host = (l.parentElement && l.parentElement.closest("[id]")) || document.body; return (host.id || "body") + ":" + [...host.querySelectorAll(".cu-tasklist")].indexOf(l); };
-  let lastY = window.scrollY || 0, userScrollAt = 0;
+  let lastY = window.scrollY || 0, userScrollAt = 0, domAt = 0;
   const noteUser = () => { userScrollAt = Date.now(); };
   for (const ev of ["wheel", "touchmove", "keydown", "pointerdown"]) window.addEventListener(ev, noteUser, { capture: true, passive: true });
   document.addEventListener("scroll", (e) => {
     const el = e.target;
-    if (el === document || el === document.documentElement || el === document.body) { if (!guarding) lastY = window.scrollY || 0; return; }
+    if (el === document || el === document.documentElement || el === document.body) {
+      // A redraw that makes the page shorter for an instant makes the browser
+      // scroll up by itself. Taking that as "where you were" is how the position
+      // used to be lost, so a scroll right after a redraw with no sign of you
+      // touching anything doesn't count.
+      if (!guarding && (Date.now() - domAt > 250 || Date.now() - userScrollAt < 250)) lastY = window.scrollY || 0;
+      return;
+    }
     if (el && el.classList && el.classList.contains("cu-tasklist") && !guarding) lastTop.set(listKey(el), el.scrollTop);
   }, true);
   let guarding = false;
+  // A change worth guarding: inside a list, or a whole list added or taken away
+  // (emptying the container that HOLDS the lists is the big one - that mutation
+  // isn't inside a list, so it used to be ignored).
+  const touchesList = (r) => {
+    if (r.target && r.target.closest && r.target.closest(".cu-tasklist")) return true;
+    for (const set of [r.removedNodes, r.addedNodes]) {
+      for (const n of set) {
+        if (!n || n.nodeType !== 1) continue;
+        if (n.classList && n.classList.contains("cu-tasklist")) return true;
+        if (n.querySelector && n.querySelector(".cu-tasklist")) return true;
+      }
+    }
+    return false;
+  };
   const keep = new MutationObserver((recs) => {
-    if (!recs.some((r) => r.target && r.target.closest && r.target.closest(".cu-tasklist"))) return;
+    if (!recs.some(touchesList)) return;
+    domAt = Date.now();
     if (Date.now() - userScrollAt < 150) return; // the person is scrolling: leave it
     guarding = true;
     try {

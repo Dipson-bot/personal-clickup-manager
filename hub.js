@@ -510,6 +510,41 @@
     };
     if (i && i.adminKey) { $("hubAdmKey").placeholder = "Saved ✓ (enter a new key only to change it)"; loadUsers(); }
   }
+  // One person, several rows. The hub's Users sheet is keyed by INSTALL id, not by
+  // ClickUp user, so a reinstall, a second Chrome profile or a new computer gives
+  // the same person a second honest row - which is why a name showed up twice in
+  // the admin panel. Group by ClickUp user id and show the copy that checked in
+  // most recently; the older ones stay reachable behind a toggle so they can be
+  // removed rather than quietly hidden. A row with no ClickUp id yet (the
+  // extension checked in before ClickUp was connected) matches nobody, so it
+  // stands on its own instead of being folded into someone else.
+  function dedupeUsers(list) {
+    const seen = new Map(), out = [];
+    for (const u of Array.isArray(list) ? list : []) {
+      if (!u) continue;
+      const k = String(u.cuUserId || "").trim();
+      if (!k) { out.push({ row: u, dupes: [] }); continue; }
+      const g = seen.get(k);
+      if (!g) { const n = { row: u, dupes: [] }; seen.set(k, n); out.push(n); continue; }
+      g.dupes.push(u);
+    }
+    // The hub sorts newest-first already, but which row is "the current one" is
+    // too important to depend on a hand-deployed script for: decide it here.
+    for (const g of out) {
+      if (!g.dupes.length) continue;
+      const all = [g.row].concat(g.dupes).sort((a, b) => (Number(b.lastSeen) || 0) - (Number(a.lastSeen) || 0));
+      g.row = all[0];
+      g.dupes = all.slice(1);
+    }
+    return out.sort((a, b) => (Number(b.row.lastSeen) || 0) - (Number(a.row.lastSeen) || 0));
+  }
+  // The hub script is pasted into Apps Script and deployed by hand, so a copy of
+  // the extension can be newer than the script behind it. An older script doesn't
+  // know "forget" and falls through to its thread branch, so say that plainly
+  // instead of leaving a button that does nothing.
+  const OLD_HUB = "Your Team hub script is older than this extension - it doesn't know how to remove a user yet. Copy team-hub.gs again (the button above), paste it into Apps Script and deploy a new version.";
+  const hubErr = (r) => (r && r.ok) ? "" : (r && /thread not found|unknown op/i.test(String(r.error || "")) ? OLD_HUB : ((r && r.error) || "Didn't work."));
+
   async function loadUsers() {
     const box = $("hubAdmUsers");
     if (!box) return;
@@ -520,18 +555,25 @@
     const myInstall = ((await send({ type: "HUB_INFO" })) || {}).install || "";
     box.textContent = "";
     if (!r || !r.ok) { box.appendChild(el("div", "hb-msg err", (r && r.error) || "Couldn't load the users.")); return; }
+    const people = dedupeUsers(r.users);
+    const extra = people.reduce((n, g) => n + g.dupes.length, 0);
     // What these numbers are: each copy's own last check-in.
     note = el("div", "hint hb-usersnote");
     note.style.cssText = "display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:6px;";
     note.appendChild(el("span", "", "Checked " + new Date().toLocaleTimeString([], { hour: "numeric", minute: "2-digit" }) +
-      ". Versions are what each copy last reported: it checks in when opened (at most hourly), at least once a day, and right after it updates. Copies on v3.10.4 or older report a new version only on their next daily check-in."));
+      ". A version here is what that copy last reported, not what it is running right now: a copy checks in when someone opens it (at most hourly), at least once a day, and straight after it updates. So a version can lag by up to a day - ↻ re-reads the row, 🔔 asks the person to open their extension."));
     const rf = el("button", "hb-mini", "↻ Refresh"); rf.type = "button"; rf.onclick = () => loadUsers();
     note.appendChild(rf);
     box.appendChild(note);
     const st = r.settings || {};
     const stats = el("div", "hb-stats");
-    const oldV = r.users.filter((u) => u.version && cmpV(u.version, VERSION) < 0).length;
-    for (const [n, l] of [[r.total, "users"], [r.activeToday, "active today"], [r.activeWeek, "active this week"], [oldV, "on an older version"]]) { const s = el("span"); s.appendChild(el("b", "", String(n))); s.append(l); stats.appendChild(s); }
+    const day = 86400000, nowMs = Date.now();
+    const since = (g) => nowMs - (Number(g.row.lastSeen) || 0);
+    const oldV = people.filter((g) => g.row.version && cmpV(g.row.version, VERSION) < 0).length;
+    const nums = [[people.length, "people"], [people.filter((g) => since(g) < day).length, "active today"],
+      [people.filter((g) => since(g) < 7 * day).length, "active this week"], [oldV, "on an older version"]];
+    if (extra) nums.push([extra, extra === 1 ? "older copy" : "older copies"]);
+    for (const [n, l] of nums) { const s = el("span"); s.appendChild(el("b", "", String(n))); s.append(l); stats.appendChild(s); }
     box.appendChild(stats);
     const set = el("div", "hb-bar");
     const slow = el("select");
@@ -543,28 +585,187 @@
     slow.onchange = saveSet; pub.onchange = saveSet;
     set.append(slow, pubL);
     box.appendChild(set);
+    // One line under the table for whatever the row buttons have to report, so a
+    // ↻ that found nothing new or a send that was refused doesn't vanish.
+    const msg = el("div", "hb-msg");
+    msg.style.display = "none";
+    const say = (t, bad) => { msg.style.display = t ? "" : "none"; msg.textContent = t || ""; msg.className = "hb-msg" + (bad ? " err" : ""); };
     const tbl = el("table", "hb-users");
     const hr = el("tr"); for (const h of ["", "Name", "Version (reported)", "Last active", "", ""]) hr.appendChild(el("th", "", h));
     tbl.appendChild(hr);
-    for (const u of r.users) {
-      const tr = el("tr");
-      const c0 = el("td"); c0.appendChild(avatar(u)); tr.appendChild(c0);
-      tr.appendChild(el("td", "", u.name || "(no name)"));
-      const cv = el("td", "", u.version ? "v" + u.version : "-"); if (u.version && cmpV(u.version, VERSION) < 0) cv.style.color = "#b45309";
-      if (u.lastSeen) cv.title = "Reported " + ago(u.lastSeen) + " (" + new Date(u.lastSeen).toLocaleString() + ")";
-      tr.appendChild(cv);
-      tr.appendChild(el("td", "", u.lastSeen ? ago(u.lastSeen) : "-"));
-      tr.appendChild(el("td", "", u.state === "banned" ? "Banned" : u.state === "muted" ? "Muted until " + new Date(u.mutedUntil).toLocaleString([], { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" }) : ""));
-      const ca = el("td");
-      if (myInstall && u.install === myInstall) { ca.appendChild(el("span", "hint", "you")); tr.appendChild(ca); tbl.appendChild(tr); continue; }
-      const act = (label, o) => { const b = el("button", "hb-mini", label); b.type = "button"; b.onclick = async () => { b.disabled = true; await hub("mod", { install: u.install, ...o }, true); loadUsers(); }; ca.appendChild(b); };
+    for (const g of people) drawUser(tbl, g, myInstall, say);
+    box.appendChild(tbl);
+    if (extra) {
+      const all = el("button", "hb-mini", "Remove all " + extra + " older cop" + (extra === 1 ? "y" : "ies"));
+      all.type = "button";
+      all.style.marginTop = "8px";
+      all.title = "Delete the leftover rows for people who appear more than once. The copy each of them is using now is untouched.";
+      all.onclick = async () => {
+        if (!confirm("Remove " + extra + " older cop" + (extra === 1 ? "y" : "ies") + "?\n\nThese are rows the same people left behind by reinstalling or using a second Chrome profile. The copy each person uses now stays in the list, and nothing changes on anybody's computer."))
+          return;
+        all.disabled = true; all.textContent = "Removing…";
+        let done = 0, stop = "";
+        for (const g of people) {
+          for (const d of g.dupes) {
+            const rr = await hub("mod", { op: "forget", install: d.install }, true);
+            if (rr && rr.ok) { done++; continue; }
+            stop = hubErr(rr);
+            break;
+          }
+          if (stop) break;
+        }
+        if (stop) say(done ? "Removed " + done + " of " + extra + ", then stopped: " + stop : stop, true);
+        loadUsers();
+      };
+      box.appendChild(all);
+    }
+    box.appendChild(msg);
+  }
+
+  // One person's row, plus the two rows that fold out of it: their older copies
+  // and the Notify composer.
+  function drawUser(tbl, g, myInstall, say) {
+    const u = g.row;
+    const mine = !!(myInstall && u.install === myInstall);
+    const dupRow = el("tr"); dupRow.style.display = "none";
+    const noteRow = el("tr"); noteRow.style.display = "none";
+    const tr = el("tr");
+    const c0 = el("td"); c0.appendChild(avatar(u)); tr.appendChild(c0);
+    const cn = el("td");
+    cn.appendChild(el("div", "", u.name || "(no name)"));
+    if (g.dupes.length) {
+      const label = () => g.dupes.length + " older cop" + (g.dupes.length === 1 ? "y" : "ies");
+      const more = el("button", "hb-mini", "▸ " + label());
+      more.type = "button";
+      more.style.marginTop = "3px";
+      more.title = "The same person on an older install id - from a reinstall or a second Chrome profile. Only the copy they are using now is listed above.";
+      more.onclick = () => { const open = dupRow.style.display === "none"; dupRow.style.display = open ? "" : "none"; more.textContent = (open ? "▾ " : "▸ ") + label(); };
+      cn.appendChild(more);
+    }
+    tr.appendChild(cn);
+    const cv = el("td", "", u.version ? "v" + u.version : "-"); if (u.version && cmpV(u.version, VERSION) < 0) cv.style.color = "#b45309";
+    if (u.lastSeen) cv.title = "Reported " + ago(u.lastSeen) + " (" + new Date(u.lastSeen).toLocaleString() + ")";
+    tr.appendChild(cv);
+    const cl = el("td", "", u.lastSeen ? ago(u.lastSeen) : "-");
+    tr.appendChild(cl);
+    tr.appendChild(el("td", "", u.state === "banned" ? "Banned" : u.state === "muted" ? "Muted until " + new Date(u.mutedUntil).toLocaleString([], { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" }) : ""));
+    const ca = el("td");
+    ca.style.whiteSpace = "nowrap";
+    const mini = (label, title, fn) => { const b = el("button", "hb-mini", label); b.type = "button"; if (title) b.title = title; b.onclick = () => fn(b); ca.appendChild(b); return b; };
+
+    // ↻ re-reads this one row. It cannot make a copy check in - only that copy
+    // decides when to - so it says which of the two happened rather than
+    // pretending the number is live.
+    mini("↻", "Re-read this person's row from the hub. The version only changes here once their own copy checks in; 🔔 asks them to open it.", async (b) => {
+      const was = b.textContent; b.disabled = true; b.textContent = "…";
+      const rr = await hub("users", {}, true);
+      b.disabled = false; b.textContent = was;
+      const fresh = rr && rr.ok && (rr.users || []).find((x) => String(x.install) === String(u.install));
+      if (!fresh) { say(hubErr(rr) || "That copy is no longer in the hub - refresh the list.", true); return; }
+      const moved = String(fresh.version || "") !== String(u.version || "");
+      Object.assign(u, fresh);
+      cv.textContent = fresh.version ? "v" + fresh.version : "-";
+      cv.style.color = fresh.version && cmpV(fresh.version, VERSION) < 0 ? "#b45309" : "";
+      cv.title = fresh.lastSeen ? "Reported " + ago(fresh.lastSeen) + " (" + new Date(fresh.lastSeen).toLocaleString() + ")" : "";
+      cl.textContent = fresh.lastSeen ? ago(fresh.lastSeen) : "-";
+      const who = u.name || "That copy";
+      say(moved
+        ? who + " now reports " + (fresh.version ? "v" + fresh.version : "no version") + "."
+        : who + " still reports " + (fresh.version ? "v" + fresh.version : "no version") + ", last checked in " + (fresh.lastSeen ? ago(fresh.lastSeen) : "never") + ". Their copy decides when to check in - 🔔 asks them to open it.");
+    });
+
+    if (!mine) {
+      // 🔔 goes down the same pipe as the reminder one teammate sends another on a
+      // task: a desktop notification plus a line in their Reminders tab. No task,
+      // so it is just the message - editable, because "update please" and "can you
+      // log your hours" are different asks.
+      const canNotify = !!String(u.cuUserId || "").trim();
+      const nb = mini("🔔 Notify", canNotify
+        ? "Send this person a message in their extension - a desktop notification, and a line under From teammates in their Reminders tab."
+        : "No ClickUp id for this copy yet, so the hub has no way to address it. It gets one the next time they open the extension with ClickUp connected.",
+        () => { const open = noteRow.style.display === "none"; noteRow.style.display = open ? "" : "none"; if (open) ta.focus(); });
+      nb.disabled = !canNotify;
+      const act = (label, o) => mini(label, "", async (b) => { b.disabled = true; const rr = await hub("mod", { install: u.install, ...o }, true); if (!(rr && rr.ok)) { b.disabled = false; say(hubErr(rr), true); return; } loadUsers(); });
       if (u.state === "banned") act("Unban", { op: "unban" }); else act("Ban", { op: "ban" });
       if (u.state === "muted") act("Unmute", { op: "unmute" }); else if (u.state !== "banned") act("Mute 24 h", { op: "mute", hours: 24 });
-      ca.style.whiteSpace = "nowrap";
-      tr.appendChild(ca);
-      tbl.appendChild(tr);
+      mini("✕", "Remove this copy from the list. It comes back the next time that computer opens the extension.", async (b) => {
+        if (!confirm("Remove " + (u.name || "this copy") + " from the list?\n\nThis only deletes the hub's row. Nothing changes on their computer, and the row comes back the next time they open the extension."))
+          return;
+        b.disabled = true;
+        const rr = await hub("mod", { op: "forget", install: u.install }, true);
+        if (rr && rr.ok) { loadUsers(); return; }
+        b.disabled = false;
+        say(hubErr(rr), true);
+      });
+    } else {
+      ca.appendChild(el("span", "hint", "you"));
     }
-    box.appendChild(tbl);
+    tr.appendChild(ca);
+    tbl.appendChild(tr);
+
+    if (g.dupes.length) {
+      const dc = el("td"); dc.colSpan = 6; dc.style.paddingTop = "0";
+      for (const d of g.dupes) {
+        const line = el("div");
+        line.style.cssText = "display:flex;gap:8px;align-items:center;font-size:12px;color:var(--muted);padding:2px 0;";
+        line.appendChild(el("span", "", (d.version ? "v" + d.version : "no version") + " · last active " + (d.lastSeen ? ago(d.lastSeen) : "never") + " · id " + String(d.install || "?").slice(0, 8)));
+        const x = el("button", "hb-mini", "✕ Remove"); x.type = "button";
+        x.title = "Delete this leftover row. The copy " + (u.name || "this person") + " uses now is not touched.";
+        x.onclick = async () => {
+          // Asks, like the other two Remove buttons do. Deleting a row is easy to
+          // undo (it comes back on that copy's next check-in) but it should never
+          // happen on a stray click, and the dialog is where the install id and
+          // the date get read properly.
+          if (!confirm("Remove this older copy of " + (u.name || "this person") + "?\n\n" +
+            (d.version ? "v" + d.version : "No version") + ", last active " + (d.lastSeen ? ago(d.lastSeen) : "never") + ", id " + String(d.install || "?").slice(0, 8) + ".\n\n" +
+            "The copy they are using now stays in the list, and nothing changes on their computer."))
+            return;
+          x.disabled = true;
+          const rr = await hub("mod", { op: "forget", install: d.install }, true);
+          if (rr && rr.ok) { loadUsers(); return; }
+          x.disabled = false;
+          say(hubErr(rr), true);
+        };
+        line.appendChild(x);
+        dc.appendChild(line);
+      }
+      dupRow.appendChild(dc);
+      tbl.appendChild(dupRow);
+    }
+
+    if (mine) return;
+    const behind = u.version && cmpV(u.version, VERSION) < 0;
+    const nc = el("td"); nc.colSpan = 6; nc.style.paddingTop = "0";
+    const form = el("div");
+    form.style.cssText = "display:flex;gap:6px;flex-wrap:wrap;align-items:flex-start;padding:2px 0 8px;";
+    const ta = el("textarea");
+    ta.rows = 2; ta.maxLength = 300;
+    ta.style.cssText = "flex:1;min-width:240px;font:inherit;font-size:12.5px;";
+    ta.value = behind
+      ? "Please open Personal ClickUp Manager (click its icon) so it updates to v" + VERSION + " - this list still shows you on v" + u.version + "."
+      : "";
+    ta.placeholder = "What should they see? e.g. please log your hours before you finish today";
+    const go = el("button", "hb-mini", "Send"); go.type = "button";
+    const no = el("button", "hb-mini", "Cancel"); no.type = "button";
+    const cnt = el("span", "hint", "");
+    const count = () => { cnt.textContent = ta.value.trim().length + "/300"; };
+    ta.oninput = count; count();
+    no.onclick = () => { noteRow.style.display = "none"; };
+    go.onclick = async () => {
+      const text = ta.value.trim();
+      if (!text) { ta.focus(); say("Write what to tell them first.", true); return; }
+      go.disabled = true; go.textContent = "Sending…";
+      const rr = await hub("nudge", { toUser: String(u.cuUserId || ""), taskId: "", taskName: "", taskUrl: "", text }, false);
+      go.disabled = false; go.textContent = "Send";
+      if (rr && rr.ok) { noteRow.style.display = "none"; say("Sent to " + (u.name || "them") + " ✓ Their extension shows it within a few minutes - as a notification, and under From teammates in their Reminders tab."); return; }
+      say(rr && rr.reason === "no-extension"
+        ? (u.name || "They") + " hasn't opened the extension since the Team hub was set up, so there is nowhere to deliver it yet."
+        : hubErr(rr), true);
+    };
+    form.append(ta, go, no, cnt);
+    nc.appendChild(form);
+    noteRow.appendChild(nc);
+    tbl.appendChild(noteRow);
   }
 
   const boot = () => { start(); startAdmin(); };

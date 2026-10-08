@@ -189,6 +189,12 @@
   });
   function openFloat() {
     chrome.storage.local.set({ floatHintSeen: 99 }).catch(() => {});
+    // The dashboard and the side panel can float it themselves, in this click -
+    // no detour through the pinned tab. The toolbar popup still uses that tab.
+    if (window.PcmFloat && window.PcmFloat.canHost()) {
+      window.PcmFloat.open().then((ok) => { if (ok === false) chrome.runtime.sendMessage({ type: "FLOAT_TRACKER_OPEN" }, () => void chrome.runtime.lastError); });
+      return;
+    }
     chrome.runtime.sendMessage({ type: "FLOAT_TRACKER_OPEN" }, () => void chrome.runtime.lastError);
   }
   function floatButton() {

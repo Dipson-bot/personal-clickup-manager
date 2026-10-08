@@ -54,6 +54,11 @@ $lines = Get-Content CHANGELOG.md
 $start = ($lines | Select-String -Pattern ("^## " + [regex]::Escape($tag) + "(\s|$)") | Select-Object -First 1).LineNumber
 if (-not $start) { throw "CHANGELOG.md has no ## $tag section - add one first." }
 $section = @(); for ($i = $start; $i -lt $lines.Count; $i++) { if ($lines[$i] -match "^## ") { break }; $section += $lines[$i] }
+# The zip's SHA-256 at the bottom, so anyone can check a download is exactly
+# what was published (Windows Defender sometimes guesses at a new unsigned zip).
+$sha = (Get-FileHash $zip -Algorithm SHA256).Hash.ToLower()
+$section += ""
+$section += ("SHA-256 of " + (Split-Path $zip -Leaf) + ": " + $sha)
 $section -join "`n" | Set-Content -Encoding utf8 $notes
 Invoke-Step "git" @("push") "the branch is not on GitHub"
 Invoke-Step "git" @("tag", $tag) "could not tag"

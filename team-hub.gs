@@ -93,6 +93,14 @@ function writeRow(name, o) {
   if (o._row) sh.getRange(o._row, 1, 1, h.length).setValues([row]);
   else { sh.appendRow(row); o._row = sh.getLastRow(); }
 }
+// Drop a row for good. Only for rows that came from readAll (they carry _row);
+// deleting shifts every row below it, so the caller must re-read before touching
+// another one - which it does, since each request reads the sheet fresh.
+function deleteRow(name, o) {
+  if (!o || !Number(o._row)) return false;
+  table(name).deleteRow(Number(o._row));
+  return true;
+}
 const js = (s, d) => { try { const v = JSON.parse(s); return v == null ? d : v; } catch (e) { return d; } };
 const now = () => Date.now();
 const setting = (k, d) => { const v = props().getProperty(k); return v == null ? d : v; };
@@ -356,6 +364,17 @@ function mod(q) {
     if (!m) return { ok: false, error: "message not found" };
     if (op === "editMsg") { m.text = String(q.text || "").slice(0, MSG_MAX); m.editedAt = now(); writeRow("Messages", m); }
     else { m.deleted = now(); writeRow("Messages", m); bumpCount(String(m.threadId)); }
+    return { ok: true };
+  }
+  // "forget": take a copy off the Users list. The Users sheet is keyed by install
+  // id, so one person who reinstalled or uses a second Chrome profile holds two
+  // rows and shows up twice in the admin panel; this is how the admin clears the
+  // leftovers. Nothing on that computer changes, and the row comes back on its
+  // next check-in - hello() recreates it.
+  if (op === "forget") {
+    const u = findUser(String(q.install || ""));
+    if (!u) return { ok: true, gone: true }; // already off the list: nothing to do
+    deleteRow("Users", u);
     return { ok: true };
   }
   if (["mute", "unmute", "ban", "unban"].indexOf(op) >= 0) {

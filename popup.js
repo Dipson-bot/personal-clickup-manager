@@ -874,6 +874,10 @@ function cuExportRows(tasks, deadlineTasks, trackedTasks, scope) {
 }
 
 // ---------- due date: click the chip to set / change / clear it ----------
+// The calendar that opens is the extension's own (calendar.js): it shows the
+// company holidays, the work-from-home days and how many tasks are already due
+// on each day, so a date can be chosen for a reason instead of guessed. The
+// browser's plain date box is only used if that calendar isn't loaded.
 function startEditDue(chip, task) {
   if (chip._editing) return;
   const taskId = task.id || task.taskId;
@@ -883,21 +887,6 @@ function startEditDue(chip, task) {
   const prevClass = chip.className;
   const prevTitle = chip.title;
   const ms = Number(task.dueDateMs) || 0;
-  const input = document.createElement("input");
-  input.type = "date";
-  input.className = "due-input";
-  input.title = "Pick a date to save it, or type it and press Enter. Esc = cancel. Clear = no due date.";
-  if (ms) {
-    const d = new Date(ms);
-    input.value = d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0") + "-" + String(d.getDate()).padStart(2, "0");
-  }
-  chip.textContent = "";
-  chip.appendChild(input);
-  input.focus();
-  // Open the calendar straight away - the click that started the edit counts
-  // as the user gesture showPicker() needs. (Before, you got a mm/dd/yyyy box
-  // to type into and had to find the tiny calendar icon yourself.)
-  try { input.showPicker(); } catch (e) {}
   let done = false;
   let saving = false;
   const finish = (text, cls, title) => {
@@ -906,21 +895,25 @@ function startEditDue(chip, task) {
     chip.textContent = text;
     chip.className = cls;
     chip.title = title;
+    chip.style.boxShadow = "";
     chip._editing = false;
+    cuEstEditing = false;
+    flushDeferredRender();
   };
   const cancel = () => finish(prevText, prevClass, prevTitle);
-  const save = async () => {
+  // The time of day the task already had is kept, so only the day changes; a
+  // task that had no due date gets midday.
+  const atMs = (dayMs) => {
+    if (!dayMs) return null;
+    const d = new Date(dayMs);
+    const keep = ms ? new Date(ms) : null;
+    return new Date(d.getFullYear(), d.getMonth(), d.getDate(), keep ? keep.getHours() : 12, keep ? keep.getMinutes() : 0, 0, 0).getTime();
+  };
+  const save = async (newMs) => {
     if (done || saving) return;
     saving = true;
-    const v = input.value;
-    let newMs = null;
-    if (v) {
-      const [y, m, d] = v.split("-").map(Number);
-      const keep = ms ? new Date(ms) : null;
-      newMs = new Date(y, m - 1, d, keep ? keep.getHours() : 12, keep ? keep.getMinutes() : 0, 0, 0).getTime();
-    }
     if ((newMs || 0) === ms) { cancel(); return; }
-    input.disabled = true;
+    chip.style.boxShadow = "";
     try {
       const r = await send({ type: "CLICKUP_SET_DUE", taskId: String(taskId), dueMs: newMs }, 15000);
       if (!r || !r.ok) throw new Error((r && (r.error || r.reason)) || "save failed");
@@ -932,16 +925,49 @@ function startEditDue(chip, task) {
       cuDueToast("Couldn't save the due date: " + (e && e.message ? e.message : e));
     }
   };
-  input.addEventListener("blur", save);
+  if (window.PcmCalendar && typeof window.PcmCalendar.pick === "function") {
+    // pick() first: it closes any calendar already open, whose cancel would
+    // otherwise clear the redraw guard set for THIS chip.
+    window.PcmCalendar.pick(chip, {
+      value: ms,
+      canClear: ms > 0,
+      onPick: (dayMs) => save(atMs(dayMs)),
+      onClose: cancel,
+    });
+    cuEstEditing = true; // a background redraw would take the chip away mid-pick
+    chip.style.boxShadow = "0 0 0 2px var(--indigo, #6366f1)";
+    chip.title = "Pick the new due date in the calendar. Esc = keep this one.";
+    return;
+  }
+  const input = document.createElement("input");
+  input.type = "date";
+  input.className = "due-input";
+  input.title = "Pick a date to save it, or type it and press Enter. Esc = cancel. Clear = no due date.";
+  if (ms) {
+    const d = new Date(ms);
+    input.value = d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0") + "-" + String(d.getDate()).padStart(2, "0");
+  }
+  chip.textContent = "";
+  chip.appendChild(input);
+  input.focus();
+  try { input.showPicker(); } catch (e) {}
+  const saveInput = () => {
+    const v = input.value;
+    let day = null;
+    if (v) { const [y, m, d] = v.split("-").map(Number); day = new Date(y, m - 1, d).getTime(); }
+    input.disabled = true;
+    save(atMs(day));
+  };
+  input.addEventListener("blur", saveInput);
   // A date picked in the calendar (or its Clear button) saves at once. Typing
   // also fires change after each part of the date, so a change that follows a
   // keystroke waits for Enter / leaving the box instead of saving half-typed.
   let lastKeyAt = 0;
   input.addEventListener("keydown", () => { lastKeyAt = Date.now(); });
-  input.addEventListener("change", () => { if (Date.now() - lastKeyAt > 400) save(); });
+  input.addEventListener("change", () => { if (Date.now() - lastKeyAt > 400) saveInput(); });
   input.addEventListener("keydown", (e) => {
-    if (e.key === "Enter") { e.preventDefault(); save(); }
-    else if (e.key === "Escape") { e.preventDefault(); input.removeEventListener("blur", save); cancel(); }
+    if (e.key === "Enter") { e.preventDefault(); saveInput(); }
+    else if (e.key === "Escape") { e.preventDefault(); input.removeEventListener("blur", saveInput); cancel(); }
   });
   input.addEventListener("click", (e) => e.stopPropagation());
 }
@@ -988,10 +1014,10 @@ function whoSlot(t) {
   return slot;
 }
 
-// Drag the bottom-right corner of a task list to make it taller or shorter,
-// like the box on the wrap-up page; the height is remembered per list and a
-// double-click on that corner puts it back to normal. The normal cap on the
-// list's height is lifted the moment a drag starts, so it can grow past it.
+// A bar under each task list: click it to show every task or go back to the
+// normal height, drag it to pick any height in between. The chosen height is
+// remembered per list. The normal cap on the list's height is lifted the moment
+// it is opened or dragged, so it can grow past it.
 // Height of a list's rows (plus its bottom padding/border), independent of how
 // tall the box is stretched. 0 when it can't be measured (hidden page).
 function listContentHeight(el) {
@@ -1013,57 +1039,134 @@ function makeListResizable(el, key) {
   el._pcmResizable = true;
   el.classList.add("cu-resizable");
   const store = "pcm.listH." + key;
-  let saved = 0;
-  try { saved = Number(localStorage.getItem(store)) || 0; } catch (e) {}
-  if (saved > 40) { el.style.height = saved + "px"; el.style.maxHeight = "none"; }
+  // "Show every task" is a MODE, not a height: the list grows with whatever is
+  // in it (an opened task's details, notes, more rows after a refresh). A fixed
+  // height taken at click time brought the scroll bar straight back the moment
+  // anything inside got taller. A height you DRAG to is still remembered as px.
+  let saved = 0, all = false;
+  try { const v = localStorage.getItem(store); all = v === "all"; saved = Number(v) || 0; } catch (e) {}
+  if (all) { el.dataset.all = "1"; el.style.maxHeight = "none"; }
+  else if (saved > 40) { el.style.height = saved + "px"; el.style.maxHeight = "none"; }
   // Never let the list be taller than its rows: with fewer tasks than the saved
   // height it shrinks to fit, and dragging stops at the last task. Re-measured
   // whenever the rows change (the popup refills the same list on every refresh).
+  // Measured at once (this runs right after the rows are in, still before the
+  // page is painted, so the box never flashes at its old height and the page
+  // never moves), and again on the next tick in case the rows arrive in batches.
   // A timer, not requestAnimationFrame: rAF never fires while the page is hidden.
-  const recap = () => setTimeout(() => capListToContent(el), 0);
+  const recap = () => { capListToContent(el); setTimeout(() => capListToContent(el), 0); };
   recap();
   new MutationObserver(recap).observe(el, { childList: true });
   const save = () => {
-    if (!el.style.height || !el.isConnected || !el.offsetHeight) return; // only after the user dragged it
+    if (!el.style.height || !el.isConnected || !el.offsetHeight) return; // only after the user resized it
     try { localStorage.setItem(store, String(el.offsetHeight)); } catch (e) {}
   };
-  // A full-width drag bar UNDER the list (the browser's own corner handle sat
-  // on top of the last row's buttons and was hard to grab). It's placed next to
-  // the list once the list is in the page.
+  // A full-width bar UNDER the list (the browser's own corner handle sat on top
+  // of the last row's buttons and was hard to grab). Click it to show every task
+  // or go back to the normal height; drag it to pick any height in between.
+  // It's placed next to the list once the list is in the page.
   const grip = document.createElement("div");
   grip.className = "cu-grip";
-  grip.title = "Drag to make the list taller or shorter \u00b7 double-click to reset";
   grip.setAttribute("role", "separator");
   grip.setAttribute("aria-orientation", "horizontal");
+  grip.tabIndex = 0;
+  const lab = document.createElement("span");
+  lab.className = "cu-griplab";
+  grip.appendChild(lab);
+  let sayTimer = 0;
+  const say = (text, ms) => {
+    lab.textContent = text || "";
+    clearTimeout(sayTimer);
+    if (text && ms) sayTimer = setTimeout(() => { if (lab.textContent === text) lab.textContent = ""; }, ms);
+  };
+  const stretched = () => !!el.style.height || el.dataset.all === "1";
+  const retitle = () => {
+    const t = stretched()
+      ? "Click to go back to the normal height \u00b7 or drag to set your own"
+      : "Click to show every task \u00b7 or drag to set your own height";
+    grip.title = t;
+    grip.setAttribute("aria-label", t);
+  };
+  retitle();
+  const collapse = () => {
+    delete el.dataset.all;
+    el.style.height = "";
+    el.style.maxHeight = "";
+    try { localStorage.removeItem(store); } catch (e2) {}
+    retitle();
+    say("Normal height", 1200);
+  };
+  // Expanding needs the height of the rows, and that can't be measured while the
+  // page is hidden or before the rows are in - exactly the moments a click used
+  // to do nothing at all, so the list only ever opened after enough random
+  // clicking that one of them landed on a ready list. Now the bar says it's
+  // loading and keeps measuring, so one click is always enough.
+  let waiting = 0;
+  const expand = (tries) => {
+    const h = listContentHeight(el);
+    if (h > 0) {
+      clearTimeout(waiting); waiting = 0;
+      grip.classList.remove("busy");
+      // Even when everything fits right now: an opened task or a refresh with
+      // more rows must not bring a scroll bar back, which is what this mode is for.
+      el.dataset.all = "1";
+      el.style.height = "";
+      el.style.maxHeight = "none";
+      try { localStorage.setItem(store, "all"); } catch (e) {}
+      retitle();
+      say("Showing every task", 1200);
+      return;
+    }
+    if (tries <= 0) {
+      grip.classList.remove("busy");
+      say("Nothing to show yet", 1600);
+      return;
+    }
+    grip.classList.add("busy");
+    say("Loading the list\u2026", 0);
+    clearTimeout(waiting);
+    waiting = setTimeout(() => expand(tries - 1), 200);
+  };
+  const toggle = () => { if (stretched()) collapse(); else expand(10); };
   const place = () => { if (el.isConnected && grip.previousElementSibling !== el) el.after(grip); };
   setTimeout(place, 0);
   new MutationObserver(place).observe(el, { childList: true });
   grip.addEventListener("pointerdown", (e) => {
     e.preventDefault();
     const startY = e.clientY;
+    const startT = Date.now();
     const startH = el.getBoundingClientRect().height;
     const maxH = listContentHeight(el) || Infinity;
-    el.style.maxHeight = "none";
+    let moved = 0;
     grip.classList.add("active");
     try { grip.setPointerCapture(e.pointerId); } catch (e2) {}
     const move = (ev) => {
-      const h = Math.max(60, Math.min(maxH, startH + ev.clientY - startY));
-      el.style.height = Math.round(h) + "px";
+      const dy = ev.clientY - startY;
+      moved = Math.max(moved, Math.abs(dy));
+      if (moved < 4) return; // a click wobbles a pixel or two: that's not a drag
+      delete el.dataset.all; // dragging sets your own height instead of "every task"
+      el.style.maxHeight = "none"; // lift the normal cap only once it IS a drag
+      el.style.height = Math.round(Math.max(60, Math.min(maxH, startH + dy))) + "px";
     };
     const up = () => {
       grip.removeEventListener("pointermove", move);
       grip.classList.remove("active");
+      // A press that didn't go anywhere is a CLICK, and a click opens or closes
+      // the list in one go - the whole point of the bar for anyone who doesn't
+      // realise it can be dragged.
+      if (moved < 4 && Date.now() - startT < 400) { toggle(); return; }
       capListToContent(el);
       save();
+      retitle();
     };
     grip.addEventListener("pointermove", move);
     grip.addEventListener("pointerup", up, { once: true });
     grip.addEventListener("pointercancel", up, { once: true });
   });
-  grip.addEventListener("dblclick", () => {
-    el.style.height = "";
-    el.style.maxHeight = "";
-    try { localStorage.removeItem(store); } catch (e2) {}
+  grip.addEventListener("keydown", (e) => {
+    if (e.key !== "Enter" && e.key !== " " && e.key !== "Spacebar") return;
+    e.preventDefault();
+    toggle();
   });
 }
 
@@ -1717,9 +1820,15 @@ async function renderFilter() {
       overdue: "deadline crossed",
       span: "start ≠ due",
     }[k] || k)).join(" · ");
+    // Someone else's tracked time can only be read with a workspace Admin API
+    // token - ClickUp refuses the assignee filter without one. A refused read
+    // means their hours are UNKNOWN, not zero, so name the missing piece rather
+    // than letting "0m" claim they tracked nothing.
+    const scopedNote = (d.trackedScoped === false) ? " (other people: needs Admin token)" : "";
     totalEl.innerHTML =
       "<b>" + (label || "") + "</b> · est <b>" + fmtDur(est) + "</b> · tracked <b>" + fmtDur(spent) + "</b>" +
       " · " + (shownTasks.length + shownDeadline.length + shownTracked.length) + " task" + ((shownTasks.length + shownDeadline.length + shownTracked.length) === 1 ? "" : "s") +
+      (scopedNote ? "<span style=\"color:var(--muted)\">" + scopedNote + "</span>" : "") +
       (active.length ? " <span style=\"color:var(--amber)\">(filter: " + filterTags + ")</span>" : "");
     box.appendChild(totalEl);
     const list = document.createElement("div");
@@ -2089,13 +2198,15 @@ function cuTrkTodayMs(st, t, spentShown, prior, now) {
 // entries, kept by the background in runningProgress), so "Tracking now" goes
 // on from 30m instead of starting at 0m after a stop / complete and restart.
 // `today` is the share of that earlier time tracked today, for the today pill.
-let cuRunPrior = { key: "", ms: 0, today: 0 };
+let cuRunPrior = { key: "", ms: 0, today: 0, est: 0 };
+let cuNowTick = null; // the "Tracking now" line's repaint, run again when the earlier time arrives
 function cuLoadRunPrior() {
   try {
     chrome.storage.local.get("runningProgress").then(({ runningProgress: rp }) => {
       cuRunPrior = rp && rp.taskId
-        ? { key: String(rp.taskId) + ":" + String(rp.startMs || ""), ms: Math.max(0, Number(rp.closedMs) || 0), today: Math.max(0, Number(rp.closedTodayMs) || 0) }
-        : { key: "", ms: 0, today: 0 };
+        ? { key: String(rp.taskId) + ":" + String(rp.startMs || ""), ms: Math.max(0, Number(rp.closedMs) || 0), today: Math.max(0, Number(rp.closedTodayMs) || 0), est: Math.max(0, Number(rp.estimateMs) || 0) }
+        : { key: "", ms: 0, today: 0, est: 0 };
+      if (cuNowTick) cuNowTick();
     }).catch(() => {});
   } catch (e) {}
 }
@@ -2755,11 +2866,24 @@ function renderNowTracking() {
   todayPill.className = "trk-today";
   todayPill.title = CU_TRK_TODAY_TIP;
   todayPill.hidden = true;
+  // This session on its own, next to the total: after a pause the timer is a new
+  // entry, and showing only it ("9m") hid the 30m already tracked on the task.
+  const sess = document.createElement("span");
+  sess.className = "cu-now-sess";
+  let askedFor = "";
   const tick = () => {
-    if (!run.startMs) { time.textContent = ""; return; }
+    if (!run.startMs) { time.textContent = ""; sess.textContent = ""; return; }
     const live = Math.max(0, Date.now() - run.startMs);
-    const prior = cuRunPrior.key === key ? cuRunPrior.ms : 0;
-    time.textContent = fmtDur(prior + live);
+    const known = cuRunPrior.key === key;
+    // The earlier time is worked out by the background for each new timer; if it
+    // hasn't been for this one yet (a restart is often between full refreshes),
+    // ask for it once instead of showing just this session.
+    if (!known && askedFor !== key) { askedFor = key; send({ type: "TRACKER_PROGRESS" }).catch(() => {}); }
+    const prior = known ? cuRunPrior.ms : 0;
+    const est = known ? cuRunPrior.est : 0;
+    time.textContent = fmtDur(prior + live) + (est > 0 ? " / " + fmtDur(est) : "");
+    sess.textContent = !known ? "adding earlier time…" : prior > 0 ? "(" + fmtDur(prior) + " before + " + fmtDur(live) + " now)" : "";
+    sess.title = !known ? "Looking up how much was tracked on this task before this timer" : prior > 0 ? "Tracked on this task before this timer: " + fmtDur(prior) + " · this timer: " + fmtDur(live) + " · total " + fmtDur(prior + live) : "";
     // Today's own share, when this task was also worked on an earlier day: the
     // big figure is everything ever tracked on it, which on a task that runs for
     // days (a weekly recurring one) is nothing like today's work.
@@ -2771,6 +2895,7 @@ function renderNowTracking() {
       : "This session";
   };
   tick();
+  cuNowTick = tick;
   cuNowTimer = setInterval(tick, 15000);
 
   // Note = this time entry's Description in ClickUp. Saved on Enter / leaving the
@@ -2839,8 +2964,8 @@ function renderNowTracking() {
   // still be completed from its row in the task list below.
   const isExtra = !!((st.extraTask && st.extraTask.id && String(st.extraTask.id) === String(run.taskId))
     || /\bextra(?:\(s\)|s)?\s+task(?:\(s\)|s)?\b/i.test(String(run.taskName || run.name || "")));
-  if (isExtra) top.append(dot, lab, nm, time, todayPill, stop);
-  else top.append(dot, lab, nm, time, todayPill, stop, done);
+  if (isExtra) top.append(dot, lab, nm, time, sess, todayPill, stop);
+  else top.append(dot, lab, nm, time, sess, todayPill, stop, done);
   const fl = window.PcmHelp && window.PcmHelp.floatButton();
   if (fl) top.insertBefore(fl, stop);
   const noteRow = document.createElement("div");

@@ -63,7 +63,13 @@
       }).catch(() => {});
     } catch (e) {}
   }
-  try { chrome.storage.onChanged.addListener((ch, area) => { if (area === "local" && (ch.taskNotes || ch.taskPins || ch.reminders)) load(); }); } catch (e) {}
+  try { chrome.storage.onChanged.addListener((ch, area) => {
+    if (area !== "local") return;
+    if (ch.taskNotes || ch.taskPins || ch.reminders) load();
+    // A reminder from a teammate (or one being read / dismissed here) redraws the
+    // open panels too, so the list is right the moment it arrives.
+    if (ch.nudgesIn || ch.nudgeSeen) loadNudges();
+  }); } catch (e) {}
   // The next reminder set from a note (⏰ Remind me), if one is still to come.
   const noteRemAt = (nid) => {
     let best = 0;
@@ -78,8 +84,84 @@
   const plain = (md) => String(md || "").replace(/```[\s\S]*?```/g, " ").replace(/^\s*(?:#{1,6}|>|[-*+]|\d+[.)])\s+/gm, "").replace(/\[( |x|X)\]\s+/g, "")
     .replace(/\[([^\]]+)\]\((https?:[^)]+)\)/g, "$1").replace(/\*\*|__|~~|`/g, "").replace(/\s+/g, " ").trim();
   load();
+  loadNudges();
   const notesOf = (id) => (notes[String(id)] && Array.isArray(notes[String(id)].notes)) ? notes[String(id)].notes : [];
   const isPinned = (id) => !!pins[String(id)];
+
+  // ---------- reminders sent to teammates, and the ones they sent you ----------
+  // SENDING: a saved note can go to a co-assignee. It travels through the Team hub
+  // to THEIR extension (a desktop notification + the From teammates list below),
+  // so what you see on screen here is not what they get: the note is sent as plain
+  // text, capped at the 300 characters the hub accepts, and its screenshots and
+  // files stay on this computer (the hub carries text, it has no file store). The
+  // note itself is never in ClickUp - only the text you explicitly send, and only
+  // to the person you pick.
+  //
+  // RECEIVING: hubPollNudges in background.js collects what teammates sent you into
+  // nudgesIn (last 30, newest last) and now the two places that read it are here:
+  // the From teammates section inside a task's notes, filtered to that task, and
+  // the Reminders tab's own list (reminders.js reads these same helpers).
+  let nudgesIn = [], nudgeSeen = {};
+  // Who wants to hear about it when the list changes. The Reminders tab is a
+  // separate reader on its own page and gets no redraw from `changed()` (that only
+  // walks the notes panels), so it subscribes here. Fired AFTER the async read has
+  // landed - a listener that redraws on the storage event alone would paint the
+  // previous list, because the event arrives before the read resolves.
+  const nudgeSubs = [];
+  const nudgesChanged = () => { for (const fn of nudgeSubs) { try { fn(); } catch (e) {} } };
+  const maxSent = (list) => list.slice(-5);
+  const nudgeKey = (n) => String((n && n.id) || "") || (String((n && n.taskId) || "") + "@" + String(Number(n && n.at) || 0));
+  // A nudge read on this computer stays read; the watermark is kept per nudge and
+  // pruned to the nudges still in the list, so it can never grow without limit.
+  const nudgeUnread = (n) => !!n && !nudgeSeen[nudgeKey(n)];
+  const nudgeCount = () => nudgesIn.filter(nudgeUnread).length;
+  function loadNudges() {
+    try {
+      chrome.storage.local.get(["nudgesIn", "nudgeSeen"]).then((g) => {
+        const seen = g.nudgeSeen && typeof g.nudgeSeen === "object" ? g.nudgeSeen : {};
+        const list = (Array.isArray(g.nudgesIn) ? g.nudgesIn : []).filter((n) => n && (n.id || n.taskId));
+        const keys = new Set(list.map(nudgeKey));
+        nudgesIn = list;
+        nudgeSeen = Object.fromEntries(Object.entries(seen).filter(([k]) => keys.has(k)));
+        changed();
+        nudgesChanged();
+      }).catch(() => {});
+    } catch (e) {}
+  }
+  async function readNudges() {
+    const g = await chrome.storage.local.get(["nudgesIn", "nudgeSeen"]).catch(() => ({}));
+    return {
+      list: (Array.isArray(g.nudgesIn) ? g.nudgesIn : []).filter((n) => n && (n.id || n.taskId)),
+      seen: g.nudgeSeen && typeof g.nudgeSeen === "object" ? g.nudgeSeen : {},
+    };
+  }
+  async function setNudges(list, seen) {
+    const kept = (list || []).slice(-30);
+    const keys = new Set(kept.map(nudgeKey));
+    const s = Object.fromEntries(Object.entries(seen || nudgeSeen || {}).filter(([k]) => keys.has(k)));
+    nudgesIn = kept;
+    nudgeSeen = s;
+    await chrome.storage.local.set({ nudgesIn: kept, nudgeSeen: s });
+    changed();
+    nudgesChanged();
+  }
+  // Opening the list marks what is in it as read (it says "3 new" until then).
+  async function markNudgesRead(keys) {
+    const { list, seen } = await readNudges();
+    const want = keys && keys.length ? keys : list.map(nudgeKey);
+    const next = { ...seen };
+    let added = 0;
+    for (const k of want) if (!next[k]) { next[k] = Date.now(); added++; }
+    if (!added) return;
+    await setNudges(list, next);
+  }
+  async function dismissNudge(key) {
+    const { list, seen } = await readNudges();
+    await setNudges(list.filter((n) => nudgeKey(n) !== String(key)), seen);
+  }
+  async function clearNudges() {
+    await setNudges([], {});
+  }
   async function setPin(id, on) {
     const g = await chrome.storage.local.get("taskPins").catch(() => ({}));
     const p = g.taskPins && typeof g.taskPins === "object" ? g.taskPins : {};
@@ -144,6 +226,22 @@
   .tn-msg { font-size: 11px; color: var(--amber, #d97706); }
   .tn-remchip { font: inherit; font-size: 10.5px; padding: 1px 7px; border: 1px solid var(--amber, #d97706); border-radius: 10px; background: none; color: var(--amber, #d97706); cursor: pointer; }
   .tn-remchip:hover { background: rgba(217,119,6,.1); }
+  /* The "send this note to …" picker, and the list of what teammates sent you. */
+  .tn-pop { position: fixed; z-index: 2147483000; width: 320px; max-width: calc(100vw - 16px); box-sizing: border-box; padding: 10px 12px; border-radius: 10px; background: var(--card, #fff); color: var(--fg, #111); border: 1px solid var(--line, rgba(0,0,0,.15)); box-shadow: 0 10px 30px rgba(0,0,0,.28); font-size: 12.5px; display: flex; flex-direction: column; gap: 7px; }
+  .tn-pop-h { font-weight: 600; font-size: 12px; }
+  .tn-pop-msg { font-size: 11.5px; color: var(--muted, #6b7280); line-height: 1.4; }
+  .tn-pop-msg.ok { color: #15803d; }
+  .tn-pop-msg.err { color: #b91c1c; }
+  .tn-pop-r { display: flex; align-items: center; gap: 7px; }
+  .tn-pop-av { width: 22px; height: 22px; flex: none; border-radius: 50%; color: #fff; font-size: 10px; font-weight: 600; display: flex; align-items: center; justify-content: center; }
+  .tn-pop-n { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .tn-pop-b { font: inherit; font-size: 11.5px; padding: 2px 10px; border: 1px solid var(--line, rgba(0,0,0,.2)); border-radius: 6px; background: none; color: inherit; cursor: pointer; }
+  .tn-pop-b:hover { background: rgba(0,0,0,.06); }
+  .tn-pop-b.go { border-color: #2563eb; color: #2563eb; }
+  .tn-pop-b:disabled { opacity: .55; cursor: default; }
+  .tn-inbox { margin-top: 10px; border-top: 1px dashed var(--line, rgba(0,0,0,.15)); padding-top: 6px; }
+  .tn-inbox .tn-new { font-size: 10.5px; font-weight: 600; color: #b91c1c; }
+  .tn-unread { border-left: 3px solid #b91c1c; padding-left: 7px; }
   `;
   document.head.appendChild(css);
 
@@ -173,16 +271,28 @@
     }
     const pinOn = isPinned(id), n = notesOf(id).length;
     const pb = box.querySelector(".tn-pin"), nb = box.querySelector(".tn-note");
-    pb.textContent = "📌"; pb.classList.toggle("on", pinOn);
+    // Only write what changed: any textContent write is a DOM change, and this
+    // runs from a MutationObserver - rewriting the same text re-woke it forever.
+    if (pb.textContent !== "📌") pb.textContent = "📌";
+    pb.classList.toggle("on", pinOn);
     pb.title = pinOn ? "Pinned - it stays at the top. Click to unpin." : "Pin this task to the top of the list (only in this extension)";
     pb.setAttribute("aria-pressed", String(pinOn));
-    nb.textContent = n ? "📝 " + n : "📝"; nb.classList.toggle("on", n > 0);
+    const nt = n ? "📝 " + n : "📝";
+    if (nb.textContent !== nt) nb.textContent = nt;
+    nb.classList.toggle("on", n > 0);
     nb.title = n ? n + " personal note" + (n === 1 ? "" : "s") + " - click to read or add (only in this extension, not in ClickUp)" : "Add a personal note (only in this extension, not in ClickUp)";
     row.classList.toggle("tn-pinned", pinOn);
   }
   function decorateAll() { document.querySelectorAll(".cu-task").forEach(decorate); }
   let pending = 0;
-  new MutationObserver(() => { if (!pending) pending = setTimeout(() => { pending = 0; decorateAll(); }, 30); }).observe(document.documentElement, { childList: true, subtree: true });
+  // Chips added in the same frame the rows were drawn (a timer let the bare rows show first).
+  let burst = 0;
+  new MutationObserver(() => {
+    if (pending) return;
+    pending = 1;
+    const run = () => { pending = 0; decorateAll(); };
+    if (burst++ < 3) { queueMicrotask(run); setTimeout(() => { burst = 0; }, 0); } else setTimeout(run, 30);
+  }).observe(document.documentElement, { childList: true, subtree: true });
 
   // ---------- lightbox ----------
   const light = document.createElement("div");
@@ -218,6 +328,260 @@
     return (shots.length ? '<div class="tn-shots">' + shots.map((f) => '<span class="tn-shot" data-fid="' + esc(f.id) + '" title="' + esc(f.name) + '"><img data-thumb="' + esc(f.id) + '" alt="' + esc(f.name) + '"/><span class="n">' + esc(f.name) + "</span>" + x + "</span>").join("") + "</div>" : "") +
       (rest.length ? '<div class="tn-shots">' + rest.map((f) => '<span class="tn-chip" data-fid="' + esc(f.id) + '" title="' + esc(f.name) + '"><span>📎 ' + esc(f.name) + "</span>" + x + "</span>").join("") + "</div>" : "");
   }
+  // ---------- sending a note to a co-assignee ----------
+  // The people on the task, minus me: `assigneePeople` comes from the task panel
+  // (id + name); a row built without it (a local task, or the moment before the
+  // panel loads) falls back to the plain name list, which can still be offered by
+  // name - ClickUp only needs the id, so without one the person is left out.
+  function teammatesOf(d) {
+    const me = d && d.meUserId != null ? String(d.meUserId) : "";
+    const people = Array.isArray(d && d.assigneePeople) ? d.assigneePeople.filter((p) => p && p.id) : [];
+    return people.filter((p) => !me || String(p.id) !== me);
+  }
+  const sentText = (n) => plain(n.text).slice(0, 300);
+  // One message to the background worker, with a timeout: a send that hangs must
+  // come back as a failure, not leave the button spinning forever.
+  function sendMsg(msg, ms) {
+    return new Promise((res) => {
+      let done = false;
+      const t = setTimeout(() => { if (!done) { done = true; res(null); } }, ms || 30000);
+      try {
+        chrome.runtime.sendMessage(msg, (r) => {
+          if (done) return;
+          done = true; clearTimeout(t);
+          res(chrome.runtime.lastError ? null : r);
+        });
+      } catch (e) { done = true; clearTimeout(t); res(null); }
+    });
+  }
+  const ini = (name) => {
+    const w = String(name || "").split("@")[0].replace(/[._-]+/g, " ").trim().split(/\s+/).filter(Boolean);
+    if (!w.length) return "?";
+    return (w.length > 1 ? w[0][0] + w[w.length - 1][0] : w[0].slice(0, 2)).toUpperCase();
+  };
+  const iniColor = (key) => { let h = 0; for (const ch of String(key || "")) h = (h * 31 + ch.charCodeAt(0)) >>> 0; return "hsl(" + (h % 360) + ", 55%, 42%)"; };
+  let sendPop = null;
+  const closeSendPop = () => { if (sendPop) { sendPop.remove(); sendPop = null; } };
+  document.addEventListener("click", (e) => { if (sendPop && !sendPop.contains(e.target)) closeSendPop(); });
+  document.addEventListener("keydown", (e) => { if (e.key === "Escape" && sendPop) closeSendPop(); }, true);
+  window.addEventListener("scroll", () => { if (sendPop) closeSendPop(); }, true);
+  window.addEventListener("resize", () => { if (sendPop) closeSendPop(); });
+
+  // The picker: who to send this note to. Modeled on the Team hub's own reminder
+  // flow (assignees.js) so the two feel like the same feature - including the
+  // "they don't use the extension, post it in ClickUp instead?" way out.
+  function openSendPop(anchor, d, note, nid, host) {
+    closeSendPop();
+    const people = teammatesOf(d);
+    sendPop = document.createElement("div");
+    sendPop.className = "tn-pop";
+    sendPop.addEventListener("click", (e) => e.stopPropagation());
+    const head = document.createElement("div");
+    head.className = "tn-pop-h";
+    head.textContent = "Send this note to";
+    sendPop.appendChild(head);
+    const prev = document.createElement("div");
+    prev.className = "tn-pop-msg";
+    prev.textContent = "“" + (sentText(note) || "(a note with files)") + "”" + (plain(note.text).length > 300 ? "…" : "");
+    sendPop.appendChild(prev);
+    // Say plainly what travels and what doesn't, before anyone sends it - the note
+    // text is private, and a screenshot pasted into it is not carried by the hub.
+    if (plain(note.text).length > 300 || (note.files || []).length) {
+      const warn = document.createElement("div");
+      warn.className = "tn-pop-msg";
+      warn.textContent = [
+        plain(note.text).length > 300 ? "Only the first 300 characters are sent." : "",
+        (note.files || []).length ? (note.files.length === 1 ? "The attached file isn't sent." : "The " + note.files.length + " attached files aren't sent.") + " They stay on this computer." : "",
+      ].filter(Boolean).join(" ");
+      sendPop.appendChild(warn);
+    }
+    const note2 = notesOf(String(d.id)).find((n) => n.id === nid) || note;
+    if (!people.length) {
+      const none = document.createElement("div");
+      none.className = "tn-pop-msg";
+      none.textContent = String(d.id) && /^\d+$/.test(String(d.id))
+        ? "Nobody else is assigned to this task. Add them as an assignee in ClickUp and they'll be offered here."
+        : "This isn't a ClickUp task, so there's nobody to send it to.";
+      sendPop.appendChild(none);
+    }
+    for (const p of people) {
+      const row = document.createElement("div");
+      row.className = "tn-pop-r";
+      const av = document.createElement("span");
+      av.className = "tn-pop-av";
+      av.textContent = ini(p.username);
+      av.style.background = iniColor(p.id || p.username);
+      const nm = document.createElement("span");
+      nm.className = "tn-pop-n";
+      nm.textContent = p.username;
+      nm.title = p.username;
+      const go = document.createElement("button");
+      go.type = "button";
+      go.className = "tn-pop-b";
+      go.textContent = "Send";
+      go.title = "Send this note to " + p.username + "'s extension";
+      const st = document.createElement("span");
+      st.className = "tn-pop-msg";
+      const send = async (via) => {
+        go.disabled = true;
+        st.textContent = via === "clickup" ? "Posting it in ClickUp…" : "Sending…";
+        const r = await sendMsg({ type: "CLICKUP_NUDGE", via, taskId: String(d.id), userId: String(p.id), taskName: d.name || "", text: sentText(note) }, 30000);
+        const alt = sendPop && sendPop.querySelector(".tn-pop-alt");
+        if (alt) alt.remove();
+        if (r && r.ok) {
+          st.textContent = r.via === "clickup" ? "Posted in ClickUp, assigned to " + p.username + " - ClickUp notifies them." : "Sent - " + p.username + "'s extension shows it within a few minutes.";
+          st.classList.add("ok");
+          go.textContent = "Sent";
+          // Remember it on the note, so the chip says who has seen it (this is the
+          // only record - the hub doesn't report back whether they opened it).
+          const list = notesOf(String(d.id)).map((n) => n.id === nid
+            ? { ...n, sent: maxSent((Array.isArray(n.sent) ? n.sent : []).concat([{ id: String(p.id), name: p.username, at: Date.now(), via: r.via === "clickup" ? "clickup" : "hub" }])) }
+            : n);
+          await saveNotes(d, list);
+          setTimeout(closeSendPop, 1200);
+          return;
+        }
+        go.disabled = false;
+        const why = r && r.reason;
+        if (why === "no-extension" || why === "no-hub" || why === "old-hub") {
+          st.textContent = (why === "no-extension"
+            ? p.username + " doesn't use the extension (or hasn't opened it since the Team hub was set up)."
+            : (r.error || "The Team hub isn't set up.")) + " Send it as a ClickUp comment assigned to them instead?";
+          const b = document.createElement("button");
+          b.type = "button";
+          b.className = "tn-pop-b go tn-pop-alt";
+          b.textContent = "Send as a ClickUp comment";
+          b.onclick = () => send("clickup");
+          row.appendChild(b);
+          return;
+        }
+        st.textContent = (r && r.error) || "No answer - try again.";
+        st.classList.add("err");
+      };
+      go.onclick = () => send("hub");
+      row.append(av, nm, go, st);
+      sendPop.appendChild(row);
+    }
+    const noteBox = document.createElement("div");
+    noteBox.className = "tn-pop-msg";
+    noteBox.textContent = "Sent to their extension, where it's waiting for them. It isn't posted in ClickUp and nobody else sees it.";
+    if (people.length) sendPop.appendChild(noteBox);
+    document.body.appendChild(sendPop);
+    const b = anchor && anchor.getBoundingClientRect ? anchor.getBoundingClientRect() : null;
+    const w = Math.min(320, window.innerWidth - 16);
+    const vw = window.innerWidth || document.documentElement.clientWidth, vh = window.innerHeight || document.documentElement.clientHeight;
+    const h = sendPop.offsetHeight || 120;
+    if (b && b.width) {
+      sendPop.style.top = Math.round((b.bottom + 6 + h > vh && b.top - h - 6 > 0 ? b.top - h - 6 : b.bottom + 6)) + "px";
+      sendPop.style.left = Math.round(Math.max(8, Math.min(b.left, vw - w - 8))) + "px";
+    } else {
+      sendPop.style.top = Math.round(Math.max(8, (vh - h) / 3)) + "px";
+      sendPop.style.left = Math.round((vw - w) / 2) + "px";
+    }
+  }
+
+  // ---------- "From teammates" - the reminders other people sent you ----------
+  // Draws into any host element. With `taskId` it shows only that task's (the task
+  // details panel), without it everything (the Reminders tab).
+  function renderNudges(host, opts) {
+    if (!host) return;
+    const taskId = opts && opts.taskId != null ? String(opts.taskId) : "";
+    const all = nudgesIn || [];
+    const rows = (taskId ? all.filter((n) => String(n.taskId || "") === taskId) : all).slice().sort((a, b) => (Number(b.at) || 0) - (Number(a.at) || 0));
+    const unread = rows.filter(nudgeUnread).length;
+    // Only the section this function owns is cleared: the notes panel calls it on
+    // a host that already holds the notes, so wiping the host would erase them.
+    const old = host.querySelector(":scope > .tn-inbox");
+    if (old) old.remove();
+    const wrap = document.createElement("div");
+    wrap.className = "tn-sec tn-inbox";
+    const h = document.createElement("div");
+    h.className = "pcm-sec-h tn-h";
+    const title = document.createElement("span");
+    title.textContent = "From teammates" + (rows.length ? " (" + rows.length + ")" : "");
+    h.appendChild(title);
+    if (unread) {
+      const dot = document.createElement("span");
+      dot.className = "tn-new";
+      dot.textContent = unread + " new";
+      h.appendChild(dot);
+    }
+    const priv = document.createElement("span");
+    priv.className = "tn-priv";
+    priv.textContent = taskId ? "reminders someone sent you about this task" : "reminders your teammates sent you";
+    h.appendChild(priv);
+    h.appendChild(Object.assign(document.createElement("span"), { className: "sp" }));
+    if (!taskId && rows.length) {
+      const clr = document.createElement("button");
+      clr.type = "button";
+      clr.className = "tn-btn";
+      clr.textContent = "Clear all";
+      clr.title = "Forget every reminder in this list (the sender's copy is not affected)";
+      clr.onclick = async () => {
+        if (!confirm("Clear all " + rows.length + " reminder" + (rows.length === 1 ? "" : "s") + " from teammates?\n\nThis only empties this list on this computer - nothing changes for whoever sent them.")) return;
+        clr.disabled = true;
+        await clearNudges();
+      };
+      h.appendChild(clr);
+    }
+    wrap.appendChild(h);
+    if (!rows.length) {
+      const e = document.createElement("div");
+      e.className = "tn-pop-msg";
+      e.textContent = taskId
+        ? "Nobody has sent you a reminder about this task."
+        : "Nothing yet. When a teammate sends you a reminder from a task, it shows up here (and as a desktop notification).";
+      wrap.appendChild(e);
+      host.appendChild(wrap);
+      return;
+    }
+    for (const n of rows) {
+      const row = document.createElement("div");
+      row.className = "tn-note-i" + (nudgeUnread(n) ? " tn-unread" : "");
+      const top = document.createElement("div");
+      top.className = "tn-txt";
+      const who = document.createElement("b");
+      who.textContent = (n.fromName || "A teammate") + ":";
+      top.appendChild(who);
+      top.appendChild(document.createTextNode(" " + (n.text || "(no message)")));
+      row.appendChild(top);
+      const meta = document.createElement("div");
+      meta.className = "tn-meta";
+      const when = document.createElement("span");
+      when.textContent = day(Number(n.at) || 0);
+      meta.appendChild(when);
+      if (!taskId && (n.taskName || n.taskId)) {
+        const a = document.createElement("a");
+        a.textContent = n.taskName || "the task";
+        a.title = n.taskName || "Open the task in ClickUp";
+        const url = /^https:\/\/app\.clickup\.com\//.test(String(n.taskUrl || "")) ? n.taskUrl : (n.taskId ? "https://app.clickup.com/t/" + n.taskId : "");
+        if (url) { a.href = url; a.target = "_blank"; a.rel = "noopener"; }
+        meta.appendChild(a);
+      }
+      meta.appendChild(Object.assign(document.createElement("span"), { className: "sp" }));
+      const x = document.createElement("button");
+      x.type = "button";
+      x.className = "tn-btn";
+      x.textContent = "✕";
+      x.title = "Remove this from the list";
+      x.onclick = () => dismissNudge(nudgeKey(n));
+      meta.appendChild(x);
+      row.appendChild(meta);
+      wrap.appendChild(row);
+    }
+    host.appendChild(wrap);
+    // Showing the list is reading it: the "new" flags clear a moment later, so the
+    // dots are still visible for this paint (otherwise they'd flash and vanish).
+    if (unread) setTimeout(() => markNudgesRead(rows.filter(nudgeUnread).map(nudgeKey)), 1400);
+  }
+
+  // the ⏰ reminder chip: both say "something else is set on this note".
+  function sentChip(n) {
+    const s = Array.isArray(n.sent) ? n.sent : [];
+    if (!s.length) return "";
+    const last = s[s.length - 1];
+    return '<button type="button" class="tn-remchip" data-sentlist title="' + esc("Sent " + s.map((x) => x.name + " (" + day(x.at) + (x.via === "clickup" ? ", as a ClickUp comment" : "") + ")").join("\nSent ")) + '">🔔 ' + esc(String(last.name || "").split(/\s+/)[0] || "sent") + (s.length > 1 ? " +" + (s.length - 1) : "") + "</button>";
+  }
   // Render (or re-render) the notes section into `host` for task `d`.
   function renderPanel(host, d) {
     if (!host || !d || d.id == null) return;
@@ -237,10 +601,17 @@
           '<div class="tn-meta"><span>Ctrl+Enter saves · Esc cancels · paste or drop screenshots</span><span class="sp"></span><button type="button" class="tn-btn" data-attach>📎 Attach</button><button type="button" class="tn-btn pri" data-save>Save</button><button type="button" class="tn-btn" data-cancel>Cancel</button></div></div>';
       } else {
         const remAt = noteRemAt(n.id);
+        // The Send button only appears when there is somebody else on the task to
+        // send to - a local task (a panel built without assigneePeople) or a task
+        // you alone are on shows nothing rather than a dead button.
+        const canSend = teammatesOf(d).length > 0;
         h += '<div class="tn-note-i" data-nid="' + esc(n.id) + '"><div class="tn-txt md">' + (window.PcmMd ? window.PcmMd.render(n.text) : linkify(n.text)) + "</div>" + filesHtml(n.files || [], false) +
           '<div class="tn-meta"><span>' + esc(day(n.at)) + (n.editedAt ? " · edited" : "") + "</span>" +
           (remAt ? '<button type="button" class="tn-remchip" data-remlist title="A reminder about this note is set - click to see your reminders">⏰ ' + esc(day(remAt)) + "</button>" : "") +
-          '<span class="sp"></span><button type="button" class="tn-btn" data-rem title="Get reminded about this note at a date and time you pick">⏰ Remind me</button><button type="button" class="tn-btn" data-edit-btn>Edit</button><button type="button" class="tn-btn" data-del title="Delete this note">✕</button></div></div>';
+          sentChip(n) +
+          '<span class="sp"></span>' +
+          (canSend ? '<button type="button" class="tn-btn" data-send title="Send this note to a teammate on this task - it appears in their extension">🔔 Send</button>' : "") +
+          '<button type="button" class="tn-btn" data-rem title="Get reminded about this note at a date and time you pick">⏰ Remind me</button><button type="button" class="tn-btn" data-edit-btn>Edit</button><button type="button" class="tn-btn" data-del title="Delete this note">✕</button></div></div>';
       }
     }
     h += '<div class="tn-new"><div data-newhost></div>' + filesHtml(st.draftFiles, true) +
@@ -253,6 +624,9 @@
     }
     host.classList.add("tn-sec");
     wire(host, d, st);
+    // What teammates sent you about this task, right under the notes. After wire()
+    // so this section's own buttons are wired independently of the notes above.
+    renderNudges(host, { taskId: id });
     fillThumbs(host, st);
     if (focusNotesFor === id) setTimeout(focusPanelNotes, 50);
   }
@@ -353,6 +727,19 @@
       };
       const rl = box.querySelector("[data-remlist]");
       if (rl) rl.onclick = (e) => { e.stopPropagation(); if (window.PcmReminders) window.PcmReminders.openList(); };
+      // Send this note to a co-assignee: the picker lists the other people on the
+      // task (never you), and the note itself is what travels - capped at the 300
+      // characters the Team hub accepts, files left behind. See the block at the top
+      // of this file for why files can't come along.
+      const sb = box.querySelector("[data-send]");
+      if (sb) sb.onclick = (e) => {
+        e.stopPropagation(); // the page's outside-click would close the popover at once
+        if (sendPop && sendPop._for === nid) { closeSendPop(); return; }
+        openSendPop(sb, d, note, nid, host);
+        if (sendPop) sendPop._for = nid;
+      };
+      const sl = box.querySelector("[data-sentlist]");
+      if (sl) sl.onclick = (e) => { e.stopPropagation(); alert(sl.title); };
       const eb = box.querySelector("[data-edit-btn]");
       if (eb) eb.onclick = () => { st.editing[nid] = note.text; st.editFiles[nid] = (note.files || []).slice(); rerender(); };
       const del = box.querySelector("[data-del]");
@@ -411,5 +798,10 @@
     });
   }
 
-  window.PcmTaskNotes = { notesOf, isPinned, setPin, renderPanel, onChange: (fn) => subs.push(fn), _decorateAll: decorateAll };
+  // PcmNudgeInbox is the read side of "reminders teammates sent me", shared with
+  // reminders.js (the Reminders tab) so both places draw the same list the same
+  // way. It's exported rather than passed because the two scripts load in
+  // different orders on the two pages - callers must tolerate it being missing.
+  window.PcmNudgeInbox = { list: readNudges, render: renderNudges, dismiss: dismissNudge, markRead: markNudgesRead, clear: clearNudges, key: nudgeKey, unread: nudgeUnread, count: nudgeCount, onChange: (fn) => { nudgeSubs.push(fn); return () => { const i = nudgeSubs.indexOf(fn); if (i >= 0) nudgeSubs.splice(i, 1); }; } };
+  window.PcmTaskNotes = { notesOf, isPinned, setPin, renderPanel, onChange: (fn) => subs.push(fn), _decorateAll: decorateAll, _teammatesOf: teammatesOf };
 })();

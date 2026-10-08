@@ -8,7 +8,8 @@
   const MAX_TEXT = 200;
   const uid = () => Date.now().toString(36) + Math.random().toString(36).slice(2, 7);
   const el = (tag, cls, text) => { const e = document.createElement(tag); if (cls) e.className = cls; if (text != null) e.textContent = text; return e; };
-  const getAll = async () => { try { const g = await chrome.storage.local.get("reminders"); return Array.isArray(g.reminders) ? g.reminders : []; } catch (e) { return []; } };
+  // "default-cups" was a withdrawn office reminder (background removes it on update).
+  const getAll = async () => { try { const g = await chrome.storage.local.get("reminders"); return Array.isArray(g.reminders) ? g.reminders.filter((r) => !(r && r.id === "default-cups")) : []; } catch (e) { return []; } };
   const setAll = async (list) => { await chrome.storage.local.set({ reminders: list }); };
   const pad = (n) => String(n).padStart(2, "0");
   const toLocalInput = (ms) => { const d = new Date(ms); return d.getFullYear() + "-" + pad(d.getMonth() + 1) + "-" + pad(d.getDate()) + "T" + pad(d.getHours()) + ":" + pad(d.getMinutes()); };
@@ -439,6 +440,38 @@
     section("Upcoming", up, false);
     section("Past", past, true);
     listBox.appendChild(box);
+    renderInbox();
+  }
+
+  // The other direction: task reminders teammates sent YOU. Kept in its own list
+  // (nudgesIn in storage) rather than mixed into the reminders above, because they
+  // aren't yours to edit, pause or delete - only to read and dismiss. Its own
+  // function, not inlined into renderPanel, so a reminder arriving while this page
+  // is open redraws just this section instead of rebuilding the whole tab (which
+  // would take the focus with it).
+  let inboxSub = false;
+  function renderInbox() {
+    const inbox = window.PcmNudgeInbox;
+    if (!inbox || typeof inbox.render !== "function") return;
+    const listBox = document.getElementById("remList");
+    if (!listBox) return;
+    const host = document.getElementById("nudgeList") || (() => {
+      // options.html should carry the host; if it doesn't (an older page cached
+      // alongside a newer script), make one rather than dropping the section.
+      const h = document.createElement("div");
+      h.id = "nudgeList";
+      listBox.parentNode.insertBefore(h, listBox.nextSibling);
+      return h;
+    })();
+    // Subscribe the first time there is something to draw into: this tab is a
+    // separate reader from the notes panels and gets no redraw from there. The
+    // storage event alone is too early - it arrives before task-notes.js has
+    // re-read the list, so painting on it shows the previous list.
+    if (!inboxSub && typeof inbox.onChange === "function") {
+      inboxSub = true;
+      try { inbox.onChange(renderInbox); } catch (e) {}
+    }
+    try { inbox.render(host, {}); } catch (e) {}
   }
 
   // Add a reminder straight away (e.g. "Remind me at…" while saving a client
@@ -457,7 +490,14 @@
   const start = () => {
     if (!initButton()) { let n = 0; const iv = setInterval(() => { if (initButton() || ++n > 20) clearInterval(iv); }, 150); }
     renderPanel();
-    chrome.storage.onChanged.addListener((ch, area) => { if (area === "local" && ch.reminders) renderPanel(); });
+    chrome.storage.onChanged.addListener((ch, area) => {
+      if (area !== "local") return;
+      if (ch.reminders) renderPanel();
+      // A reminder from a teammate arriving while this page is open. The notes panel
+      // in task-notes.js sees it too, but this tab is a separate reader and gets no
+      // redraw from there, so without this the list would sit stale until reload.
+      if (ch.nudgesIn || ch.nudgeSeen) renderInbox();
+    });
   };
   if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", start); else start();
 })();

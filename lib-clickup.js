@@ -75,6 +75,75 @@ function rateLimitError(res) {
   return err;
 }
 
+// ---------- one guard in front of EVERY ClickUp request ----------
+// ClickUp allows about 100 requests a minute per token, shared by everything the
+// extension does. Bursts (a refresh, Explore, the weekly rebuild, many task
+// details at once) used to go out all together and tip it over, and after a 429
+// further requests kept going out and stretched the penalty. Every request now
+// passes through guardedFetch (per token):
+//  - at most RL_CONCURRENT in flight; the rest queue;
+//  - at most RL_PER_MIN started in any 60 s; the next waits for a slot;
+//  - ClickUp's own X-RateLimit-Remaining: at RL_LOW or less, everything waits
+//    for its X-RateLimit-Reset;
+//  - after a 429, nothing goes out for that token until the wait ClickUp asked for.
+// A short wait is simply waited out; one longer than RL_MAX_WAIT_MS fails at once
+// with the usual rate-limit error (status 429) instead of hanging the caller.
+const RL_PER_MIN = 90, RL_CONCURRENT = 4, RL_LOW = 3, RL_MAX_WAIT_MS = 20000;
+const rlState = new Map(); // token -> { sent: [startedAt], inFlight, waiters: [], pausedUntil }
+function rlOf(token) {
+  const k = String(token || "");
+  let st = rlState.get(k);
+  if (!st) { st = { sent: [], inFlight: 0, waiters: [], pausedUntil: 0 }; rlState.set(k, st); }
+  return st;
+}
+const rlSleep = (ms) => new Promise((r) => setTimeout(r, ms));
+function rlPausedError(waitMs) {
+  const err = new Error("ClickUp rate limit hit - try again in a minute.");
+  err.status = 429;
+  err.retryAfterMs = Math.max(1000, Math.min(120000, Math.round(waitMs)));
+  return err;
+}
+async function guardedFetch(token, url, init) {
+  const st = rlOf(token);
+  const t0 = Date.now();
+  for (;;) {
+    const now = Date.now();
+    let wait = 0;
+    if (st.pausedUntil > now) wait = st.pausedUntil - now;
+    else {
+      while (st.sent.length && now - st.sent[0] >= 60000) st.sent.shift();
+      if (st.sent.length >= RL_PER_MIN) wait = 60000 - (now - st.sent[0]) + 50;
+    }
+    if (wait > 0) {
+      if (now + wait - t0 > RL_MAX_WAIT_MS) throw rlPausedError(wait);
+      await rlSleep(wait);
+      continue;
+    }
+    if (st.inFlight >= RL_CONCURRENT) { await new Promise((r) => st.waiters.push(r)); continue; }
+    break;
+  }
+  st.inFlight++;
+  st.sent.push(Date.now());
+  try {
+    const res = await fetch(url, init);
+    try {
+      const h = res && res.headers;
+      const remRaw = h && h.get ? h.get("X-RateLimit-Remaining") : null;
+      const resetRaw = h && h.get ? h.get("X-RateLimit-Reset") : null;
+      if (remRaw != null && remRaw !== "" && Number(remRaw) <= RL_LOW && resetRaw) {
+        const until = Number(resetRaw) * 1000; // epoch seconds
+        if (Number.isFinite(until) && until > Date.now()) st.pausedUntil = Math.max(st.pausedUntil, Math.min(until, Date.now() + 65000));
+      }
+    } catch (e) {}
+    if (res && res.status === 429) st.pausedUntil = Math.max(st.pausedUntil, Date.now() + rateLimitError(res).retryAfterMs);
+    return res;
+  } finally {
+    st.inFlight--;
+    const w = st.waiters.shift();
+    if (w) w();
+  }
+}
+
 // Wraps one ClickUp GET. Throws a typed-ish Error with a `.status` so callers
 // can tell "bad token" (401) apart from "network died".
 async function cuFetch(token, path, params) {
@@ -85,11 +154,12 @@ async function cuFetch(token, path, params) {
   }
   let res;
   try {
-    res = await fetch(url.toString(), {
+    res = await guardedFetch(token, url.toString(), {
       method: "GET",
       headers: { Authorization: token, "Content-Type": "application/json" },
     });
   } catch (e) {
+    if (e && e.status === 429) throw e; // the guard said wait (see guardedFetch)
     const err = new Error("Couldn't reach ClickUp (network error).");
     err.status = 0;
     throw err;
@@ -119,12 +189,13 @@ async function cuPost(token, path, body) {
   meterRequest(path);
   let res;
   try {
-    res = await fetch(API + path, {
+    res = await guardedFetch(token, API + path, {
       method: "POST",
       headers: { Authorization: token, "Content-Type": "application/json" },
       body: JSON.stringify(body || {}),
     });
   } catch (e) {
+    if (e && e.status === 429) throw e; // the guard said wait (see guardedFetch)
     const err = new Error("Couldn't reach ClickUp (network error).");
     err.status = 0;
     throw err;
@@ -159,12 +230,13 @@ async function cuPut(token, path, body) {
   meterRequest(path);
   let res;
   try {
-    res = await fetch(API + path, {
+    res = await guardedFetch(token, API + path, {
       method: "PUT",
       headers: { Authorization: token, "Content-Type": "application/json" },
       body: JSON.stringify(body || {}),
     });
   } catch (e) {
+    if (e && e.status === 429) throw e; // the guard said wait (see guardedFetch)
     const err = new Error("Couldn't reach ClickUp (network error).");
     err.status = 0;
     throw err;
@@ -198,16 +270,26 @@ async function cuPut(token, path, body) {
 // tracked time) requires it. That param is Owner/Admin-only; if ClickUp rejects
 // it (403), retry without it and let the callers client-side-filter whatever
 // the endpoint returns (best effort). 401/429 are rethrown untouched.
+// The answer carries `__scoped`: true only when ClickUp accepted the `assignee`
+// param, so the entries really are the people asked for. Callers MUST check it -
+// an unscoped answer is the token owner's own time, and filtering that down to
+// other people leaves nothing, which is where "tracked 0m" for a whole team came
+// from (it looked like nobody had tracked anything, not like a refused request).
 async function cuFetchTimeEntries(token, teamId, params, assigneeIds) {
-  if (assigneeIds && assigneeIds.length) {
+  const want = assigneeIds && assigneeIds.length;
+  if (want) {
     const scoped = params.concat([["assignee", assigneeIds.map(String).join(",")]]);
     try {
-      return await cuFetch(token, "/team/" + teamId + "/time_entries", scoped);
+      const j = await cuFetch(token, "/team/" + teamId + "/time_entries", scoped);
+      if (j && typeof j === "object") j.__scoped = true;
+      return j;
     } catch (e) {
       if (e.status === 401 || e.status === 429) throw e;
     }
   }
-  return cuFetch(token, "/team/" + teamId + "/time_entries", params);
+  const j = await cuFetch(token, "/team/" + teamId + "/time_entries", params);
+  if (j && typeof j === "object") j.__scoped = !want; // unscoped request = nothing was asked for
+  return j;
 }
 
 // ---------- identity + workspaces ----------
@@ -664,15 +746,26 @@ export async function getTaskDetail(token, taskId) {
 // opening / closing the same task doesn't re-pay; a new comment clears it.
 const PANEL_TTL_MS = 60000;
 const panelCache = new Map(); // task id -> { at, data }
+// An @mention piece of a comment. ClickUp leaves the mention OUT of the plain
+// comment_text, so a comment that mentions someone is always read from its
+// pieces, and the name falls back through everything ClickUp may send.
+const isMention = (p) => !!(p && (p.type === "tag" || p.type === "mention") && (p.user || p.text));
+function mentionText(p) {
+  const t = String((p && p.text) || "").trim();
+  if (t && t !== "@") return t.startsWith("@") ? t : "@" + t;
+  const u = (p && p.user) || {};
+  const nm = u.username || u.name || (u.email ? String(u.email).split("@")[0] : "") || (u.id != null ? "user " + u.id : "someone");
+  return "@" + nm;
+}
 function commentText(c) {
   // Formatted comments (lists, bold, links…) come as pieces: keep the formatting as Markdown.
   const parts = Array.isArray(c && c.comment) ? c.comment : [];
-  if (parts.some((p) => p && p.attributes && Object.keys(p.attributes).length)) {
+  if (parts.some((p) => isMention(p) || (p && p.attributes && Object.keys(p.attributes).length))) {
     const md = commentOpsToMd(parts);
     if (md) return md;
   }
   if (c && typeof c.comment_text === "string" && c.comment_text.trim()) return c.comment_text.trim();
-  return parts.map((p) => (p && (p.text || (p.type === "tag" && p.user && ("@" + p.user.username)))) || "").join("").trim();
+  return parts.map((p) => (isMention(p) ? mentionText(p) : (p && p.text) || "")).join("").trim();
 }
 
 // ---------- formatted comments: Markdown <-> ClickUp's comment pieces ----------
@@ -751,7 +844,7 @@ export function commentOpsToMd(parts) {
   };
   for (const p of parts || []) {
     if (!p) continue;
-    if (p.type === "tag" && p.user) { cur += "@" + (p.user.username || p.user.email || ""); continue; }
+    if (isMention(p)) { cur += mentionText(p); continue; }
     const text = String(p.text == null ? "" : p.text), a = p.attributes || {};
     const segs = text.split("\n");
     segs.forEach((seg, i) => {
@@ -832,6 +925,11 @@ export async function getTaskPanel(token, taskId, force) {
       .map((a) => ({ title: a.title || a.url, url: a.url, ext: a.extension || "" })),
     comments,
     assignees: who(t),
+    // The same people with their ClickUp ids, for the things that have to send
+    // TO someone (a note sent to a co-assignee) rather than just name them.
+    assigneePeople: (Array.isArray(t && t.assignees) ? t.assignees : [])
+      .filter((a) => a && a.id != null && (a.username || a.email))
+      .map((a) => ({ id: String(a.id), username: a.username || a.email })),
     tags: (Array.isArray(t && t.tags) ? t.tags : []).map((g) => g && g.name).filter(Boolean),
     priority: cuPriorityName(t),
     parentId: t && t.parent != null ? String(t.parent) : "",
@@ -844,29 +942,84 @@ export async function getTaskPanel(token, taskId, force) {
 }
 // The comment itself, no re-read: the Bulk edit tab comments on a whole batch,
 // where fetching each task's panel back would be pure rate-limit pressure.
-export async function postTaskComment(token, taskId, text) {
+// "@sam" -> the one workspace member it can only mean. Exact names first
+// ("@Sam Rivera", any case/spacing), then a unique start of a first name,
+// full name or email name (3+ letters). Returns the text with each found mention
+// swapped for a marker, the people, and the words that matched no one.
+const MENTION_RE = /(^|[\s(\[{,;:])@([\p{L}][\p{L}\p{N}._'-]*(?:[ \t]+[\p{L}][\p{L}\p{N}._'-]*){0,3})/gu;
+const normName = (s) => String(s || "").toLowerCase().replace(/\s+/g, " ").trim();
+export function matchMentions(text, members) {
+  const people = (Array.isArray(members) ? members : []).filter((m) => m && m.id != null).map((m) => {
+    const full = normName(m.name || m.username || "");
+    return { id: m.id, name: String(m.name || m.username || m.email || "").trim(), full, first: full.split(" ")[0] || "", mail: normName(String(m.email || "").split("@")[0]) };
+  }).filter((p) => p.full || p.mail);
+  const found = [], unmatched = [];
+  const out = String(text || "").replace(MENTION_RE, (all, lead, words) => {
+    const parts = words.split(/[ \t]+/);
+    // Longest run of words that IS someone's full name.
+    for (let n = parts.length; n >= 1; n--) {
+      const cand = normName(parts.slice(0, n).join(" "));
+      const hit = people.filter((p) => p.full === cand);
+      if (hit.length === 1) {
+        found.push(hit[0]);
+        return lead + "\u0000" + (found.length - 1) + "\u0000" + (n < parts.length ? " " + parts.slice(n).join(" ") : "");
+      }
+    }
+    const w = normName(parts[0]).replace(/[.'-]+$/, "");
+    if (w.length >= 3) {
+      const hit = people.filter((p) => p.first.startsWith(w) || p.full.startsWith(w) || (p.mail && p.mail.startsWith(w)));
+      if (hit.length === 1) {
+        found.push(hit[0]);
+        return lead + "\u0000" + (found.length - 1) + "\u0000" + (parts.length > 1 ? " " + parts.slice(1).join(" ") : "");
+      }
+      if (hit.length > 1) { unmatched.push("@" + parts[0] + " (" + hit.length + " people - type more of the name)"); return all; }
+    }
+    unmatched.push("@" + parts[0] + " (no one)");
+    return all;
+  });
+  return { text: out, people: found, unmatched };
+}
+export async function postTaskComment(token, taskId, text, members) {
   // notify_all false: ClickUp still notifies assignees / watchers as usual.
   const path = "/task/" + encodeURIComponent(String(taskId)) + "/comment";
   const plain = String(text).slice(0, 5000);
-  // Formatted (lists, bold, headings, links…): send ClickUp's formatted pieces so
-  // it shows the same way there. Should ClickUp refuse them, post the text as is.
-  const ops = mdToCommentOps(plain);
-  if (ops.some((p) => p.attributes)) {
-    try { await cuPost(token, path, { comment: ops, notify_all: false }); return; }
+  const mm = matchMentions(plain, members);
+  // Formatted (lists, bold, headings, links…) or with a mention: send ClickUp's
+  // pieces so it shows the same way there (a mention as a real @tag, which
+  // notifies that person). Should ClickUp refuse them, post the text as is.
+  let ops = mdToCommentOps(mm.text);
+  if (mm.people.length) {
+    const split = [];
+    for (const op of ops) {
+      const t = op && typeof op.text === "string" ? op.text : null;
+      if (t == null || t.indexOf("\u0000") < 0) { split.push(op); continue; }
+      t.split(/\u0000(\d+)\u0000/).forEach((seg, i) => {
+        if (i % 2) { const p = mm.people[Number(seg)]; split.push({ type: "tag", user: { id: Number(p.id) } }); }
+        else if (seg) split.push(op.attributes ? { text: seg, attributes: op.attributes } : { text: seg });
+      });
+    }
+    ops = split;
+  }
+  const res = { mentioned: mm.people.map((p) => p.name), unmatched: mm.unmatched };
+  if (mm.people.length || ops.some((p) => p.attributes)) {
+    try { await cuPost(token, path, { comment: ops, notify_all: false }); return res; }
     catch (e) { if (!e || e.status === 401 || e.status === 403 || e.status === 429 || e.status === 0) throw e; }
   }
   await cuPost(token, path, { comment_text: plain, notify_all: false });
+  return { mentioned: [], unmatched: mm.unmatched.concat(mm.people.map((p) => "@" + p.name)) };
 }
 // A comment assigned to one person: ClickUp notifies them (the reminder
 // fallback for a teammate who doesn't use the extension).
 export async function postAssignedComment(token, taskId, text, userId) {
   return cuPost(token, "/task/" + encodeURIComponent(String(taskId)) + "/comment", { comment_text: String(text).slice(0, 5000), assignee: Number(userId), notify_all: false });
 }
-export async function addTaskComment(token, taskId, text) {
+export async function addTaskComment(token, taskId, text, members) {
   const key = String(taskId);
-  await postTaskComment(token, key, text);
+  const mm = await postTaskComment(token, key, text, members);
   panelCache.delete(key);
-  return getTaskPanel(token, key, true);
+  const data = await getTaskPanel(token, key, true);
+  if (data && typeof data === "object" && mm) { data.mentioned = mm.mentioned; data.unmatched = mm.unmatched; }
+  return data;
 }
 // Save a task's description (floating tracker's bigger view). Written as
 // markdown so bold, lists and links keep their formatting. `expected` is the
@@ -1608,7 +1761,10 @@ export async function fetchTimeEntriesForTaskToday(token, teamId, taskId, now = 
 // Fetch time entries for a date range, grouped day → task. Returns
 // Map<dayStartMs, Map<taskId, totalMs>>. Scoped to the logged users when
 // `assigneeIds` is provided (a department, a single member, or the viewer).
-export async function fetchTimeEntriesByDayTask(token, teamId, fromTs, toTs, assigneeIds, adminToken) {
+// `selfId` is who the personal `token` belongs to: an unscoped answer from it is
+// that person's own time, which legitimately covers a scope that is only ever
+// them (so a normal member still sees their own tracked time).
+export async function fetchTimeEntriesByDayTask(token, teamId, fromTs, toTs, assigneeIds, adminToken, selfId) {
   const startD = new Date(fromTs);
   startD.setHours(0, 0, 0, 0);
   const endD = new Date(toTs);
@@ -1620,26 +1776,33 @@ export async function fetchTimeEntriesByDayTask(token, teamId, fromTs, toTs, ass
   // Department/single-user scopes need a token that can read OTHERS' entries. If
   // an `adminToken` is configured, try it FIRST with the assignee scope; if it
   // returns nothing (or isn't set), fall back to the personal token the same way.
-  // The caller decides whether the personal fallback keeps the assignee scope
-  // (it silently drops other users' entries, leaving them at 0m - never a wrong
-  // rounded cumulative).
+  // An answer that came back UNSCOPED is only ever the token owner's own time -
+  // ClickUp refuses the `assignee` param unless the token is an Owner/Admin - so
+  // it must NOT be treated as the scope's time. Accepting one was the whole
+  // "Explore shows an estimate but 0m tracked for everybody" bug: the admin's own
+  // entries came back, the per-person filter below threw every one of them away,
+  // and a refused request was reported as "nobody tracked anything".
+  const want = (Array.isArray(assigneeIds) && assigneeIds.length) ? assigneeIds.map(String) : null;
   let j = null;
-  if (adminToken && assigneeIds && assigneeIds.length) {
+  let scoped = false;
+  if (adminToken && want) {
     try {
-      const aj = await cuFetchTimeEntries(adminToken, teamId, params, assigneeIds);
-      const ae = (aj && Array.isArray(aj.data)) ? aj.data : [];
-      if (ae.length) { j = aj; }
+      const aj = await cuFetchTimeEntries(adminToken, teamId, params, want);
+      // A SCOPED answer is authoritative even when it's empty - that really is
+      // "these people tracked nothing in this window". Only an answer ClickUp
+      // refused to scope falls through to the personal token below.
+      if (aj && aj.__scoped) { j = aj; scoped = true; }
     } catch (e) {
       if (e.status === 401 || e.status === 429) throw e;
     }
   }
   if (!j) {
-    j = await cuFetchTimeEntries(token, teamId, params, assigneeIds);
+    j = await cuFetchTimeEntries(token, teamId, params, want || undefined);
+    const selfOnly = !!(want && selfId != null && want.every((id) => id === String(selfId)));
+    scoped = !want || !!(j && j.__scoped) || selfOnly;
   }
   const entries = (j && Array.isArray(j.data)) ? j.data : [];
-  const who = (Array.isArray(assigneeIds) && assigneeIds.length)
-    ? assigneeIds.map(String).reduce((s, id) => s.add(id), new Set())
-    : null;
+  const who = want ? want.reduce((s, id) => s.add(id), new Set()) : null;
   const byDay = new Map(); // dayStartMs -> Map<taskId, ms>
   for (const e of entries) {
     if (who) {
@@ -1658,6 +1821,10 @@ export async function fetchTimeEntriesByDayTask(token, teamId, fromTs, toTs, ass
     const m = byDay.get(dayStart);
     m.set(taskId, (m.get(taskId) || 0) + dur);
   }
+  // Whether these totals really cover the people asked for. When false, ClickUp
+  // refused to read other people's time with the token(s) available, so anyone
+  // else's tracked time is UNKNOWN - the callers say so instead of showing 0m.
+  byDay.scoped = scoped;
   return byDay;
 }
 
@@ -2104,18 +2271,27 @@ export async function fetchWeeklySummary({ token, teamId, userId, taskUrls = [],
   // Every task of the week up front: due on each day, plus - in spread mode -
   // started tasks due in the next two weeks, which count their share on the days
   // of this week they cover.
-  const dueByDay = new Map();
-  for (const ts of days) {
-    try { dueByDay.set(ts, await getTasksDueToday(token, teamId, userId, ts)); } catch (e) { dueByDay.set(ts, []); }
-  }
+  //
+  // ONE call for the whole week, not one per day. getTasksDueToday was called in
+  // a loop over the days (up to 7 calls, each paginated up to MAX_PAGES) and it
+  // is the same request as getTasksDueBetween with narrower bounds - so a
+  // Sun→Sat week cost up to 7 x 20 = 140 requests for data a single paginated
+  // call already covers. The bounds are the outer edges of the week (days[0] and
+  // the last day, 23:59:59.999) and every day in between is inside them, so the
+  // returned set is identical. Each day's rows are then picked out by due date
+  // below (the `dueDayOf(t) === ts` test in the per-day loop), exactly as before.
+  const weekFrom = days[0];
+  const weekTo = days[days.length - 1] + (MS - 1);
+  let weekFetched = [];
+  try { weekFetched = await getTasksDueBetween(token, teamId, userId, weekFrom, weekTo); } catch (e) { weekFetched = []; }
+  const dueDayOf = (t) => (Number(t.due_date) ? new Date(Number(t.due_date)).setHours(0, 0, 0, 0) : 0);
   let laterTasks = [];
   if (spread) {
     try { laterTasks = await getTasksDueBetween(token, teamId, userId, friEnd.getTime() + 1, friEnd.getTime() + SPAN_HORIZON_DAYS * MS); } catch (e) { laterTasks = []; }
   }
   const weekTasks = new Map();
-  for (const ts of days) for (const t of dueByDay.get(ts) || []) if (t && t.id != null && !weekTasks.has(String(t.id))) weekTasks.set(String(t.id), t);
+  for (const t of weekFetched) if (t && t.id != null && !weekTasks.has(String(t.id))) weekTasks.set(String(t.id), t);
   for (const t of laterTasks) if (t && t.id != null && isSpread(t) && !weekTasks.has(String(t.id))) weekTasks.set(String(t.id), t);
-  const dueDayOf = (t) => (Number(t.due_date) ? new Date(Number(t.due_date)).setHours(0, 0, 0, 0) : 0);
 
   const perDay = [];
   let extraTask = null; // the auto-detected "Extra(s) Task(s)" (by name) - if found
@@ -2149,7 +2325,7 @@ export async function fetchWeeklySummary({ token, teamId, userId, taskUrls = [],
       const est = spread ? dayEstimateOf(t, ts, extendedMode, byDayTask) : (Number(t.time_estimate) || 0);
       const sp = dayTime.get(t.id) || 0;
       dayEst += est;
-      dayRows.push({ id: t.id, name: t.name || "(untitled task)", url: taskUrlFor(t.id), estimateMs: est, totalEstimateMs: Number(t.time_estimate) || 0, dueDateMs: Number(t.due_date) || null, spentMs: sp, done: isTaskDone(t), status: (t.status && t.status.status) || "", priority: cuPriorityName(t), type: "due", parentId: t.parent != null ? String(t.parent) : null, assignees: cuRowAssignees(t), container: taskContainer(t) });
+      dayRows.push({ id: t.id, name: t.name || "(untitled task)", url: taskUrlFor(t.id), estimateMs: est, totalEstimateMs: Number(t.time_estimate) || 0, dueDateMs: Number(t.due_date) || null, spentMs: sp, done: isTaskDone(t), doneAt: Number(t.date_done || t.date_closed) || 0, status: (t.status && t.status.status) || "", priority: cuPriorityName(t), type: "due", parentId: t.parent != null ? String(t.parent) : null, assignees: cuRowAssignees(t), container: taskContainer(t) });
     }
     // Configured tasks active on this day (skip the extra and anything already
     // counted in the due list). The auto-detected "Extra(s) Task(s)" is matched
@@ -2397,6 +2573,10 @@ export async function fetchTodayEstimate({ token, teamId, userId, targetHours = 
       status: (t.status && t.status.status) || "",
       priority: cuPriorityName(t),
       done: isTaskDone(t),
+      // ClickUp's own completion time, when it gave one. Free - it rides along on
+      // the task we already fetched - and it lets "Recently completed" show when
+      // a task was really finished rather than when we happened to notice.
+      doneAt: Number(t.date_done || t.date_closed) || 0,
       hasEstimate: est > 0,
       // Who this task hangs off, for the "group subtasks" filter - every other
       // view's rows carry it, and without it Due today could not group a
@@ -2611,12 +2791,22 @@ export async function fetchDateRangeEstimate({ token, teamId, userId, fromTs, to
   // card matches the daily view instead of showing all-time totals.
   const rangeByTask = new Map();
   let rangeByDay = new Map();
+  // Whether those numbers really cover the people in scope. ClickUp only lets an
+  // Owner/Admin token read someone ELSE's time; when it refuses, their hours are
+  // UNKNOWN, not zero. Reporting that as "0m" for a whole team is exactly what
+  // made Explore look like nobody had tracked anything, so the answer carries the
+  // flag out and the view says what's actually missing.
+  let trackedScoped = true;
   try {
-    rangeByDay = await fetchTimeEntriesByDayTask(token, teamId, start.getTime(), end.getTime(), scope, adminToken);
+    rangeByDay = await fetchTimeEntriesByDayTask(token, teamId, start.getTime(), end.getTime(), scope, adminToken, userId);
+    trackedScoped = rangeByDay.scoped !== false;
     for (const dayMap of rangeByDay.values()) {
       for (const [tid, ms] of dayMap) rangeByTask.set(tid, (rangeByTask.get(tid) || 0) + ms);
     }
-  } catch (e) {}
+  } catch (e) {
+    // Only a refusal is "needs an Admin token"; a rate limit or network blip isn't.
+    if (e && (e.status === 401 || e.status === 403)) trackedScoped = false;
+  }
 
   // Live running timer: ClickUp's list endpoint reports the still-open entry with
   // a non-positive duration, so it's excluded above and the day would read 0m
@@ -2760,6 +2950,7 @@ export async function fetchDateRangeEstimate({ token, teamId, userId, fromTs, to
       status: (t.status && t.status.status) || "",
       priority: cuPriorityName(t),
       done: isTaskDone(t),
+      doneAt: Number(t.date_done || t.date_closed) || 0, // see fetchTodayEstimate
       hasEstimate: est > 0,
       startDateMs: tStart || null,
       dueDateMs: tDue || null,
@@ -2880,6 +3071,10 @@ export async function fetchDateRangeEstimate({ token, teamId, userId, fromTs, to
   return {
     estimateMs,
     spentMs,
+    // false = ClickUp wouldn't let the saved token(s) read the tracked time of
+    // everyone in scope, so `spentMs` is only part of the story. The views show
+    // "needs an Admin API token" rather than a plain, wrong "0m".
+    trackedScoped,
     fromTs: start.getTime(),
     toTs: end.getTime(),
     tasks,

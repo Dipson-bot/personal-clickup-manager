@@ -10,6 +10,13 @@
   const backTab = Number(new URLSearchParams(location.search).get("back")) || null;
   const supported = "documentPictureInPicture" in window;
   let pip = null;
+  // Also loaded by the dashboard and the side panel, which can host the window
+  // themselves: Chrome opens one only during a click ON the page that hosts it,
+  // so the pinned tab (tracker.html) needed a second click - and starting a task
+  // could never open it. There, a click on Start (or ⧉ Float) opens it at once.
+  // The window lives as long as that page does.
+  const isHost = /\/tracker\.html$/.test(location.pathname);
+  let floatingElsewhere = false; // another page already has it open (storage floatOpen)
 
   // ---------- data ----------
   let data = { st: null, rp: null, settings: {}, last: null, theme: "" };
@@ -137,6 +144,37 @@
     button.next { max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; text-align: left; }
     #cBadge { position: fixed; top: 3px; left: 3px; z-index: 5; font: 700 10.5px/1.2 -apple-system, "Segoe UI", sans-serif; padding: 2px 6px; border-radius: 999px; background: #ef4444; border: 0; color: #fff; cursor: pointer; box-shadow: 0 1px 3px rgba(0,0,0,.3); }
     #cBadge[hidden] { display: none; }
+    /* A window made very small (drag its corner): the content gets tighter, then
+       the least important lines step aside, so what is left is never cut off at
+       the top or bottom. Resting view keeps the bar longest; the hover view keeps
+       its buttons (Stop / Done / Extra) longest. The bigger view scrolls instead. */
+    .trk { min-width: 24px; }
+    @media (max-height: 104px) {
+      #root:not(.big) { padding: 3px 8px; gap: 8px; }
+      #root:not(.big) .col { gap: 2px; }
+      #root:not(.big) .face svg { width: 34px; height: 34px; }
+      #root:not(.big) .row:has(#fCmt) { display: none; }
+    }
+    @media (max-height: 80px) {
+      html, body { font-size: 11.5px; }
+      #root:not(.big) { padding: 1px 8px; }
+      #root:not(.big) .col { gap: 1px; }
+      #root:not(.big) .face svg { width: 28px; height: 28px; }
+      #root:not(.big) .row:has(#fBar), #root:not(.big) .row:has(.next) { display: none; }
+      button { padding: 1px 7px; font-size: 11px; }
+    }
+    @media (max-height: 60px) {
+      #root:not(.big) .lab { display: none; }
+      #root:not(.big) .face svg { width: 22px; height: 22px; }
+    }
+    @media (max-height: 42px) {
+      #root:not(.big) .sub:not(#fToday) { display: none; }
+      #root:not(.big) .face { display: none; }
+    }
+    @media (max-width: 210px) {
+      #root:not(.big) .face { display: none; }
+      #root:not(.big) { padding-left: 6px; padding-right: 6px; }
+    }
     .newtag { font-size: 9.5px; font-weight: 700; padding: 0 5px; border-radius: 999px; background: #ef4444; color: #fff; margin-left: 4px; }
     .close { margin-left: auto; background: none; border: 0; color: var(--muted); font-size: 14px; padding: 0 2px; }
   `;
@@ -197,7 +235,21 @@
     const root = d.createElement("div");
     root.id = "root";
     d.body.appendChild(root);
-    root.addEventListener("mouseenter", () => { if (!expanded && data.settings.floatHover !== false) { full = true; paint(); } });
+    // The background's one click to put the size right (see fitSmall): it only
+    // resizes - no button, no hover view.
+    const swallow = (e) => { if (Date.now() < hoverMuteUntil) { e.preventDefault(); e.stopPropagation(); } };
+    d.addEventListener("pointerdown", (e) => {
+      if (!fitPending) return;
+      fitPending = false;
+      hoverMuteUntil = Date.now() + 1500;
+      e.preventDefault(); e.stopPropagation();
+      fitSmall();
+      if (full && !expanded) { full = false; paint(); }
+    }, true);
+    d.addEventListener("mousedown", swallow, true);
+    d.addEventListener("mouseup", swallow, true);
+    d.addEventListener("click", swallow, true);
+    root.addEventListener("mouseenter", () => { if (Date.now() < hoverMuteUntil) return; if (!expanded && data.settings.floatHover !== false) { full = true; paint(); } });
     root.addEventListener("mouseleave", () => { if (!expanded && data.settings.floatHover !== false && !note.busy() && !qc.busy()) { full = false; paint(); } });
     // Moving: only Chrome's own top bar (the empty part, not the extension name
     // chip) drags a floating window - Chrome ignores moveBy from the page (tested).
@@ -220,7 +272,7 @@
     const t = data.theme === "dark" || data.theme === "light" ? data.theme
       : (window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light");
     if (pip) pip.document.documentElement.dataset.theme = t;
-    document.documentElement.dataset.theme = t;
+    if (isHost) document.documentElement.dataset.theme = t; // never touch the dashboard's own theme
   }
   function paint() {
     if (!pip) return;
@@ -338,8 +390,12 @@
       d.getElementById("fToday").textContent = today || label;
     } else {
       root.dataset.key = "";
+      // Today's total sits under the mood word in the small view too, so it no
+      // longer needs a hover: this view used about 40px of the window's 140, so
+      // the line costs no room. Same line the idle view shows.
       root.innerHTML = '<div class="face">' + faceSVG(p, compact() ? 40 : 50) + '</div><div class="col">' + bar +
-        '<div class="lab" style="color:' + labColor + '">' + esc(label) + "</div></div>";
+        '<div class="lab" style="color:' + labColor + '">' + esc(label) + "</div>" +
+        (today ? '<div class="sub" title="' + esc("Tracked today across all your tasks, out of your daily target") + '">' + esc(today) + "</div>" : "") + "</div>";
     }
   }
   // Today's open tasks to suggest when nothing is running: not done, not the
@@ -388,7 +444,36 @@
       if (!input) return;
       input.value = this.value;
       input.oninput = () => { this.value = input.value; this.msg(""); };
-      input.onkeydown = (e) => { if (e.key === "Enter") { e.preventDefault(); this.post(); } };
+      // @names: the people the extension already knows. "@sa" shows the match
+      // and Tab fills in the full name (posting resolves it either way).
+      const people = () => ((data.st && data.st.members) || []).map((m) => String(m.name || m.username || "").trim()).filter(Boolean);
+      const atWord = () => { const v = input.value.slice(0, input.selectionStart || 0); const m = /(^|\s)@([^\s@]{1,30})$/.exec(v); return m ? m[2] : null; };
+      const matches = (w) => { const q = w.toLowerCase(); return people().filter((n) => n.toLowerCase().split(/\s+/).some((p) => p.startsWith(q)) || n.toLowerCase().startsWith(q)); };
+      input.addEventListener("input", () => {
+        const w = atWord();
+        if (!w) { const m = this.el("fCmsg"); if (m && m.dataset.at) { m.textContent = ""; delete m.dataset.at; } return; }
+        const hit = matches(w);
+        const m = this.el("fCmsg");
+        if (!m) return;
+        m.dataset.at = "1"; m.style.color = "";
+        m.textContent = !hit.length ? "@" + w + ": no one" : hit.length === 1 ? "Tab → @" + hit[0] : "Tab → @" + hit[0] + " (+" + (hit.length - 1) + ")";
+      });
+      input.onkeydown = (e) => {
+        if (e.key === "Tab") {
+          const w = atWord(); const hit = w ? matches(w) : [];
+          if (hit.length) {
+            e.preventDefault();
+            const at = input.selectionStart || 0, before = input.value.slice(0, at - w.length), after = input.value.slice(at);
+            input.value = before + hit[0] + " " + after;
+            const c = before.length + hit[0].length + 1;
+            input.setSelectionRange(c, c);
+            this.value = input.value;
+            const m = this.el("fCmsg"); if (m) { m.textContent = ""; delete m.dataset.at; }
+          }
+          return;
+        }
+        if (e.key === "Enter") { e.preventDefault(); this.post(); }
+      };
       input.addEventListener("paste", (e) => {
         const fl = [...((e.clipboardData && e.clipboardData.files) || [])];
         if (fl.length) { e.preventDefault(); this.addFiles(fl); }
@@ -428,8 +513,11 @@
         this.value = ""; this.files = [];
         const i = this.el("fCmt"); if (i) i.value = "";
         this.paintFiles();
-        this.msg("Posted ✓");
-        setTimeout(() => { const m = this.el("fCmsg"); if (m && m.textContent === "Posted ✓") m.textContent = ""; }, 1800);
+        const who = (r.mentioned || []).length ? " - mentioned " + r.mentioned.join(", ") : "";
+        const miss = (r.unmatched || []).length ? " - not a mention: " + r.unmatched.join(", ") : "";
+        const said = "Posted ✓" + who + miss;
+        this.msg(said, !!miss);
+        setTimeout(() => { const m = this.el("fCmsg"); if (m && m.textContent === said) m.textContent = ""; }, miss ? 6000 : 3500);
         return true;
       }
       this.msg("Not posted", true);
@@ -548,6 +636,26 @@
   const compact = () => data.settings.floatSize === "compact";
   let savedPos = null, savedOuter = null;
   const tryResize = (w, h) => { try { pip.resizeTo(w, h); } catch (e) {} };
+  // Opened from a page that isn't in front (the automatic open), Chrome ignores
+  // the size asked for and makes the window as big as the browser window. Put it
+  // back to the small size straight away (resizeTo takes the OUTER size).
+  // Chrome only allows that resize during a click IN the window, so when it's
+  // refused the window asks (storage floatNeedsFit) and the background clicks
+  // it once through the debugger; that one click only resizes (fitPending).
+  let fitPending = false, hoverMuteUntil = 0;
+  const wrongSize = () => { const [w, h] = compact() ? COMPACT : SMALL; return pip && (Math.abs(pip.innerWidth - w) > 24 || Math.abs(pip.innerHeight - h) > 24); };
+  function fitSmall() {
+    if (!pip) return;
+    const [w, h] = compact() ? COMPACT : SMALL;
+    const fw = Math.max(0, pip.outerWidth - pip.innerWidth), fh = Math.max(0, pip.outerHeight - pip.innerHeight);
+    if (!wrongSize()) return;
+    tryResize(w + fw, h + fh);
+    setTimeout(() => {
+      if (!wrongSize()) { fitPending = false; chrome.storage.local.set({ floatNeedsFit: 0 }).catch(() => {}); return; }
+      fitPending = true;
+      chrome.storage.local.set({ floatNeedsFit: Date.now() }).catch(() => {});
+    }, 200);
+  }
   const bigFiles = []; // { name, type, b64, size }
   function linkify(text) {
     return esc(text).replace(/https?:\/\/[^\s<"']+/g, (u) => '<a href="' + u + '" target="_blank" rel="noopener">' + u + "</a>").replace(/\n/g, "<br>");
@@ -819,6 +927,7 @@
 
   // ---------- host page ----------
   function hostState(kind) {
+    if (!isHost) return; // the dashboard / side panel have no host screen
     const title = $("title"), lead = $("lead"), action = $("action"), note = $("note");
     $("face").innerHTML = faceSVG(kind === "floating" ? 1 : kind === "closed" ? "sleep" : 0.05, 64);
     if (kind === "unsupported") {
@@ -847,12 +956,13 @@
     try {
       pip = await window.documentPictureInPicture.requestWindow({ width: (compact() ? COMPACT : SMALL)[0], height: (compact() ? COMPACT : SMALL)[1] });
     } catch (e) {
-      $("lead").textContent = "Chrome didn't open it (" + (e && e.message ? e.message : e) + "). Click again.";
-      return;
+      if (isHost) $("lead").textContent = "Chrome didn't open it (" + (e && e.message ? e.message : e) + "). Click again.";
+      return false;
     }
     build();
     theme();
     paint();
+    fitSmall();
     chrome.storage.local.set({ floatOpen: true }).catch(() => {});
     hostState("floating");
     pollComments(true); // new comments on the running task
@@ -862,10 +972,32 @@
       hostState("closed");
     });
     // Back to where the user was; this pinned tab only has to stay open.
-    if (backTab) chrome.tabs.update(backTab, { active: true }).catch(() => {});
+    if (isHost && backTab) chrome.tabs.update(backTab, { active: true }).catch(() => {});
+    return true;
   }
-  document.addEventListener("click", () => { if (!pip) openPip(); });
-  window.addEventListener("pagehide", () => { chrome.storage.local.set({ floatOpen: false }).catch(() => {}); });
+  // The toolbar popup closes as soon as you click elsewhere, and its floating
+  // window would close with it - so it never hosts one (the side panel does).
+  const canHostHere = () => supported && (isHost || !/\/popup\.html$/.test(location.pathname) || document.documentElement.classList.contains("in-panel"));
+  if (isHost) document.addEventListener("click", () => { if (!pip) openPip(); });
+  else {
+    // A timer started with a click here: open the window in that same click
+    // (setting "Open it by itself when I start a task", on unless turned off).
+    document.addEventListener("click", (e) => {
+      const b = e.target && e.target.closest ? e.target.closest(".cu-iconbtn.start, #cuTimerBtn") : null;
+      if (!b || b.disabled || pip || floatingElsewhere || !canHostHere()) return;
+      if (b.id === "cuTimerBtn" && !/start/i.test(b.textContent || "")) return; // that button also stops
+      const s = data.settings || {};
+      if (s.floatAutoOpen === false || s.floatTracker === false) return;
+      openPip();
+    }, true);
+  }
+  window.addEventListener("pagehide", () => { if (isHost || pip) chrome.storage.local.set({ floatOpen: false }).catch(() => {}); });
+  try {
+    chrome.storage.local.get("floatOpen").then((g) => { floatingElsewhere = !!(g && g.floatOpen) && !pip; }).catch(() => {});
+    chrome.storage.onChanged.addListener((ch, area) => { if (area === "local" && ch.floatOpen) floatingElsewhere = !!ch.floatOpen.newValue && !pip; });
+  } catch (e) {}
+  // ⧉ Float on this page opens it here, in the same click (pcm-help.js).
+  window.PcmFloat = { canHost: canHostHere, isOpen: () => !!pip, open: () => (pip ? Promise.resolve(true) : openPip()) };
 
   // ---------- live updates ----------
   load().then(() => { theme(); hostState(supported ? "intro" : "unsupported"); });

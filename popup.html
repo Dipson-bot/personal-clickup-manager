@@ -250,10 +250,19 @@
   .cu-done-pill { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; border-radius: 6px; background: #15803d; color: #fff; font-size: 9.5px; font-weight: 700; letter-spacing: .01em; white-space: nowrap; }
   /* Task lists stretch from their bottom-right corner (makeListResizable). */
   .cu-tasklist.cu-resizable { min-height: 60px; }
+  .cu-tasklist[data-all="1"] { max-height: none !important; height: auto !important; overflow: visible !important; }
   /* Drag bar under a stretchable list: full width, above nothing clickable. */
-  .cu-grip { height: 10px; margin: 2px 0 4px; cursor: ns-resize; display: flex; align-items: center; justify-content: center; border-radius: 6px; touch-action: none; user-select: none; }
+  .cu-grip { height: 10px; margin: 2px 0 4px; cursor: ns-resize; display: flex; align-items: center; justify-content: center; gap: 6px; border-radius: 6px; touch-action: none; user-select: none; }
   .cu-grip::before { content: ""; width: 42px; height: 4px; border-radius: 3px; background: var(--border); transition: background .15s, width .15s; }
   .cu-grip:hover::before, .cu-grip.active::before { background: var(--indigo); width: 64px; }
+  .cu-grip:focus-visible { outline: 2px solid var(--indigo); outline-offset: 1px; }
+  /* Click-state word ("Loading the list…", "Everything already fits"): sized to
+     fit the bar's own 10px, so showing it never moves the page a pixel. */
+  .cu-griplab { font-size: 9.5px; line-height: 10px; white-space: nowrap; color: var(--muted); pointer-events: none; }
+  .cu-grip:hover .cu-griplab { color: var(--indigo); }
+  .cu-grip.busy { cursor: progress; }
+  .cu-grip.busy::before { width: 64px; background: var(--amber); animation: cu-gripwait .9s ease-in-out infinite; }
+  @keyframes cu-gripwait { 0%, 100% { opacity: 1; } 50% { opacity: .35; } }
   .cu-iconbtn.done { font-weight: 700;color: var(--green); border-color: var(--green); }
   .cu-iconbtn.done:hover:not(:disabled) { color: #fff; background: var(--green); }
   .cu-iconbtn:disabled { opacity: 0.55; cursor: not-allowed; }
@@ -443,6 +452,8 @@
   .cu-now-name { width: 0; }
   .cu-now-name:hover { text-decoration: underline; }
   .cu-now-time { flex: none; font-variant-numeric: tabular-nums; color: var(--green); font-weight: 700; }
+  .cu-now-sess { flex: none; font-size: .86em; color: var(--muted); font-variant-numeric: tabular-nums; white-space: nowrap; }
+  .cu-now-sess:empty { display: none; }
   /* Today's share of the running task's time, beside the all-days total. The row
      and the strip already space their items, so the pill drops its own margin. */
   .cu-now .trk-today, .cu-task .trk-today { flex: none; margin-left: 0; }
@@ -758,6 +769,7 @@
   <script src="export-tasks.js"></script>
   <script src="task-panel.js"></script>
   <script src="assignees.js"></script>
+  <script src="tracker.js"></script>
   <script src="add-time.js"></script>
   <script src="lib-taskfiles.js"></script>
   <script src="md-notes.js"></script>

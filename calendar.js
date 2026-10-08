@@ -152,7 +152,7 @@
   // follow the same rule as the background: no check-in / check-out on company
   // holidays, no cup reminder on holidays or work-from-home days.
   let reminders = [];
-  const REM_SKIP = { "default-checkin": ["holiday"], "default-checkout": ["holiday"], "default-cups": ["holiday", "wfh"] };
+  const REM_SKIP = { "default-checkin": ["holiday"], "default-checkout": ["holiday"], "default-cups-noon": ["holiday", "wfh"] };
   function remindersOn(ts) {
     const day = new Date(ts); day.setHours(0, 0, 0, 0);
     const k = ymd(day.getTime()), dow = day.getDay();
@@ -238,6 +238,12 @@
     .pcal-day .rm { position: absolute; right: 3px; bottom: 2px; font-size: 9.5px; font-weight: 700; color: var(--amber, #d97706); }
     .pcal-day .n { position: absolute; right: 3px; top: 3px; font-size: 9.5px; font-weight: 700; padding: 0 4px; border-radius: 99px; background: var(--indigo, #6366f1); color: #fff; }
     .pcal-day .n.late { background: var(--amber, #d97706); }
+    /* The day the date sits on while a due date is being set (both themes, and
+       over a holiday or weekend tint, so the chosen day is never in doubt). */
+    .pcal-day.sel, html[data-theme="dark"] .pcal-day.sel { background: var(--indigo, #6366f1); border-color: var(--indigo, #6366f1); box-shadow: 0 0 0 2px rgba(99,102,241,.35); }
+    .pcal-day.sel .ad, .pcal-day.sel .bsd, .pcal-day.sel .rm,
+    html[data-theme="dark"] .pcal-day.sel .ad, html[data-theme="dark"] .pcal-day.sel .bsd, html[data-theme="dark"] .pcal-day.sel .rm { color: #fff; }
+    .pcal-day.sel .n, html[data-theme="dark"] .pcal-day.sel .n { background: #fff; color: var(--indigo, #6366f1); }
     .pcal-legend { display: flex; flex-wrap: wrap; gap: 10px; margin: 8px 0 4px; font-size: 11px; color: var(--muted); }
     .pcal-legend i { display: inline-block; width: 10px; height: 10px; border-radius: 3px; margin-right: 4px; vertical-align: -1px; }
     .pcal-ev { margin-top: 8px; border-top: 1px solid var(--border); padding-top: 8px; display: grid; gap: 4px; }
@@ -248,10 +254,30 @@
   `;
   document.head.appendChild(css);
 
-  let pop = null, view = null;
+  let pop = null, view = null, picker = null;
   const el = (tag, cls, text) => { const x = document.createElement(tag); if (cls) x.className = cls; if (text != null) x.textContent = text; return x; };
-  const close = () => { if (pop) { pop.remove(); pop = null; } };
-  document.addEventListener("click", (e) => { if (pop && !pop.contains(e.target) && !(e.target.closest && e.target.closest(".pcal-chip"))) close(); });
+  // Closing without a day being chosen tells whoever opened it for picking that
+  // nothing was picked, so it can put its chip back.
+  const close = () => {
+    const p = picker;
+    picker = null;
+    if (pop) { pop.remove(); pop = null; }
+    if (p && p.onClose) { try { p.onClose(); } catch (e) {} }
+  };
+  // A day (or "no due date") chosen while the calendar is being used to set a date.
+  function choose(ms) {
+    const p = picker;
+    picker = null; // not a cancel: close() must not call onClose
+    close();
+    if (p && p.onPick) { try { p.onPick(ms); } catch (e) {} }
+  }
+  document.addEventListener("click", (e) => {
+    if (!pop || pop.contains(e.target)) return;
+    if (e.target.closest && e.target.closest(".pcal-chip")) return;
+    // The thing the calendar was opened from (a task's due date) counts as inside it.
+    if (picker && picker.anchor && picker.anchor.contains(e.target)) return;
+    close();
+  });
   document.addEventListener("keydown", (e) => { if (e.key === "Escape") close(); });
 
   function paintMonth() {
@@ -272,14 +298,32 @@
     head.append(prev, t, next);
     pop.appendChild(head);
     // Jump to any date: Today, or pick one (the month opens and the day is pointed at).
+    // While a date is being set, those are replaced by the quick choices - the
+    // browser's own date box would open a second, plain calendar inside ours.
     const go = el("div", "pcal-go");
-    const todayBtn = el("button", "", "Today"); todayBtn.type = "button";
-    todayBtn.onclick = (e) => { e.stopPropagation(); goTo(ymd(Date.now())); };
-    const pick = el("input"); pick.type = "date"; pick.title = "Go to a date";
-    pick.value = ymd(new Date(y, m, 1).getTime());
-    pick.onchange = (e) => { e.stopPropagation(); if (/^\d{4}-\d{2}-\d{2}$/.test(pick.value)) goTo(pick.value); };
-    pick.onclick = (e) => e.stopPropagation();
-    go.append(todayBtn, pick);
+    if (picker) {
+      const quick = (lab, ts, tip) => { const b = el("button", "", lab); b.type = "button"; b.title = tip; b.onclick = (e) => { e.stopPropagation(); choose(ts); }; return b; };
+      const t0 = new Date(); t0.setHours(0, 0, 0, 0);
+      const t1 = new Date(t0); t1.setDate(t1.getDate() + 1);
+      go.append(quick("Today", t0.getTime(), "Set the due date to today"), quick("Tomorrow", t1.getTime(), "Set the due date to tomorrow"));
+      if (picker.canClear) {
+        const c = el("button", "", "No due date"); c.type = "button";
+        c.title = "Take the due date off this task";
+        c.onclick = (e) => { e.stopPropagation(); choose(null); };
+        go.appendChild(c);
+      }
+      const now = el("span", "", picker.sel ? "now " + fmtShort(parseYmd(picker.sel)) : "no due date yet");
+      now.style.cssText = "margin-left:auto;color:var(--muted);font-size:11.5px;white-space:nowrap";
+      go.appendChild(now);
+    } else {
+      const todayBtn = el("button", "", "Today"); todayBtn.type = "button";
+      todayBtn.onclick = (e) => { e.stopPropagation(); goTo(ymd(Date.now())); };
+      const jump = el("input"); jump.type = "date"; jump.title = "Go to a date";
+      jump.value = ymd(new Date(y, m, 1).getTime());
+      jump.onchange = (e) => { e.stopPropagation(); if (/^\d{4}-\d{2}-\d{2}$/.test(jump.value)) goTo(jump.value); };
+      jump.onclick = (e) => e.stopPropagation();
+      go.append(todayBtn, jump);
+    }
     pop.appendChild(go);
     const grid = el("div", "pcal-grid");
     for (const w of ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"]) grid.appendChild(el("div", "pcal-wd", w));
@@ -295,6 +339,7 @@
       const weekend = d.getDay() === 0 || d.getDay() === 6;
       b.dataset.k = k;
       if (k === todayK) b.classList.add("today");
+      if (picker && picker.sel === k) b.classList.add("sel");
       const evs = eventsOn(ts);
       if (evs.some((e) => e.kind === "holiday")) b.classList.add("hol");
       else if (weekend) b.classList.add("we");
@@ -308,8 +353,11 @@
       if (rms.length) { const rm = el("span", "rm", "\u23F0" + (rms.length > 1 ? rms.length : "")); b.appendChild(rm); }
       b.title = d.toLocaleDateString(undefined, { weekday: "long", month: "long", day: "numeric" }) + (bs ? " \u00b7 " + BS_NAMES[bs.m - 1] + " " + bs.d + ", " + bs.y : "") +
         (evs.length ? "\n" + evs.map((e) => icon(e.kind) + " " + e.title).join("\n") : "") + (c && c.n ? "\n" + c.n + " task" + (c.n === 1 ? "" : "s") + " due" : "") +
-        (rms.length ? "\n" + rms.map((r) => "\u23F0 " + r.time + "  " + r.text).join("\n") : "") + "\nClick to list this day's tasks";
-      b.onclick = (e) => { e.stopPropagation(); close(); if (typeof window.pcmPickDay === "function") window.pcmPickDay(ts); };
+        (rms.length ? "\n" + rms.map((r) => "\u23F0 " + r.time + "  " + r.text).join("\n") : "") +
+        (picker ? (picker.sel === k ? "\nThe due date now" : "\nClick to make this the due date") : "\nClick to list this day's tasks");
+      b.onclick = picker
+        ? (e) => { e.stopPropagation(); choose(ts); }
+        : (e) => { e.stopPropagation(); close(); if (typeof window.pcmPickDay === "function") window.pcmPickDay(ts); };
       grid.appendChild(b);
     }
     pop.appendChild(grid);
@@ -331,7 +379,9 @@
       }
       pop.appendChild(ev);
     }
-    pop.appendChild(el("div", "pcal-hint", "Task counts come from the weeks the extension has loaded (this week, next week and your filter)."));
+    pop.appendChild(el("div", "pcal-hint", picker
+      ? "Click a day to make it the due date. Red = holiday, blue = work from home, the number on a day is how many tasks are already due then. Esc keeps the date it has."
+      : "Task counts come from the weeks the extension has loaded (this week, next week and your filter)."));
   }
   // Show the month of a date and point at that day.
   function goTo(k) {
@@ -341,19 +391,46 @@
     const cell = pop && pop.querySelector('.pcal-day[data-k="' + k + '"]');
     if (cell) { cell.classList.add("flash"); cell.focus({ preventScroll: true }); }
   }
-  function open(anchor) {
-    close();
-    pop = el("div", "pcal-pop");
-    pop.onclick = (e) => e.stopPropagation();
-    document.body.appendChild(pop);
-    view = new Date(); view.setDate(1);
-    paintMonth();
+  // Sit under whatever was clicked, or above it when there's no room below.
+  function place(anchor) {
     const r = anchor.getBoundingClientRect();
     const w = pop.offsetWidth, h = pop.offsetHeight;
     let top = r.bottom + 6;
     if (top + h > window.innerHeight - 8) top = Math.max(8, r.top - h - 6);
     pop.style.top = Math.round(top) + "px";
     pop.style.left = Math.round(Math.max(8, Math.min(window.innerWidth - w - 8, r.left))) + "px";
+  }
+  // Open on the month of a given day.
+  function openAt(anchor, ts) {
+    pop = el("div", "pcal-pop");
+    pop.onclick = (e) => e.stopPropagation();
+    pop._anchor = anchor;
+    document.body.appendChild(pop);
+    const d = new Date(ts || Date.now());
+    view = new Date(d.getFullYear(), d.getMonth(), 1);
+    paintMonth();
+    place(anchor);
+  }
+  function open(anchor) { close(); openAt(anchor, Date.now()); }
+  // It's fixed on the screen, so it follows what it was opened from while the
+  // page scrolls, and gets out of the way if that is redrawn away under it
+  // (the task lists refresh on their own).
+  for (const ev of ["scroll", "resize"]) {
+    window.addEventListener(ev, () => {
+      if (!pop || !pop._anchor) return;
+      if (!pop._anchor.isConnected) close();
+      else place(pop._anchor);
+    }, { capture: true, passive: true });
+  }
+  // The same calendar, used to SET a date instead of browsing it: the holidays,
+  // the work-from-home days and how many tasks are already due on a day are all
+  // in front of you, so a due date isn't a guess.
+  // opts: { value: ms (the date it has now), canClear, onPick(dayMs|null), onClose() }
+  function pickDate(anchor, opts) {
+    close(); // whatever was open is a cancel, and its onClose runs before ours is set
+    const o = opts || {};
+    picker = { sel: o.value ? ymd(o.value) : "", canClear: !!o.canClear, anchor, onPick: o.onPick, onClose: o.onClose };
+    openAt(anchor, o.value || Date.now());
   }
 
   // ---- the chip ----
@@ -390,5 +467,5 @@
   try { chrome.storage.onChanged.addListener((ch, area) => { if (area === "local" && (ch.companyCalendar || ch.clickupState || ch.reminders)) load(); }); } catch (e) {}
   setInterval(paintChip, 60000); // the date rolls over at midnight
   if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", load); else load();
-  window.PcmCalendar = { toBS, bsLabel, isHoliday, isWfh, eventsOn, remindersOn, open, refresh: load };
+  window.PcmCalendar = { toBS, bsLabel, isHoliday, isWfh, eventsOn, remindersOn, open, pick: pickDate, refresh: load };
 })();
