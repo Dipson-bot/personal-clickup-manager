@@ -1416,6 +1416,20 @@ function waitSlot(t) {
 // "31m today" pill goes in there after the pair, so a multi-day figure can't be
 // mistaken for today's work. The pill is ordered last (.trk is order 1, .est
 // order 3) instead of landing between the two numbers.
+// Tracked on other days too: a view only counts the time tracked on its own
+// dates (a "Due tomorrow" row reads 0m though 12m were tracked today), so the
+// time cell also says how much there is in all, instead of a bare 0m.
+function cuAllNote(spans, t) {
+  if (!spans || !t || spans.querySelector(".trk-all")) return;
+  const allMs = Number(t.totalSpentMs) || 0, spent = Number(t.spentMs) || 0;
+  if (allMs - spent < 60000) return;
+  const all = document.createElement("span");
+  all.className = "trk-all";
+  all.style.order = "5";
+  all.textContent = fmtDurOpt(allMs) + " in all";
+  all.title = "Tracked on this task in all, on any day: " + fmtDurOpt(allMs) + ". This view counts only the time tracked on its own dates (" + fmtDurOpt(spent) + ").";
+  spans.appendChild(all);
+}
 function markTrk(trk, t, spans) {
   const spent = Number(t && t.spentMs) || 0;
   const est = Number(t && (t.estimateMs != null ? t.estimateMs : t.dayEstimateMs)) || 0;
@@ -1639,9 +1653,26 @@ function whoSlot(t) {
     slot.appendChild(c);
   };
   const nameOf = (a) => a.username || ("User " + a.id);
-  const shown = list.length > 2 ? list.slice(0, 1) : list;
+  // Created by someone else: their circle, a small arrow, then who it's on
+  // ("AP › DT" = Aashraya created it, it's on Dipson).
+  const cr = t && t.container && t.container.creator;
+  const me = optClickup && optClickup.user && optClickup.user.id;
+  if (cr && cr.id && cr.name && String(cr.id) !== String(me || "")) {
+    const on = list.length ? list.map(nameOf).join(", ") : "nobody yet";
+    circle(cuInitials(cr.name), "Created by " + cr.name + " - assigned to " + on, cuAvatarColor(cr.id), "by");
+    const ar = document.createElement("span");
+    ar.className = "by-ar";
+    ar.textContent = "›";
+    ar.title = "Created by " + cr.name + " - assigned to " + on;
+    slot.appendChild(ar);
+    slot.classList.add("has-by");
+  }
+  // With the creator in front there's room for one assignee circle: two or more
+  // become one circle + "+N" (all names on hover), so nothing is cut off.
+  const max = slot.classList.contains("has-by") ? 1 : 2;
+  const shown = list.length > max ? list.slice(0, 1) : list;
   for (const a of shown) circle(cuInitials(a.username), nameOf(a), cuAvatarColor(a.id || a.username));
-  if (list.length > 2) circle("+" + (list.length - 1), list.slice(1).map(nameOf).join(", "), "", "more");
+  if (list.length > max) circle("+" + (list.length - 1), list.slice(1).map(nameOf).join(", "), "", "more");
   return slot;
 }
 
@@ -2031,6 +2062,46 @@ try {
   });
 } catch (e) {}
 
+
+// The weekly Extra task's estimate (e.g. 7h) against what has been tracked on it
+// this week: earlier days from the week summary, today from today's list, plus
+// a running timer on it. Everything is already loaded - no ClickUp request.
+function extraWeekUse(st) {
+  const ex = st && st.extraTask;
+  if (!ex || !ex.id || !(Number(ex.estimateMs) > 0)) return null;
+  const id = String(ex.id), day0 = new Date().setHours(0, 0, 0, 0);
+  let used = 0;
+  for (const d of (st.weekly && st.weekly.perDay) || []) {
+    if (!(Number(d.ts) < day0)) continue; // today comes from today's list below
+    for (const r of d.tasks || []) if (r && String(r.id) === id) used += Number(r.spentMs) || 0;
+  }
+  let today = 0;
+  for (const r of [].concat(st.deadlineTasks || [], st.tasks || [], st.trackedTasks || [])) if (r && String(r.id) === id) today = Math.max(today, Number(r.spentMs) || 0);
+  used += today;
+  if (st.running && String(st.running.taskId) === id && st.running.startMs) used += Math.max(0, Date.now() - Math.max(Number(st.running.startMs), Number(st.at) || 0));
+  return { used, est: Number(ex.estimateMs) };
+}
+function paintExtraWeek(el, st) {
+  if (!el) return;
+  const u = extraWeekUse(st);
+  if (!u) { el.hidden = true; return; }
+  el.hidden = false;
+  const over = u.used - u.est;
+  const pct = Math.min(100, (u.used / u.est) * 100);
+  el.innerHTML = "";
+  const txt = document.createElement("span");
+  txt.className = "xw-t";
+  txt.textContent = "This week: " + fmtDurOpt(u.used) + " of " + fmtDurOpt(u.est) + " used · " + (over >= 60000 ? fmtDurOpt(over) + " over" : fmtDurOpt(Math.max(0, u.est - u.used)) + " left");
+  if (over >= 60000) txt.classList.add("over");
+  const bar = document.createElement("span");
+  bar.className = "xw-bar";
+  const fill = document.createElement("i");
+  fill.style.width = pct.toFixed(1) + "%";
+  if (over >= 60000) fill.className = "over";
+  bar.appendChild(fill);
+  el.title = "Your weekly Extra task: " + fmtDurOpt(u.est) + " for the week (" + fmtDurOpt(Math.round(u.est / 5)) + " a day). Tracked on it so far this week: " + fmtDurOpt(u.used) + ".";
+  el.append(txt, bar);
+}
 function renderExtraTimerButton(extra, running) {
   const btn = $("cuTimerBtn");
   const hint = $("cuTimerHint");
@@ -2161,7 +2232,21 @@ function appendTaskControlsOpt(row, t) {
   // Switch confirmation: another task is in progress. Warn, then let the user
   // confirm the switch (start this one, stop + revert the other) or cancel.
   const cf = cuRowConfirmOpt[tid];
-  if (cf) {
+  if (cf && cf.held) {
+    const warn = document.createElement("div");
+    warn.className = "cu-rowmsg cu-rowconfirm";
+    row.classList.add("has-msg");
+    const first = String((cf.held[0] && cf.held[0].text) || "").replace(/\s+/g, " ");
+    warn.appendChild(document.createTextNode("\uD83D\uDCAC " + (cf.held.length === 1 ? "You have a comment waiting to be sent" : "You have " + cf.held.length + " comments waiting to be sent") + ": “" + (first.length > 90 ? first.slice(0, 88) + "…" : first) + "”. Send it before completing?"));
+    const btns = document.createElement("span");
+    btns.className = "cu-confirm-btns";
+    const mk = (label, cls, fn) => { const b = document.createElement("button"); b.className = "cu-iconbtn" + (cls ? " " + cls : ""); b.textContent = label; b.onclick = fn; btns.appendChild(b); };
+    mk("Send & complete", "start", () => { delete cuRowConfirmOpt[tid]; sendTaskActionOpt(tid, "complete", false, "send"); });
+    mk("Complete without it", "", () => { delete cuRowConfirmOpt[tid]; sendTaskActionOpt(tid, "complete", false, "skip"); });
+    mk("Cancel", "", () => { delete cuRowConfirmOpt[tid]; repaintCuTaskRows(); });
+    warn.appendChild(btns);
+    row.appendChild(warn);
+  } else if (cf) {
     const warn = document.createElement("div");
     warn.className = "cu-rowmsg cu-rowconfirm";
     row.classList.add("has-msg");
@@ -2244,7 +2329,7 @@ function cuRowNotice(m, onDismiss) {
 // Fire a per-task Start/Stop/Complete action from the options page, then repaint.
 // 20s timeout (the background does the ClickUp write THEN a today+tasks refresh
 // before replying). Errors surface inline on the row via cuRowMsgOpt.
-async function sendTaskActionOpt(taskId, action, force) {
+async function sendTaskActionOpt(taskId, action, force, held) {
   const tid = String(taskId);
   if (cuRowBusyOpt.has(tid)) return;
   cuRowBusyOpt.add(tid);
@@ -2255,9 +2340,22 @@ async function sendTaskActionOpt(taskId, action, force) {
   setTimeout(() => { if (cuRowBusyOpt.has(tid)) repaintCuTaskRows(); }, 6500); // switch to "ClickUp is slow"
   const typeMap = { start: "CLICKUP_TASK_START", stop: "CLICKUP_TASK_STOP", complete: "CLICKUP_TASK_COMPLETE" };
   try {
-    const res = await send({ type: typeMap[action], taskId: tid, force: !!force }, 20000);
+    const res = await send({ type: typeMap[action], taskId: tid, force: !!force, ...(held ? { held } : {}) }, 20000);
     cuRowBusyOpt.delete(tid);
     if (!res || res.ok === false) {
+      if (res && res.reason === "held-comment") {
+        // A comment is waiting to be posted when this task is completed: ask.
+        // Its row isn't on screen (e.g. Complete in the Tracking now bar): ask here.
+        if (!document.querySelector('.pcm-chev[data-task-id="' + tid + '"]')) {
+          const first = String((res.comments && res.comments[0] && res.comments[0].text) || "").replace(/\s+/g, " ").slice(0, 200);
+          if (confirm("You have a comment waiting to be sent on this task:\n\n“" + first + "”\n\nOK = send it and complete the task. Cancel = don't complete yet.")) sendTaskActionOpt(tid, "complete", false, "send");
+          else repaintCuTaskRows();
+          return;
+        }
+        cuRowConfirmOpt[tid] = { held: res.comments || [] };
+        repaintCuTaskRows();
+        return;
+      }
       if (res && res.reason === "needs-confirm") {
         cuRowConfirmOpt[tid] = {
           activeTaskName: res.activeTaskName || "",
@@ -2386,6 +2484,7 @@ function renderClickupSettings(cu) {
         link.removeAttribute("href");
       }
       renderExtraTimerButton(extra, running);
+      paintExtraWeek($("cuExtraWeek"), cu.state);
     } else {
       autoExtra.style.display = "none";
       autoNote.style.display = "";
@@ -2736,6 +2835,7 @@ function renderOptionsWeekly(cu) {
               spans.appendChild(trk);
             }
             row.appendChild(spans);
+            cuAllNote(spans, row._cuTask);
             tlist.appendChild(row);
           }
           if (trackedRows.length) {
@@ -2766,11 +2866,13 @@ function renderOptionsWeekly(cu) {
                 spans.appendChild(trk);
               }
               row.appendChild(spans);
+              cuAllNote(spans, row._cuTask);
               tlist.appendChild(row);
             }
           }
         }
         listBox.appendChild(tlist);
+        makeListResizable(tlist, "weekday");
         {
           const key = String(d.ts);
           const isToday = new Date(d.ts).setHours(0, 0, 0, 0) === new Date().setHours(0, 0, 0, 0);
@@ -3038,11 +3140,20 @@ async function loadWorkspaceClients() {
   } catch (e) {}
 }
 
+// Explore tasks reads from ClickUp only after "Show tasks" is pressed; changing a
+// filter afterwards asks for it again instead of loading by itself.
+let optFltArmed = false;
 async function renderOptionsFilter() {
   if (cuEstEditingOpt) { cuRenderPendingOpt = true; return; }
   const box = $("optFltResult");
   if (!box || !optClickup || !optClickup.configured) {
     if (box) box.style.display = "none";
+    return;
+  }
+  if (!optFltArmed) {
+    ++optFltSeq;
+    box.style.display = "block";
+    box.innerHTML = '<div class="flt-tot">Choose the view, people, client and the rest, then press <b>Show tasks</b>. Nothing is read from ClickUp before that.</div>';
     return;
   }
   const seq = ++optFltSeq;
@@ -3305,6 +3416,7 @@ async function renderOptionsFilter() {
         spans.appendChild(trk);
       }
       row.appendChild(spans);
+      cuAllNote(spans, row._cuTask);
       if (withControls) appendTaskControlsOpt(row, t);
       list.appendChild(row);
     }
@@ -3328,6 +3440,7 @@ async function renderOptionsFilter() {
         spans.appendChild(trk);
       }
       row.appendChild(spans);
+      cuAllNote(spans, row._cuTask);
       if (withControls) appendTaskControlsOpt(row, dt);
       list.appendChild(row);
     }
@@ -3359,6 +3472,7 @@ async function renderOptionsFilter() {
           spans.appendChild(trk);
         }
         row.appendChild(spans);
+        cuAllNote(spans, row._cuTask);
         if (withControls) appendTaskControlsOpt(row, t);
         list.appendChild(row);
       }
@@ -3479,7 +3593,7 @@ function renderDeptSelects() {
       const o = document.createElement("option");
       o.value = d.id;
       const n = (d.users || []).length;
-      o.textContent = d.name + " (" + n + " user" + (n === 1 ? "" : "s") + ")";
+      o.textContent = d.name + " (" + n + " user" + (n === 1 ? "" : "s") + ")" + (d.fromClickUp ? " · ClickUp" : "");
       sel.appendChild(o);
     }
     if (prev && [...sel.options].some((o) => o.value === prev)) sel.value = prev;
@@ -3533,11 +3647,14 @@ function syncDeptUserSelect() {
 
 function loadDeptIntoEditor(id) {
   const dept = id ? optDeptList.find((d) => String(d.id) === String(id)) : null;
-  optDeptEditing = dept ? dept.id : null;
+  // A Team from ClickUp: shown as it is there. Saving makes your own copy.
+  const fromCu = !!(dept && dept.fromClickUp);
+  optDeptEditing = dept && !fromCu ? dept.id : null;
   optDeptDraft = dept ? (dept.users || []).map((u) => ({ id: String(u.id), name: u.name })) : [];
-  $("deptName").value = dept ? dept.name : "";
+  $("deptName").value = dept ? dept.name + (fromCu ? " (my copy)" : "") : "";
   const del = $("deptDelete");
-  if (del) del.style.display = dept ? "" : "none";
+  if (del) del.style.display = dept && !fromCu ? "" : "none";
+  deptMsg(fromCu ? "This team comes from ClickUp (Settings › Teams) - change it there. Saving here makes your own copy." : "", true);
   const search = $("deptUserSearch");
   if (search) search.value = "";
   renderDeptChips();
@@ -3809,6 +3926,12 @@ const CU_TODAY_TIP = "Time you tracked today, across all your tasks. The bar sho
 // inside a wider date filter's Estimated bar - like the tracked "today" part.
 // Only when the filter's dates include today.
 const CU_TODAY_EST_TIP = "Today's estimate: what is due today (the Due today total). The bar shows this filter's own total; the light part of it is today's share.";
+// The "… today" chips' breakdown: the state's own today bundle (due today,
+// the Extra Task share, and other tasks tracked today) - no ClickUp request.
+function cuTodayBd(st) {
+  return () => ({ label: "today", estMs: Number(st && st.estimateMs) || 0, spentMs: Number(st && st.spentMs) || 0,
+    tasks: (st && st.tasks) || [], cfg: (st && st.deadlineTasks) || [], other: (st && st.trackedTasks) || [], fmt: fmtDurOpt });
+}
 function cuTodayEstimate(st, view, f) {
   st = st || {}; view = view || {};
   if (!view.scope || view.scope === "today" || view.scope === "extended" || view.scope === "plan") return 0; // the bar IS today
@@ -4422,6 +4545,7 @@ function renderDoneHistory() {
   const list = $("dashDoneList");
   const sub = $("dashDoneSub");
   if (!list) return;
+  makeListResizable(list, "done"); // the same show-all / drag bar as the task table
   const rows = Array.isArray(cuDoneRowsOpt) ? cuDoneRowsOpt : [];
   const key = cuSearchKey(cuDoneSearchOpt);
   const shown = key ? rows.filter((t) => cuSearchMatches(t, key)) : rows;
@@ -4493,6 +4617,7 @@ function renderDoneHistory() {
       spans.appendChild(trk);
     }
     row.appendChild(spans);
+    cuAllNote(spans, row._cuTask);
     list.appendChild(row);
   }
 }
@@ -4793,7 +4918,9 @@ function renderClickupPreviewBody(st) {
     const chip = document.createElement("span");
     chip.className = "est-today";
     chip.textContent = fmtDurOpt(todayEstMs) + " today";
-    chip.title = CU_TODAY_EST_TIP;
+    // Click: today's own breakdown (the tasks due today behind this number).
+    if (window.PcmBreakdown) PcmBreakdown.attach(chip, "est", cuTodayBd(st));
+    chip.title = CU_TODAY_EST_TIP + " Click for today's tasks.";
     estName.appendChild(document.createTextNode(" "));
     estName.appendChild(chip);
   }
@@ -4830,7 +4957,8 @@ function renderClickupPreviewBody(st) {
     const chip = document.createElement("span");
     chip.className = "trk-today";
     chip.textContent = fmtDurOpt(todayTrkMs) + " today";
-    chip.title = CU_TODAY_TIP;
+    if (window.PcmBreakdown) PcmBreakdown.attach(chip, "trk", cuTodayBd(st));
+    chip.title = CU_TODAY_TIP + " Click to see where today's time went.";
     trkName.appendChild(document.createTextNode(" "));
     trkName.appendChild(chip);
   }
@@ -4976,6 +5104,7 @@ function renderClickupPreviewBody(st) {
         }
         appendNameCellOpt(row, nm, dt);
         row.appendChild(spans);
+        cuAllNote(spans, row._cuTask);
         appendTaskControlsOpt(row, dt);
         cuDecorateRowOpt(row, dt, "deadline", canDrag, groupName);
         dList.appendChild(row);
@@ -5043,6 +5172,7 @@ function renderClickupPreviewBody(st) {
         }
         appendNameCellOpt(row, nm, t);
         row.appendChild(spans);
+        cuAllNote(spans, row._cuTask);
         appendTaskControlsOpt(row, t);
         cuDecorateRowOpt(row, t, "main", canDrag, groupName);
         listEl.appendChild(row);
@@ -5085,6 +5215,7 @@ function renderClickupPreviewBody(st) {
         }
         appendNameCellOpt(row, nm, t);
         row.appendChild(spans);
+        cuAllNote(spans, row._cuTask);
         appendTaskControlsOpt(row, t);
         cuDecorateRowOpt(row, t, "tracked", canDrag, groupName);
         listEl.appendChild(row);
@@ -5993,7 +6124,8 @@ try {
     insGoToDrill(want[0]);
   });
 } catch (e) {}
-var INS_DRILL_CAP = 60;                  // rows visible in one list at a time
+var INS_DRILL_CAP = 10;                  // rows visible in one list until "Show all" is pressed
+var insDrillOpen = Object.create(null);  // lists opened with "Show all" (kept across redraws)
 var INS_DRILL_MAX = 400;                 // rows put in the DOM per list (filtering needs them there)
 
 function insTabActive() {
@@ -6219,9 +6351,15 @@ function insPaintSubNav() {
     };
   }
 }
+try { chrome.storage.onChanged.addListener(function (ch, area) { if (area === "local" && ch.perfHistory && ch.perfHistory.newValue) { insLateList = insLateFrom(ch.perfHistory.newValue); if (insSub === "health") renderInsights(); } }); } catch (e) {}
 function renderInsights() {
   var view = document.getElementById("insView");
   if (!view) return;
+  // The late-finished tasks come from the stored Performance history.
+  if (insLateList === null) {
+    insLateList = false;
+    chrome.storage.local.get("perfHistory").then(function (g) { insLateList = insLateFrom(g && g.perfHistory); renderInsights(); }).catch(function () {});
+  }
   insPaintSubNav();
   var plus = document.getElementById("insPlusView");
   if (plus) {
@@ -6277,8 +6415,25 @@ function insFetchOpen(force) {
     if (insTabActive()) { try { renderInsights(); } catch (e2) {} }
   });
 }
+// Tasks finished after their due date in the last 4 weeks ("Deadlines missed"),
+// from the Performance history already stored (perfHistory) - no ClickUp request.
+// null = not read yet, false = no history on this computer yet.
+var insLateList = null;
+function insLateFrom(perf, now) {
+  if (!perf || !Array.isArray(perf.done)) return false;
+  var DAY = 86400000, from = (now || Date.now()) - 28 * DAY, out = [];
+  perf.done.forEach(function (t) {
+    if (!t || !(Number(t.dueDateMs) > 0) || !(Number(t.doneAt) > 0) || t.doneAt < from) return;
+    var d = new Date(Number(t.dueDateMs)); d.setHours(0, 0, 0, 0);
+    var end = d.getTime() + DAY;
+    if (t.doneAt < end) return;
+    out.push({ id: String(t.id || ""), name: t.name || "(task)", url: t.url || (t.id ? "https://app.clickup.com/t/" + t.id : ""), client: t.client || "", due: Number(t.dueDateMs), doneAt: Number(t.doneAt), late: Math.max(1, Math.ceil((t.doneAt - end) / DAY)) });
+  });
+  return out.sort(function (a, b) { return b.doneAt - a.doneAt; });
+}
 function insPaint(m, st, meta) {
   var k = m.k, problems = k.overdue + k.noEst + k.noDue + k.blocked, html = "";
+  m.lateList = insLateList || [];
   html += '<div class="page-h" style="display:flex;align-items:center;gap:10px;margin:0 0 4px;"><h2 style="margin:0;font-size:18px;">Insights</h2></div>';
   html += '<p class="ins-sub">A weekly health check of everything assigned to you — the things that are easy to miss until it’s too late. Every number is a shortcut into the details, including the ones in the By client table.</p>';
   if (problems) {
@@ -6305,6 +6460,9 @@ function insPaint(m, st, meta) {
   }
   html += '<div class="kpis">' +
     kpi("red", k.overdue, "Overdue", k.overdue ? "overdue" : "", "Past their due date and not done") +
+    (insLateList === false
+      ? '<div class="kpi red" title="Open Insights › Performance once - it reads your finished tasks, and this counts the late ones."><div class="n">—</div><div class="l">Deadlines missed</div><div class="bar"><i style="width:6%;background:var(--red)"></i></div></div>'
+      : kpi("red", m.lateList.length, "Deadlines missed", m.lateList.length ? "late" : "", "Finished after their due date in the last 4 weeks")) +
     kpi("blue", k.week, "Due this week", "", "Due between today and the end of this week") +
     kpi("amber", k.noEst, "No estimate", k.noEst ? "noest" : "", "Open tasks with no time estimate") +
     kpi("amber", k.noDue, "No due date", k.noDue ? "nodue" : "", "Open tasks with no due date") +
@@ -6410,6 +6568,10 @@ function insFilterBar(m) {
     '<button type="button" class="lnk" id="insFClear" hidden>Clear</button></div>';
 }
 function insDrillsHtml(m) {
+  var lateOut = insDrill("late", "Deadlines missed · last 4 weeks", m.lateList || [], function (r) {
+    return { badge: '<span class="badge red">' + r.late + "d late</span>",
+      plain: "due " + insDateShort(r.due) + " · done " + insDateShort(r.doneAt), action: "Open" };
+  });
   // fmt returns `plain`: the sub-line as RAW text. insDrill escapes it once for
   // display and lower-cases it into the search haystack, so searching matches
   // what the eye reads ("waiting on", a date, a client) and nothing is
@@ -6420,6 +6582,7 @@ function insDrillsHtml(m) {
     return { badge: '<span class="badge red">' + (d > 0 ? d + "d" : "due") + "</span>",
       plain: "due " + insDateShort(r.due) + (r.est ? " · " + insHrs(r.est) : " · no est"), action: "Change due date", act: "due" };
   });
+  out += lateOut;
   out += insDrill("blocked", "Blocked / waiting", m.blockedList, function (r) {
     return { badge: '<span class="badge red">held</span>', plain: r.reason, action: "Open" };
   });
@@ -6450,7 +6613,7 @@ function insDrill(id, label, listArr, fmt) {
         ? '<button type="button" class="lnk ins-act" data-act="' + f.act + '">' + f.action + "</button>"
         : '<a class="lnk" href="' + insEsc(r.url) + '" target="_blank" rel="noopener">' + f.action + "</a>") + "</div>";
   }
-  body += '<div class="det-more" data-more hidden></div>' +
+  body += '<button type="button" class="det-more det-morebtn" data-more hidden></button>' +
     '<div class="det-more" data-none hidden>No task in this list matches the filter above.</div>';
   if (!n) body += '<div class="det-more">Nothing here — nice.</div>';
   return '<details class="ins-det" data-drill="' + id + '"><summary><span class="caret">▸</span> ' + label +
@@ -6468,6 +6631,17 @@ function insRowMatches(rowClient, hay, client, q) {
 // Narrow the lists IN PLACE - no repaint, so typing never loses focus and the
 // sections the user opened stay open. The KPIs and the By client table are left
 // alone on purpose: they're the whole-board picture the filter is read against.
+// "Show all N" / "Show less" under a Health list.
+if (typeof document !== "undefined") document.addEventListener("click", function (e) {
+  var b = e.target && e.target.closest ? e.target.closest("#insView [data-more]") : null;
+  if (!b) return;
+  var d = b.closest("details.ins-det");
+  if (!d) return;
+  var id = d.getAttribute("data-drill");
+  insDrillOpen[id] = !insDrillOpen[id];
+  insApplyFilter();
+  if (!insDrillOpen[id]) try { d.scrollIntoView({ block: "nearest" }); } catch (x) {}
+});
 function insApplyFilter() {
   var view = document.getElementById("insView");
   if (!view) return;
@@ -6475,11 +6649,12 @@ function insApplyFilter() {
   var active = !!(client || q), hitAll = 0, totalAll = 0;
   view.querySelectorAll("details.ins-det").forEach(function (d) {
     var rows = d.querySelectorAll(".trow"), hit = 0, i, r;
+    var cap = insDrillOpen[d.getAttribute("data-drill")] ? Infinity : INS_DRILL_CAP;
     for (i = 0; i < rows.length; i++) {
       r = rows[i];
       if (insRowMatches(r.getAttribute("data-client"), r.getAttribute("data-hay"), client, q)) {
         hit++;
-        r.style.display = hit > INS_DRILL_CAP ? "none" : "";
+        r.style.display = hit > cap ? "none" : "";
       } else r.style.display = "none";
     }
     var body = d.querySelector(".det-body");
@@ -6491,9 +6666,10 @@ function insApplyFilter() {
     if (more) {
       // Rows past INS_DRILL_MAX were never put in the DOM, so they can only be
       // counted while nothing is filtered (lists that long don't happen today).
+      var opened = cap === Infinity;
       var extra = (hit - Math.min(hit, INS_DRILL_CAP)) + (active ? 0 : total - rows.length);
       more.hidden = extra <= 0;
-      more.textContent = "+ " + extra + " more" + (active ? " match" + (extra === 1 ? "" : "es") : "");
+      more.textContent = opened ? "Show less ▴" : "Show all " + (Math.min(hit, INS_DRILL_CAP) + extra) + (active ? " matching" : "") + " ▾  (" + extra + " more)";
     }
     var none = d.querySelector("[data-none]");
     if (none) none.hidden = !(active && total > 0 && hit === 0);
@@ -7125,19 +7301,28 @@ function renderSiteMonitorStatus(cfg) {
     return;
   }
   // Background replies { ok, state } - read the state object, not the wrapper.
-  send({ type: "GET_SITE_MONITOR_STATE" }).then((resp) => {
+  Promise.all([send({ type: "GET_SITE_MONITOR_STATE" }), chrome.storage.local.get("siteSnooze").catch(() => ({}))]).then(([resp, sg]) => {
     const state = resp && resp.state && typeof resp.state === "object" ? resp.state : {};
+    const snooze = (sg && sg.siteSnooze) || {};
     const rows = cfg.sites.map((s) => {
       const st = state[s.url] || { up: null, fails: 0, lastCheck: 0 };
       const statusText = st.up === true ? "✅ Up" : st.up === false ? (st.blank || st.kind === "blank" ? "⚠️ Blank page" : st.kind === "5xx" ? "🔥 Server error" + (st.status ? " (HTTP " + st.status + ")" : "") : "🚨 Down") : "⚪ Not checked yet";
       const lastCheckText = st.lastCheck ? new Date(st.lastCheck).toLocaleString() : "never";
-      const label = s.name && s.name !== s.url ? escapeHtml(s.name) + ' <span class="hint">' + escapeHtml(s.url) + "</span>" : escapeHtml(s.url);
+      // The address opens the site (new tab).
+      const link = /^https?:\/\//i.test(s.url) ? '<a class="sm-url" href="' + escapeHtml(s.url) + '" target="_blank" rel="noopener" title="Open the site">' + escapeHtml(s.url) + "</a>" : escapeHtml(s.url);
+      const label = s.name && s.name !== s.url ? escapeHtml(s.name) + ' <span class="hint">' + link + "</span>" : link;
+      const until = Number(snooze[s.url]) || 0;
+      const snoozed = until > Date.now();
+      const snoozeTxt = snoozed ? ' · <span class="sm-snoozed">🔕 alerts snoozed until ' + escapeHtml(new Date(until).toLocaleString([], { weekday: "short", month: "short", day: "numeric", hour: "numeric", minute: "2-digit" })) + "</span>" : "";
       const why = st.lastError ? ' · <span class="sm-err">' + escapeHtml(st.lastError) + "</span>"
         : st.blocked ? ' · <span class="sm-err" title="The site is up, but its security is blocking or challenging this computer (it fetches the page every few minutes, which can look like a bot). No alarm is raised for this. If it keeps happening, ask whoever manages the site to allow this office\'s IP.">' + escapeHtml(st.blocked) + " (site is up - not an outage)</span>" : "";
       const speed = st.up === true && st.lastMs ? " · " + (st.lastMs < 1000 ? st.lastMs + "ms" : (st.lastMs / 1000).toFixed(1) + "s") : "";
       const u = escapeHtml(s.url);
-      return '<div class="imp-row" data-sm-row="' + u + '"><div class="imp-entry"><b>' + label + '</b><br><span class="hint">' + statusText + speed + " · last check: " + lastCheckText + (st.fails && st.up !== false ? " · " + st.fails + " failed check(s)" : "") + why + "</span></div>"
+      return '<div class="imp-row" data-sm-row="' + u + '"><div class="imp-entry"><b>' + label + '</b><br><span class="hint">' + statusText + speed + " · last check: " + lastCheckText + (st.fails && st.up !== false ? " · " + st.fails + " failed check(s)" : "") + why + snoozeTxt + "</span></div>"
         + '<div class="sm-acts"><button type="button" class="sm-check" data-sm-url="' + u + '" title="Check this site right now">Check</button>'
+        + (snoozed
+          ? '<button type="button" class="sm-act" data-sm-unsnooze="' + u + '" title="Alert me about this site again">Unsnooze</button>'
+          : '<select class="sm-snooze" data-sm-snooze="' + u + '" title="Stop the alerts for this site for a while - it is still checked"><option value="">Snooze…</option><option value="1">1 hour</option><option value="4">4 hours</option><option value="tom">Until tomorrow 9 AM</option><option value="72">3 days</option><option value="168">1 week</option></select>')
         + '<button type="button" class="sm-act" data-sm-edit="' + u + '" title="Change the client name or website">Edit</button>'
         + '<button type="button" class="sm-act sm-del" data-sm-del="' + u + '" title="Stop monitoring this site">Delete</button></div></div>';
     }).join("");
@@ -7231,9 +7416,33 @@ function smSiteForm(name, url, onSave) {
   wrap.append(n, u, save, cancel, err);
   return { wrap, cancel, first: name ? u : n };
 }
+// Snooze one site's alerts (it keeps being checked and shown).
+async function smSetSnooze(url, until) {
+  const g = await chrome.storage.local.get("siteSnooze").catch(() => ({}));
+  const map = { ...((g && g.siteSnooze) || {}) };
+  if (until) map[url] = until; else delete map[url];
+  for (const k of Object.keys(map)) if (!(Number(map[k]) > Date.now())) delete map[k]; // drop the expired ones
+  await chrome.storage.local.set({ siteSnooze: map });
+  renderSiteMonitorStatus(await getSiteMonitorConfigOpt());
+}
+async function getSiteMonitorConfigOpt() {
+  const resp = await send({ type: "GET_SITE_MONITOR_CONFIG" }).catch(() => null);
+  return (resp && resp.cfg && typeof resp.cfg === "object") ? resp.cfg : { sites: [], enabled: false };
+}
+if ($("siteMonitorStatus")) $("siteMonitorStatus").addEventListener("change", (e) => {
+  const sel = e.target && e.target.closest && e.target.closest("[data-sm-snooze]");
+  if (!sel || !sel.value) return;
+  const v = sel.value;
+  let until;
+  if (v === "tom") { const d = new Date(); d.setDate(d.getDate() + 1); d.setHours(9, 0, 0, 0); until = d.getTime(); }
+  else until = Date.now() + Number(v) * 3600000;
+  smSetSnooze(sel.dataset.smSnooze, until);
+});
 if ($("siteMonitorStatus")) $("siteMonitorStatus").addEventListener("click", async (e) => {
   const t = e.target && e.target.closest ? e.target : null;
   if (!t) return;
+  const un = t.closest("[data-sm-unsnooze]");
+  if (un) { smSetSnooze(un.dataset.smUnsnooze, 0); return; }
   const chk = t.closest(".sm-check");
   if (chk && !chk.disabled) { smCheckNow(chk.dataset.smUrl, chk); return; }
   const add = t.closest("[data-sm-add]");
@@ -7309,6 +7518,19 @@ if ($("versionsBtn")) $("versionsBtn").onclick = () => {
 if (window.pcmExport) window.pcmExport.attach($("optFltExportBtn"), () => optFltExport);
 if ($("optFltClient")) $("optFltClient").addEventListener("change", () => renderOptionsFilter());
 // Explore tasks: clear its tick boxes, client and department in one go.
+if ($("optFltGo")) $("optFltGo").onclick = () => {
+  optFltArmed = true;
+  const coll = $("optFltColl");
+  // Collapsed card: open it so the tasks can be seen.
+  const tog = document.querySelector('[data-optcollapse="filter"]');
+  if (coll && tog && (coll.hidden || coll.style.display === "none" || coll.classList.contains("collapsed"))) tog.click();
+  renderOptionsFilter();
+};
+// Changing a choice (not something inside the task list) waits for Show tasks again.
+if ($("optFltColl")) for (const ev of ["change", "input"]) $("optFltColl").addEventListener(ev, (e) => {
+  if (!e.target || !e.target.closest || e.target.closest("#optFltResult")) return;
+  optFltArmed = false;
+}, true);
 if ($("optFltClearBtn")) $("optFltClearBtn").onclick = () => {
   for (const id of ["optFltOnlyMissing", "optFltMissingStart", "optFltMissingDue", "optFltIncomplete", "optFltOverdue", "optFltSpan"]) {
     if ($(id)) $(id).checked = false;
@@ -7847,7 +8069,7 @@ const ADMIN_FILES = [
   "manifest.json", "background.js", "popup.html", "popup.js", "options.html", "options.js", "phone-timer.js",
   "offscreen.html", "offscreen.js", "update.html", "update.js", "auto-update.html", "auto-update.js", "wrapup.html", "wrapup.js",
   "notify-menu.js", "export-tasks.js", "lib-zip.js", "lib-unzip.js", "lib-automation.js",
-  "lib-availability.js", "lib-clickup.js", "lib-crypto.js", "lib-tidy.js", "lib-drive.js", "task-panel.js", "lib-updater.js", "offscreen-updater.js", "celebrate.js", "celebrate.html", "celebrate-window.js", "fx.js", "pcm-help.js", "tracker.html", "tracker.js", "bulk-edit.js", "pcm-search.js", "lib-taskfiles.js", "task-files.js", "reminders.js", "hub.js", "task-sort.js", "breakdown.js", "calendar.js", "notices.js", "insights-plus.js", "header-ui.js", "plan-apply.js", "task-notes.js", "md-notes.js", "local-tasks.js", "ui-extras.js", "assignees.js", "add-time.js", "team-hub.gs", "vendor/pdf.min.js", "vendor/pdf.worker.min.js", "vendor/pdfjs-LICENSE.txt",
+  "lib-availability.js", "lib-clickup.js", "lib-crypto.js", "lib-tidy.js", "lib-drive.js", "task-panel.js", "lib-updater.js", "offscreen-updater.js", "celebrate.js", "celebrate.html", "celebrate-window.js", "fx.js", "pcm-help.js", "tracker.html", "tracker.js", "bulk-edit.js", "pcm-search.js", "lib-taskfiles.js", "task-files.js", "reminders.js", "hub.js", "task-sort.js", "breakdown.js", "calendar.js", "notices.js", "insights-plus.js", "header-ui.js", "plan-apply.js", "task-notes.js", "md-notes.js", "mention.js", "long-list.js", "local-tasks.js", "ui-extras.js", "assignees.js", "add-time.js", "team-hub.gs", "vendor/pdf.min.js", "vendor/pdf.worker.min.js", "vendor/pdfjs-LICENSE.txt",
   "icons/icon16.png", "icons/icon48.png", "icons/icon128.png", "icons/celebrate.png", "icons/sad.png",
   "sounds/notify.wav", "sounds/danger.mp3", "sounds/winner.wav",
   "README.md", "CHANGELOG.md",
@@ -8211,8 +8433,11 @@ if ($("admForgetToken")) $("admForgetToken").onclick = async () => {
   cuMsg("admTokenMsg", "Forgotten", true);
   admRefresh();
 };
+// Shown when turned on in General, or when the hub owner made this person an admin.
+let hubRoleAdmin = false;
+try { chrome.storage.local.get("hubMe").then((g) => { const r = g && g.hubMe && g.hubMe.role; if (r === "admin" && !hubRoleAdmin) { hubRoleAdmin = true; document.body.classList.remove("no-admin"); } }).catch(() => {}); } catch (e) {}
 function adminVisible(st) {
-  return !!(st && st.settings && st.settings.showAdmin);
+  return !!(st && st.settings && st.settings.showAdmin) || hubRoleAdmin;
 }
 function applyAdminVisibility(st) {
   const on = adminVisible(st);
@@ -8354,8 +8579,222 @@ if ($("floatNow")) {
   $("floatNow").onclick = () => window.PcmHelp && window.PcmHelp.openFloat();
 }
 
+// ---- Admin: company calendar & events (update-policy.json "calendar") ----
+let admCal = null, admCalEdit = -1;
+const admCalDates = { from: 0, to: 0 };
+const admYmd = (ts) => { const d = new Date(ts); return d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0") + "-" + String(d.getDate()).padStart(2, "0"); };
+const admDay = (k) => new Date(k + "T12:00:00").getTime();
+function admCalPaintForm() {
+  const kind = $("admCalKind").value, ev = kind === "event";
+  $("admCalTimeWrap").style.display = ev ? "" : "none";
+  $("admCalRemWrap").style.display = ev ? "" : "none";
+  $("admCalNoteWrap").style.display = ev ? "" : "none";
+  $("admCalToWrap").style.display = ev ? "none" : "";
+  const f = (ms) => new Date(ms).toLocaleDateString([], { weekday: "short", month: "short", day: "numeric", year: "numeric" });
+  $("admCalFrom").textContent = admCalDates.from ? f(admCalDates.from) : "Pick a day…";
+  $("admCalTo").textContent = admCalDates.to ? f(admCalDates.to) : "Same day";
+}
+function admCalRender() {
+  const box = $("admCalList");
+  if (!box) return;
+  if (!admCal) { box.textContent = "Loading…"; return; }
+  if (!admCal.length) { box.textContent = "Nothing on the company calendar yet."; return; }
+  const today = admYmd(Date.now());
+  const icon = (k) => k === "holiday" ? "\uD83C\uDF89" : k === "wfh" ? "\uD83C\uDFE0" : "\uD83D\uDCCC";
+  box.innerHTML = admCal.map((e, i) => {
+    const d = (k) => new Date(k + "T12:00:00").toLocaleDateString([], { month: "short", day: "numeric" });
+    const when = d(e.from) + (e.to && e.to !== e.from ? " - " + d(e.to) : "") + (e.time ? " · " + new Date(e.from + "T" + e.time).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" }) : "");
+    const rem = Array.isArray(e.remind) && e.remind.length ? " · reminds " + e.remind.map((m) => m === 0 ? "at the time" : m === 1440 ? "a day before" : m >= 60 ? (m / 60) + "h before" : m + "m before").join(", ") : "";
+    return '<div class="adm-cal-item' + ((e.to || e.from) < today ? " past" : "") + '"><span class="w">' + icon(e.kind) + " <b>" + escapeHtml(e.title) + "</b> - " + escapeHtml(when + rem) + (e.note ? '<br><span class="hint">' + escapeHtml(e.note) + "</span>" : "") +
+      '</span><button type="button" data-adm-cal-edit="' + i + '">Edit</button><button type="button" data-adm-cal-del="' + i + '">Remove</button></div>';
+  }).join("");
+}
+async function admCalLoad() {
+  const r = await send({ type: "ADMIN_POLICY_GET" }, 20000).catch(() => null);
+  const raw = r && r.ok && r.policy && Array.isArray(r.policy.calendar) ? r.policy.calendar : null;
+  if (raw) admCal = raw.slice();
+  else { const g = await chrome.storage.local.get("companyCalendar").catch(() => ({})); admCal = Array.isArray(g.companyCalendar) ? g.companyCalendar.slice() : []; }
+  admCalRender();
+}
+async function admCalPublish(list, what) {
+  $("admCalMsg").textContent = "Publishing…";
+  const r = await send({ type: "ADMIN_POLICY_SET", policy: { calendar: list } }, 30000).catch((e) => ({ ok: false, error: String(e && e.message ? e.message : e) }));
+  if (!r || !r.ok) { $("admCalMsg").textContent = "Couldn't publish: " + ((r && r.error) || "no reply"); return false; }
+  admCal = list.slice();
+  await chrome.storage.local.set({ companyCalendar: list }).catch(() => {}); // this copy right away
+  admCalRender();
+  $("admCalMsg").textContent = what + " ✓ Everyone has it within a few minutes.";
+  return true;
+}
+if ($("admCalCard")) {
+  admCalPaintForm();
+  $("admCalKind").onchange = admCalPaintForm;
+  for (const k of ["from", "to"]) {
+    const btn = $(k === "from" ? "admCalFrom" : "admCalTo");
+    btn.onclick = (e) => {
+      e.preventDefault();
+      if (!window.PcmCalendar || typeof window.PcmCalendar.pick !== "function") return;
+      window.PcmCalendar.pick(btn, { value: admCalDates[k], canClear: k === "to", what: k === "from" ? "day" : "last day", onPick: (ms) => { admCalDates[k] = ms || 0; admCalPaintForm(); }, onClose: () => {} });
+    };
+  }
+  const reset = () => { admCalEdit = -1; admCalDates.from = admCalDates.to = 0; $("admCalTitle").value = ""; $("admCalNote").value = ""; $("admCalAdd").textContent = "Add & publish"; $("admCalCancel").style.display = "none"; admCalPaintForm(); };
+  $("admCalCancel").onclick = reset;
+  $("admCalAdd").onclick = async () => {
+    const kind = $("admCalKind").value, title = $("admCalTitle").value.trim();
+    if (!title) { $("admCalMsg").textContent = "Give it a title."; $("admCalTitle").focus(); return; }
+    if (!admCalDates.from) { $("admCalMsg").textContent = "Pick the day."; return; }
+    const from = admYmd(admCalDates.from);
+    const e = { from, to: kind !== "event" && admCalDates.to && admYmd(admCalDates.to) > from ? admYmd(admCalDates.to) : from, kind, title };
+    if (kind === "event") {
+      if ($("admCalTime").value) e.time = $("admCalTime").value;
+      if ($("admCalNote").value.trim()) e.note = $("admCalNote").value.trim();
+      e.remind = [...$("admCalRemWrap").querySelectorAll("input:checked")].map((x) => Number(x.value));
+      e.id = admCalEdit >= 0 && admCal[admCalEdit] && admCal[admCalEdit].id ? admCal[admCalEdit].id : "ev" + Date.now().toString(36);
+    }
+    const list = (admCal || []).slice();
+    if (admCalEdit >= 0) list[admCalEdit] = e; else list.push(e);
+    list.sort((a, b) => a.from.localeCompare(b.from));
+    if (await admCalPublish(list, admCalEdit >= 0 ? "Saved" : "Added")) reset();
+  };
+  $("admCalList").addEventListener("click", async (ev) => {
+    const ed = ev.target.closest("[data-adm-cal-edit]"), del = ev.target.closest("[data-adm-cal-del]");
+    if (ed) {
+      const e = admCal[Number(ed.dataset.admCalEdit)]; if (!e) return;
+      admCalEdit = Number(ed.dataset.admCalEdit);
+      $("admCalKind").value = e.kind; $("admCalTitle").value = e.title; $("admCalNote").value = e.note || ""; $("admCalTime").value = e.time || "14:00";
+      admCalDates.from = admDay(e.from); admCalDates.to = e.to && e.to !== e.from ? admDay(e.to) : 0;
+      $("admCalRemWrap").querySelectorAll("input").forEach((x) => { x.checked = Array.isArray(e.remind) && e.remind.includes(Number(x.value)); });
+      $("admCalAdd").textContent = "Save & publish"; $("admCalCancel").style.display = "";
+      admCalPaintForm();
+      $("admCalTitle").focus();
+    } else if (del) {
+      const i = Number(del.dataset.admCalDel), e = admCal[i]; if (!e) return;
+      if (!confirm("Remove “" + e.title + "” from everyone's calendar?")) return;
+      const list = admCal.slice(); list.splice(i, 1);
+      await admCalPublish(list, "Removed");
+    }
+  });
+  admCalLoad();
+}
+
+// ---- The taskbar timer (ClickUp Tracker app) ----
+// Where the timer shows (Floating window / Taskbar / Both / Neither) is picked once
+// and kept; the Dashboard card invites people to try the taskbar until they pick.
+const DESK_REL = "https://github.com/Dipson-bot/personal-clickup-manager/releases";
+const DESK_TAG = "desktop-v0.2.0";
+let deskOs = "";
+async function deskPlatform() {
+  if (deskOs) return deskOs;
+  try { const pi = await chrome.runtime.getPlatformInfo(); deskOs = pi.os === "mac" ? (pi.arch === "arm" || pi.arch === "arm64" ? "mac-arm" : "mac-x64") : pi.os; } catch (e) { deskOs = "other"; }
+  return deskOs;
+}
+async function deskDownload() {
+  const os = await deskPlatform();
+  const file = os === "win" ? "ClickUp-Tracker-Setup.exe" : os === "mac-arm" ? "ClickUp-Tracker-arm64.dmg" : os === "mac-x64" ? "ClickUp-Tracker-x64.dmg" : "";
+  if (!file) { chrome.tabs.create({ url: DESK_REL }).catch(() => {}); return ""; }
+  // Is it published yet? (GitHub's API: one read, only when the button is pressed.)
+  try {
+    const r = await fetch("https://api.github.com/repos/Dipson-bot/personal-clickup-manager/releases/tags/" + DESK_TAG, { cache: "no-store", headers: { Accept: "application/vnd.github+json" } });
+    if (r.status === 404) return "The taskbar app isn't published yet - it will be available here soon. Nothing was changed.";
+    if (r.ok) { const j = await r.json(); if (!(j.assets || []).some((x) => x && x.name === file)) return "The taskbar app for this computer isn't ready yet - try again in a little while. Nothing was changed."; }
+  } catch (e) { /* offline or GitHub busy: try the download anyway */ }
+  const g = await chrome.storage.local.get("deskApp").catch(() => ({}));
+  await chrome.storage.local.set({ deskApp: { ...((g && g.deskApp) || {}), wanted: Date.now() } });
+  // Taskbar from now on (the floating window stops opening by itself); Settings can change it.
+  await send({ type: "SET_SETTINGS", patch: { timerPlace: "taskbar", timerPlaceChosen: true } }).catch(() => {});
+  const a = document.createElement("a");
+  a.href = DESK_REL + "/download/" + DESK_TAG + "/" + file;
+  a.rel = "noopener";
+  document.body.appendChild(a); a.click(); a.remove();
+  deskWatch();
+  return os === "win"
+    ? "Downloading… Open ClickUp-Tracker-Setup.exe when it finishes. If Windows says \"Windows protected your PC\", click More info › Run anyway (the app isn't from the Microsoft Store). It then appears on your taskbar and signs in by itself within a minute."
+    : "Downloading… Open the .dmg and drag ClickUp Tracker into Applications, then open it from there. The first time, Mac asks if you're sure: right-click it › Open (or System Settings › Privacy & Security › Open Anyway). It then shows in the menu bar and signs in by itself within a minute.";
+}
+// After a download: look for the app every 10 s for 10 minutes so Settings and
+// the card flip to "running" as soon as it starts.
+let deskWatchT = null;
+function deskWatch() {
+  clearInterval(deskWatchT);
+  const until = Date.now() + 600000;
+  deskWatchT = setInterval(async () => {
+    if (Date.now() > until) { clearInterval(deskWatchT); return; }
+    const r = await deskRefresh();
+    if (r && r.running) { clearInterval(deskWatchT); renderDeskTry(); }
+  }, 10000);
+}
+async function deskRefresh() {
+  const r = await send({ type: "DESK_STATUS" }).catch(() => null);
+  const app = (r && r.app) || {};
+  const el = $("deskStatus");
+  if (el) {
+    el.classList.remove("desk-note", "warn"); // a status line, not a Get result
+    const os = await deskPlatform();
+    const where = os.startsWith("mac") ? "menu bar" : "taskbar";
+    el.innerHTML = app.running
+      ? '<span class="ok">✓ Taskbar timer is running</span>' + (app.version ? " (v" + escapeHtml(app.version) + ")" : "") + (app.signedIn ? (app.user ? " · signed in as " + escapeHtml(app.user) : " · signed in") : " · signing in…") +
+        (app.shown === false ? " · hidden, because the timer is set to show in " + ($("timerPlace") && $("timerPlace").value === "off" ? "neither place" : "the floating window") + " - pick Taskbar or Both to see it." : ". Hide it with its own tray menu, or choose here.")
+      : app.seenAt
+        ? "The taskbar timer isn't running right now - open ClickUp Tracker from the Start menu" + (os.startsWith("mac") ? " / Applications" : "") + "."
+        : (os === "win" || os.startsWith("mac")) ? "The ClickUp Tracker app puts the timer in the " + where + ", with Stop and Done. One download; it starts with your computer and signs in by itself." : "The taskbar timer is for Windows and Mac.";
+  }
+  if ($("deskGet")) $("deskGet").textContent = app.seenAt ? "Download it again" : "Get the taskbar timer";
+  return app;
+}
+async function renderDeskTry() {
+  const card = $("deskTry");
+  if (!card) return;
+  const os = await deskPlatform();
+  const g = await chrome.storage.local.get(["settings", "deskTryUntil", "deskApp"]).catch(() => ({}));
+  const st = (g && g.settings) || {};
+  const da = (g && g.deskApp) || {};
+  const show = (os === "win" || os.startsWith("mac")) && !st.timerPlaceChosen && !da.seenAt && !(Number(g.deskTryUntil) > Date.now());
+  card.style.display = show ? "" : "none";
+  if (!show) return;
+  card.querySelectorAll("[data-desk-where]").forEach((x) => { x.textContent = os.startsWith("mac") ? "menu bar" : "taskbar"; });
+  card.querySelectorAll("[data-desk-where2]").forEach((x) => { x.textContent = os.startsWith("mac") ? "Mac menu bar" : "Windows taskbar"; });
+}
+if ($("deskTry")) {
+  renderDeskTry();
+  $("deskTryGet").onclick = async () => {
+    // The card stays (with the steps) until the app turns up.
+    const msg = await deskGetClick($("deskTryGet"), $("deskTryMsg"));
+    if (msg && !deskNotYet(msg)) $("deskTryGet").textContent = "Download again";
+  };
+  $("deskTryLater").onclick = async () => { await chrome.storage.local.set({ deskTryUntil: Date.now() + 3 * 86400000 }); renderDeskTry(); };
+  $("deskTryNo").onclick = async () => { await send({ type: "SET_SETTINGS", patch: { timerPlace: "float", timerPlaceChosen: true } }).catch(() => {}); renderDeskTry(); if ($("timerPlace")) $("timerPlace").value = "float"; };
+}
+if ($("timerPlace")) {
+  chrome.storage.local.get("settings").then((g) => { $("timerPlace").value = (g.settings && g.settings.timerPlace) || "float"; }).catch(() => {});
+  $("timerPlace").onchange = async () => {
+    await send({ type: "SET_SETTINGS", patch: { timerPlace: $("timerPlace").value, timerPlaceChosen: true } }).catch(() => {});
+    renderDeskTry();
+    deskRefresh(); // passes the choice on to the app right away
+  };
+  deskRefresh();
+}
+const deskNotYet = (m) => /isn't (published|ready) yet/.test(String(m || ""));
+// The result of pressing Get: in a coloured box (amber = not available yet), not grey hint text.
+function deskSay(el, m) {
+  if (!el) return;
+  el.textContent = m || "";
+  el.classList.toggle("desk-note", !!m);
+  el.classList.toggle("warn", deskNotYet(m));
+}
+async function deskGetClick(btn, out) {
+  const was = btn.textContent;
+  btn.disabled = true; btn.textContent = "Checking…";
+  deskSay(out, "");
+  let m = "";
+  try { m = await deskDownload(); } finally { btn.disabled = false; btn.textContent = was; }
+  deskSay(out, m);
+  if (m && !deskNotYet(m) && $("timerPlace")) $("timerPlace").value = "taskbar";
+  return m;
+}
+if ($("deskGet")) $("deskGet").onclick = () => deskGetClick($("deskGet"), $("deskStatus"));
+
 // ---- General: keyboard shortcuts + help & diagnostics ----
-const SHORTCUT_LABELS = { "toggle-timer": "Start / stop the timer", _execute_action: "Open the popup", "open-dashboard": "Open the dashboard" };
+const SHORTCUT_LABELS = { "toggle-timer": "Start / stop the timer", _execute_action: "Open the popup", "open-dashboard": "Open the dashboard", "toggle-float": "Show / hide the floating timer" };
 async function renderShortcuts() {
   const el = $("shortcutList");
   if (!el || !chrome.commands) return;
@@ -8400,6 +8839,55 @@ if ($("setupShow")) $("setupShow").onclick = async () => {
   await window.PcmHelp.showSetup();
   location.hash = "#dashboard";
 };
+
+// ---- Site monitor › 📣 Send sites to… (admin only; uses client-sites.json) ----
+let smTeamPeople = null, smChosen = [];
+async function smRoster() {
+  if (smTeamPeople) return smTeamPeople;
+  const r = await send({ type: "CLICKUP_DEPT_DATA" }, 15000).catch(() => null);
+  smTeamPeople = ((r && r.ok && r.members) || []).map((m) => ({ id: String(m.id), name: String(m.name || m.username || m.email || ""), email: String(m.email || "") })).filter((p) => p.name);
+  return smTeamPeople;
+}
+function smPaintChips() {
+  const box = $("smChips");
+  box.replaceChildren();
+  for (const p of smChosen) {
+    const c = document.createElement("span"); c.textContent = p.name;
+    const x = document.createElement("button"); x.type = "button"; x.textContent = "✕"; x.title = "Remove " + p.name;
+    x.onclick = () => { smChosen = smChosen.filter((q) => q.id !== p.id); smPaintChips(); };
+    c.appendChild(x); box.appendChild(c);
+  }
+}
+if ($("smSendTeam")) {
+  $("smSendTeam").onclick = () => { $("smSendPanel").hidden = !$("smSendPanel").hidden; $("smSendMsg").textContent = ""; };
+  $("smSendCancel").onclick = () => { $("smSendPanel").hidden = true; };
+  for (const r of document.querySelectorAll('input[name="smTo"]')) r.onchange = () => { $("smPeopleWrap").hidden = document.querySelector('input[name="smTo"]:checked').value !== "some"; };
+  const q = $("smPeopleQ"), sug = $("smSug");
+  const showSug = async () => {
+    const list = await smRoster();
+    const n = q.value.trim().toLowerCase();
+    const have = new Set(smChosen.map((p) => p.id));
+    const hits = list.filter((p) => !have.has(p.id) && (!n || p.name.toLowerCase().includes(n) || p.email.toLowerCase().includes(n))).slice(0, 8);
+    sug.replaceChildren(...hits.map((p) => { const d = document.createElement("div"); d.textContent = p.name + (p.email ? "  ·  " + p.email : ""); d.onmousedown = (e) => { e.preventDefault(); smChosen.push(p); smPaintChips(); q.value = ""; showSug(); }; return d; }));
+    sug.hidden = !hits.length;
+  };
+  q.onfocus = showSug; q.oninput = showSug; q.onblur = () => setTimeout(() => { sug.hidden = true; }, 150);
+  $("smSendGo").onclick = async () => {
+    const msg = $("smSendMsg");
+    const some = document.querySelector('input[name="smTo"]:checked').value === "some";
+    const mode = document.querySelector('input[name="smMode"]:checked').value;
+    if (some && !smChosen.length) { msg.textContent = "Add at least one person."; return; }
+    const got = await send({ type: "GET_SITE_MONITOR_CONFIG" }).catch(() => null);
+    const sites = ((got && got.cfg && got.cfg.sites) || []).map((s) => ({ name: s.name || "", url: s.url })).filter((s) => s.url);
+    if (!sites.length) { msg.textContent = "Your Site monitor list is empty."; return; }
+    const who = some ? smChosen.map((p) => p.name).join(", ") : "everyone";
+    if (!confirm("Send your " + sites.length + " site(s) to " + who + "?" + (mode === "match" ? "\n\nTheir lists will match yours: changed addresses are updated and the team sites you removed are removed from theirs." : ""))) return;
+    $("smSendGo").disabled = true; msg.textContent = "Sending…";
+    const r = await send({ type: "ADMIN_SITES_PUBLISH", sites, mode, to: some ? smChosen.map((p) => p.id) : [] }, 60000).catch((e) => ({ ok: false, error: String(e && e.message ? e.message : e) }));
+    $("smSendGo").disabled = false;
+    msg.textContent = r && r.ok ? "Sent ✓ " + r.count + " site(s) to " + who + " - their extensions take them within a few minutes." : "Couldn't send: " + ((r && r.error) || "no reply");
+  };
+}
 
 // ---- Admin: client sites for everyone (client-sites.json, encrypted) ----
 let admSitesMineList = [];

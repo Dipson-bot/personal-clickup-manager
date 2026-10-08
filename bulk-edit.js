@@ -328,7 +328,7 @@ function bkMergePeople(current, found, selfId) {
     if (same) return;
     picked.clear();
     results.clear();
-    load(false);
+    ask();
   }
   function syncScope() {
     // Being pointed at another person always wins the note: it is the one that
@@ -368,7 +368,25 @@ function bkMergePeople(current, found, selfId) {
   }
 
   // ---------- load ----------
+  // Nothing is read from ClickUp until "Load tasks" is pressed: picking a range,
+  // a person or a tag only says what will load (ClickUp's request allowance is
+  // shared by the whole office). Pressing it again with the same choices re-reads.
+  let loadedSig = "";
+  const sig = () => [$("bkRange").value, scopeId, $("bkFrom").value, $("bkTo").value, $("bkTag").value].join("|");
+  async function ask() {
+    ++loadSeq;
+    const kind = $("bkRange").value;
+    $("bkCustom").hidden = kind !== "custom";
+    $("bkTagWrap").hidden = kind !== "tag";
+    if (kind === "tag" && !tagNames.length) await loadTags(false);
+    tasks = [];
+    loadedTag = "";
+    loadedSig = "";
+    $("bkList").innerHTML = '<div class="hint bk-ask" style="padding:14px;">Choose <b>Tasks due</b>' + ($("bkWhoWrap").hidden ? "" : ", <b>Whose tasks</b>") + " and the rest, then press <b>Load tasks</b>. Nothing is read from ClickUp before that.</div>";
+    renderCount();
+  }
   async function load(force) {
+    loadedSig = sig();
     const seq = ++loadSeq;
     const kind = $("bkRange").value;
     await loadScope();
@@ -812,7 +830,7 @@ function bkMergePeople(current, found, selfId) {
   $("bkMissing").onchange = () => { paintMissing(); render(); };
   $("bkMissingOn").onchange = () => { paintMissing(); render(); };
   $("bkSearch").oninput = render;
-  $("bkRange").onchange = () => load(false);
+  $("bkRange").onchange = () => ask();
   // Switching person loads a different task set, so the ticks go with it -
   // carrying them over would mean changing one person's tasks on another's tick.
   // People picker: type to search, click (or Enter/arrows) to choose. The list
@@ -881,10 +899,11 @@ function bkMergePeople(current, found, selfId) {
   document.addEventListener("click", (e) => { if (!$("bkWhoWrap").hidden && !e.target.closest("#bkWhoWrap")) closeWho(); });
   // Tags: pick one and the list loads straight away; Load also re-reads the tag
   // list from ClickUp, for tags added there since this tab was opened.
-  $("bkTag").onchange = () => load(false);
-  $("bkTagGo").onclick = () => { loadTags(true); load(false); };
-  $("bkFrom").onchange = $("bkTo").onchange = () => { if ($("bkFrom").value && $("bkTo").value) load(false); };
-  $("bkReload").onclick = () => load(true);
+  $("bkTag").onchange = () => ask();
+  $("bkTagGo").onclick = () => { loadTags(true); };
+  $("bkFrom").onchange = $("bkTo").onchange = () => ask();
+  // Same choices as what's showing = read them again from ClickUp.
+  $("bkReload").onclick = () => load(loadedSig === sig());
   paintMissing();
   const repaint = () => { paintKind(); paintComment(); };
   $("bkKind").onchange = repaint;
@@ -901,7 +920,7 @@ function bkMergePeople(current, found, selfId) {
   // Load when the tab is first opened (not on every Options page load).
   let loaded = false;
   const panel = document.querySelector('.panel[data-panel="bulk"]');
-  const maybeLoad = () => { if (!loaded && panel && panel.classList.contains("on")) { loaded = true; load(false); } };
+  const maybeLoad = () => { if (!loaded && panel && panel.classList.contains("on")) { loaded = true; loadScope().then(() => { syncScope(); ask(); }).catch(() => ask()); } };
   new MutationObserver(maybeLoad).observe(panel, { attributes: true, attributeFilter: ["class"] });
   maybeLoad();
   // A previous batch that can still be undone.

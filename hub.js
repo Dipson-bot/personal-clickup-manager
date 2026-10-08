@@ -46,6 +46,9 @@
     .hb-head h3 { margin: 0; font-size: 15px; flex: 1; min-width: 200px; overflow-wrap: anywhere; }
     .hb-acts { display: flex; gap: 6px; flex-wrap: wrap; margin: 6px 0 10px; }
     .hb-acts button, .hb-mini { font: inherit; font-size: 11.5px; padding: 3px 9px; border-radius: 7px; border: 1px solid var(--border); background: var(--bg2); color: var(--text); cursor: pointer; }
+    .hb-role { font-size: 11.5px; color: var(--muted); }
+    .hb-role.adm { color: var(--indigo, #6366f1); font-weight: 700; }
+    .hb-rolesel { font: inherit; font-size: 11.5px; padding: 2px 6px; width: auto; }
     .hb-msgs { display: flex; flex-direction: column; gap: 12px; margin: 8px 0 12px; }
     .hb-m { display: flex; gap: 10px; }
     .hb-av { width: 30px; height: 30px; border-radius: 50%; flex: none; object-fit: cover; display: grid; place-items: center; font: 700 11px sans-serif; color: #fff; background: #6366f1; overflow: hidden; }
@@ -215,6 +218,8 @@
     if (!view || view.kind !== "list") return;
     const box = view.listBox;
     box.textContent = "";
+    // Long lists: first 15, then "Show all" (long-list.js); the search is the one above.
+    box.dataset.long = "hub-threads"; box.dataset.longRows = ".hb-row"; box.dataset.longMax = "15"; box.dataset.longNosearch = "1";
     if (!threads) { box.appendChild(el("div", "hb-empty", "Loading…")); return; }
     const words = view.q.value.toLowerCase().split(/\s+/).filter(Boolean);
     const rows = threads.filter((t) => (filter === "all" || (filter === "mine" ? t.mine : t.status === filter || (filter === "open" && t.pinned)))
@@ -626,6 +631,7 @@
     wrap.append(bar, panel);
     return wrap;
   }
+  let youOwner = false; // this copy holds the hub's admin key (sets roles)
   async function loadUsers() {
     const box = $("hubAdmUsers");
     if (!box) return;
@@ -662,7 +668,8 @@
     for (const [v, l] of [[0, "Slow mode off"], [1, "1 message / min"], [5, "1 message / 5 min"], [15, "1 message / 15 min"], [60, "1 message / hour"]]) { const o = el("option", "", l); o.value = String(v); if (Number(st.slowMin || 0) === v) o.selected = true; slow.appendChild(o); }
     const pubL = el("label"); pubL.style.cssText = "font-size:12.5px;display:flex;gap:6px;align-items:center;";
     const pub = el("input"); pub.type = "checkbox"; pub.checked = !!st.filesPublic;
-    pubL.append(pub, "Everyone can see screenshots (otherwise only you)");
+    pubL.append(pub, "Everyone can see the screenshots people attach in Help & issues (otherwise only admins)");
+    pubL.title = "When someone reports a problem in Help & issues with a screenshot, the other people reading that thread see it too when this is ticked. Unticked, only admins see screenshots - safer, because a screenshot can show a client's data.";
     const saveSet = async () => { await hub("settings", { slowMin: Number(slow.value), filesPublic: pub.checked }, true); };
     slow.onchange = saveSet; pub.onchange = saveSet;
     set.append(slow, pubL);
@@ -673,7 +680,9 @@
     msg.style.display = "none";
     const say = (t, bad) => { msg.style.display = t ? "" : "none"; msg.textContent = t || ""; msg.className = "hb-msg" + (bad ? " err" : ""); };
     const tbl = el("table", "hb-users");
-    const hr = el("tr"); for (const h of ["", "Name", "Version (reported)", "Last active", "", ""]) hr.appendChild(el("th", "", h));
+    tbl.dataset.long = "hub-users"; tbl.dataset.longRows = "tr.hb-urow"; tbl.dataset.longMax = "15";
+    const hr = el("tr"); for (const h of ["", "Name", "Role", "Version (reported)", "Last active", "", ""]) hr.appendChild(el("th", "", h));
+    youOwner = !!r.youOwner;
     tbl.appendChild(hr);
     for (const g of people) drawUser(tbl, g, myInstall, say);
     box.appendChild(tbl);
@@ -711,7 +720,7 @@
     const mine = !!(myInstall && u.install === myInstall);
     const dupRow = el("tr"); dupRow.style.display = "none";
     const noteRow = el("tr"); noteRow.style.display = "none";
-    const tr = el("tr");
+    const tr = el("tr", "hb-urow");
     const c0 = el("td"); c0.appendChild(avatar(u)); tr.appendChild(c0);
     const cn = el("td");
     cn.appendChild(el("div", "", u.name || "(no name)"));
@@ -725,6 +734,27 @@
       cn.appendChild(more);
     }
     tr.appendChild(cn);
+    // Role: the owner (who holds the admin key) sets User / Admin; shows "Admin"
+    // for the owner's own row, which can't be changed.
+    const cr = el("td");
+    if (u.role === "owner") cr.appendChild(el("span", "hb-role adm", "Admin"));
+    else if (youOwner) {
+      const sel = el("select", "hb-rolesel");
+      for (const [v, l] of [["user", "User"], ["admin", "Admin"]]) { const o = el("option", "", l); o.value = v; if ((u.role || "user") === v) o.selected = true; sel.appendChild(o); }
+      sel.title = "Admins get the Team hub tools (users, notices, Help & issues moderation) - not publishing versions or shared settings, which need your GitHub token.";
+      sel.onchange = async () => {
+        const want = sel.value;
+        if (want === "admin" && !confirm("Make " + (u.name || "this person") + " an admin?\n\nThey get the Team hub tools: this users list, notices, notifying people and moderating Help & issues. They can't change roles or touch you.")) { sel.value = u.role || "user"; return; }
+        sel.disabled = true;
+        const rr = await hub("mod", { op: "role", install: u.install, role: want }, true);
+        sel.disabled = false;
+        if (!(rr && rr.ok)) { sel.value = u.role || "user"; say(hubErr(rr), true); return; }
+        u.role = want;
+        say((u.name || "They") + (want === "admin" ? " is now an admin (their copy picks it up the next time it checks in)." : " is a user again."));
+      };
+      cr.appendChild(sel);
+    } else cr.appendChild(el("span", "hb-role" + (u.role === "admin" ? " adm" : ""), u.role === "admin" ? "Admin" : "User"));
+    tr.appendChild(cr);
     const cv = el("td", "", u.version ? "v" + u.version : "-"); if (u.version && cmpV(u.version, VERSION) < 0) cv.style.color = "#b45309";
     if (u.lastSeen) cv.title = "Reported " + ago(u.lastSeen) + " (" + new Date(u.lastSeen).toLocaleString() + ")";
     tr.appendChild(cv);
@@ -786,7 +816,7 @@
     tbl.appendChild(tr);
 
     if (g.dupes.length) {
-      const dc = el("td"); dc.colSpan = 6; dc.style.paddingTop = "0";
+      const dc = el("td"); dc.colSpan = 7; dc.style.paddingTop = "0";
       for (const d of g.dupes) {
         const line = el("div");
         line.style.cssText = "display:flex;gap:8px;align-items:center;font-size:12px;color:var(--muted);padding:2px 0;";
@@ -817,7 +847,7 @@
 
     if (mine) return;
     const behind = u.version && cmpV(u.version, VERSION) < 0;
-    const nc = el("td"); nc.colSpan = 6; nc.style.paddingTop = "0";
+    const nc = el("td"); nc.colSpan = 7; nc.style.paddingTop = "0";
     const form = el("div");
     form.style.cssText = "display:flex;gap:6px;flex-wrap:wrap;align-items:flex-start;padding:2px 0 8px;";
     const ta = el("textarea");

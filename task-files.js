@@ -78,6 +78,21 @@
   const noteFiles = {};   // client key -> files waiting to go with the next note
   const remindAt = {};    // client key -> "" | datetime-local value for the next note
   const open = new Set(); // expanded client keys
+  // Reports (a client note with .report = { kind, period, title }): the new-report
+  // form's state per client. Its text / files / reminder use the note maps under
+  // the key R + client key.
+  const R = "rep:";
+  const repForm = {};     // client key -> { kind, period } while "+ New report" is open
+  const ymdOf = (ms) => { const d = new Date(ms); return d.getFullYear() + "-" + pad(d.getMonth() + 1) + "-" + pad(d.getDate()); };
+  const mondayOf = (ms) => { const d = new Date(ms); d.setHours(12, 0, 0, 0); d.setDate(d.getDate() - ((d.getDay() + 6) % 7)); return d.getTime(); };
+  const monthKey = (ms) => { const d = new Date(ms); return d.getFullYear() + "-" + pad(d.getMonth() + 1); };
+  function repLabel(r) {
+    if (!r) return "";
+    if (r.kind === "monthly") { const [y, m] = String(r.period || "").split("-").map(Number); return "Monthly report · " + (y ? new Date(y, (m || 1) - 1, 1).toLocaleDateString([], { month: "long", year: "numeric" }) : ""); }
+    const t = new Date(String(r.period || "") + "T12:00:00");
+    const d = isNaN(t) ? "" : t.toLocaleDateString([], { month: "short", day: "numeric", year: "numeric" });
+    return r.kind === "weekly" ? "Weekly report · week of " + d : "Report · " + d;
+  }
   let pinned = [];        // pinned client keys, newest first (rides settings to Drive)
   let focusNid = "";      // a note whose editor should get the caret on the next draw
   // One object URL per image, made once and reused: the list is redrawn often,
@@ -157,6 +172,18 @@
     #tfList .tf-fthumb:hover { border-color: var(--indigo); }
     .tf-light { position: fixed; inset: 0; z-index: 9999; background: rgba(0,0,0,.72); display: flex; align-items: center; justify-content: center; padding: 24px; }
     .tf-light[hidden] { display: none; }
+    .tf-reps .tf-sech .tf-rnew { margin-left: auto; }
+    .tf-radd { border: 1px dashed var(--indigo, #6366f1); border-radius: 10px; padding: 10px; margin: 6px 0 10px; }
+    .tf-rrow { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; margin-bottom: 8px; }
+    .tf-rrow select, .tf-rrow input { width: auto; font: inherit; font-size: 12.5px; padding: 4px 8px; }
+    .tf-rrow .tf-rtitle { flex: 1 1 220px; }
+    .tf-rin { width: 100%; box-sizing: border-box; min-height: 90px; }
+    .tf-note.tf-rep { border-left: 3px solid var(--indigo, #6366f1); }
+    .tf-rhead { font-size: 12.5px; margin-bottom: 4px; }
+    .tf-rsendp { position: relative; margin-top: 8px; padding: 10px; border: 1px solid var(--border); border-radius: 8px; background: var(--card); display: grid; gap: 6px; }
+    .tf-rsendp input { font: inherit; font-size: 12.5px; padding: 5px 8px; }
+    .tf-rsug { position: absolute; left: 10px; right: 10px; top: 40px; z-index: 10; background: var(--card); border: 1px solid var(--border); border-radius: 8px; box-shadow: 0 10px 24px rgba(0,0,0,.15); max-height: 200px; overflow: auto; }
+    .tf-rsug div { padding: 6px 10px; cursor: pointer; } .tf-rsug div:hover { background: rgba(99,102,241,.1); }
     .tf-lbox { max-width: min(1100px, 94vw); max-height: 92vh; display: flex; flex-direction: column; gap: 8px; }
     .tf-lbox img { max-width: 100%; max-height: calc(92vh - 46px); object-fit: contain; border-radius: 10px; background: #fff; }
     .tf-lbar { display: flex; align-items: center; gap: 8px; }
@@ -270,8 +297,10 @@
         '<button type="button" class="tf-btn tf-neattach" title="Attach screenshots or files to this note. You can also paste one with Ctrl+V or drop files on the note. ✕ on a file takes it off.">📎 Attach</button>' +
         '<button type="button" class="tf-btn pri tf-nesave">Save</button>' +
         '<button type="button" class="tf-btn tf-necancel">Cancel</button>';
-    return '<div class="tf-note' + (ed == null ? "" : " editing") + '" data-nid="' + esc(n.id) + '">' + body +
-      attHtml(atts, ed == null ? "tf-natt" : "tf-neatt", ed != null) + '<div class="tf-nmeta">' + meta + "</div></div>";
+    const rh = n.report ? '<div class="tf-rhead">📊 <b>' + esc(repLabel(n.report)) + "</b>" + (n.report.title ? " · " + esc(n.report.title) : "") + "</div>" : "";
+    const send = n.report && ed == null ? '<button type="button" class="tf-btn tf-rsend" title="Send a notification about this report to a teammate who uses the extension">🔔 Send to a teammate</button>' : "";
+    return '<div class="tf-note' + (n.report ? " tf-rep" : "") + (ed == null ? "" : " editing") + '" data-nid="' + esc(n.id) + '">' + rh + body +
+      attHtml(atts, ed == null ? "tf-natt" : "tf-neatt", ed != null) + '<div class="tf-nmeta">' + meta.replace('<button type="button" class="tf-btn tf-nrem"', send + '<button type="button" class="tf-btn tf-nrem"') + "</div></div>";
   }
   /* ---- end markup ---- */
   function render() {
@@ -303,16 +332,22 @@
     }
     list.innerHTML = rows.map(([k, name]) => {
       const fs = files.filter((f) => f.ck === k).sort((a, b) => a.addedAt - b.addedAt);
-      const ns = (notes[k] || []).slice().sort((a, b) => b.at - a.at);
+      const all = (notes[k] || []).slice().sort((a, b) => b.at - a.at);
+      const ns = all.filter((n) => !n.report);
+      const reps = all.filter((n) => n.report).sort((a, b) => String(b.report.period || "").localeCompare(String(a.report.period || "")) || b.at - a.at);
       const isOpen = open.has(k);
       const isPin = pinned.indexOf(k) >= 0;
-      const count = (fs.length ? fs.length + " file" + (fs.length === 1 ? "" : "s") : "no files") + (ns.length ? " · " + ns.length + " note" + (ns.length === 1 ? "" : "s") : "");
+      const count = (fs.length ? fs.length + " file" + (fs.length === 1 ? "" : "s") : "no files") + (ns.length ? " · " + ns.length + " note" + (ns.length === 1 ? "" : "s") : "") + (reps.length ? " · " + reps.length + " report" + (reps.length === 1 ? "" : "s") : "");
       let body = "";
       if (isOpen) {
         body = '<div class="tf-body">' +
           '<div class="tf-sec"><div class="tf-sech">📎 Files <span class="hint">Drop files here or use + Add files. Kept on this computer; their text is backed up to Drive (hidden app data).</span>' +
           (fs.length ? '<button type="button" class="tf-btn tf-drive" title="Copy these files to My Drive &gt; Personal ClickUp Manager &gt; Clients &gt; ' + esc(name) + ' (files already copied are skipped)">☁ Copy to Drive</button>' : "") + "</div>" +
           (fs.length ? fs.map(fileRow).join("") : '<div class="hint" style="padding:4px 2px;">No files yet.</div>') + "</div>" +
+          '<div class="tf-sec tf-reps"><div class="tf-sech">📊 Reports <span class="hint">Weekly, monthly or any report for ' + esc(name) + ' - text, screenshots and files, kept apart from the notes.</span>' +
+          (repForm[k] ? "" : '<button type="button" class="tf-btn tf-rnew">+ New report</button>') + "</div>" +
+          (repForm[k] ? repFormHtml(k, name) : "") +
+          (reps.length ? reps.map(noteHtml).join("") : repForm[k] ? "" : '<div class="hint" style="padding:4px 2px;">No reports yet.</div>') + "</div>" +
           '<div class="tf-sec"><div class="tf-sech">📝 Notes <span class="hint">What you were told, what to watch out for. Task details and "Explain this task" show them.</span></div>' +
           ns.map(noteHtml).join("") +
           '<div class="tf-nadd"><textarea class="tf-nin" maxlength="20000" placeholder="Add a note about ' + esc(name) + '… Paste a screenshot with Ctrl+V or drop files here. Ctrl+Enter saves.">' + esc(drafts[k] || "") + "</textarea>" +
@@ -323,7 +358,7 @@
           '<span class="sp"></span><button type="button" class="tf-btn pri tf-nsave">Save note</button></div></div>' +
           "</div></div>";
       }
-      return '<div class="tf-client' + (isOpen ? " open" : "") + (isPin ? " pinned" : "") + (fs.length || ns.length ? "" : " empty") + '" data-ck="' + esc(k) + '" data-name="' + esc(name) + '">' +
+      return '<div class="tf-client' + (isOpen ? " open" : "") + (isPin ? " pinned" : "") + (fs.length || all.length ? "" : " empty") + '" data-ck="' + esc(k) + '" data-name="' + esc(name) + '">' +
         '<div class="tf-head"><button type="button" class="tf-tog" aria-expanded="' + isOpen + '">' + (isOpen ? "▾" : "▸") + "</button>" +
         '<span class="tf-name">' + esc(name) + "</span>" +
         '<span class="tf-count">' + count + "</span>" +
@@ -490,9 +525,10 @@
   }
   function addNoteFiles(ck, list) {
     takeFiles(noteFiles[ck] || (noteFiles[ck] = []), list);
-    open.add(ck);
+    open.add(ck.startsWith(R) ? ck.slice(R.length) : ck);
     render();
   }
+  const list0 = () => $("tfList");
   // Attached while editing: held in editFiles until Save, so Cancel undoes it.
   function addEditFiles(nid, list) {
     takeFiles(editFiles[nid] || (editFiles[nid] = []), list);
@@ -508,6 +544,87 @@
   noteInput.onchange = () => { if (noteFor) addNoteFiles(noteFor, [...noteInput.files]); noteInput.value = ""; };
   editInput.onchange = () => { if (editFor) addEditFiles(editFor, [...editInput.files]); editInput.value = ""; };
 
+  function repFormHtml(k, name) {
+    const f = repForm[k];
+    const months = [];
+    for (let i = -12; i <= 1; i++) { const d = new Date(); d.setDate(1); d.setMonth(d.getMonth() + i); months.push(monthKey(d.getTime())); }
+    const per = f.kind === "monthly"
+      ? '<select class="tf-rmonth" aria-label="Month">' + months.reverse().map((m) => { const [y, mo] = m.split("-").map(Number); return '<option value="' + m + '"' + (m === f.period ? " selected" : "") + ">" + new Date(y, mo - 1, 1).toLocaleDateString([], { month: "long", year: "numeric" }) + "</option>"; }).join("") + "</select>"
+      : '<button type="button" class="tf-btn tf-rper" title="Pick the ' + (f.kind === "weekly" ? "week (any day in it)" : "date") + ' in the calendar">📅 ' + esc(repLabel({ kind: f.kind, period: f.period }).replace(/^.*?· /, "")) + "</button>";
+    return '<div class="tf-nadd tf-radd" data-ck="' + esc(k) + '">' +
+      '<div class="tf-rrow"><select class="tf-rkind" aria-label="Kind of report"><option value="weekly"' + (f.kind === "weekly" ? " selected" : "") + '>Weekly</option><option value="monthly"' + (f.kind === "monthly" ? " selected" : "") + '>Monthly</option><option value="other"' + (f.kind === "other" ? " selected" : "") + ">Other</option></select>" + per +
+      '<input type="text" class="tf-rtitle" maxlength="120" placeholder="Title (optional) - e.g. SEO weekly report" value="' + esc(f.title || "") + '" /></div>' +
+      '<textarea class="tf-rin" maxlength="20000" placeholder="The report or notes about it… Paste screenshots with Ctrl+V or drop files here. Ctrl+Enter saves.">' + esc(drafts[R + k] || "") + "</textarea>" +
+      attHtml(noteFiles[R + k], "tf-rpf", true) +
+      '<div class="tf-nrow"><button type="button" class="tf-btn tf-rattach" title="Attach the report file, screenshots or anything else">📎 Attach</button>' +
+      '<label title="Also get a reminder about this report"><input type="checkbox" class="tf-rremon"' + (remindAt[R + k] ? " checked" : "") + " /> ⏰ Remind me at</label>" +
+      '<input type="datetime-local" class="tf-rremat" value="' + esc(remindAt[R + k] || "") + '"' + (remindAt[R + k] ? "" : " disabled") + " />" +
+      '<span class="sp"></span><button type="button" class="tf-btn tf-rcancel">Cancel</button><button type="button" class="tf-btn pri tf-rsave">Save report</button></div></div>';
+  }
+  async function saveReport(box, ck, name) {
+    const form = box.querySelector(".tf-radd");
+    const f = repForm[ck];
+    if (!form || !f) return;
+    const ta = form.querySelector(".tf-rin");
+    const text = String((ta && ta.value) || "").trim();
+    const title = String((form.querySelector(".tf-rtitle") || {}).value || "").trim().slice(0, 120);
+    const pend = noteFiles[R + ck] || [];
+    if (!text && !pend.length && !title) { say("Write something, add a title or attach the report first.", "var(--amber, #d97706)"); if (ta) ta.focus(); return; }
+    const remOn = form.querySelector(".tf-rremon"), remAtEl = form.querySelector(".tf-rremat");
+    const when = remOn && remOn.checked && remAtEl && remAtEl.value ? new Date(remAtEl.value).getTime() : 0;
+    if (remOn && remOn.checked && !(when > Date.now())) { say("Pick a reminder time that hasn't passed (or untick ⏰ Remind me at).", "var(--red)"); return; }
+    try {
+      if (pend.length) await F.attPut(pend.map((p) => ({ id: p.id, name: p.name, type: p.type, size: p.size, blob: p.blob, at: Date.now() })));
+    } catch (e) { say("Couldn't save the files (is the disk full?).", "var(--red)"); return; }
+    const meta = pend.map((p) => ({ id: p.id, name: p.name, type: p.type, size: p.size }));
+    const report = { kind: f.kind, period: f.period, title };
+    const list = (notes[ck] || []).slice();
+    list.push({ id: Date.now().toString(36) + Math.random().toString(36).slice(2, 6), text: (text || title || pend.map((p) => p.name).join(", ")).slice(0, 20000), at: Date.now(), client: name, files: meta, report });
+    await F.saveNotes(name, list);
+    let msg = repLabel(report) + " saved for " + name + ".";
+    if (when) {
+      try { msg += " Reminder set for " + (await window.PcmReminders.add({ text: name + ": " + repLabel(report) + (title ? " - " + title : ""), at: when, files: meta })) + "."; }
+      catch (e) { msg += " The reminder wasn't set: " + e.message; }
+    }
+    delete drafts[R + ck]; delete noteFiles[R + ck]; delete remindAt[R + ck]; delete repForm[ck];
+    say(msg);
+    await load();
+  }
+  // 🔔 Send to a teammate: pick someone (the workspace people) and an optional line.
+  let sendRoster = null;
+  async function sendPanel(nEl, n, name) {
+    const old = nEl.querySelector(".tf-rsendp");
+    if (old) { old.remove(); return; }
+    const p = document.createElement("div");
+    p.className = "tf-rsendp";
+    p.innerHTML = '<input type="text" class="tf-rsq" placeholder="Who? Type a name…" autocomplete="off" /><div class="tf-rsug" hidden></div>' +
+      '<input type="text" class="tf-rsmsg" maxlength="250" placeholder="Message (optional) - e.g. please review before Friday" />' +
+      '<div class="tf-nrow"><span class="hint tf-rsres"></span><span class="sp"></span><button type="button" class="tf-btn tf-rscancel">Cancel</button><button type="button" class="tf-btn pri tf-rsgo">Send</button></div>';
+    nEl.appendChild(p);
+    let who = null;
+    const q = p.querySelector(".tf-rsq"), sug = p.querySelector(".tf-rsug"), res = p.querySelector(".tf-rsres");
+    if (!sendRoster) { const r = await send({ type: "CLICKUP_DEPT_DATA" }, 15000); sendRoster = ((r && r.ok && r.members) || []).map((m) => ({ id: String(m.id), name: String(m.name || m.username || m.email || ""), email: String(m.email || "") })).filter((x) => x.name); }
+    const show = () => {
+      const t = q.value.trim().toLowerCase();
+      const hits = sendRoster.filter((x) => !t || x.name.toLowerCase().includes(t) || x.email.toLowerCase().includes(t)).slice(0, 8);
+      sug.innerHTML = hits.map((x) => '<div data-id="' + esc(x.id) + '">' + esc(x.name) + (x.email ? ' <span class="hint">' + esc(x.email) + "</span>" : "") + "</div>").join("");
+      sug.hidden = !hits.length;
+    };
+    q.onfocus = show; q.oninput = () => { who = null; show(); };
+    q.onblur = () => setTimeout(() => { sug.hidden = true; }, 150);
+    sug.onmousedown = (e) => { const d = e.target.closest("[data-id]"); if (!d) return; e.preventDefault(); who = sendRoster.find((x) => x.id === d.dataset.id); q.value = who ? who.name : ""; sug.hidden = true; };
+    p.querySelector(".tf-rscancel").onclick = () => p.remove();
+    p.querySelector(".tf-rsgo").onclick = async () => {
+      if (!who) { res.textContent = "Pick someone from the list."; return; }
+      res.textContent = "Sending…";
+      const extra = p.querySelector(".tf-rsmsg").value.trim();
+      const files = (n.files || []).length ? " (" + n.files.length + " file" + (n.files.length === 1 ? "" : "s") + " with it on my computer)" : "";
+      const r = await send({ type: "HUB_MESSAGE", userId: who.id, title: "Report: " + name + " · " + repLabel(n.report).replace(/ report ·/, " ·") + (n.report.title ? " - " + n.report.title : ""), text: (extra || String(n.text || "").replace(/\s+/g, " ").slice(0, 200)) + files }, 30000);
+      res.textContent = r && r.ok ? "Sent to " + who.name + " ✓" : "Couldn't send: " + ((r && r.error) || "no reply");
+      if (r && r.ok) setTimeout(() => p.remove(), 2500);
+    };
+    q.focus();
+  }
   async function saveNote(box, ck, name) {
     const ta = box.querySelector(".tf-nin");
     const text = String((ta && ta.value) || "").trim();
@@ -558,6 +675,27 @@
       render();
       return;
     }
+    // ---- reports ----
+    if (e.target.closest(".tf-rnew")) { const now = Date.now(); repForm[ck] = { kind: "weekly", period: ymdOf(mondayOf(now)) }; open.add(ck); render(); const t = list0().querySelector('.tf-client[data-ck="' + ck + '"] .tf-rtitle'); if (t) t.focus(); return; }
+    if (e.target.closest(".tf-rcancel")) { delete repForm[ck]; delete drafts[R + ck]; dropThumbs((noteFiles[R + ck] || []).map((x) => x.id)); delete noteFiles[R + ck]; delete remindAt[R + ck]; render(); return; }
+    if (e.target.closest(".tf-rsave")) { await saveReport(box, ck, name); return; }
+    if (e.target.closest(".tf-rattach")) { noteFor = R + ck; noteInput.click(); return; }
+    if (e.target.closest(".tf-rper")) {
+      const b = e.target.closest(".tf-rper"), f = repForm[ck];
+      if (f && window.PcmCalendar && window.PcmCalendar.pick) window.PcmCalendar.pick(b, { value: new Date(f.period + "T12:00:00").getTime(), canClear: false, what: f.kind === "weekly" ? "report's week" : "report's date",
+        onPick: (ms) => { if (ms) { f.period = ymdOf(f.kind === "weekly" ? mondayOf(ms) : ms); render(); } }, onClose: () => {} });
+      return;
+    }
+    if (e.target.closest(".tf-rpf-x")) { const i = Number(e.target.closest(".tf-rpf").dataset.i); const gone = (noteFiles[R + ck] || [])[i]; if (gone) dropThumbs([gone.id]); (noteFiles[R + ck] || []).splice(i, 1); render(); return; }
+    if (e.target.closest(".tf-rpf")) { const m = (noteFiles[R + ck] || []).find((x) => x.id === e.target.closest(".tf-rpf").dataset.fid); if (m && isImage(m)) expand(m.id, m.name); return; }
+    if (e.target.closest(".tf-rremon")) {
+      const c = e.target.closest(".tf-rremon");
+      if (c.checked) { const d = new Date(Date.now() + 24 * 3600000); d.setHours(9, 0, 0, 0); remindAt[R + ck] = toLocalInput(d.getTime()); } else remindAt[R + ck] = "";
+      const at = box.querySelector(".tf-rremat");
+      if (at) { at.disabled = !c.checked; at.value = remindAt[R + ck]; }
+      return;
+    }
+    if (e.target.closest(".tf-rin, .tf-rtitle, .tf-rremat, .tf-rkind, .tf-rmonth, .tf-rsendp")) return; // typing / picking
     if (e.target.closest(".tf-nin, .tf-nein, .tf-nremat")) return; // typing
     if (e.target.closest(".tf-nremon")) {
       const c = e.target.closest(".tf-nremon");
@@ -676,6 +814,7 @@
         return;
       }
       // The page's outside-click would close the reminder card at once.
+      if (e.target.closest(".tf-rsend")) { e.stopPropagation(); sendPanel(nEl, n, name); return; }
       if (e.target.closest(".tf-nrem")) { e.stopPropagation(); if (window.PcmReminders) window.PcmReminders.open({ text: (name + ": " + n.text).slice(0, 200), files: n.files || [] }, e.target); return; }
       return;
     }
@@ -685,10 +824,22 @@
     const ta = e.target.closest(".tf-nin"); if (ta) drafts[ta.closest(".tf-client").dataset.ck] = ta.value;
     const ed = e.target.closest(".tf-nein"); if (ed) editing[ed.dataset.nid] = ed.value;
     const at = e.target.closest(".tf-nremat"); if (at) remindAt[at.closest(".tf-client").dataset.ck] = at.value;
+    const ri = e.target.closest(".tf-rin"); if (ri) drafts[R + ri.closest(".tf-client").dataset.ck] = ri.value;
+    const rt = e.target.closest(".tf-rtitle"); if (rt) { const f = repForm[rt.closest(".tf-client").dataset.ck]; if (f) f.title = rt.value; }
+    const ra = e.target.closest(".tf-rremat"); if (ra) remindAt[R + ra.closest(".tf-client").dataset.ck] = ra.value;
+  });
+  $("tfList").addEventListener("change", (e) => {
+    const ck = e.target.closest(".tf-client") && e.target.closest(".tf-client").dataset.ck;
+    const f = ck && repForm[ck];
+    if (!f) return;
+    if (e.target.closest(".tf-rkind")) { f.kind = e.target.value; f.period = f.kind === "monthly" ? monthKey(Date.now()) : ymdOf(f.kind === "weekly" ? mondayOf(Date.now()) : Date.now()); render(); }
+    else if (e.target.closest(".tf-rmonth")) f.period = e.target.value;
   });
   $("tfList").addEventListener("keydown", (e) => {
     const ta = e.target.closest(".tf-nin");
     if (ta && e.key === "Enter" && (e.ctrlKey || e.metaKey)) { e.preventDefault(); const box = ta.closest(".tf-client"); saveNote(box, box.dataset.ck, box.dataset.name); return; }
+    const rin = e.target.closest(".tf-rin, .tf-radd .md-ed-for");
+    if (rin && e.key === "Enter" && (e.ctrlKey || e.metaKey)) { e.preventDefault(); const box = rin.closest(".tf-client"); saveReport(box, box.dataset.ck, box.dataset.name); return; }
     const ed = e.target.closest(".tf-nein");
     if (!ed) return;
     if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) { e.preventDefault(); const b = ed.closest(".tf-note").querySelector(".tf-nesave"); if (b) b.click(); }
@@ -698,6 +849,12 @@
   $("tfList").addEventListener("paste", (e) => {
     const ed = e.target.closest(".tf-nein");
     const ta = ed || e.target.closest(".tf-nin");
+    const rep = e.target.closest(".tf-radd");
+    if (rep) {
+      const fl0 = [...((e.clipboardData && e.clipboardData.files) || [])];
+      if (fl0.length) { e.preventDefault(); addNoteFiles(R + rep.dataset.ck, fl0); }
+      return;
+    }
     if (!ta) return;
     const fl = [...((e.clipboardData && e.clipboardData.files) || [])];
     if (!fl.length) return;
@@ -707,7 +864,7 @@
   });
   // Drop: on a note being edited = attach to it; on the note box = attach to
   // the next note; anywhere else on a client = add files to the client.
-  const dropTarget = (e) => e.target.closest(".tf-note.editing") || e.target.closest(".tf-nadd") || e.target.closest(".tf-client");
+  const dropTarget = (e) => e.target.closest(".tf-note.editing") || e.target.closest(".tf-radd") || e.target.closest(".tf-nadd") || e.target.closest(".tf-client");
   $("tfList").addEventListener("dragover", (e) => { const b = dropTarget(e); if (b) { e.preventDefault(); b.classList.add("over"); } });
   $("tfList").addEventListener("dragleave", (e) => { const b = dropTarget(e); if (b && !b.contains(e.relatedTarget)) b.classList.remove("over"); });
   $("tfList").addEventListener("drop", (e) => {
@@ -718,6 +875,7 @@
     const fl = [...((e.dataTransfer && e.dataTransfer.files) || [])];
     const en = e.target.closest(".tf-note.editing");
     if (en) addEditFiles(en.dataset.nid, fl);
+    else if (e.target.closest(".tf-radd")) addNoteFiles(R + b.dataset.ck, fl);
     else if (e.target.closest(".tf-nadd")) addNoteFiles(b.dataset.ck, fl);
     else addTo(b.dataset.ck, b.dataset.name, fl);
   });

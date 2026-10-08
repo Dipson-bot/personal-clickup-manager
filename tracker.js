@@ -610,6 +610,14 @@
       const extraRun = (st.extraTask && String(st.extraTask.id) === String(run.taskId)) || /\bextra(?:\(s\)|s)?\s+task(?:\(s\)|s)?\b/i.test(String(run.taskName || ""));
       if (extraRun) { busy = false; paint(); return; } // never complete the recurring Extra Task
       r = await send({ type: "CLICKUP_TASK_COMPLETE", taskId: String(run.taskId) });
+      if (r && r.reason === "held-comment") {
+        // A comment kept for completion: ask here too (OK = post it, then complete).
+        const first = String((r.comments && r.comments[0] && r.comments[0].text) || "").replace(/\s+/g, " ").slice(0, 160);
+        const w = (pip && pip.window) || window;
+        r = w.confirm("You have a comment waiting to be sent on this task:\n\n“" + first + "”\n\nOK = send it and complete the task. Cancel = don't complete yet.")
+          ? await send({ type: "CLICKUP_TASK_COMPLETE", taskId: String(run.taskId), held: "send" })
+          : null;
+      }
     }
     else if (act === "extra" && st.extraTask) r = await send({ type: "CLICKUP_TASK_START", taskId: String(st.extraTask.id), force: true });
     else if (act === "resume" && data.last) {
@@ -975,6 +983,7 @@
       try { const g = await chrome.storage.local.get("floatPlaceHome"); home = Date.now() - (Number(g.floatPlaceHome) || 0) < 30000; if (home) chrome.storage.local.set({ floatPlaceHome: 0 }).catch(() => {}); } catch (e) {}
       const size = { width: sizeNow()[0], height: sizeNow()[1] };
       pip = await window.documentPictureInPicture.requestWindow(home ? { ...size, preferInitialWindowPlacement: true } : size);
+      try { if (window.PcmMention) window.PcmMention.attach(pip.document); } catch (e) {} // @name suggestions in its comment boxes
     } catch (e) {
       if (isHost) $("lead").textContent = "Chrome didn't open it (" + (e && e.message ? e.message : e) + "). Click again.";
       return false;
@@ -1008,6 +1017,7 @@
       if (b.id === "cuTimerBtn" && !/start/i.test(b.textContent || "")) return; // that button also stops
       const s = data.settings || {};
       if (s.floatAutoOpen === false || s.floatTracker === false) return;
+      if (s.timerPlace === "taskbar" || s.timerPlace === "off") return; // shown by the taskbar app instead
       openPip();
     }, true);
   }
@@ -1064,6 +1074,8 @@
   }
   setInterval(watchPlacement, 1000);
   if (window.PcmFloat) { window.PcmFloat.rehome = rehome; window.PcmFloat.hiddenPx = hiddenPx; }
+  // The shortcut's "hide it" (background toggleFloat).
+  try { chrome.runtime.onMessage.addListener((msg) => { if (msg && msg.type === "FLOAT_CLOSE" && pip) { try { pip.close(); } catch (e) {} } }); } catch (e) {}
   setInterval(() => { pollComments(false); }, 30000); // each task is checked at most every 3 minutes
   // A timer started or stopped in ClickUp itself shows up within a minute.
   setInterval(() => { if (pip) send({ type: "CLICKUP_SYNC_RUNNING" }); }, 60000);

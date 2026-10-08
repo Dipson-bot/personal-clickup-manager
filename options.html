@@ -217,8 +217,16 @@
   /* Today's own tracked time, shown next to a bar whose scope is wider than
      today (week, tomorrow, a custom range, Deadline crossed), plus its share of
      the fill drawn inside the bar. */
+  .trk-all { flex: none; font-size: 10.5px; color: var(--muted); white-space: nowrap; cursor: help; }
+  .xweek { display: flex; align-items: center; gap: 8px; margin-top: 6px; font-size: 12px; color: var(--muted); }
+  .xweek .xw-t.over { color: var(--red); font-weight: 600; }
+  .xweek .xw-bar { flex: 1; max-width: 220px; height: 6px; border-radius: 999px; background: var(--bg2); overflow: hidden; }
+  .xweek .xw-bar i { display: block; height: 100%; background: var(--indigo); border-radius: 999px; }
+  .xweek .xw-bar i.over { background: var(--red); }
   .trk-today { display: inline-block; margin-left: 6px; padding: 1px 6px; border-radius: 999px; background: var(--blue); color: #fff; font-size: 10.5px; font-weight: 700; vertical-align: 1px; }
   .est-today { display: inline-block; margin-left: 6px; padding: 1px 6px; border-radius: 999px; background: var(--amber, #d97706); color: #fff; font-size: 10.5px; font-weight: 700; vertical-align: 1px; }
+  .est-today.pbd-link, .trk-today.pbd-link { cursor: pointer; text-decoration: none; color: #fff; }
+  .est-today.pbd-link:hover, .trk-today.pbd-link:hover { filter: brightness(1.12); box-shadow: 0 0 0 2px rgba(0,0,0,.08); }
   .cu-today-seg { height: 100%; width: 0; background: rgba(255, 255, 255, .5); border-radius: 999px; }
   /* Phone shortcut card: the two values the shortcut needs, then the actions. */
   .pt-vals { display: flex; flex-wrap: wrap; gap: 10px; margin-bottom: 12px; }
@@ -330,10 +338,14 @@
   .cu-iconbtn.start.multi { background: #d97706; border-color: #d97706; color: #fff; }
   .cu-iconbtn.start.multi:hover { background: #b45309; border-color: #b45309; }
   /* Assignee initials (see whoSlot): fixed-width slot on every row. */
-  .cu-task .cu-who { flex: 0 0 auto; width: 30px; display: inline-flex; align-items: center; align-self: center; }
+  .cu-task .cu-who { flex: 0 0 auto; width: 54px; display: inline-flex; align-items: center; align-self: center; }
   .cu-who .av { width: 17px; height: 17px; border-radius: 50%; display: inline-flex; align-items: center; justify-content: center; font-size: 8px; font-weight: 700; line-height: 1; color: #fff; letter-spacing: -.02em; box-shadow: 0 0 0 1.5px var(--card); flex: none; cursor: default; }
   .cu-who .av + .av { margin-left: -6px; }
   .cu-who .av.more { background: var(--muted); }
+  .cu-who .by-ar { font-size: 11px; font-weight: 700; color: var(--muted); margin: 0 1px 0 2px; line-height: 1; }
+  .cu-who .by-ar + .av { margin-left: 0; }
+  .cu-who .av.by { width: 13px; height: 13px; font-size: 6.5px; opacity: .9; }
+  .cu-who.has-by .av.more { font-size: 7.5px; }
   /* Finished task: same-width empty slot, so its row lines up with the rest. */
   .cu-actions-ghost { visibility: hidden; }
   /* Completed task rows: tint + green edge, name greyed, "✓ Done" badge in the actions column. */
@@ -345,6 +357,7 @@
   .cu-done-pill { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; border-radius: 6px; background: #15803d; color: #fff; font-size: 10.5px; font-weight: 700; letter-spacing: .01em; white-space: nowrap; }
   /* Task lists stretch from their bottom-right corner (makeListResizable). */
   .cu-tasklist.cu-resizable { min-height: 60px; }
+  .cu-tasklist[style*="display: none"] + .cu-grip { display: none; } /* a closed day: no bar either */
   .cu-tasklist[data-all="1"] { max-height: none !important; height: auto !important; overflow: visible !important; }
   /* Drag bar under a stretchable list: full width, above nothing clickable. */
   .cu-grip { height: 10px; margin: 2px 0 4px; cursor: ns-resize; display: flex; align-items: center; justify-content: center; gap: 6px; border-radius: 6px; touch-action: none; user-select: none; }
@@ -810,7 +823,17 @@
 
   /* Agent Router hidden */
   body.no-ar [data-tab="agent"], body.no-ar .panel[data-panel="agent"] { display: none !important; }
-  body.no-admin [data-tab="admin"], body.no-admin .panel[data-panel="admin"] { display: none !important; }
+  body.no-admin [data-tab="admin"], body.no-admin .panel[data-panel="admin"], body.no-admin .adm-only { display: none !important; }
+  .sm-send { margin-top: 12px; padding: 12px 14px; border: 1px solid var(--indigo); border-radius: 10px; background: rgba(99,102,241,.06); display: grid; gap: 8px; font-size: 12.5px; }
+  .sm-send[hidden] { display: none !important; }
+  .sm-send-row { display: flex; gap: 14px; flex-wrap: wrap; align-items: center; }
+  .sm-send label { display: flex; gap: 6px; align-items: center; font-weight: 400; margin: 0; }
+  #smPeopleWrap { position: relative; }
+  .sm-chips { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 6px; }
+  .sm-chips span { display: inline-flex; gap: 4px; align-items: center; padding: 2px 4px 2px 9px; border-radius: 999px; background: rgba(99,102,241,.15); font-weight: 600; }
+  .sm-chips button { border: 0; background: none; cursor: pointer; color: var(--muted); padding: 0 3px; }
+  .sm-sug { position: absolute; left: 0; right: 0; z-index: 20; background: var(--card); border: 1px solid var(--border); border-radius: 8px; box-shadow: 0 10px 24px rgba(0,0,0,.15); max-height: 220px; overflow: auto; }
+  .sm-sug div { padding: 6px 10px; cursor: pointer; } .sm-sug div:hover { background: rgba(99,102,241,.1); }
   .adm-log { margin-top: 12px; font-size: 12.5px; line-height: 1.6; }
   .adm-log div { padding: 2px 0; }
   .adm-log .ok { color: var(--green); }
@@ -955,8 +978,10 @@
   #insView .mini.amber { color: var(--amber); background: rgba(217,119,6,0.14); }
   html[data-theme="dark"] #insView .mini.amber { background: rgba(251,191,36,0.14); }
   #insView .mini.blue { color: var(--blue); background: rgba(59,130,246,0.14); }
-  #insView .kpis { display: grid; grid-template-columns: repeat(6,1fr); gap: 12px; }
-  @media (max-width: 900px) { #insView .kpis { grid-template-columns: repeat(3,1fr); } }
+  #insView .kpis { display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); gap: 10px; }
+  #insView .kpis .kpi .l { overflow-wrap: anywhere; }
+  @media (max-width: 1150px) { #insView .kpis { grid-template-columns: repeat(4, minmax(0, 1fr)); } }
+  @media (max-width: 700px) { #insView .kpis { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
   #insView .kpi { background: var(--card); border: 1px solid var(--border); border-radius: 12px; padding: 13px 14px; position: relative; text-align: left; font: inherit; color: inherit; }
   #insView button.kpi { cursor: pointer; transition: transform .08s, border-color .12s; }
   #insView button.kpi:hover { transform: translateY(-1px); border-color: var(--indigo); }
@@ -1048,6 +1073,9 @@
   #insView .ins-ok { flex: none; font-size: 12px; font-weight: 600; color: var(--green); white-space: nowrap; }
   #insView .trow.ins-fixed { opacity: .75; transition: opacity .3s; }
   #insView .det-more { padding: 8px 0 2px; text-align: center; color: var(--muted); font-size: 12px; }
+  #insView .det-morebtn { display: block; width: 100%; margin: 6px 0 2px; padding: 6px; font: inherit; font-size: 12px; font-weight: 600; color: var(--indigo); background: rgba(99,102,241,.06); border: 1px dashed var(--indigo); border-radius: 8px; cursor: pointer; text-align: center; }
+  #insView .det-morebtn[hidden] { display: none; }
+  #insView .det-morebtn:hover { background: rgba(99,102,241,.12); }
   #insView .ins-empty { padding: 30px 0; text-align: center; color: var(--muted); font-size: 13px; }
 
   /* --- Dashboard health strip (lives in the Dashboard panel) --- */
@@ -1086,7 +1114,7 @@
   <div class="shell">
   <nav class="sidenav" id="sideNav" aria-label="Sections">
     <button type="button" data-tab="dashboard"><svg class="nv-i" viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="3" width="7" height="9" rx="1.5"/><rect x="14" y="3" width="7" height="5" rx="1.5"/><rect x="14" y="12" width="7" height="9" rx="1.5"/><rect x="3" y="16" width="7" height="5" rx="1.5"/></svg><span>Dashboard</span></button>
-    <button type="button" data-tab="insights"><svg class="nv-i" viewBox="0 0 24 24" aria-hidden="true"><path d="M3 3v18h18"/><path d="M7 14l3-4 3 3 5-7"/></svg><span>Insights</span><span class="nv-new">NEW</span></button>
+    <button type="button" data-tab="insights"><svg class="nv-i" viewBox="0 0 24 24" aria-hidden="true"><path d="M3 3v18h18"/><path d="M7 14l3-4 3 3 5-7"/></svg><span>Insights</span></button>
     <button type="button" data-tab="clickup"><svg class="nv-i" viewBox="0 0 24 24" aria-hidden="true"><path d="M9 11l3 3l8-8"/><path d="M20 12v6a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h9"/></svg><span>ClickUp setup</span></button>
     <button type="button" data-tab="agent"><svg class="nv-i" viewBox="0 0 24 24" aria-hidden="true"><circle cx="8" cy="15" r="4"/><path d="M10.85 12.15L19 4"/><path d="M18 5l2 2"/><path d="M15 8l2 2"/></svg><span>Agent Router</span></button>
     <button type="button" data-tab="sites"><svg class="nv-i" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M3.6 9h16.8M3.6 15h16.8"/><path d="M11.5 3a17 17 0 0 0 0 18M12.5 3a17 17 0 0 1 0 18"/></svg><span>Site monitor</span></button>
@@ -1114,6 +1142,17 @@
          state already loaded - no extra ClickUp calls. Hidden when all is well. -->
     <div class="pcm-dash-strip" id="pcmDashStrip" style="display:none;"></div>
 
+    <!-- "Try the taskbar timer": until a choice is made (options.js deskTry). -->
+    <div class="card desk-try" id="deskTry" style="display:none;">
+      <div class="desk-try-pic" aria-hidden="true"><span class="dt-dot"></span><b>Fix the redirect rule…</b><span class="dt-time">0:27:14</span><span class="dt-btn">■</span><span class="dt-btn">✓</span></div>
+      <div class="desk-try-txt">
+        <h2 style="margin:0 0 4px;display:block;">New: your timer in the <span data-desk-where>taskbar</span></h2>
+        <p class="hint" style="margin:0 0 10px;line-height:1.5;">The task you're tracking, its time, <b>Stop</b> and <b>Done</b> sit right in the <span data-desk-where2>Windows taskbar</span> - always visible, never in the way. One download, run it once, and it starts with your computer from then on. It signs in by itself through this extension, and the floating window stops popping up (you can have both in Settings).</p>
+        <div class="btns"><button type="button" class="primary" id="deskTryGet">Get the taskbar timer</button><button type="button" id="deskTryLater">Not now</button><button type="button" id="deskTryNo">No thanks, keep the floating window</button></div>
+        <p class="hint" id="deskTryMsg" style="margin:8px 0 0;"></p>
+      </div>
+    </div>
+
     <div class="dash-top">
       <div class="card dash-card" id="cuTodayWrap" style="display:none;">
         <div class="dash-h"><h3 id="dashTodayTitle">Today</h3><span class="spacer"></span><span class="dash-chip" id="dashTodayChip" style="display:none;"></span></div>
@@ -1124,6 +1163,7 @@
     <div class="cu-autox" id="cuAutoExtra" style="display:none;">
       <div class="cu-autox-h"><span class="hint">Extra task</span> <a id="cuAutoExtraName" href="#" target="_blank" rel="noopener" class="nm"></a> <span class="cu-autox-st" id="cuAutoExtraStatus" hidden></span>
         <span class="cu-info" tabindex="0" title="Found automatically by its name, e.g. &quot;Daily Extra Tasks - MyName&quot;, &quot;Extra Task - AnyName&quot; or &quot;Extra(s) Task(s)&quot; (not case-sensitive). No URL needed.">&#9432;</span></div>
+      <div class="xweek" id="cuExtraWeek" hidden></div>
       <div style="margin-top:8px;display:flex;align-items:center;gap:10px;flex-wrap:wrap;">
         <button type="button" class="primary" id="cuTimerBtn" style="padding:6px 12px;">▶ Start tracking</button>
         <span class="hint" id="cuTimerHint"></span>
@@ -1241,6 +1281,7 @@
 
     <div class="card cu-needs-config" id="dashExploreCard" style="display:none;">
       <div class="dash-h"><h3>Explore tasks</h3><span class="hint">any date range, client, department or teammate</span><span class="spacer"></span>
+        <button type="button" class="cu-filter-btn primary" id="optFltGo" title="Read the tasks for these choices from ClickUp (pressed again: read them again)">Show tasks</button>
         <button type="button" class="cu-filter-btn" id="optFltClearBtn" title="Clear the tick boxes, client and department">Clear filters</button>
         <button type="button" class="cu-filter-btn" id="optFltExportBtn" title="Export these tasks (CSV, Excel, Google Sheets/Docs)">&#10515; Export</button>
         <button type="button" class="cu-collapse-btn" data-optcollapse="filter" data-optcolltarget="optFltColl" title="Show / hide">▸ Show</button>
@@ -1695,14 +1736,14 @@
         <option value="tag">By tag</option>
       </select></label>
       <span id="bkCustom" hidden><input type="date" id="bkFrom" /> to <input type="date" id="bkTo" /></span>
-      <span id="bkTagWrap" hidden><label>Tag <select id="bkTag" title="Every tag in your ClickUp workspace. ClickUp matches tag names exactly, so these are the exact names."><option value="">Any tag</option></select></label><button type="button" id="bkTagGo" title="Load again, and re-read the tag list from ClickUp">Load</button></span>
+      <span id="bkTagWrap" hidden><label>Tag <select id="bkTag" title="Every tag in your ClickUp workspace. ClickUp matches tag names exactly, so these are the exact names."><option value="">Any tag</option></select></label><button type="button" id="bkTagGo" title="Re-read the tag list from ClickUp (tags added there since this tab was opened)">&#8635; tags</button></span>
       <span id="bkWhoWarn" hidden class="bk-warn"></span>
       <span id="bkWhoWrap" hidden class="bk-who"><label for="bkWhoSearch">Whose tasks</label><span class="bk-whobox"><input type="search" id="bkWhoSearch" placeholder="Search people" autocomplete="off" role="combobox" aria-expanded="false" aria-controls="bkWhoList" aria-autocomplete="list" title="Search by name or email. Only a workspace Owner or Admin can load another person's tasks." /><div id="bkWhoList" class="bk-wholist" role="listbox" hidden></div></span><button type="button" id="bkWhoReload" title="Re-read the workspace member list from ClickUp">&#8635;</button></span>
       <label>Client <select id="bkClient"><option value="">All clients</option></select></label>
       <label class="bk-missing"><input type="checkbox" id="bkMissingOn" title="Tick to hide tasks that DO have this. Unticked, nothing is filtered out at all - a range lists every task in it." /> <span>Filter missing</span> <select id="bkMissing" disabled title="Unticked: no missing filter. Tick 'Filter missing' to keep ONLY the tasks that have no due date, no start date or no estimate."><option value="due">No due date</option><option value="start">No start date</option><option value="est">No estimate</option></select></label>
       <label>Status <select id="bkStatus"><option value="open">All not done</option><option value="">Any status</option></select></label>
       <input type="search" id="bkSearch" placeholder="Search task names" />
-      <button type="button" id="bkReload" title="Load again from ClickUp">&#8635;</button>
+      <button type="button" id="bkReload" class="primary" title="Read these tasks from ClickUp (pressed again with the same choices: read them again)">Load tasks</button>
     </div>
     <div class="bk-listhead">
       <label><input type="checkbox" id="bkAll" /> Select all shown</label>
@@ -1956,6 +1997,7 @@
           <button class="primary" id="siteMonitorSave">Save sites</button>
           <button class="primary" id="siteMonitorDiscover" style="margin-left: 8px;">Auto-detect from ClickUp</button>
           <button id="siteMonitorCheckAll" style="margin-left: 8px;" title="Check every site right now instead of waiting for the next 5-minute check">Check all now</button>
+          <button id="smSendTeam" class="adm-only" style="margin-left: 8px;" title="Admin: send this list to everyone's extension, or to chosen people">📣 Send sites to…</button>
           <span class="saved" id="siteMonitorSaved" style="display:none;">Saved ✓</span>
         </div>
         
@@ -1963,12 +2005,47 @@
         <p class="hint" id="siteMonitorDiscoverHint" style="display:none; margin-top: 6px; line-height: 1.5;"></p>
         <div id="siteMonitorDetected" style="display:none; margin-top: 10px;"></div>
         
-        <div id="siteMonitorStatus" style="margin-top: 16px;"></div>
+        <div id="smSendPanel" class="adm-only sm-send" hidden>
+          <b>Send these sites to</b>
+          <div class="sm-send-row"><label><input type="radio" name="smTo" value="all" checked /> Everyone</label><label><input type="radio" name="smTo" value="some" /> Chosen people</label></div>
+          <div id="smPeopleWrap" hidden><div class="sm-chips" id="smChips"></div><input type="text" id="smPeopleQ" placeholder="Type a name to add someone…" autocomplete="off" /><div class="sm-sug" id="smSug" hidden></div></div>
+          <b>How their list changes</b>
+          <div class="sm-send-row" style="flex-direction:column;align-items:flex-start;">
+            <label><input type="radio" name="smMode" value="add" checked /> Add the sites they don't have yet <span class="hint">- their own changes and deletions are kept</span></label>
+            <label><input type="radio" name="smMode" value="match" /> Make their list match mine <span class="hint">- also updates changed addresses and removes the team sites I removed; sites they added themselves stay</span></label>
+          </div>
+          <div class="btns"><button type="button" class="primary" id="smSendGo">Send</button><button type="button" id="smSendCancel">Cancel</button><span class="hint" id="smSendMsg"></span></div>
+        </div>
+        <div id="siteMonitorStatus" style="margin-top: 16px;" data-long="sites" data-long-rows=".imp-row" data-long-max="12"></div>
         <style>
           #siteMonitorStatus .imp-row { display: flex; align-items: center; gap: 10px; }
           #siteMonitorStatus .imp-entry { flex: 1 1 auto; min-width: 0; }
           #siteMonitorStatus .sm-check, #siteMonitorStatus .sm-act { flex: none; font-size: 11px; padding: 3px 10px; }
           #siteMonitorStatus .sm-acts { display: flex; gap: 6px; flex: none; }
+          #siteMonitorStatus .sm-url { color: inherit; text-decoration: none; }
+          .adm-cal-form label { display: flex; flex-direction: column; gap: 3px; font-size: 12px; font-weight: 600; flex: 1 1 140px; min-width: 0; }
+          .adm-cal-row { display: flex; gap: 10px; flex-wrap: wrap; margin-bottom: 8px; }
+          .adm-cal-date { text-align: left; font-weight: 400; }
+          .adm-cal-rem { display: flex; gap: 12px; flex-wrap: wrap; align-items: center; font-size: 12px; font-weight: 600; margin-top: 8px; }
+          .adm-cal-rem label { flex-direction: row; align-items: center; gap: 4px; font-weight: 400; flex: none; }
+          .adm-cal-item { display: flex; gap: 8px; align-items: center; padding: 5px 0; border-bottom: 1px solid var(--border); color: var(--text); }
+          .adm-cal-item .w { flex: 1; min-width: 0; }
+          .adm-cal-item button { padding: 3px 9px; font-size: 11.5px; flex: none; }
+          .adm-cal-item .past { opacity: .55; }
+          .desk-try { display: flex; gap: 18px; align-items: center; flex-wrap: wrap; border: 1px solid var(--indigo); }
+          .desk-try-txt { flex: 1 1 320px; min-width: 0; }
+          .desk-try-pic { flex: none; display: flex; align-items: center; gap: 8px; width: 300px; max-width: 100%; height: 42px; padding: 0 10px; box-sizing: border-box; border-radius: 8px; background: #1f2430; color: #f3f4f6; font-size: 12px; box-shadow: 0 6px 18px rgba(0,0,0,.25); }
+          .desk-try-pic b { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 600; }
+          .desk-try-pic .dt-dot { width: 8px; height: 8px; border-radius: 50%; background: #22c55e; flex: none; }
+          .desk-try-pic .dt-time { font-variant-numeric: tabular-nums; color: #a5b4fc; }
+          .desk-try-pic .dt-btn { width: 22px; height: 22px; display: grid; place-items: center; border-radius: 5px; background: rgba(255,255,255,.1); font-size: 11px; }
+          .desk-place { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+          #deskStatus .ok { color: var(--green, #16a34a); font-weight: 600; }
+          .desk-note { display: block; padding: 8px 12px !important; border-radius: 8px; border: 1px solid var(--indigo); background: rgba(99,102,241,.1); color: var(--text) !important; font-weight: 600; line-height: 1.5; }
+          .desk-note.warn { border-color: var(--amber, #d97706); background: rgba(217,119,6,.12); }
+          #siteMonitorStatus .sm-url:hover { color: var(--indigo); text-decoration: underline; }
+          #siteMonitorStatus .sm-snooze { width: auto; font-size: 11px; padding: 2px 6px; flex: none; }
+          #siteMonitorStatus .sm-snoozed { color: var(--amber); font-weight: 600; }
           #siteMonitorStatus .sm-del { color: var(--red); }
           #siteMonitorStatus .sm-form { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; flex: 1 1 auto; }
           #siteMonitorStatus .sm-form input { flex: 1 1 180px; min-width: 0; font-size: 12px; padding: 5px 8px; }
@@ -2130,6 +2207,30 @@
         <button class="primary" id="admSaveToken">Save token</button>
         <button type="button" id="admForgetToken">Forget token</button>
         <span class="saved" id="admTokenMsg" style="display:none;"></span>
+      </div>
+    </div>
+    <div class="card" id="admCalCard">
+      <h2>Company calendar &amp; events</h2>
+      <p class="hint" style="margin:0 0 10px;line-height:1.55;">Holidays, work-from-home days and events (a program, a meeting, a notice) for <b>everyone</b>: they show in each person's calendar, and an event reminds everyone at the times you tick. Saved to the shared settings file, so every copy has it within a few minutes - no new version needed. Needs the GitHub token below.</p>
+      <div id="admCalList" class="hint" style="margin:0 0 12px;" data-long="adm-cal" data-long-rows=".adm-cal-item"></div>
+      <div class="adm-cal-form">
+        <div class="adm-cal-row">
+          <label>What<select id="admCalKind"><option value="event">Event / notice</option><option value="holiday">Holiday</option><option value="wfh">Work from home</option></select></label>
+          <label style="flex:2 1 220px;">Title<input type="text" id="admCalTitle" maxlength="80" placeholder="e.g. Dashain program" /></label>
+        </div>
+        <div class="adm-cal-row">
+          <label>Day<button type="button" class="adm-cal-date" id="admCalFrom">Pick a day…</button></label>
+          <label id="admCalToWrap">Until<button type="button" class="adm-cal-date" id="admCalTo">Same day</button></label>
+          <label id="admCalTimeWrap">Time<input type="time" id="admCalTime" value="14:00" /></label>
+        </div>
+        <label id="admCalNoteWrap">Note <span class="hint">(optional - where, what to bring…)</span><input type="text" id="admCalNote" maxlength="300" placeholder="e.g. In the meeting room. Everyone is welcome." /></label>
+        <div id="admCalRemWrap" class="adm-cal-rem">Remind everyone:
+          <label><input type="checkbox" value="1440" checked /> a day before</label>
+          <label><input type="checkbox" value="60" checked /> 1 hour before</label>
+          <label><input type="checkbox" value="15" /> 15 minutes before</label>
+          <label><input type="checkbox" value="0" checked /> at the time</label>
+        </div>
+        <div class="btns" style="margin-top:10px;"><button type="button" class="primary" id="admCalAdd">Add &amp; publish</button><button type="button" id="admCalCancel" style="display:none;">Cancel edit</button><span class="hint" id="admCalMsg"></span></div>
       </div>
     </div>
     <div class="card" id="hubAdminCard">
@@ -2375,6 +2476,17 @@
 
   <div class="card" id="floatCard">
     <h2>Floating tracker</h2>
+    <div class="desk-place">
+      <label for="timerPlace" style="margin:0;font-weight:600;">Where the timer shows</label>
+      <select id="timerPlace" style="width:auto;padding:3px 6px;">
+        <option value="float">Floating window</option>
+        <option value="taskbar">Taskbar (the ClickUp Tracker app)</option>
+        <option value="both">Both</option>
+        <option value="off">Neither</option>
+      </select>
+      <button type="button" id="deskGet">Get the taskbar timer</button>
+    </div>
+    <p class="hint" id="deskStatus" style="margin:4px 0 12px;"></p>
     <p class="hint" style="margin:0 0 10px;line-height:1.5;">A small window that stays on top of every app, showing the task you're tracking, how close it is to the
       estimate, and a face that goes from sad to happy as you reach it (and grumpy once you go over). It opens by itself when you start a task
       in the dashboard or the side panel, or with <b>&#10697; Float</b> in the Tracking now bar, or the button below. It stays open as long as the
@@ -2428,6 +2540,8 @@
 <script src="add-time.js"></script>
 <script src="lib-taskfiles.js"></script>
 <script src="md-notes.js"></script>
+<script src="mention.js"></script>
+<script src="long-list.js"></script>
 <script src="task-notes.js"></script>
 <script src="local-tasks.js"></script>
 <script src="ui-extras.js"></script>

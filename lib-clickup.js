@@ -1055,6 +1055,8 @@ export async function createTask(token, listId, f) {
   if (md) { body.markdown_content = md; body.description = md; }
   if (Array.isArray(f.assignees) && f.assignees.length) body.assignees = f.assignees.map(Number).filter((n) => Number.isFinite(n));
   if (Number(f.dueDateMs) > 0) { body.due_date = Number(f.dueDateMs); body.due_date_time = false; }
+  if (Number(f.startDateMs) > 0) { body.start_date = Number(f.startDateMs); body.start_date_time = false; }
+  if (f.parentId && /^[a-z0-9]+$/i.test(String(f.parentId))) body.parent = String(f.parentId); // a subtask of that task
   if (Number(f.estimateMs) > 0) body.time_estimate = Math.round(Number(f.estimateMs));
   const pr = { urgent: 1, high: 2, normal: 3, low: 4 }[String(f.priority || "").toLowerCase()];
   if (pr) body.priority = pr;
@@ -1392,6 +1394,9 @@ export function taskContainer(t) {
     folderId: folder && folder.hidden !== true && folder.id != null ? String(folder.id) : "",
     spaceId: space && space.id != null ? String(space.id) : "",
     clientField: taskClientField(t),
+    // Who created the task (ClickUp doesn't say who assigned it; the creator
+    // usually did). Carried here so every row built from a task has it.
+    creator: t && t.creator && t.creator.id != null ? { id: String(t.creator.id), name: String(t.creator.username || t.creator.email || "").trim() } : null,
   };
 }
 
@@ -1489,6 +1494,19 @@ export async function resolveSpaceNamesFor(token, containers, level, spaceNames)
 }
 
 // Fetch a single task by its ID (including time_estimate, time_spent, dates).
+// The workspace's Teams (ClickUp calls them user groups: Settings › Teams), as
+// departments: [{ id: "cu:<id>", name, users: [{ id, name }], fromClickUp: true }].
+export async function getUserGroups(token, teamId) {
+  const j = await cuFetch(token, "/group?team_id=" + encodeURIComponent(String(teamId)));
+  const groups = Array.isArray(j && j.groups) ? j.groups : [];
+  return groups.filter((g) => g && g.id != null && g.name).map((g) => ({
+    id: "cu:" + String(g.id),
+    name: String(g.name).trim(),
+    users: (Array.isArray(g.members) ? g.members : []).filter((m) => m && m.id != null)
+      .map((m) => ({ id: String(m.id), name: String(m.username || m.email || ("User " + m.id)).trim() })),
+    fromClickUp: true,
+  })).sort((a, b) => a.name.localeCompare(b.name));
+}
 export async function getTaskById(token, taskId) {
   const j = await cuFetch(token, "/task/" + encodeURIComponent(taskId));
   const t = j && j.task ? j.task : j;
@@ -2569,6 +2587,7 @@ export async function fetchTodayEstimate({ token, teamId, userId, targetHours = 
       startDateMs: tStart || null,
       dueDateMs: tDue || null,
       spentMs: spent,
+      totalSpentMs: Number(t.time_spent) || 0,
       spentToday: entriesOk,
       status: (t.status && t.status.status) || "",
       priority: cuPriorityName(t),
@@ -2946,6 +2965,7 @@ export async function fetchDateRangeEstimate({ token, teamId, userId, fromTs, to
       estimateMs: est,
       totalEstimateMs: Number(t.time_estimate) || 0,
       spentMs: spentRow,
+      totalSpentMs: Number(t.time_spent) || 0, // everything ever tracked on it (any day), for the "in all" note
       spentToday: false,
       status: (t.status && t.status.status) || "",
       priority: cuPriorityName(t),

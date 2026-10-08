@@ -420,7 +420,7 @@
   // the editor writes Markdown into it (with an input event), setting its value
   // redraws the editor, Ctrl+Enter / Esc and pasted files are handed to it, and
   // focus() goes to the editor.
-  const RICH = "textarea.tf-nin, textarea.tf-nein, textarea.pcm-cmt, textarea.pcm-desc-ta";
+  const RICH = "textarea.tf-nin, textarea.tf-nein, textarea.tf-rin, textarea.pcm-cmt, textarea.pcm-desc-ta";
   const valueDesc = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value");
   function upgrade(ta) {
     if (ta._mdEd || !ta.isConnected) return;

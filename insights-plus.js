@@ -121,6 +121,15 @@
   #insPlusView .ip-applyall { font-weight: 600; color: #fff; background: var(--indigo); border-color: var(--indigo); }
   #insPlusView .ip-applyall:hover { color: #fff; filter: brightness(1.1); }
   #insPlusView .ip-applymsg { margin: 6px 0 0; }
+  #insPlusView .ip-row.ip-short { background: rgba(217,119,6,.10); border-radius: 6px; }
+  #insPlusView .ip-row.ip-short.bad { background: rgba(220,38,38,.10); }
+  #insPlusView .ip-row.ip-short .tm small { color: var(--amber); font-weight: 700; }
+  #insPlusView .ip-row.ip-short.bad .tm small { color: var(--red); }
+  #insPlusView .ip-ptools { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin: 0 0 14px; position: sticky; top: 0; z-index: 3; padding: 8px 0; background: var(--bg, #fff); }
+  #insPlusView .ip-ptools .ip-pq { flex: 1 1 260px; min-width: 0; font: inherit; font-size: 13px; padding: 7px 10px; border: 1px solid var(--border); border-radius: 8px; background: var(--card); color: var(--text); }
+  #insPlusView .ip-ptools .ip-pclient { width: auto; max-width: 260px; font: inherit; font-size: 13px; padding: 6px 8px; }
+  #insPlusView .ip-more { display: block; width: 100%; margin: 6px 0 4px; padding: 7px; font: inherit; font-size: 12.5px; font-weight: 600; color: var(--indigo); background: rgba(99,102,241,.06); border: 1px dashed var(--indigo); border-radius: 8px; cursor: pointer; }
+  #insPlusView .ip-more span { font-weight: 400; color: var(--muted); }
   #insPlusView .ip-empty { padding: 26px 0; text-align: center; color: var(--muted); }
   /* performance */
   #insPlusView .ip-kpis { display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); gap: 10px; margin: 0 0 14px; }
@@ -130,7 +139,9 @@
   #insPlusView .ip-kpi .l { font-size: 12px; color: var(--muted); margin-top: 2px; }
   #insPlusView .ip-kpi .s { font-size: 11px; color: var(--muted); margin-top: 6px; }
   #insPlusView .ip-kpi .go { font-size: 11px; color: var(--indigo); margin-top: 6px; }
-  #insPlusView .ip-grid2 { display: grid; grid-template-columns: repeat(auto-fit, minmax(340px, 1fr)); gap: 14px; margin: 0 0 14px; }
+  /* Two columns: the four charts make an even 2 x 2 (three across left a hole). */
+  #insPlusView .ip-grid2 { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; margin: 0 0 14px; }
+  @media (max-width: 860px) { #insPlusView .ip-grid2 { grid-template-columns: minmax(0, 1fr); } }
   #insPlusView .ip-grid2 .ip-card { margin: 0; }
   #insPlusView svg { display: block; width: 100%; height: auto; overflow: visible; }
   #insPlusView svg text { fill: var(--muted); font-size: 10px; font-family: inherit; }
@@ -151,6 +162,33 @@
   #insPlusView .ip-drill .dh { display: flex; align-items: center; gap: 8px; margin-bottom: 4px; }
   #insPlusView .ip-drill .dh b { flex: 1; }
   #insPlusView .ip-drill .x { font: inherit; border: 0; background: none; color: var(--muted); cursor: pointer; font-size: 13px; }
+  #insPlusView .ip-rating .ip-rhead { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-bottom: 10px; }
+  #insPlusView .ip-rating .ip-rhead h3 { margin: 0; flex: 1; }
+  #insPlusView .ip-rper { display: inline-flex; border: 1px solid var(--border); border-radius: 999px; overflow: hidden; }
+  #insPlusView .ip-rper button { font: inherit; font-size: 12px; border: 0; background: none; color: var(--muted); padding: 5px 12px; cursor: pointer; }
+  #insPlusView .ip-rper button.on { background: var(--indigo); color: #fff; }
+  #insPlusView .ip-rmain { display: flex; gap: 22px; align-items: center; flex-wrap: wrap; }
+  #insPlusView .ip-rbig { display: flex; flex-direction: column; align-items: center; gap: 4px; flex: none; }
+  #insPlusView .ip-rcap { font-weight: 700; font-size: 13px; }
+  #insPlusView svg.ring { width: auto; display: block; overflow: visible; }
+  #insPlusView svg.ring .rt { fill: var(--text); font-weight: 700; }
+  #insPlusView .ip-rparts { display: grid; gap: 12px; flex: 1 1 320px; }
+  #insPlusView .ip-rpart .t { display: flex; align-items: baseline; gap: 8px; font-size: 13px; }
+  #insPlusView .ip-rpart .t b { flex: 1; }
+  #insPlusView .ip-rpart .sc, #insPlusView .ip-rcl .sc { font-weight: 800; font-variant-numeric: tabular-nums; }
+  #insPlusView .ip-rpart .tr, #insPlusView .ip-rcl .tr { display: block; height: 8px; border-radius: 4px; background: var(--bg2, rgba(0,0,0,.06)); overflow: hidden; margin: 4px 0 3px; }
+  #insPlusView .ip-rpart .tr i, #insPlusView .ip-rcl .tr i { display: block; height: 100%; border-radius: 4px; }
+  #insPlusView .ip-rpart { display: flex; align-items: center; gap: 10px; }
+  #insPlusView .ip-rpart b { display: block; font-size: 13px; }
+  #insPlusView .ip-rpart small, #insPlusView .ip-rcl small { color: var(--muted); font-size: 11px; }
+  /* By client: one compact line each (name · bar · score), two columns. */
+  #insPlusView .ip-rclients { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 2px 18px; }
+  #insPlusView .ip-rcl { font: inherit; color: inherit; display: grid; grid-template-columns: minmax(0, 1.3fr) minmax(60px, 1fr) 30px; grid-template-rows: auto auto; column-gap: 10px; align-items: center; padding: 6px 8px; border: 0; border-radius: 8px; background: none; cursor: pointer; min-width: 0; text-align: left; }
+  #insPlusView .ip-rcl small { grid-column: 1 / -1; margin-top: -2px; }
+  #insPlusView .ip-rcl .tr { margin: 0; }
+  #insPlusView .ip-rcl .sc { text-align: right; font-size: 12.5px; }
+  #insPlusView .ip-rcl:hover, #insPlusView .ip-rcl.on { background: rgba(99,102,241,.08); }
+  #insPlusView .ip-rcl .nm { font-size: 12px; font-weight: 600; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   #insPlusView .tapme { font-size: 11px; color: var(--muted); margin: -6px 0 8px; }
   @media (max-width: 700px) { #insPlusView .ip-stats { grid-template-columns: 1fr; } }
   `;
@@ -375,6 +413,24 @@
   }
   let planWeek = (() => { const g = new Date().getDay(); return g === 0 || g === 6 ? "next" : "this"; })();
   const planOpen = Object.create(null); // which groups / days the user opened (kept across repaints)
+  // Search + client filter over every list on the Plan tab, and long lists shown
+  // 10 at a time ("Show 10 more") - 80 tasks without an estimate in one go was a
+  // wall. The totals stay the whole week's; the lists say what they show.
+  let planQ = "", planClient = "";
+  const planShow = Object.create(null);
+  const PLAN_PAGE = 10;
+  const planFiltered = () => !!(planQ || planClient);
+  const planMatch = (t) => !!t && (!planClient || String(t.client || "") === planClient) &&
+    (!planQ || (String(t.name || "") + " " + String(t.client || "")).toLowerCase().includes(planQ));
+  function planList(id, list, tOf, row) {
+    const f = list.filter((x) => planMatch(tOf(x)));
+    const n = planShow[id] || PLAN_PAGE;
+    let out = f.slice(0, n).map(row).join("");
+    if (f.length > n) out += '<button type="button" class="ip-more" data-more="' + esc(id) + '">Show ' + Math.min(PLAN_PAGE, f.length - n) + " more <span>(" + (f.length - n) + " left of " + f.length + ")</span></button>";
+    if (!f.length) out = '<p class="ip-meta" style="margin:8px 0">' + (list.length ? "No task here matches the search / client." : "Nothing here.") + "</p>";
+    return out;
+  }
+  const planCount = (list, tOf) => planFiltered() ? list.filter((x) => planMatch(tOf(x))).length + " of " + list.length : String(list.length);
   function buildPlan() {
     const st = state(), rows = openRows();
     if (!rows) return null;
@@ -536,6 +592,12 @@
     const range = dShort(p.mon) + " – " + dShort(p.fri);
     const daysTxt = p.days.length + " working day" + (p.days.length === 1 ? "" : "s") + (planWeek === "this" ? " left" : "") + " × " + fmt(p.tMs) + (p.holidays.length ? " · holidays left out" : "");
     let h = head;
+    // Search / client: the clients with tasks in this plan.
+    const planClients = [...new Set(p.items.map((t) => t.client).concat(p.overflow.map((x) => x.t.client)).filter(Boolean))].sort((a, b) => a.localeCompare(b));
+    if (planClient && !planClients.includes(planClient)) planClient = "";
+    h += '<div class="ip-ptools"><input type="search" class="ip-pq" placeholder="Search tasks or clients in this plan…" value="' + esc(planQ) + '" aria-label="Search the plan" />' +
+      '<select class="ip-pclient" aria-label="Client"><option value="">All clients (' + planClients.length + ")</option>" + planClients.map((c) => '<option value="' + esc(c) + '"' + (c === planClient ? " selected" : "") + ">" + esc(c) + "</option>").join("") + "</select>" +
+      (planFiltered() ? '<button type="button" class="ip-btn ip-pclear">Clear</button><span class="ip-meta">Lists show only matching tasks; the totals are still the whole week.</span>' : '<span class="ip-meta">' + plural(p.items.length, "task") + " this week · long lists show " + PLAN_PAGE + " at a time</span>") + "</div>";
     // 1) Summary
     h += '<div class="ip-card"><div class="ip-head"><h3>' + (planWeek === "this" ? "This week" : "Next week") + " · " + esc(range) + "</h3></div>" +
       '<div class="ip-stats"><div class="ip-stat"><div class="k">Target</div><div class="v">' + fmt(p.capacityMs) + '</div><div class="s">' + esc(daysTxt) + "</div></div>" +
@@ -552,43 +614,45 @@
     }
     if (p.withEst.length) {
       const list = p.withEst.slice().sort((a, b2) => b2.planMs - a.planMs);
-      b += grp("est", "var(--amber)", "Tasks with an estimate · " + p.withEst.length, fmt(p.estMs),
-        list.map((t) => taskRow(t, fmt(t.planMs) + (t.edited ? "<small>your time</small>" : t.spentMs ? "<small>" + fmt(t.estimateMs) + " − " + fmt(t.spentMs) + " done</small>" : ""), { no: t.no, edit: { ms: t.planMs } })).join(""));
+      b += grp("est", "var(--amber)", "Tasks with an estimate · " + planCount(list, (t) => t), fmt(p.estMs),
+        planList("est", list, (t) => t, (t) => taskRow(t, fmt(t.planMs) + (t.edited ? "<small>your time</small>" : t.spentMs ? "<small>" + fmt(t.estimateMs) + " − " + fmt(t.spentMs) + " done</small>" : ""), { no: t.no, edit: { ms: t.planMs } })), planFiltered());
     }
     if (p.missing.length) {
-      b += grp("sug", "rgba(217,119,6,.5)", "Tasks without an estimate · " + p.missing.length + " (suggested)", fmt(p.sugMs),
-        p.missing.slice().sort((a, b2) => b2.planMs - a.planMs).map((t) => taskRow(t, fmt(t.planMs) + (t.edited ? "<small>your time</small>" : t.suggested.sure ? "" : "<small>rough</small>"), { no: t.no, why: t.suggested.why, edit: { ms: t.planMs }, apply: true })).join(""), false,
-        '<div class="ip-applybar"><span>Make these times the tasks\' real estimates in ClickUp (change any time first by clicking it).</span><button type="button" class="ip-btn ip-applyall" data-applyall="1">' + (applyingAll ? "Saving… " + applyingAll : "Apply all " + p.missing.length) + "</button></div>");
+      const shownMissing = p.missing.filter(planMatch);
+      b += grp("sug", "rgba(217,119,6,.5)", "Tasks without an estimate · " + planCount(p.missing, (t) => t) + " (suggested)", fmt(p.sugMs),
+        planList("sug", p.missing.slice().sort((a, b2) => b2.planMs - a.planMs), (t) => t, (t) => taskRow(t, fmt(t.planMs) + (t.edited ? "<small>your time</small>" : t.suggested.sure ? "" : "<small>rough</small>"), { no: t.no, why: t.suggested.why, edit: { ms: t.planMs }, apply: true })), planFiltered(),
+        shownMissing.length ? '<div class="ip-applybar"><span>Make these times the tasks\' real estimates in ClickUp (change any time first by clicking it).' + (planFiltered() ? " Only the " + shownMissing.length + " matching the search / client." : "") + '</span><button type="button" class="ip-btn ip-applyall" data-applyall="1">' + (applyingAll ? "Saving… " + applyingAll : "Apply all " + shownMissing.length) + "</button></div>" : "");
     }
     if (p.reviewMine.length) {
-      b += grp("revmine", "#0d9488", "Your part: reviews of developers' tasks · " + p.reviewMine.length, fmt(p.reviewMine.reduce((a, t) => a + t.planMs, 0)),
-        p.reviewMine.map((t) => taskRow(t, fmt(t.planMs) + (t.edited ? "<small>your time</small>" : t.estimateMs ? "<small>task est " + fmt(t.estimateMs) + "</small>" : ""), { no: t.no, why: t.why, edit: { ms: t.planMs } })).join(""), true);
+      b += grp("revmine", "#0d9488", "Your part: reviews of developers' tasks · " + planCount(p.reviewMine, (t) => t), fmt(p.reviewMine.reduce((a, t) => a + t.planMs, 0)),
+        planList("revmine", p.reviewMine, (t) => t, (t) => taskRow(t, fmt(t.planMs) + (t.edited ? "<small>your time</small>" : t.estimateMs ? "<small>task est " + fmt(t.estimateMs) + "</small>" : ""), { no: t.no, why: t.why, edit: { ms: t.planMs } })), true);
     }
     if (p.reviewsExpected.length) {
-      b += grp("revexp", "#0d9488", "Expected reviews · " + p.reviewsExpected.length + " (not created yet)", fmt(p.reviewsExpected.reduce((a, t) => a + t.planMs, 0)),
-        p.reviewsExpected.map((t) => taskRow(t, fmt(t.planMs) + (t.edited ? "<small>your time</small>" : "<small>expected</small>"), { no: t.no, why: t.why, edit: { ms: t.planMs } })).join(""));
+      b += grp("revexp", "#0d9488", "Expected reviews · " + planCount(p.reviewsExpected, (t) => t) + " (not created yet)", fmt(p.reviewsExpected.reduce((a, t) => a + t.planMs, 0)),
+        planList("revexp", p.reviewsExpected, (t) => t, (t) => taskRow(t, fmt(t.planMs) + (t.edited ? "<small>your time</small>" : "<small>expected</small>"), { no: t.no, why: t.why, edit: { ms: t.planMs } })));
     }
     h += '<div class="ip-card"><h3>What makes up the ' + fmt(p.plannedMs) + '</h3><p class="hint">Every task due ' + (planWeek === "this" ? "by Friday" : "that week") + ", overdue ones included (they carry over). Time = estimate minus what's already tracked. Tasks without an estimate get a suggested time based on how long similar tasks took. Developers' dev tasks count as the short review that comes back to you (" + esc(fmt(p.rv.ms)) + " each), not their whole estimate. Open a group to see each task; click a time to change it (only in this plan).</p>" +
       (applyMsg ? '<p class="ip-meta ip-applymsg">' + esc(applyMsg) + "</p>" : "") + b + '<div class="ip-total"><span>Total</span><span>' + fmt(p.plannedMs) + "</span></div></div>";
     // 3) Fix it
     if (p.overflow.length) {
       h += '<div class="ip-card"><h3>Doesn\'t fit this week · ' + fmt(p.overMs) + '</h3><p class="hint">The days below hold ' + fmt(p.fitsMs) + " of tasks (" + fmt(Math.max(0, p.tMs - p.cfgPerDay)) + " a day next to the Extra Task). These come last in the order, so they're the ones to move to next week, split, or ask about.</p>" +
-        p.overflow.map((x) => taskRow(x.t, fmt(x.ms) + (x.part ? "<small>the rest of it</small>" : ""), { no: x.t.no })).join("") + "</div>";
+        planList("over", p.overflow, (x) => x.t, (x) => taskRow(x.t, fmt(x.ms) + (x.part ? "<small>the rest of it</small>" : ""), { no: x.t.no })) + "</div>";
     }
     if (p.pull.length) {
       h += '<div class="ip-card"><h3>To fill the week, start these early</h3><p class="hint">Real work due later (or with no due date) that isn\'t waiting on anyone - better than raising estimates to reach the target.</p>' +
-        p.pull.map((x) => taskRow(x.t, fmt(x.ms) + (x.guessed ? "<small>suggested</small>" : ""), {})).join("") + "</div>";
+        planList("pull", p.pull, (x) => x.t, (x) => taskRow(x.t, fmt(x.ms) + (x.guessed ? "<small>suggested</small>" : ""), {})) + "</div>";
     }
     if (p.raise.length) {
       h += '<div class="ip-card"><h3>Estimates that look too low</h3><p class="hint">Not changed in the totals above - just worth a look.</p>' +
-        p.raise.map((t) => taskRow(t, fmt(t.raise.ms) + "<small>now " + fmt(t.estimateMs) + "</small>", { why: t.raise.why })).join("") + "</div>";
+        planList("raise", p.raise, (t) => t, (t) => taskRow(t, fmt(t.raise.ms) + "<small>now " + fmt(t.estimateMs) + "</small>", { why: t.raise.why })) + "</div>";
     }
     // 4) Day by day
     let d = "";
     for (const day of p.cal) {
       const used = day.cap - day.left;
       const tasksN = new Set(day.items.map((it) => it.t.id)).size;
-      const body = day.items.length ? day.items.map((it) => taskRow(it.t, fmt(it.ms) + (it.cont ? "<small>continued</small>" : it.ms < it.t.planMs ? "<small>of " + fmt(it.t.planMs) + "</small>" : ""), { no: it.cont ? "↳" : it.t.no, after: !it.cont, late: !it.t.overdue && it.t.due && day.ts > dayStart(it.t.due), edit: { ms: it.ms, day: true } })).join("") : '<p class="ip-meta" style="margin:8px 0">Nothing planned - room for more.</p>';
+      const dayItems = day.items.filter((it) => planMatch(it.t));
+      const body = dayItems.length ? dayItems.map((it) => taskRow(it.t, fmt(it.ms) + (it.cont ? "<small>continued</small>" : it.ms < it.t.planMs ? "<small>of " + fmt(it.t.planMs) + "</small>" : ""), { no: it.cont ? "↳" : it.t.no, after: !it.cont, late: !it.t.overdue && it.t.due && day.ts > dayStart(it.t.due), edit: { ms: it.ms, day: true } })).join("") : '<p class="ip-meta" style="margin:8px 0">' + (day.items.length ? "No task on this day matches the search / client." : "Nothing planned - room for more.") + "</p>";
       const cur = window.PcmPlanDay && window.PcmPlanDay.active() && window.PcmPlanDay.current();
       const applied = !!(cur && cur.day === day.ts);
       const applyBtn = day.items.length ? '<button type="button" class="ip-btn ip-apply' + (applied ? " on" : "") + '" data-apply-day="' + day.ts + '" title="' + (applied ? "Showing this day in your task list - click to go back to your filter" : "Show exactly these tasks, in this order, in the task list on the dashboard, popup and side panel (nothing changes in ClickUp)") + '">' + (applied ? "Applied ✓" : "Apply to my task list") + "</button>" : "";
@@ -604,6 +668,34 @@
 
   // ---------- Performance ----------
   let drill = null; // { card, kind, key } - which detail list is open
+  // Rating rings: which period (this week / this month / everything kept).
+  let ringP = "week";
+  try { const v = localStorage.getItem("pcmRingP"); if (v === "week" || v === "month" || v === "all") ringP = v; } catch (e) {}
+  const ringColor = (s) => s == null ? "var(--muted)" : s >= 80 ? "var(--green)" : s >= 60 ? "var(--amber)" : "var(--red)";
+  function ringSvg(score, size, stroke) {
+    const r = (size - stroke) / 2, c = 2 * Math.PI * r, p = score == null ? 0 : Math.max(0, Math.min(100, score)) / 100;
+    return '<svg class="ring" viewBox="0 0 ' + size + " " + size + '" width="' + size + '" height="' + size + '" aria-hidden="true">' +
+      '<circle cx="' + size / 2 + '" cy="' + size / 2 + '" r="' + r + '" fill="none" stroke="var(--border)" stroke-width="' + stroke + '"/>' +
+      '<circle cx="' + size / 2 + '" cy="' + size / 2 + '" r="' + r + '" fill="none" stroke="' + ringColor(score) + '" stroke-width="' + stroke + '" stroke-linecap="round" stroke-dasharray="' + (c * p).toFixed(1) + " " + c.toFixed(1) + '" transform="rotate(-90 ' + size / 2 + " " + size / 2 + ')"/>' +
+      '<text x="50%" y="50%" text-anchor="middle" dominant-baseline="central" class="rt" style="font-size:' + Math.round(size * 0.26) + 'px">' + (score == null ? "—" : Math.round(score)) + "</text></svg>";
+  }
+  // One rating out of 100 from the parts there is data for: time tracked against
+  // the working-day target (40%), deadlines met (35%), estimates that held (25%).
+  function ratingParts(o) {
+    const parts = [];
+    if (o.target > 0) parts.push({ k: "hours", w: 40, s: Math.min(100, (o.tracked / o.target) * 100), label: "Time tracked", sub: fmt(o.tracked) + " of " + fmt(o.target) });
+    // Deadlines: on finished tasks only (an open overdue backlog - someone senior
+    // who simply gets more work - never lowers it), and by HOW late: a day late
+    // costs 1/7 of a miss, a week or more late a full one.
+    if (o.dated.length) {
+      const on = o.dated.filter((t) => !o.late(t)).length;
+      const cost = o.dated.reduce((a, t) => a + (o.late(t) ? Math.min(1, Math.max(1, Math.ceil((t.doneAt - (dayStart(t.dueDateMs) + DAY)) / DAY)) / 7) : 0), 0);
+      parts.push({ k: "deadlines", w: 35, s: (1 - cost / o.dated.length) * 100, label: "Deadlines met", sub: on + " of " + o.dated.length + " on time" });
+    }
+    if (o.acc.length) { const sc = o.acc.reduce((a, t) => a + Math.max(0, 1 - Math.abs(t.spentMs / t.estimateMs - 1)), 0) / o.acc.length; parts.push({ k: "estimates", w: 25, s: sc * 100, label: "Estimates held", sub: plural(o.acc.length, "task") + " compared" }); }
+    const wsum = parts.reduce((a, p) => a + p.w, 0);
+    return { parts, overall: wsum ? parts.reduce((a, p) => a + p.s * p.w, 0) / wsum : null };
+  }
   function nameOf(id) {
     id = String(id);
     if (perf && perf.names && perf.names[id]) return perf.names[id];
@@ -621,7 +713,7 @@
     for (let i = 0; i < 7; i++) for (const t of dayTasks(addDays(mon, i))) acc.set(t.id, { id: t.id, name: t.name, ms: (acc.has(t.id) ? acc.get(t.id).ms : 0) + t.ms });
     return [...acc.values()].sort((a, b) => b.ms - a.ms);
   }
-  const simpleRows = (list, timeOf, subOf) => list.length ? list.map((t, i) => '<div class="ip-row"><span class="no">' + (i + 1) + '</span><div class="nm"><a href="' + esc(t.url || taskUrl(t.id)) + '" target="_blank" rel="noopener" title="' + esc(t.name) + '">' + esc(t.name) + "</a>" + (subOf ? '<div class="sub">' + subOf(t) + "</div>" : "") + '</div><span class="tm">' + timeOf(t) + "</span></div>").join("") : '<p class="ip-meta">Nothing here.</p>';
+  const simpleRows = (list, timeOf, subOf, clsOf) => list.length ? list.map((t, i) => '<div class="ip-row' + (clsOf ? clsOf(t) : "") + '"><span class="no">' + (i + 1) + '</span><div class="nm"><a href="' + esc(t.url || taskUrl(t.id)) + '" target="_blank" rel="noopener" title="' + esc(t.name) + '">' + esc(t.name) + "</a>" + (subOf ? '<div class="sub">' + subOf(t) + "</div>" : "") + '</div><span class="tm">' + timeOf(t) + "</span></div>").join("") : '<p class="ip-meta">Nothing here.</p>';
   function svgBars(vals, opt) {
     const W = 560, Hh = opt.h || 150, pad = 22, n = vals.length || 1, bw = (W - 10) / n;
     const max = Math.max(1, opt.max || 0, ...vals.map((v) => Math.max(v.line || 0, (Array.isArray(v.parts) ? v.parts.reduce((a, b) => a + b, 0) : v.v) || 0)));
@@ -649,7 +741,7 @@
   }
   function drillBox(card, title, body) {
     if (!drill || drill.card !== card) return "";
-    return '<div class="ip-drill"><div class="dh"><b>' + title + '</b><button type="button" class="x" data-close-drill="1" title="Close">✕</button></div>' + body + "</div>";
+    return '<div class="ip-drill"><div class="dh"><b>' + title + '</b><button type="button" class="x" data-close-drill="1" title="Close">✕</button></div><div data-long="drill-' + esc(card) + '" data-long-rows=".ip-row">' + body + "</div></div>";
   }
   function renderPerf(el) {
     const head = '<div class="ip-head"><h2>Performance</h2></div>' +
@@ -701,9 +793,42 @@
     const hasDetail = perf.v === 2;
     const needNew = '<p class="ip-meta">Task-level details arrive with the next history refresh (a few seconds).</p>';
 
+    // ---- Rating rings ----
+    const pFrom = ringP === "week" ? thisMon : ringP === "month" ? new Date(new Date(today).getFullYear(), new Date(today).getMonth(), 1).getTime() : dayStart(perf.fromTs);
+    const pDays = [];
+    for (let d = pFrom; d <= today; d = addDays(d, 1)) pDays.push(d);
+    const pWork = pDays.filter((d) => isWorkday(d) && d < today);
+    const pTracked = pWork.reduce((a, d) => a + (Number(perf.days[d]) || 0), 0);
+    const pDone = done.filter((t) => t.doneAt >= pFrom);
+    const pDated = pDone.filter((t) => t.dueDateMs > 0);
+    const pAcc = pDone.filter((t) => t.estimateMs > 0 && t.spentMs > 0);
+    const R = ratingParts({ tracked: pTracked, target: pWork.length * tMs, dated: pDated, acc: pAcc, late });
+    const pLabel = { week: "This week", month: "This month", all: "All (" + ((perf && perf.weeks) || 12) + " weeks kept)" };
+    // By client: deadlines + estimates on what was finished, and the time tracked in the period.
+    const cMs = new Map();
+    if (hasDetail) for (const d of pDays) { const m = (perf.byDay && (perf.byDay[d] || perf.byDay[String(d)])) || {}; for (const [id, ms] of Object.entries(m)) { const c = clientOf.get(String(id)) || "Other"; cMs.set(c, (cMs.get(c) || 0) + Number(ms || 0)); } }
+    const cNames = new Set([...cMs.keys(), ...pDone.map((t) => t.client).filter(Boolean)]);
+    const cRows = [...cNames].filter((c) => c !== "Other").map((c) => {
+      const cd = pDone.filter((t) => t.client === c);
+      const r = ratingParts({ tracked: 0, target: 0, dated: cd.filter((t) => t.dueDateMs > 0), acc: cd.filter((t) => t.estimateMs > 0 && t.spentMs > 0), late });
+      return { c, ms: cMs.get(c) || 0, n: cd.length, score: r.overall, parts: r.parts };
+    }).sort((a, b) => b.ms - a.ms || b.n - a.n).slice(0, 12);
+    let rg = '<div class="ip-card ip-rating"><div class="ip-rhead"><h3>Your rating</h3><div class="ip-rper">' +
+      ["week", "month", "all"].map((p) => '<button type="button" data-ring-p="' + p + '" class="' + (ringP === p ? "on" : "") + '">' + esc(pLabel[p]) + "</button>").join("") + "</div></div>";
+    rg += '<div class="ip-rmain"><div class="ip-rbig">' + ringSvg(R.overall, 132, 13) + '<div class="ip-rcap">' + (R.overall == null ? "Not enough data yet" : R.overall >= 85 ? "Excellent" : R.overall >= 70 ? "Good" : R.overall >= 55 ? "Fair" : "Needs attention") + "</div></div>" +
+      '<div class="ip-rparts">' + (R.parts.length ? R.parts.map((p) => '<div class="ip-rpart"><div class="t"><b>' + esc(p.label) + '</b><span class="sc" style="color:' + ringColor(p.s) + '">' + Math.round(p.s) + '</span></div><div class="tr"><i style="width:' + Math.max(2, Math.round(p.s)) + "%;background:" + ringColor(p.s) + '"></i></div><small>' + esc(p.sub) + " · counts " + p.w + "%</small></div>").join("") : '<p class="ip-meta">Nothing to rate in this period yet' + (ringP === "week" ? " - the week has just started." : ".") + "</p>") + "</div></div>";
+    rg += '<p class="hint" style="margin:10px 0 0">Out of 100: time tracked against your ' + fmt(tMs) + " working days (40%), deadlines met on the tasks you finished - a day late counts much less than a week late (35%) - and how close tasks came to their estimate (25%). Overdue tasks still open don't lower it: a big pile of work isn't held against you, only how the finished work went. Weekends and company holidays never count.</p>";
+    if (cRows.length) {
+      rg += '<h3 style="margin:16px 0 8px">By client</h3><div class="ip-rclients">' + cRows.map((r) =>
+        '<button type="button" class="ip-rcl' + (drill && drill.card === "client" && drill.key === r.c ? " on" : "") + '" data-card="client" data-kind="client" data-key="' + esc(r.c) + '" title="' + esc(r.c + (r.parts.length ? " - " + r.parts.map((p) => p.label + " " + Math.round(p.s)).join(", ") : " - nothing finished in this period") + " - click for the tasks") + '">' +
+        '<span class="nm">' + esc(r.c) + '</span><span class="tr"><i style="width:' + (r.score == null ? 0 : Math.max(2, Math.round(r.score))) + "%;background:" + ringColor(r.score) + '"></i></span><span class="sc" style="color:' + ringColor(r.score) + '">' + (r.score == null ? "—" : Math.round(r.score)) + '</span><small>' + (r.ms ? fmt(r.ms) + " tracked" : "") + (r.n ? (r.ms ? " · " : "") + r.n + " finished" : "") + "</small></button>").join("") + "</div>" +
+        '<p class="hint" style="margin:8px 0 0">Each client\'s ring: deadlines met and estimates held on the tasks you finished for them in this period ("—" = none finished yet).</p>';
+    }
+    rg += "</div>";
+
     const kpi = (id, n, l, s, cls) => '<button type="button" class="ip-kpi' + (drill && drill.card === "kpi" && drill.key === id ? " on" : "") + '" data-card="kpi" data-kind="kpi" data-key="' + id + '"><div class="n"' + (cls ? ' style="color:var(--' + (cls === "good" ? "green" : cls === "bad" ? "red" : "amber") + ')"' : "") + ">" + esc(n) + '</div><div class="l">' + esc(l) + "</div>" + (s ? '<div class="s">' + esc(s) + "</div>" : "") + '<div class="go">Details →</div></button>';
     const rDays = recent.length, rOn = onT(recent);
-    let h = head;
+    let h = head + rg;
     h += '<div class="ip-kpis">' +
       kpi("days", rDays ? rOn + " / " + rDays : "—", "days at " + fmt(tMs) + "+ (last 4 weeks)", pastWork.length ? onT(pastWork) + " of " + pastWork.length + " over " + weeks.length + " weeks" : "", rDays ? (rOn / rDays >= 0.8 ? "good" : "warn") : "") +
       kpi("avg", fmt(avg(recent)), "average per working day (4 weeks)", weeks.length + "-week average " + fmt(avg(pastWork))) +
@@ -714,10 +839,10 @@
       let title = "", body = "";
       if (drill.key === "days" || drill.key === "avg") {
         title = "Your working days, last 4 weeks";
-        body = recent.slice().reverse().map((x) => '<div class="ip-row"><span class="no">' + (x.ms >= tMs * 0.98 ? "✓" : "") + '</span><div class="nm"><button type="button" class="ip-btn" data-card="heat" data-kind="day" data-key="' + x.d + '" style="border:0;padding:0;background:none;color:var(--indigo)">' + esc(dDay(x.d)) + '</button></div><span class="tm">' + fmt(x.ms) + "<small>" + (x.ms >= tMs * 0.98 ? "target reached" : fmt(tMs - x.ms) + " short") + "</small></span></div>").join("") || '<p class="ip-meta">No working days yet.</p>';
+        body = recent.slice().reverse().map((x) => '<div class="ip-row' + (x.ms >= tMs * 0.98 ? "" : x.ms >= tMs * 0.7 ? " ip-short" : " ip-short bad") + '"><span class="no">' + (x.ms >= tMs * 0.98 ? "✓" : "") + '</span><div class="nm"><button type="button" class="ip-btn" data-card="heat" data-kind="day" data-key="' + x.d + '" style="border:0;padding:0;background:none;color:var(--indigo)">' + esc(dDay(x.d)) + '</button></div><span class="tm">' + fmt(x.ms) + "<small>" + (x.ms >= tMs * 0.98 ? "target reached" : fmt(tMs - x.ms) + " short") + "</small></span></div>").join("") || '<p class="ip-meta">No working days yet.</p>';
       } else if (drill.key === "deadlines") {
         title = "Finished tasks with a due date, last 4 weeks";
-        body = simpleRows(dRecent.slice().sort((a, b) => b.doneAt - a.doneAt), (t) => late(t) ? '<span class="flag bad">' + daysLate(t) + "d late</span>" : '<span class="flag mut">on time</span>', (t) => (t.client ? esc(t.client) + " · " : "") + "due " + esc(dShort(t.dueDateMs)) + " · done " + esc(dShort(t.doneAt)));
+        body = simpleRows(dRecent.slice().sort((a, b) => (late(b) - late(a)) || b.doneAt - a.doneAt), (t) => late(t) ? '<span class="flag bad">' + daysLate(t) + "d late</span>" : '<span class="flag mut">on time</span>', (t) => (t.client ? esc(t.client) + " · " : "") + "due " + esc(dShort(t.dueDateMs)) + " · done " + esc(dShort(t.doneAt)), (t) => late(t) ? " ip-short bad" : "");
       } else {
         title = "Estimate vs time taken (finished tasks)";
         body = simpleRows(acc.slice().sort((a, b) => b.spentMs / b.estimateMs - a.spentMs / a.estimateMs).slice(0, 40), (t) => fmt(t.spentMs) + "<small>est " + fmt(t.estimateMs) + " · ×" + (Math.round((t.spentMs / t.estimateMs) * 10) / 10) + "</small>", (t) => (t.client ? esc(t.client) + " · " : "") + "done " + esc(dShort(t.doneAt)));
@@ -763,7 +888,7 @@
     if (drill && drill.card === "deadlines") {
       const mon = Number(drill.key), list = finWeek(mon).filter((t) => t.dueDateMs > 0).sort((a, b) => b.doneAt - a.doneAt);
       dlDrill = drillBox("deadlines", "Week of " + esc(dShort(mon)) + " · " + list.filter((t) => !late(t)).length + " on time, " + list.filter(late).length + " late",
-        simpleRows(list, (t) => late(t) ? '<span class="flag bad">' + daysLate(t) + "d late</span>" : '<span class="flag mut">on time</span>', (t) => (t.client ? esc(t.client) + " · " : "") + "due " + esc(dShort(t.dueDateMs)) + " · done " + esc(dShort(t.doneAt))));
+        simpleRows(list.slice().sort((a, b) => late(b) - late(a)), (t) => late(t) ? '<span class="flag bad">' + daysLate(t) + "d late</span>" : '<span class="flag mut">on time</span>', (t) => (t.client ? esc(t.client) + " · " : "") + "due " + esc(dShort(t.dueDateMs)) + " · done " + esc(dShort(t.doneAt)), (t) => late(t) ? " ip-short bad" : ""));
     }
     h += '<div class="ip-card"><h3>Deadlines met</h3><p class="hint">Finished tasks per week that had a due date: green on time, red late. Click a week for the tasks.</p>' +
       svgBars(weeks.map((w) => { const inW = finWeek(w.mon).filter((t) => t.dueDateMs > 0); const lt = inW.filter(late).length; return { key: w.mon, parts: [inW.length - lt, lt], lbl: dShort(w.mon), tip: "Week of " + dShort(w.mon) + ": " + (inW.length - lt) + " on time, " + lt + " late" }; }), { card: "deadlines", kind: "week", colors: ["var(--green)", "var(--red)"], label: "Deadlines met per week" }) + dlDrill + "</div>";
@@ -812,6 +937,7 @@
     h += '<p class="ip-meta">History updated ' + ago(perf.at) + " (refreshes by itself every few hours)." + (perfErr ? " Last refresh failed: " + esc(perfErr) : "") + "</p>";
     el.innerHTML = h;
     wire(el);
+    el.querySelectorAll("[data-ring-p]").forEach((b) => { b.onclick = () => { ringP = b.getAttribute("data-ring-p"); try { localStorage.setItem("pcmRingP", ringP); } catch (e) {} repaint(); }; });
     // Bring an opened detail into view (it sits under the thing that was clicked).
     if (drill && drill.scroll) { drill.scroll = false; const box = el.querySelector(".ip-drill"); if (box) try { box.scrollIntoView({ block: "nearest", behavior: "smooth" }); } catch (e) {} }
   }
@@ -867,10 +993,31 @@
         repaint();
       };
     });
+    // Plan search / client / show more.
+    const pq = el.querySelector(".ip-pq");
+    if (pq) {
+      let tmr = 0;
+      pq.oninput = () => {
+        clearTimeout(tmr);
+        tmr = setTimeout(() => {
+          const pos = pq.selectionStart;
+          planQ = pq.value.trim().toLowerCase();
+          for (const k of Object.keys(planShow)) delete planShow[k];
+          repaint();
+          const again = view.el && view.el.querySelector(".ip-pq");
+          if (again) { again.focus(); try { again.setSelectionRange(pos, pos); } catch (e) {} }
+        }, 200);
+      };
+    }
+    const pc = el.querySelector(".ip-pclient");
+    if (pc) pc.onchange = () => { planClient = pc.value; for (const k of Object.keys(planShow)) delete planShow[k]; repaint(); };
+    const pcl = el.querySelector(".ip-pclear");
+    if (pcl) pcl.onclick = () => { planQ = ""; planClient = ""; for (const k of Object.keys(planShow)) delete planShow[k]; repaint(); };
+    el.querySelectorAll("[data-more]").forEach((b) => { b.onclick = (e) => { e.preventDefault(); e.stopPropagation(); const k = b.getAttribute("data-more"); planShow[k] = (planShow[k] || PLAN_PAGE) + PLAN_PAGE; repaint(); }; });
     const all = el.querySelector("[data-applyall]");
     if (all) all.onclick = async (e) => {
       e.preventDefault(); e.stopPropagation();
-      const list = (lastPlan && lastPlan.missing || []).slice();
+      const list = (lastPlan && lastPlan.missing || []).filter(planMatch);
       if (!list.length || applyingAll) return;
       if (!confirm("Set these estimates in ClickUp?\n\n" + list.map((t) => "• " + fmt(estOf(t)) + "  " + t.name).join("\n").slice(0, 1500))) return;
       let done = 0, failed = 0;

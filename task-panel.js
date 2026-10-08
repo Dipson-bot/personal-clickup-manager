@@ -75,6 +75,11 @@
   .pcm-compose textarea { width: 100%; box-sizing: border-box; min-height: 44px; resize: vertical; font: inherit; font-size: 12px; padding: 6px 8px; border: 1px solid var(--border); border-radius: 6px; background: var(--card); color: var(--text); }
   .pcm-compose textarea:focus { outline: none; border-color: var(--indigo); }
   .pcm-compose-row { display: flex; align-items: center; gap: 8px; justify-content: flex-end; flex-wrap: wrap; }
+  .pcm-held-it { border: 1px dashed var(--amber, #d97706); border-radius: 8px; padding: 8px 10px; margin: 8px 0; background: rgba(217,119,6,.06); }
+  .pcm-held-h { font-size: 11px; font-weight: 700; color: var(--amber, #d97706); margin-bottom: 4px; }
+  .pcm-held-bar { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; margin-top: 6px; }
+  .pcm-held-bar .sp { flex: 1; }
+  .pcm-held-mode { width: auto !important; flex: none; font: inherit; font-size: 11.5px; padding: 3px 6px; border: 1px solid var(--border); border-radius: 6px; background: var(--card); color: var(--text); }
   .pcm-theirs { border: 1px dashed var(--border); border-radius: 6px; padding: 6px 8px; opacity: .85; }
   .pcm-compose-row .pcm-note { margin-right: auto; }
   `;
@@ -986,9 +991,56 @@
     const msg = el("span", "pcm-note", "Ctrl+Enter to post");
     const post = el("button", "pcm-btn pri", "Comment");
     post.type = "button";
-    r.append(msg, post);
+    // Kept in the extension and posted when the task is completed from it.
+    const later = el("button", "pcm-btn", "Send when I complete it");
+    later.type = "button";
+    later.title = "Keep this comment and post it when you mark the task complete in the extension (you're reminded when you start the task)";
+    r.append(msg, later, post);
     box.append(ta, r);
-    sec.append(list, more, box);
+    // The comments waiting for the task to be completed.
+    const heldBox = el("div", "pcm-held");
+    sec.append(list, more, heldBox, box);
+    let editing = "";
+    const paintHeld = (items) => {
+      heldBox.textContent = "";
+      for (const c of items || []) {
+        const it = el("div", "pcm-held-it");
+        const h = el("div", "pcm-held-h", "\uD83D\uDCAC Waiting - posted when you complete this task");
+        const t = el("div", "pcm-cm-t");
+        if (window.PcmMd) { t.classList.add("md"); t.innerHTML = window.PcmMd.render(c.text); } else t.textContent = c.text;
+        const bar = el("div", "pcm-held-bar");
+        const mode = el("select", "pcm-held-mode");
+        mode.innerHTML = '<option value="ask">Ask me first</option><option value="auto">Send it automatically</option>';
+        mode.value = c.auto ? "auto" : "ask";
+        mode.title = "When you press Complete: ask before posting it, or post it without asking";
+        mode.onchange = async () => { const res = await send({ type: "HELD_COMMENTS", op: "auto", taskId: d.id, id: c.id, auto: mode.value === "auto" }); if (res && res.ok) paintHeld(res.list); };
+        const now = el("button", "pcm-btn pri", "Send now"); now.type = "button";
+        now.onclick = async () => {
+          now.disabled = true; now.textContent = "Posting…";
+          const res = await send({ type: "HELD_COMMENTS", op: "send", taskId: d.id, id: c.id });
+          if (res && res.ok) { paintHeld(res.list); if (res.data) { comments = res.data.comments || comments; paintComments(list, more, comments, false); } msg.className = "pcm-note"; msg.textContent = "Posted to ClickUp ✓"; }
+          else { now.disabled = false; now.textContent = "Send now"; msg.className = "pcm-err"; msg.textContent = "Couldn't post: " + ((res && res.error) || "no reply"); }
+        };
+        const edit = el("button", "pcm-btn", "Edit"); edit.type = "button";
+        edit.onclick = () => { ta.value = c.text; editing = c.id; later.textContent = "Save for when I complete it"; ta.focus(); };
+        const del = el("button", "pcm-btn", "Delete"); del.type = "button";
+        del.onclick = async () => { if (!confirm("Delete this waiting comment?")) return; const res = await send({ type: "HELD_COMMENTS", op: "delete", taskId: d.id, id: c.id }); if (res && res.ok) paintHeld(res.list); };
+        bar.append(mode, el("span", "sp"), del, edit, now);
+        it.append(h, t, bar);
+        heldBox.appendChild(it);
+      }
+    };
+    send({ type: "HELD_COMMENTS", op: "list", taskId: d.id }).then((res) => { if (res && res.ok) paintHeld(res.list); }).catch(() => {});
+    later.onclick = async () => {
+      const text = ta.value.trim();
+      if (!text) { msg.className = "pcm-err"; msg.textContent = "Write a comment first."; ta.focus(); return; }
+      const res = await send({ type: "HELD_COMMENTS", op: "save", taskId: d.id, id: editing || undefined, text });
+      if (res && res.ok) {
+        ta.value = ""; editing = ""; later.textContent = "Send when I complete it";
+        paintHeld(res.list);
+        msg.className = "pcm-note"; msg.textContent = "Kept ✓ - posted when you complete this task";
+      } else { msg.className = "pcm-err"; msg.textContent = "Couldn't keep it: " + ((res && res.error) || "no reply"); }
+    };
     const submit = async () => {
       const text = ta.value.trim();
       if (!text) { msg.className = "pcm-err"; msg.textContent = "Write a comment first."; ta.focus(); return; }
@@ -997,6 +1049,7 @@
       post.disabled = false; post.textContent = "Comment";
       if (res && res.ok && res.data) {
         ta.value = "";
+        if (editing) { const was = editing; editing = ""; later.textContent = "Send when I complete it"; send({ type: "HELD_COMMENTS", op: "delete", taskId: d.id, id: was }).then((x) => { if (x && x.ok) paintHeld(x.list); }).catch(() => {}); }
         comments = res.data.comments || [];
         paintComments(list, more, comments, false);
         msg.className = "pcm-note"; msg.textContent = "Posted to ClickUp ✓";
@@ -1198,7 +1251,7 @@
           try { const a = await window.pcmAudit.get(n); if (a) { res.data._audit = a; break; } } catch (e) {}
         }
       }
-      if (window.PcmFiles && window.PcmFiles.notesFor && res.data._client) { try { res.data._notes = await window.PcmFiles.notesFor(res.data._client); } catch (e) {} }
+      if (window.PcmFiles && window.PcmFiles.notesFor && res.data._client) { try { res.data._notes = (await window.PcmFiles.notesFor(res.data._client)).filter((n) => !(n && n.report)); } catch (e) {} }
       if (p !== panel) return;
       fill(p, res.data);
       return;

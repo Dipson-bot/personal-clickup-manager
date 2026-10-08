@@ -508,7 +508,21 @@ function appendTaskControls(row, t) {
   // Switch confirmation: another task is in progress. Warn, then let the user
   // confirm the switch (start this one, stop + revert the other) or cancel.
   const cf = cuRowConfirm[tid];
-  if (cf) {
+  if (cf && cf.held) {
+    const warn = document.createElement("div");
+    warn.className = "cu-rowmsg cu-rowconfirm";
+    row.classList.add("has-msg");
+    const first = String((cf.held[0] && cf.held[0].text) || "").replace(/\s+/g, " ");
+    warn.appendChild(document.createTextNode("\uD83D\uDCAC " + (cf.held.length === 1 ? "You have a comment waiting to be sent" : "You have " + cf.held.length + " comments waiting to be sent") + ": “" + (first.length > 90 ? first.slice(0, 88) + "…" : first) + "”. Send it before completing?"));
+    const btns = document.createElement("span");
+    btns.className = "cu-confirm-btns";
+    const mk = (label, cls, fn) => { const b = document.createElement("button"); b.className = "cu-iconbtn" + (cls ? " " + cls : ""); b.textContent = label; b.onclick = fn; btns.appendChild(b); };
+    mk("Send & complete", "start", () => { delete cuRowConfirm[tid]; sendTaskAction(tid, "complete", false, "send"); });
+    mk("Complete without it", "", () => { delete cuRowConfirm[tid]; sendTaskAction(tid, "complete", false, "skip"); });
+    mk("Cancel", "", () => { delete cuRowConfirm[tid]; render(); });
+    warn.appendChild(btns);
+    row.appendChild(warn);
+  } else if (cf) {
     const warn = document.createElement("div");
     warn.className = "cu-rowmsg cu-rowconfirm";
     row.classList.add("has-msg");
@@ -591,7 +605,7 @@ function cuRowNotice(m, onDismiss) {
 // Fire a per-task Start/Stop/Complete action, then repaint. Modeled on
 // toggleExtraTimer: 20s timeout (the background does the ClickUp write THEN a
 // today+tasks refresh before replying), inline error via cuRowMsg on that row.
-async function sendTaskAction(taskId, action, force) {
+async function sendTaskAction(taskId, action, force, held) {
   const tid = String(taskId);
   if (cuRowBusy.has(tid)) return;
   cuRowBusy.add(tid);
@@ -602,9 +616,22 @@ async function sendTaskAction(taskId, action, force) {
   setTimeout(() => { if (cuRowBusy.has(tid)) render(); }, 6500); // switch to "ClickUp is slow"
   const typeMap = { start: "CLICKUP_TASK_START", stop: "CLICKUP_TASK_STOP", complete: "CLICKUP_TASK_COMPLETE" };
   try {
-    const res = await send({ type: typeMap[action], taskId: tid, force: !!force }, 20000);
+    const res = await send({ type: typeMap[action], taskId: tid, force: !!force, ...(held ? { held } : {}) }, 20000);
     cuRowBusy.delete(tid);
     if (!res || res.ok === false) {
+      if (res && res.reason === "held-comment") {
+        // A comment is waiting to be posted when this task is completed: ask.
+        // Its row isn't on screen (e.g. Complete in the Tracking now bar): ask here.
+        if (!document.querySelector('.pcm-chev[data-task-id="' + tid + '"]')) {
+          const first = String((res.comments && res.comments[0] && res.comments[0].text) || "").replace(/\s+/g, " ").slice(0, 200);
+          if (confirm("You have a comment waiting to be sent on this task:\n\n“" + first + "”\n\nOK = send it and complete the task. Cancel = don't complete yet.")) sendTaskAction(tid, "complete", false, "send");
+          else render();
+          return;
+        }
+        cuRowConfirm[tid] = { held: res.comments || [] };
+        render();
+        return;
+      }
       if (res && res.reason === "needs-confirm") {
         // Another task is in progress - surface the in-row switch confirmation.
         cuRowConfirm[tid] = {
@@ -790,6 +817,20 @@ function waitSlot(t) {
 // "31m today" pill goes in there after the pair, so a multi-day figure can't be
 // mistaken for today's work. The pill is ordered last (.trk is order 1, .est
 // order 3) instead of landing between the two numbers.
+// Tracked on other days too: a view only counts the time tracked on its own
+// dates (a "Due tomorrow" row reads 0m though 12m were tracked today), so the
+// time cell also says how much there is in all, instead of a bare 0m.
+function cuAllNote(spans, t) {
+  if (!spans || !t || spans.querySelector(".trk-all")) return;
+  const allMs = Number(t.totalSpentMs) || 0, spent = Number(t.spentMs) || 0;
+  if (allMs - spent < 60000) return;
+  const all = document.createElement("span");
+  all.className = "trk-all";
+  all.style.order = "5";
+  all.textContent = fmtDur(allMs) + " in all";
+  all.title = "Tracked on this task in all, on any day: " + fmtDur(allMs) + ". This view counts only the time tracked on its own dates (" + fmtDur(spent) + ").";
+  spans.appendChild(all);
+}
 function markTrk(trk, t, spans) {
   const spent = Number(t && t.spentMs) || 0;
   const est = Number(t && (t.estimateMs != null ? t.estimateMs : t.dayEstimateMs)) || 0;
@@ -1008,9 +1049,26 @@ function whoSlot(t) {
     slot.appendChild(c);
   };
   const nameOf = (a) => a.username || ("User " + a.id);
-  const shown = list.length > 2 ? list.slice(0, 1) : list;
+  // Created by someone else: their circle, a small arrow, then who it's on
+  // ("AP › DT" = Aashraya created it, it's on Dipson).
+  const cr = t && t.container && t.container.creator;
+  const me = state && state.clickup && state.clickup.user && state.clickup.user.id;
+  if (cr && cr.id && cr.name && String(cr.id) !== String(me || "")) {
+    const on = list.length ? list.map(nameOf).join(", ") : "nobody yet";
+    circle(cuInitials(cr.name), "Created by " + cr.name + " - assigned to " + on, cuAvatarColor(cr.id), "by");
+    const ar = document.createElement("span");
+    ar.className = "by-ar";
+    ar.textContent = "›";
+    ar.title = "Created by " + cr.name + " - assigned to " + on;
+    slot.appendChild(ar);
+    slot.classList.add("has-by");
+  }
+  // With the creator in front there's room for one assignee circle: two or more
+  // become one circle + "+N" (all names on hover), so nothing is cut off.
+  const max = slot.classList.contains("has-by") ? 1 : 2;
+  const shown = list.length > max ? list.slice(0, 1) : list;
   for (const a of shown) circle(cuInitials(a.username), nameOf(a), cuAvatarColor(a.id || a.username));
-  if (list.length > 2) circle("+" + (list.length - 1), list.slice(1).map(nameOf).join(", "), "", "more");
+  if (list.length > max) circle("+" + (list.length - 1), list.slice(1).map(nameOf).join(", "), "", "more");
   return slot;
 }
 
@@ -1263,6 +1321,7 @@ function appendFilterTaskRows(container, tasks, deadlineTasks, trackedTasks = []
     }
     appendNameCell(row, nm, t, opts);
     row.appendChild(spans);
+    cuAllNote(spans, row._cuTask);
     if (withControls) appendTaskControls(row, t);
     cuDecorateRow(row, t, "main", canDrag, opts.group);
     container.appendChild(row);
@@ -1292,6 +1351,7 @@ function appendFilterTaskRows(container, tasks, deadlineTasks, trackedTasks = []
     }
     appendNameCell(row, nm, dt, opts);
     row.appendChild(spans);
+    cuAllNote(spans, row._cuTask);
     if (withControls) appendTaskControls(row, dt);
     cuDecorateRow(row, dt, "deadline", canDrag, opts.group);
     container.appendChild(row);
@@ -1331,6 +1391,7 @@ function appendFilterTaskRows(container, tasks, deadlineTasks, trackedTasks = []
       }
       appendNameCell(row, nm, t, opts);
       row.appendChild(spans);
+      cuAllNote(spans, row._cuTask);
       if (withControls) appendTaskControls(row, t);
       cuDecorateRow(row, t, "tracked", canDrag, opts.group);
       container.appendChild(row);
@@ -1993,6 +2054,7 @@ function renderWeekDetail(w, agg) {
       }
       appendNameCell(row, nm, t, {});
       row.appendChild(spans);
+      cuAllNote(spans, row._cuTask);
       box.appendChild(row);
     }
     if (trackedRows.length) {
@@ -2023,6 +2085,7 @@ function renderWeekDetail(w, agg) {
         }
         appendNameCell(row, nm, t, {});
         row.appendChild(spans);
+        cuAllNote(spans, row._cuTask);
         box.appendChild(row);
       }
     }
@@ -3028,6 +3091,46 @@ try {
   });
 } catch (e) {}
 
+
+// The weekly Extra task's estimate (e.g. 7h) against what has been tracked on it
+// this week: earlier days from the week summary, today from today's list, plus
+// a running timer on it. Everything is already loaded - no ClickUp request.
+function extraWeekUse(st) {
+  const ex = st && st.extraTask;
+  if (!ex || !ex.id || !(Number(ex.estimateMs) > 0)) return null;
+  const id = String(ex.id), day0 = new Date().setHours(0, 0, 0, 0);
+  let used = 0;
+  for (const d of (st.weekly && st.weekly.perDay) || []) {
+    if (!(Number(d.ts) < day0)) continue; // today comes from today's list below
+    for (const r of d.tasks || []) if (r && String(r.id) === id) used += Number(r.spentMs) || 0;
+  }
+  let today = 0;
+  for (const r of [].concat(st.deadlineTasks || [], st.tasks || [], st.trackedTasks || [])) if (r && String(r.id) === id) today = Math.max(today, Number(r.spentMs) || 0);
+  used += today;
+  if (st.running && String(st.running.taskId) === id && st.running.startMs) used += Math.max(0, Date.now() - Math.max(Number(st.running.startMs), Number(st.at) || 0));
+  return { used, est: Number(ex.estimateMs) };
+}
+function paintExtraWeek(el, st) {
+  if (!el) return;
+  const u = extraWeekUse(st);
+  if (!u) { el.hidden = true; return; }
+  el.hidden = false;
+  const over = u.used - u.est;
+  const pct = Math.min(100, (u.used / u.est) * 100);
+  el.innerHTML = "";
+  const txt = document.createElement("span");
+  txt.className = "xw-t";
+  txt.textContent = "This week: " + fmtDur(u.used) + " of " + fmtDur(u.est) + " used · " + (over >= 60000 ? fmtDur(over) + " over" : fmtDur(Math.max(0, u.est - u.used)) + " left");
+  if (over >= 60000) txt.classList.add("over");
+  const bar = document.createElement("span");
+  bar.className = "xw-bar";
+  const fill = document.createElement("i");
+  fill.style.width = pct.toFixed(1) + "%";
+  if (over >= 60000) fill.className = "over";
+  bar.appendChild(fill);
+  el.title = "Your weekly Extra task: " + fmtDur(u.est) + " for the week (" + fmtDur(Math.round(u.est / 5)) + " a day). Tracked on it so far this week: " + fmtDur(u.used) + ".";
+  el.append(txt, bar);
+}
 function renderClickupTimer(st) {
   const row = $("cuTimerRow");
   const btn = $("cuTimerBtn");
@@ -3035,6 +3138,7 @@ function renderClickupTimer(st) {
   if (!row || !btn || !hint) return;
   if (!st) { row.style.display = "none"; return; }
   row.style.display = "flex";
+  paintExtraWeek($("cuExtraWeek"), st);
   const extra = st.extraTask && st.extraTask.id ? st.extraTask : null;
   const running = st.running && st.running.taskId ? st.running : null;
   if (!extra) {

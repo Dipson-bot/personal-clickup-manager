@@ -9,7 +9,9 @@
 //  - The List picker lists the Lists your open tasks are in (CLICKUP_TASK_LISTS,
 //    from the cached open-task read), or takes a pasted List link.
 // Storage: localTasks [{ id: "local-…", name, md, listId, listName, client,
-//   dueDateMs, estimateMs, priority, assignMe, createdAt, updatedAt, error }]
+//   dueDateMs, startDateMs, estimateMs, priority, assignees [{id, name}] (older
+//   drafts: assignMe), parentId/parentName (a subtask), applyAt (send to ClickUp
+//   by itself then - background sendScheduledDrafts), createdAt, updatedAt, error }]
 // (backed up to Drive with the other extras). Drafts don't count in any totals.
 (() => {
   "use strict";
@@ -128,6 +130,27 @@
   .lt-dlg .bar .sp { flex: 1; }
   .lt-dlg .err { color: var(--red, #dc2626); font-size: 11.5px; min-height: 14px; }
   .lt-dlg .bad { border-color: var(--red, #dc2626) !important; }
+  .lt-dlg .opt { font-weight: 400; text-transform: none; letter-spacing: 0; }
+  .lt-dlg div.f { display: flex; flex-direction: column; gap: 4px; font-size: 11px; font-weight: 700; color: var(--muted); text-transform: uppercase; letter-spacing: .04em; position: relative; }
+  .lt-date { font: inherit; font-size: 12.5px; text-transform: none; letter-spacing: 0; font-weight: 400; text-align: left; padding: 6px 8px; border: 1px solid var(--border); border-radius: 7px; background: var(--card); color: var(--text); cursor: pointer; }
+  .lt-date.empty { color: var(--muted); }
+  .lt-date:hover { border-color: var(--indigo, #6366f1); }
+  .lt-when { display: flex; gap: 6px; align-items: center; }
+  .lt-when .lt-date { flex: 1; }
+  .lt-when input[type=time] { font: inherit; font-size: 12.5px; padding: 5px 6px; border: 1px solid var(--border); border-radius: 7px; background: var(--card); color: var(--text); text-transform: none; letter-spacing: 0; font-weight: 400; }
+  .lt-people { display: flex; flex-wrap: wrap; gap: 5px; align-items: center; padding: 4px 6px; border: 1px solid var(--border); border-radius: 7px; background: var(--card); text-transform: none; letter-spacing: 0; font-weight: 400; }
+  .lt-people input { flex: 1; min-width: 120px; border: 0 !important; padding: 3px 2px !important; outline: none; background: none; }
+  .lt-chip { display: inline-flex; align-items: center; gap: 4px; font-size: 12px; font-weight: 600; padding: 2px 4px 2px 9px; border-radius: 999px; background: rgba(99,102,241,.14); color: var(--text); }
+  .lt-chip button { border: 0; background: none; color: var(--muted); cursor: pointer; padding: 0 3px; font-size: 11px; }
+  .lt-chip button:hover { color: var(--red, #dc2626); }
+  .lt-pick { position: relative; }
+  .lt-pick input { width: 100%; box-sizing: border-box; }
+  .lt-sug { position: absolute; left: 0; right: 0; top: 100%; z-index: 5; margin-top: 2px; max-height: 220px; overflow: auto; background: var(--card); border: 1px solid var(--border); border-radius: 8px; box-shadow: 0 10px 24px rgba(0,0,0,.15); text-transform: none; letter-spacing: 0; font-weight: 400; }
+  .lt-opt { padding: 6px 9px; font-size: 12.5px; cursor: pointer; color: var(--text); }
+  .lt-opt:hover { background: rgba(99,102,241,.1); }
+  .lt-opt .m, .lt-chosen .m { color: var(--muted); font-size: 11px; }
+  .lt-none { padding: 7px 9px; font-size: 12px; color: var(--muted); }
+  .lt-chosen { display: flex; align-items: center; gap: 4px; font-size: 12.5px; font-weight: 400; text-transform: none; letter-spacing: 0; color: var(--text); padding: 5px 8px; border: 1px dashed var(--indigo, #6366f1); border-radius: 7px; }
   .lt-pmeta { display: flex; flex-wrap: wrap; gap: 6px 12px; color: var(--muted); font-size: 11px; align-items: center; }
   .lt-pmeta b { color: var(--text); font-weight: 600; }
   .lt-pacts { display: flex; gap: 6px; flex-wrap: wrap; }
@@ -182,8 +205,8 @@
     nm.href = "#";
     nm.onclick = (e) => { e.preventDefault(); e.stopPropagation(); openEditor(d); };
     wrap.appendChild(nm);
-    const pill = el("span", "lt-pill" + (d.error ? " err" : ""), d.error ? "Not applied" : "Draft");
-    pill.title = d.error ? "ClickUp said: " + d.error + " - fix it with Edit, then Apply again." : "Only in this extension - press Apply to ClickUp to create it there";
+    const pill = el("span", "lt-pill" + (d.error ? " err" : ""), d.error ? "Not applied" : d.applyAt ? "⏰ " + new Date(d.applyAt).toLocaleString([], { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" }) : "Draft");
+    pill.title = d.error ? "ClickUp said: " + d.error + " - fix it with Edit, then Apply again." : d.applyAt ? "Goes to ClickUp by itself at this time (or press Apply to ClickUp now)" : "Only in this extension - press Apply to ClickUp to create it there";
     wrap.appendChild(pill);
     if (d.client || d.listName) { const c = el("span", "cu-client", d.client || d.listName); c.title = "List: " + (d.listName || "") + (d.client && d.client !== d.listName ? " (" + d.client + ")" : ""); wrap.appendChild(c); }
     const due = el("span", "cu-due" + (d.dueDateMs ? (dayStart(d.dueDateMs) < dayStart(Date.now()) ? " overdue" : dayStart(d.dueDateMs) === dayStart(Date.now()) ? " today" : "") : " nodue"), d.dueDateMs ? dueText(d.dueDateMs) : "+ due");
@@ -213,24 +236,50 @@
   }
 
   // ---------- create / edit ----------
+  // People (for Assignees): the workspace members the extension already loaded,
+  // and who "me" is.
+  let people = null, me = null;
+  async function getPeople() {
+    if (people) return people;
+    // The workspace roster (cached ~1h, built in the background - no wait here).
+    const r = await send({ type: "CLICKUP_DEPT_DATA" }, 15000);
+    me = r && r.userId != null ? { id: String(r.userId), name: r.meName || "Me" } : null;
+    const ms = (r && r.ok && Array.isArray(r.members)) ? r.members : [];
+    if (!ms.length) { setTimeout(() => { people = null; }, 0); } // try again next time it's opened
+    people = ms.filter((m) => m && m.id != null).map((m) => ({ id: String(m.id), name: String(m.name || m.username || m.email || ("User " + m.id)), email: String(m.email || "") }));
+    if (me && !people.some((p) => p.id === me.id)) people.unshift({ id: me.id, name: me.name, email: "" });
+    return people;
+  }
+  // Open tasks to hang a subtask under (the cached open-task read; it also gives each task's List).
+  let parents = null;
+  async function getParents() {
+    if (parents) return parents;
+    const r = await send({ type: "CLICKUP_OPEN_TASKS" }, 45000);
+    const ts = (r && r.ok && r.data && Array.isArray(r.data.tasks)) ? r.data.tasks : [];
+    parents = ts.filter((t) => t && t.id && !t.parentId).map((t) => ({ id: String(t.id), name: String(t.name || ""), listId: (t.container && t.container.listId) || "", listName: (t.container && t.container.listName) || "", client: t.client || "" }));
+    return parents;
+  }
+  const dateLabel = (ms) => ms ? new Date(ms).toLocaleDateString([], { weekday: "short", month: "short", day: "numeric", year: "numeric" }) : "";
   let modal = null;
   function closeEditor() { if (modal) { modal.remove(); modal = null; } }
   function openEditor(d0, focus) {
     closeEditor();
-    const d = d0 ? { ...d0 } : { id: uid(), name: "", md: "", listId: "", listName: "", client: "", dueDateMs: 0, estimateMs: 0, priority: "", assignMe: true };
+    const d = d0 ? { ...d0 } : { id: uid(), name: "", md: "", listId: "", listName: "", client: "", dueDateMs: 0, startDateMs: 0, estimateMs: 0, priority: "", assignees: null, parentId: "", parentName: "", applyAt: 0 };
     modal = el("div", "lt-modal");
     const dlg = el("div", "lt-dlg");
     dlg.setAttribute("role", "dialog");
     dlg.innerHTML =
       "<h3>" + (d0 ? "Edit draft task" : "New task") + "</h3>" +
-      '<p class="hint">Kept only in this extension until you press <b>Apply to ClickUp</b> - then it\'s created in the List you pick, assigned to you, with this description, due date, estimate and priority.</p>' +
+      '<p class="hint">Kept only in this extension until you press <b>Apply to ClickUp</b> (or the time you set comes) - then it\'s created in ClickUp with these people, dates, estimate, priority and description.</p>' +
       '<label class="f">Task name<input type="text" data-k="name" maxlength="1000" placeholder="e.g. Fix the slow server response (TTFB)" /></label>' +
-      '<label class="f">List (where it goes in ClickUp)<select data-k="list"><option value="">Loading your Lists…</option></select></label>' +
-      '<label class="f" data-paste hidden>List link<input type="text" data-k="listurl" placeholder="Paste the List\'s link from ClickUp (…/li/901234…)" /></label>' +
-      '<div class="row3"><label class="f">Due date<input type="date" data-k="due" /></label>' +
-      '<label class="f">Estimate<input type="text" data-k="est" placeholder="e.g. 1h 30m" /></label>' +
-      '<label class="f">Priority<select data-k="prio">' + Object.keys(PRIOS).map((k) => '<option value="' + k + '">' + PRIOS[k] + "</option>").join("") + "</select></label></div>" +
-      '<label class="chk"><input type="checkbox" data-k="me" /> Assign it to me</label>' +
+      '<div class="f">Make it a subtask of <span class="opt">(optional)</span><div class="lt-pick" data-k="parentbox"><input type="text" data-k="parentq" placeholder="Search your open tasks…" autocomplete="off" /><div class="lt-sug" data-k="parentsug" hidden></div></div><div class="lt-chosen" data-k="parentchosen" hidden></div></div>' +
+      '<label class="f" data-k="listrow">List (where it goes in ClickUp)<select data-k="list"><option value="">Loading your Lists…</option></select></label>' +
+      '<div class="f">Assignees<div class="lt-people" data-k="people"><span data-k="chips"></span><input type="text" data-k="pq" placeholder="Type a name…" autocomplete="off" /></div><div class="lt-sug" data-k="psug" hidden></div></div>' +
+      '<div class="row3"><div class="f">Start date<button type="button" class="lt-date" data-k="start"></button></div>' +
+      '<div class="f">Due date<button type="button" class="lt-date" data-k="due"></button></div>' +
+      '<label class="f">Estimate<input type="text" data-k="est" placeholder="e.g. 1h 30m" /></label></div>' +
+      '<div class="row3"><label class="f">Priority<select data-k="prio">' + Object.keys(PRIOS).map((k) => '<option value="' + k + '">' + PRIOS[k] + "</option>").join("") + "</select></label>" +
+      '<div class="f" style="grid-column: span 2">Send to ClickUp <span class="opt">(optional - otherwise when you press Apply)</span><div class="lt-when"><button type="button" class="lt-date" data-k="applyday"></button><input type="time" data-k="applytime" /><button type="button" class="lt-x" data-k="applyclear" title="Don\'t schedule it">✕</button></div></div></div>' +
       '<div class="f" style="font-size:11px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:.04em">Description</div><div data-k="desc"></div>' +
       '<div class="err" data-err></div>' +
       '<div class="bar"><button type="button" class="lt-btn" data-cancel>Cancel</button><span class="sp"></span>' +
@@ -240,17 +289,93 @@
     const $ = (k) => dlg.querySelector('[data-k="' + k + '"]');
     const errEl = dlg.querySelector("[data-err]");
     $("name").value = d.name || "";
-    $("due").value = toDateInput(d.dueDateMs);
     $("est").value = fmt(d.estimateMs);
     $("prio").value = d.priority || "";
-    $("me").checked = d.assignMe !== false;
+
+    // Dates: the extension's own calendar (holidays, work-from-home days, how full each day is).
+    const dates = { start: Number(d.startDateMs) || 0, due: Number(d.dueDateMs) || 0, applyday: d.applyAt ? dayStart(d.applyAt) : 0 };
+    const paintDate = (k) => { const btn = $(k); const ms = dates[k]; btn.textContent = ms ? dateLabel(ms) : (k === "applyday" ? "Pick a day…" : "Pick a date…"); btn.classList.toggle("empty", !ms); };
+    for (const k of ["start", "due", "applyday"]) {
+      paintDate(k);
+      $(k).onclick = (e) => {
+        e.preventDefault();
+        const pick = (dayMs) => { dates[k] = dayMs ? new Date(new Date(dayMs).setHours(12, 0, 0, 0)).getTime() : 0; paintDate(k); };
+        if (window.PcmCalendar && typeof window.PcmCalendar.pick === "function") window.PcmCalendar.pick($(k), { value: dates[k], canClear: true, what: k === "start" ? "start date" : k === "due" ? "due date" : "day to send it", onPick: pick, onClose: () => {} });
+        else { const v = prompt("Date (YYYY-MM-DD)", dates[k] ? toDateInput(dates[k]) : ""); if (v !== null) pick(fromDateInput(v)); }
+      };
+    }
+    if (d.applyAt) { const t = new Date(d.applyAt); $("applytime").value = String(t.getHours()).padStart(2, "0") + ":" + String(t.getMinutes()).padStart(2, "0"); }
+    $("applyclear").onclick = () => { dates.applyday = 0; $("applytime").value = ""; paintDate("applyday"); };
+
+    // Assignees: chips + type-ahead over the workspace people. New drafts start with you.
+    let chosen = Array.isArray(d.assignees) ? d.assignees.slice() : null;
+    const chips = () => {
+      const box = $("chips"); box.textContent = "";
+      for (const p of chosen || []) {
+        const c = el("span", "lt-chip", p.name + (me && p.id === me.id ? " (you)" : ""));
+        const x = el("button", "", "✕"); x.type = "button"; x.title = "Remove " + p.name;
+        x.onclick = () => { chosen = chosen.filter((q) => q.id !== p.id); chips(); };
+        c.appendChild(x); box.appendChild(c);
+      }
+    };
+    getPeople().then(() => { if (!chosen) chosen = d.assignMe === false || !me ? [] : [me]; chips(); });
+    const pq = $("pq"), psug = $("psug");
+    const showPeople = () => {
+      const q = pq.value.trim().toLowerCase();
+      const have = new Set((chosen || []).map((p) => p.id));
+      const hits = (people || []).filter((p) => !have.has(p.id) && (!q || p.name.toLowerCase().includes(q) || p.email.toLowerCase().includes(q))).slice(0, 8);
+      psug.innerHTML = hits.length ? hits.map((p) => '<div class="lt-opt" data-id="' + esc(p.id) + '">' + esc(p.name) + (p.email ? ' <span class="m">' + esc(p.email) + "</span>" : "") + "</div>").join("") : '<div class="lt-none">' + (people && people.length ? "No one matches." : "The people list loads after the first ClickUp refresh.") + "</div>";
+      psug.hidden = false;
+    };
+    pq.onfocus = () => getPeople().then(showPeople);
+    pq.oninput = showPeople;
+    pq.onkeydown = (e) => { if (e.key === "Enter") { e.preventDefault(); const f = psug.querySelector(".lt-opt"); if (f) f.click(); } else if (e.key === "Backspace" && !pq.value && chosen && chosen.length) { chosen.pop(); chips(); } };
+    psug.onmousedown = (e) => {
+      const o = e.target.closest(".lt-opt"); if (!o) return;
+      e.preventDefault();
+      const p = (people || []).find((x) => x.id === o.dataset.id);
+      if (p) { chosen = (chosen || []).concat([p]); chips(); pq.value = ""; showPeople(); }
+    };
+    pq.onblur = () => setTimeout(() => { psug.hidden = true; }, 150);
+
+    // Subtask of: search the open tasks; the parent decides the List.
+    let parent = d.parentId ? { id: d.parentId, name: d.parentName || "", listId: d.listId, listName: d.listName } : null;
+    const sel = $("list");
+    const paintParent = () => {
+      const ch = $("parentchosen");
+      ch.hidden = !parent; $("parentbox").hidden = !!parent;
+      $("listrow").hidden = !!(parent && parent.listId); // the parent decides the List (asked only if unknown)
+      ch.textContent = "";
+      if (parent) {
+        ch.append(el("span", "", "↳ subtask of "), el("b", "", parent.name || ("task " + parent.id)), el("span", "m", parent.listName ? "  · in " + parent.listName : ""));
+        const x = el("button", "lt-x", "✕"); x.type = "button"; x.title = "Not a subtask"; x.onclick = () => { parent = null; paintParent(); };
+        ch.appendChild(x);
+      }
+    };
+    paintParent();
+    const parq = $("parentq"), parsug = $("parentsug");
+    const showParents = () => {
+      const q = parq.value.trim().toLowerCase();
+      if (!parents) { parsug.innerHTML = '<div class="lt-none">Loading your open tasks…</div>'; parsug.hidden = false; return; }
+      const hits = parents.filter((p) => !q || p.name.toLowerCase().includes(q) || p.client.toLowerCase().includes(q)).slice(0, 10);
+      parsug.innerHTML = hits.length ? hits.map((p) => '<div class="lt-opt" data-id="' + esc(p.id) + '">' + esc(p.name) + (p.client || p.listName ? ' <span class="m">' + esc(p.client || p.listName) + "</span>" : "") + "</div>").join("") : '<div class="lt-none">No open task matches.</div>';
+      parsug.hidden = false;
+    };
+    parq.onfocus = () => { showParents(); getParents().then(showParents); };
+    parq.oninput = showParents;
+    parsug.onmousedown = (e) => {
+      const o = e.target.closest(".lt-opt"); if (!o) return;
+      e.preventDefault();
+      const p = (parents || []).find((x) => x.id === o.dataset.id);
+      if (p) { parent = p; parq.value = ""; parsug.hidden = true; paintParent(); }
+    };
+    parq.onblur = () => setTimeout(() => { parsug.hidden = true; }, 150);
+
     const ed = window.PcmMd ? window.PcmMd.editor(d.md || "", { maxLength: 20000, placeholder: "What needs doing, links, steps… Paste from Claude / ChatGPT keeps its formatting." }) : null;
     if (ed) $("desc").replaceWith(ed); else { const ta = el("textarea"); ta.value = d.md || ""; ta.style.cssText = "min-height:120px;font:inherit"; ta.getMarkdown = () => ta.value; $("desc").replaceWith(ta); }
     const descEl = () => dlg.querySelector(".md-ed") || dlg.querySelector("textarea");
-    // List picker
-    const sel = $("list"), paste = dlg.querySelector("[data-paste]");
     const fillLists = (ls) => {
-      const opts = ['<option value="">' + (ls.length ? "Pick a List…" : listsErr ? "Couldn't read your Lists - paste a link below" : "No Lists found - paste a link below") + "</option>"];
+      const opts = ['<option value="">' + (ls.length ? "Pick a List…" : listsErr ? "Couldn't read your Lists" : "No Lists found") + "</option>"];
       let known = false;
       for (const l of ls) {
         if (String(l.id) === String(d.listId)) known = true;
@@ -258,13 +383,10 @@
         opts.push('<option value="' + esc(l.id) + '">' + esc(label) + "</option>");
       }
       if (d.listId && !known) opts.push('<option value="' + esc(d.listId) + '">' + esc(d.listName || "List " + d.listId) + "</option>");
-      opts.push('<option value="__paste">Another List - paste its link…</option>');
       sel.innerHTML = opts.join("");
       sel.value = d.listId ? String(d.listId) : "";
-      paste.hidden = sel.value !== "__paste";
     };
     getLists(false).then(fillLists);
-    sel.onchange = () => { paste.hidden = sel.value !== "__paste"; if (!paste.hidden) $("listurl").focus(); };
     const read = () => {
       errEl.textContent = "";
       dlg.querySelectorAll(".bad").forEach((x) => x.classList.remove("bad"));
@@ -272,26 +394,37 @@
       if (!name) { $("name").classList.add("bad"); errEl.textContent = "Give the task a name."; $("name").focus(); return null; }
       const est = parseDur($("est").value);
       if (est == null) { $("est").classList.add("bad"); errEl.textContent = "Estimate: try 45m, 1h 30m or 1.5 (hours)."; $("est").focus(); return null; }
+      if (dates.start && dates.due && dates.start > dates.due) { errEl.textContent = "The start date is after the due date."; return null; }
       let listId = sel.value, listName = "", client = "";
-      if (listId === "__paste") {
-        listId = listIdFrom($("listurl").value);
-        if ($("listurl").value.trim() && !listId) { $("listurl").classList.add("bad"); errEl.textContent = "That doesn't look like a ClickUp List link (it has /li/ and a number in it)."; return null; }
-        listName = listId ? "List " + listId : "";
-      } else if (listId) {
+      if (parent && parent.listId) { listId = parent.listId; listName = parent.listName || ""; client = parent.client || parent.listName || ""; }
+      else if (listId) {
         const l = (lists || []).find((x) => String(x.id) === listId);
         listName = l ? l.name : d.listName || "List " + listId;
         client = l ? (l.client || l.name) : d.client || "";
       }
+      let applyAt = 0;
+      if (dates.applyday) {
+        const [hh, mm] = ($("applytime").value || "09:00").split(":").map(Number);
+        applyAt = new Date(new Date(dates.applyday).setHours(hh || 0, mm || 0, 0, 0)).getTime();
+        if (applyAt <= Date.now()) { errEl.textContent = "The time to send it is already past - pick a later one, or clear it."; return null; }
+      }
       const de = descEl();
       return { ...d, name: name.slice(0, 1000), md: String(de && de.getMarkdown ? de.getMarkdown() : "").trim().slice(0, 20000), listId, listName, client,
-        dueDateMs: fromDateInput($("due").value), estimateMs: est, priority: $("prio").value, assignMe: $("me").checked, error: "",
+        dueDateMs: dates.due, startDateMs: dates.start, estimateMs: est, priority: $("prio").value,
+        assignees: (chosen || []).map((p) => ({ id: p.id, name: p.name })), assignMe: undefined,
+        parentId: parent ? parent.id : "", parentName: parent ? parent.name : "", applyAt, error: "",
         createdAt: d.createdAt || Date.now(), updatedAt: Date.now() };
     };
     dlg.querySelector("[data-cancel]").onclick = closeEditor;
-    dlg.querySelector("[data-save]").onclick = async () => { const v = read(); if (!v) return; await upsert(v); closeEditor(); };
+    dlg.querySelector("[data-save]").onclick = async () => {
+      const v = read(); if (!v) return;
+      if (v.applyAt && !v.listId) { sel.classList.add("bad"); errEl.textContent = "Pick the List it goes in, so it can be sent at that time."; return; }
+      await upsert(v); closeEditor();
+    };
     dlg.querySelector("[data-apply]").onclick = async () => {
       const v = read(); if (!v) return;
       if (!v.listId) { sel.classList.add("bad"); errEl.textContent = "Pick the List it goes in (or Save draft and choose later)."; return; }
+      v.applyAt = 0; // applied now
       await upsert(v);
       closeEditor();
       apply(v.id);
@@ -302,7 +435,7 @@
       if (e.key === "Escape") { e.preventDefault(); e.stopPropagation(); closeEditor(); }
       else if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) { e.preventDefault(); dlg.querySelector("[data-save]").click(); }
     });
-    setTimeout(() => { const f = focus === "due" ? $("due") : focus === "est" ? $("est") : $("name"); if (f) { f.focus(); if (f.select) try { f.select(); } catch (e) {} } }, 30);
+    setTimeout(() => { const f = focus === "due" ? $("due") : focus === "est" ? $("est") : $("name"); if (f) { f.focus(); if (f.select) try { f.select(); } catch (e) {} if (focus === "due") f.click(); } }, 30);
   }
 
   async function del(id) {
@@ -366,7 +499,10 @@
       "<span>Due <b>" + esc(d.dueDateMs ? new Date(d.dueDateMs).toLocaleDateString([], { weekday: "short", month: "short", day: "numeric" }) : "-") + "</b></span>" +
       "<span>Estimate <b>" + esc(fmt(d.estimateMs) || "-") + "</b></span>" +
       "<span>Priority <b>" + esc(PRIOS[d.priority || ""]) + "</b></span>" +
-      "<span>" + (d.assignMe !== false ? "Assigned to you" : "Unassigned") + "</span>";
+      "<span>" + esc(Array.isArray(d.assignees) ? (d.assignees.length ? "Assignees: " + d.assignees.map((a) => a.name).join(", ") : "Unassigned") : (d.assignMe !== false ? "Assigned to you" : "Unassigned")) + "</span>" +
+      (d.startDateMs ? "<span>Start <b>" + esc(new Date(d.startDateMs).toLocaleDateString([], { month: "short", day: "numeric" })) + "</b></span>" : "") +
+      (d.parentId ? "<span>Subtask of <b>" + esc(d.parentName || d.parentId) + "</b></span>" : "") +
+      (d.applyAt ? "<span>Sends to ClickUp <b>" + esc(new Date(d.applyAt).toLocaleString([], { weekday: "short", month: "short", day: "numeric", hour: "numeric", minute: "2-digit" })) + "</b></span>" : "");
     p.appendChild(meta);
     if (d.error) p.appendChild(el("div", "pcm-err", "ClickUp said: " + d.error));
     const dh = el("div", "pcm-sec-h", "Description");

@@ -8,6 +8,29 @@
   const MAX_TEXT = 200;
   const uid = () => Date.now().toString(36) + Math.random().toString(36).slice(2, 7);
   const el = (tag, cls, text) => { const e = document.createElement(tag); if (cls) e.className = cls; if (text != null) e.textContent = text; return e; };
+  // Admin: reminders sent to everyone (see renderList / teamPanel).
+  let teamAdmin = false, teamIds = new Set();
+  function teamPanel(row, r, onTeam) {
+    const old = row.querySelector(".rm-teampanel");
+    if (old) { old.remove(); return; }
+    const p = el("div", "rm-teampanel");
+    p.innerHTML = '<div>Everyone\'s extension gets “<b></b>” at this time and repeat, within a few minutes. People who already have it get it updated.</div>' +
+      '<label><input type="checkbox" class="rm-tforce" /> Also for people who changed or deleted it themselves</label>' +
+      '<div class="rm-tbtns"><button type="button" class="rm-tsend pri">Send to everyone</button>' + (onTeam ? '<button type="button" class="rm-tstop">Stop for everyone</button>' : "") + '<button type="button" class="rm-tcancel">Cancel</button><span class="rm-tmsg"></span></div>';
+    p.querySelector("b").textContent = r.text;
+    const msg = p.querySelector(".rm-tmsg");
+    const go = async (remove) => {
+      if (remove && !confirm("Remove “" + r.text + "” from everyone's reminders?")) return;
+      msg.textContent = "Sending…";
+      const res = await new Promise((ok) => { try { chrome.runtime.sendMessage({ type: "ADMIN_TEAM_REMINDER", rem: r, remove: !!remove, force: p.querySelector(".rm-tforce").checked }, (x) => { void chrome.runtime.lastError; ok(x); }); } catch (e) { ok(null); } });
+      msg.textContent = res && res.ok ? (remove ? "Stopped for everyone ✓" : "Sent ✓ - everyone has it within a few minutes.") : "Couldn't send: " + ((res && res.error) || "no reply");
+      if (res && res.ok) { teamIds = new Set((res.team || []).filter((x) => !x.removed).map((x) => x.id)); setTimeout(() => p.remove(), 2500); }
+    };
+    p.querySelector(".rm-tsend").onclick = () => go(false);
+    const stop = p.querySelector(".rm-tstop"); if (stop) stop.onclick = () => go(true);
+    p.querySelector(".rm-tcancel").onclick = () => p.remove();
+    row.appendChild(p);
+  }
   // "default-cups" was a withdrawn office reminder (background removes it on update).
   const getAll = async () => { try { const g = await chrome.storage.local.get("reminders"); return Array.isArray(g.reminders) ? g.reminders.filter((r) => !(r && r.id === "default-cups")) : []; } catch (e) { return []; } };
   const setAll = async (list) => { await chrome.storage.local.set({ reminders: list }); };
@@ -130,6 +153,13 @@
     .rm-form.over { outline: 2px dashed var(--indigo); outline-offset: 4px; border-radius: 6px; }
     .rm-item.focus { background: rgba(99,102,241,.1); border-radius: 8px; }
     .rm-item .rm-acts { flex: none; display: flex; gap: 6px; flex-wrap: wrap; justify-content: flex-end; }
+    .rm-item { flex-wrap: wrap; }
+    .rm-team { margin-left: 6px; font-size: 10.5px; font-weight: 700; color: var(--indigo, #6366f1); }
+    .rm-teampanel { flex-basis: 100%; margin-top: 8px; padding: 10px 12px; border: 1px solid var(--indigo, #6366f1); border-radius: 8px; background: rgba(99,102,241,.07); font-size: 12px; display: grid; gap: 6px; }
+    .rm-teampanel label { display: flex; gap: 6px; align-items: center; }
+    .rm-tbtns { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
+    .rm-tbtns button.pri { background: var(--indigo, #6366f1); color: #fff; border-color: var(--indigo, #6366f1); }
+    .rm-tmsg { color: var(--muted); }
     .rm-item.paused .rm-t div:first-child { opacity: .55; }
     .rm-item .rm-sub .rm-paused { color: var(--amber, #d97706); font-weight: 600; }
     .rm-item .rm-files { margin-top: 5px; }
@@ -363,6 +393,10 @@
         h.appendChild(clr);
       }
       box.appendChild(h);
+      // The rows themselves: a long list (first 10, Show all, search) - long-list.js.
+      const listEl = el("div");
+      listEl.dataset.long = "rem-" + (isPast ? "past" : "up");
+      box.appendChild(listEl);
       if (!rows.length) { box.appendChild(el("div", "rm-empty", isPast ? "Nothing yet." : "No reminders yet. Save one above (or with ⏰ next to the bell) and it shows here with Duplicate and Delete buttons.")); return; }
       for (const r of rows) {
         const it = el("div", "rm-item" + (isPast ? " past" : ""));
@@ -389,7 +423,7 @@
           }
           t.appendChild(fb);
         }
-        if (r.id === focusId) { it.classList.add("focus"); setTimeout(() => it.scrollIntoView({ block: "center" }), 50); }
+        if (r.id === focusId) { it.classList.add("focus"); setTimeout(() => { it.classList.remove("pl-hide"); it.scrollIntoView({ block: "center" }); }, 50); }
         // Duplicate: the same reminder in the quick-add card, ready to tweak and save.
         // A time that has passed moves to the same time on the next day to come.
         const dup = el("button", "", "Duplicate"); dup.type = "button";
@@ -433,10 +467,27 @@
         const acts = el("div", "rm-acts");
         if (!isPast) acts.append(edit, pause);
         acts.append(dup, del);
+        // Admin only (Options with Admin on and the GitHub token saved): send this
+        // repeating reminder to everyone's extension, or stop it for everyone.
+        if (teamAdmin && !isPast && r.repeat && r.repeat !== "none") {
+          const onTeam = teamIds.has(r.id);
+          if (onTeam) { const b = el("span", "rm-team", "📣 everyone"); b.title = "Sent to everyone's extension"; sub.appendChild(b); }
+          const tb = el("button", "", "📣 For everyone"); tb.type = "button";
+          tb.title = "Send this reminder (text, time, repeat) to everyone's extension, or stop it for everyone";
+          tb.onclick = (e) => { e.stopPropagation(); teamPanel(it, r, onTeam); };
+          acts.append(tb);
+        }
         it.append(t, acts);
-        box.appendChild(it);
+        listEl.appendChild(it);
       }
     };
+    // Who's the admin here, and which reminders are already sent to everyone.
+    try {
+      const g = await chrome.storage.local.get(["settings", "adminEnc", "updatePolicy"]);
+      teamAdmin = !!(document.body && document.querySelector('.panel[data-panel="admin"]') && g.settings && g.settings.showAdmin && g.adminEnc);
+      const tl = g.updatePolicy && g.updatePolicy.policy && Array.isArray(g.updatePolicy.policy.teamReminders) ? g.updatePolicy.policy.teamReminders : [];
+      teamIds = new Set(tl.filter((x) => x && !x.removed).map((x) => String(x.id)));
+    } catch (e) { teamAdmin = false; }
     section("Upcoming", up, false);
     section("Past", past, true);
     listBox.appendChild(box);

@@ -26,7 +26,7 @@ const POSTS_PER_HOUR = 30; // per install (slow mode can tighten it)
 const ALL_CALLS_PER_MIN = 240; // whole hub, a safety valve
 
 const SHEETS = {
-  Users: ["install", "cuUserId", "name", "avatar", "color", "initials", "version", "firstSeen", "lastSeen", "status", "mutedUntil"],
+  Users: ["install", "cuUserId", "name", "avatar", "color", "initials", "version", "firstSeen", "lastSeen", "status", "mutedUntil", "role"],
   Threads: ["id", "title", "status", "pinned", "locked", "fixedIn", "byInstall", "byName", "byAvatar", "createdAt", "lastAt", "lastRole", "count", "metoo", "deleted"],
   Messages: ["id", "threadId", "install", "name", "avatar", "color", "initials", "role", "text", "at", "editedAt", "files", "diag", "deleted", "reactions", "replyTo"],
   // Announcements from the admin (maintenance break, sudden holiday...), shown to everyone until "until".
@@ -113,8 +113,18 @@ function doPost(e) {
   try { q = JSON.parse(e.postData.contents); } catch (err) { return out({ ok: false, error: "bad request" }); }
   try {
     if (!flowOk()) return out({ ok: false, error: "The hub is busy - try again in a minute." });
-    const admin = q.key && String(q.key) === adminKey();
-    if (q.key && !admin) return out({ ok: false, error: "wrong admin key" });
+    // Two kinds of admin. The OWNER holds the admin key (whoever set the hub
+    // up); nobody can take that away. Other people can be made admins by the
+    // owner (Users "role" = "admin"): they get the admin tools through their
+    // own install id, but only the owner can change roles, and they can't
+    // mute / ban / remove the owner or another admin.
+    const owner = !!(q.key && String(q.key) === adminKey());
+    if (q.key && !owner) return out({ ok: false, error: "wrong admin key" });
+    const me = cleanInstall(q);
+    if (owner && me && setting("OWNER_INSTALL", "") !== me) props().setProperty("OWNER_INSTALL", me);
+    const meRow = !owner && me ? findUser(me) : null;
+    const admin = owner || !!(meRow && meRow.role === "admin" && userState(meRow) === "ok");
+    q._owner = owner;
     const lock = LockService.getScriptLock();
     lock.waitLock(20000);
     try {
@@ -132,7 +142,7 @@ function doPost(e) {
       }
       if (!admin) return out({ ok: false, error: "admin only" });
       switch (q.action) {
-        case "users": return out(users());
+        case "users": { const r = users(); r.youOwner = !!q._owner; return out(r); }
         case "mod": return out(mod(q));
         case "settings": return out(saveSettings(q));
         case "notice": return out(notice(q));
@@ -176,13 +186,14 @@ function hello(q) {
   u.version = String(q.version || u.version || "").slice(0, 20);
   u.lastSeen = t;
   writeRow("Users", u);
-  return { ok: true, state: userState(u), mutedUntil: Number(u.mutedUntil) || 0, settings: pub() };
+  return { ok: true, state: userState(u), mutedUntil: Number(u.mutedUntil) || 0, settings: pub(), role: install === setting("OWNER_INSTALL", "") ? "owner" : (u.role === "admin" ? "admin" : "user") };
 }
 function users() {
   const t = now();
   const list = readAll("Users").map((u) => ({
     install: String(u.install), cuUserId: String(u.cuUserId), name: String(u.name), avatar: String(u.avatar), color: String(u.color), initials: String(u.initials),
     version: String(u.version), firstSeen: Number(u.firstSeen) || 0, lastSeen: Number(u.lastSeen) || 0, state: userState(u), mutedUntil: Number(u.mutedUntil) || 0,
+    role: String(u.install) === setting("OWNER_INSTALL", "") ? "owner" : (u.role === "admin" ? "admin" : "user"),
   })).sort((a, b) => b.lastSeen - a.lastSeen);
   const day = 86400000;
   return { ok: true, users: list, total: list.length, activeToday: list.filter((u) => t - u.lastSeen < day).length, activeWeek: list.filter((u) => t - u.lastSeen < 7 * day).length, settings: pub() };
@@ -359,6 +370,9 @@ function bumpCount(threadId) {
 // ---------- admin ----------
 function mod(q) {
   const op = String(q.op || "");
+  // The person acted on. "install" is always the CALLER's own id (the extension
+  // adds it to every call), so the target travels as "target".
+  const target = String(q.target || "").replace(/[^a-z0-9]/gi, "").slice(0, 40);
   if (["editMsg", "deleteMsg"].indexOf(op) >= 0) {
     const m = readAll("Messages").find((x) => String(x.id) === String(q.id) && !x.deleted);
     if (!m) return { ok: false, error: "message not found" };
@@ -371,14 +385,29 @@ function mod(q) {
   // rows and shows up twice in the admin panel; this is how the admin clears the
   // leftovers. Nothing on that computer changes, and the row comes back on its
   // next check-in - hello() recreates it.
+  // Roles: the owner only. The owner's own row can't be changed.
+  const ownerInstall = setting("OWNER_INSTALL", "");
+  if (op === "role") {
+    if (!q._owner) return { ok: false, error: "Only the hub's owner can make someone an admin." };
+    if (target === ownerInstall) return { ok: false, error: "That's you - the owner stays an admin." };
+    const u = findUser(target);
+    if (!u) return { ok: false, error: "user not found" };
+    u.role = q.role === "admin" ? "admin" : "";
+    writeRow("Users", u);
+    return { ok: true };
+  }
+  if (["forget", "mute", "unmute", "ban", "unban"].indexOf(op) >= 0 && !q._owner) {
+    const t = findUser(target);
+    if (target === ownerInstall || (t && t.role === "admin")) return { ok: false, error: "Only the owner can do that to an admin." };
+  }
   if (op === "forget") {
-    const u = findUser(String(q.install || ""));
+    const u = findUser(target);
     if (!u) return { ok: true, gone: true }; // already off the list: nothing to do
     deleteRow("Users", u);
     return { ok: true };
   }
   if (["mute", "unmute", "ban", "unban"].indexOf(op) >= 0) {
-    const u = findUser(String(q.install || ""));
+    const u = findUser(target);
     if (!u) return { ok: false, error: "user not found" };
     if (op === "mute") u.mutedUntil = now() + Math.max(1, Math.min(24 * 30, Number(q.hours) || 24)) * 3600000;
     if (op === "unmute") u.mutedUntil = 0;

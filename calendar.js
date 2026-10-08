@@ -134,6 +134,8 @@
   const isWfh = (ts) => eventsOn(ts).some((e) => e.kind === "wfh");
   const fmtShort = (ts) => new Date(ts).toLocaleDateString(undefined, { month: "short", day: "numeric" });
   const icon = (kind) => kind === "holiday" ? "\uD83C\uDF89" : kind === "wfh" ? "\uD83C\uDFE0" : "\uD83D\uDCCC";
+  // An event's time ("2:00 PM") after its title.
+  const evTime = (e) => { if (!e || !e.time) return ""; const [h, m] = e.time.split(":").map(Number); return " \u00b7 " + new Date(2000, 0, 1, h, m).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" }); };
   // Today's status or the next thing starting within two weeks, for the chip.
   function headsUp(now) {
     const today = eventsOn(now);
@@ -141,7 +143,7 @@
     if (hol) return icon("holiday") + " " + hol.title;
     const wfh = today.find((e) => e.kind === "wfh");
     const soon = company.filter((e) => e.from > ymd(now) && parseYmd(e.from) - now < 14 * 86400000).sort((a, b) => a.from.localeCompare(b.from))[0];
-    if (soon && (!wfh || soon.kind === "holiday")) return (wfh ? icon("wfh") + " WFH \u00b7 " : "") + icon(soon.kind) + " " + soon.title + " from " + fmtShort(parseYmd(soon.from));
+    if (soon && (!wfh || soon.kind === "holiday")) return (wfh ? icon("wfh") + " WFH \u00b7 " : "") + icon(soon.kind) + " " + soon.title + (soon.kind === "event" ? " " + fmtShort(parseYmd(soon.from)) + evTime(soon) : " from " + fmtShort(parseYmd(soon.from)));
     if (wfh) return icon("wfh") + " Work from home" + (wfh.to ? " until " + fmtShort(parseYmd(wfh.to)) : "");
     return "";
   }
@@ -192,7 +194,7 @@
     .pcal-chip .bs { color: var(--muted); font-weight: 500; }
     .pcal-chip .ev { color: var(--indigo, #6366f1); font-weight: 600; }
     .pcal-line { margin: 0 0 8px; }
-    .pcal-pop { position: fixed; z-index: 3000; width: min(380px, calc(100vw - 16px)); background: var(--card); color: var(--text); border: 1px solid var(--border); border-radius: 12px; box-shadow: 0 16px 36px rgba(0,0,0,.3); padding: 12px; font-size: 12.5px; }
+    .pcal-pop { position: fixed; z-index: 2147483000; width: min(380px, calc(100vw - 16px)); background: var(--card); color: var(--text); border: 1px solid var(--border); border-radius: 12px; box-shadow: 0 16px 36px rgba(0,0,0,.3); padding: 12px; font-size: 12.5px; }
     .pcal-head { display: flex; align-items: center; gap: 6px; margin-bottom: 8px; }
     .pcal-head .t { flex: 1; text-align: center; }
     .pcal-head .t b { display: block; font-size: 13.5px; }
@@ -305,14 +307,14 @@
       const quick = (lab, ts, tip) => { const b = el("button", "", lab); b.type = "button"; b.title = tip; b.onclick = (e) => { e.stopPropagation(); choose(ts); }; return b; };
       const t0 = new Date(); t0.setHours(0, 0, 0, 0);
       const t1 = new Date(t0); t1.setDate(t1.getDate() + 1);
-      go.append(quick("Today", t0.getTime(), "Set the due date to today"), quick("Tomorrow", t1.getTime(), "Set the due date to tomorrow"));
+      go.append(quick("Today", t0.getTime(), "Set the " + picker.what + " to today"), quick("Tomorrow", t1.getTime(), "Set the " + picker.what + " to tomorrow"));
       if (picker.canClear) {
-        const c = el("button", "", "No due date"); c.type = "button";
-        c.title = "Take the due date off this task";
+        const c = el("button", "", "No " + picker.what); c.type = "button";
+        c.title = "Take the " + picker.what + " off";
         c.onclick = (e) => { e.stopPropagation(); choose(null); };
         go.appendChild(c);
       }
-      const now = el("span", "", picker.sel ? "now " + fmtShort(parseYmd(picker.sel)) : "no due date yet");
+      const now = el("span", "", picker.sel ? "now " + fmtShort(parseYmd(picker.sel)) : "no " + picker.what + " yet");
       now.style.cssText = "margin-left:auto;color:var(--muted);font-size:11.5px;white-space:nowrap";
       go.appendChild(now);
     } else {
@@ -352,9 +354,9 @@
       const rms = remindersOn(ts);
       if (rms.length) { const rm = el("span", "rm", "\u23F0" + (rms.length > 1 ? rms.length : "")); b.appendChild(rm); }
       b.title = d.toLocaleDateString(undefined, { weekday: "long", month: "long", day: "numeric" }) + (bs ? " \u00b7 " + BS_NAMES[bs.m - 1] + " " + bs.d + ", " + bs.y : "") +
-        (evs.length ? "\n" + evs.map((e) => icon(e.kind) + " " + e.title).join("\n") : "") + (c && c.n ? "\n" + c.n + " task" + (c.n === 1 ? "" : "s") + " due" : "") +
+        (evs.length ? "\n" + evs.map((e) => icon(e.kind) + " " + e.title + evTime(e) + (e.note ? " - " + e.note : "")).join("\n") : "") + (c && c.n ? "\n" + c.n + " task" + (c.n === 1 ? "" : "s") + " due" : "") +
         (rms.length ? "\n" + rms.map((r) => "\u23F0 " + r.time + "  " + r.text).join("\n") : "") +
-        (picker ? (picker.sel === k ? "\nThe due date now" : "\nClick to make this the due date") : "\nClick to list this day's tasks");
+        (picker ? (picker.sel === k ? "\nThe " + picker.what + " now" : "\nClick to make this the " + picker.what) : "\nClick to list this day's tasks");
       b.onclick = picker
         ? (e) => { e.stopPropagation(); choose(ts); }
         : (e) => { e.stopPropagation(); close(); if (typeof window.pcmPickDay === "function") window.pcmPickDay(ts); };
@@ -372,7 +374,8 @@
       for (const e of list) {
         const row = el("button"); row.type = "button";
         row.title = "Show where it starts (" + fmtShort(parseYmd(e.from)) + ")";
-        row.append(icon(e.kind) + " " + e.title);
+        row.append(icon(e.kind) + " " + e.title + evTime(e));
+        if (e.note) row.title = e.note + "\n" + row.title;
         row.appendChild(el("small", "", fmtShort(parseYmd(e.from)) + (e.to && e.to !== e.from ? " \u2013 " + fmtShort(parseYmd(e.to)) : "")));
         row.onclick = (ev2) => { ev2.stopPropagation(); goTo(e.from); };
         ev.appendChild(row);
@@ -380,7 +383,7 @@
       pop.appendChild(ev);
     }
     pop.appendChild(el("div", "pcal-hint", picker
-      ? "Click a day to make it the due date. Red = holiday, blue = work from home, the number on a day is how many tasks are already due then. Esc keeps the date it has."
+      ? "Click a day to make it the " + picker.what + ". Red = holiday, blue = work from home, the number on a day is how many tasks are already due then. Esc keeps the date it has."
       : "Task counts come from the weeks the extension has loaded (this week, next week and your filter)."));
   }
   // Show the month of a date and point at that day.
@@ -425,11 +428,11 @@
   // The same calendar, used to SET a date instead of browsing it: the holidays,
   // the work-from-home days and how many tasks are already due on a day are all
   // in front of you, so a due date isn't a guess.
-  // opts: { value: ms (the date it has now), canClear, onPick(dayMs|null), onClose() }
+  // opts: { value: ms (the date it has now), canClear, onPick(dayMs|null), onClose(), what ("due date" unless said: "start date"…) }
   function pickDate(anchor, opts) {
     close(); // whatever was open is a cancel, and its onClose runs before ours is set
     const o = opts || {};
-    picker = { sel: o.value ? ymd(o.value) : "", canClear: !!o.canClear, anchor, onPick: o.onPick, onClose: o.onClose };
+    picker = { sel: o.value ? ymd(o.value) : "", canClear: !!o.canClear, what: String(o.what || "due date"), anchor, onPick: o.onPick, onClose: o.onClose };
     openAt(anchor, o.value || Date.now());
   }
 
