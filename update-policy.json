@@ -4,17 +4,29 @@
   "autoInstallAfterHours": 0,
   "important": false,
   "holdUntil": 0,
-  "notifyNonce": "muzft3cb",
-  "notifiedAllAt": 1791457947947,
+  "notifyNonce": "muzs6jy7",
+  "notifiedAllAt": 1791478731391,
   "sitesAt": 1790937886566,
-  "updatedAt": 1791457947947,
-  "latest": "4.1.2",
-  "zip": "https://github.com/Dipson-bot/personal-clickup-manager/releases/download/v4.1.2/personal-clickup-manager-v4.1.2.zip",
-  "url": "https://github.com/Dipson-bot/personal-clickup-manager/releases/tag/v4.1.2",
+  "updatedAt": 1791478731391,
+  "latest": "4.1.3",
+  "zip": "https://github.com/Dipson-bot/personal-clickup-manager/releases/download/v4.1.3/personal-clickup-manager-v4.1.3.zip",
+  "url": "https://github.com/Dipson-bot/personal-clickup-manager/releases/tag/v4.1.3",
   "hubUrl": "https://script.google.com/macros/s/AKfycbzdP7lz2TPLULw1-Om4zgzOLghUT5_YLrYWcCatIrPmY82gKmxR5w4PcUJPb920ebNW3Q/exec",
   "quietFor": "",
   "preview": null,
   "calendar": [
+    {
+      "from": "2026-10-09",
+      "to": "2026-10-09",
+      "kind": "event",
+      "title": "Dashain Program",
+      "time": "14:00",
+      "remind": [
+        15,
+        0
+      ],
+      "id": "ev-dashain-program-2026"
+    },
     {
       "from": "2026-10-12",
       "to": "2026-11-13",
