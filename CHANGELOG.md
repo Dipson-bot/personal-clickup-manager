@@ -1,6 +1,8 @@
 # Changelog
 
 ## v4.1.6
+- Fixed: the client work report left out real client work - tasks with "internal" in the name ("Fix internal links…", "Internal Linking Audit") and tasks starting with Re-inspect, Re-check, Monitor, Hold or Wait. The extension no longer decides what is in-house: every ticked task is in, and you leave tasks out with the tick boxes in the list.
+- Fixed: report lines could change what a task did ("Removed itemReviewed" for an Add task, "Replaced" for Compress, an invented widget change for a Review task). A line must keep the task's own action; otherwise the AI is asked again and then the task's own words are used. The task's department from ClickUp now decides On-page / Off-page / Technical (a technical task no longer lands under Off-page), and the report says which lines have no link or screenshot yet.
 - New: Cancel while an export is running (reading tasks from ClickUp, writing the report, creating the Google file) - it stops at once and nothing is saved or created.
 - Fixed: with automatic updates on, an update waiting for Chrome's one click could still bring a second notice ("couldn't install automatically - set it up again") whose button opened the update page in another tab. It now stays one tab and one notice until you click, and an update tab is never reopened with your pages after the restart.
 - New: you're asked before completing a task that has nothing to show for it yet - no filled Description: "…" or File: "…" in its description and no comment. Complete anyway, or go back and add one. Works from every Complete / Done button (dashboard, popup, side panel, the floating timer and the taskbar timer); never for the Extra Task. Turn it off in ClickUp setup › "Ask before completing a task with nothing to show for it".
