@@ -2329,7 +2329,7 @@ function cuRowNotice(m, onDismiss) {
 // Fire a per-task Start/Stop/Complete action from the options page, then repaint.
 // 20s timeout (the background does the ClickUp write THEN a today+tasks refresh
 // before replying). Errors surface inline on the row via cuRowMsgOpt.
-async function sendTaskActionOpt(taskId, action, force, held) {
+async function sendTaskActionOpt(taskId, action, force, held, evidence) {
   const tid = String(taskId);
   if (cuRowBusyOpt.has(tid)) return;
   cuRowBusyOpt.add(tid);
@@ -2340,9 +2340,15 @@ async function sendTaskActionOpt(taskId, action, force, held) {
   setTimeout(() => { if (cuRowBusyOpt.has(tid)) repaintCuTaskRows(); }, 6500); // switch to "ClickUp is slow"
   const typeMap = { start: "CLICKUP_TASK_START", stop: "CLICKUP_TASK_STOP", complete: "CLICKUP_TASK_COMPLETE" };
   try {
-    const res = await send({ type: typeMap[action], taskId: tid, force: !!force, ...(held ? { held } : {}) }, 20000);
+    const res = await send({ type: typeMap[action], taskId: tid, force: !!force, ...(held ? { held } : {}), ...(evidence ? { evidence } : {}) }, 20000);
     cuRowBusyOpt.delete(tid);
     if (!res || res.ok === false) {
+      if (res && res.reason === "no-evidence") {
+        const name = res.taskName;
+        if (confirm("\u201c" + (name || "This task") + "\u201d has nothing to show for it yet: no Description: \"\u2026\", no File: \"\u2026\" and no comment.\n\nOK = complete it anyway. Cancel = go back and add one.")) sendTaskActionOpt(tid, "complete", false, held, "skip");
+        else repaintCuTaskRows();
+        return;
+      }
       if (res && res.reason === "held-comment") {
         // A comment is waiting to be posted when this task is completed: ask.
         // Its row isn't on screen (e.g. Complete in the Tracking now bar): ask here.
@@ -2514,6 +2520,7 @@ function renderClickupSettings(cu) {
   $("cuAwayMin").value = cu.awayMin != null ? String(cu.awayMin) : "15";
   $("cuWrapUp").checked = cu.wrapUp !== false;
   if ($("cuExtraAutoClose")) $("cuExtraAutoClose").checked = cu.extraAutoClose !== false;
+  if ($("cuWarnEmpty")) $("cuWarnEmpty").checked = cu.warnEmptyComplete !== false;
   $("cuWrapUpTime").value = cu.wrapUpTime || "16:45";
   $("cuTidyNotify").checked = cu.tidyNotify !== false;
   $("cuTidyTime").value = cu.tidyTime || "14:00";
@@ -5524,6 +5531,7 @@ $("cuSave").onclick = async () => {
         clickupAwayMin: awayMin,
         clickupWrapUp: $("cuWrapUp").checked,
         clickupExtraAutoClose: $("cuExtraAutoClose") ? $("cuExtraAutoClose").checked : true,
+        clickupWarnEmptyComplete: $("cuWarnEmpty") ? $("cuWarnEmpty").checked : true,
         clickupWrapUpTime: wrapUpTime,
         clickupTidyNotify: $("cuTidyNotify").checked,
         clickupTidyTime: tidyTime,
@@ -8748,7 +8756,7 @@ if ($("admCalCard")) {
 // Where the timer shows (Floating window / Taskbar / Both / Neither) is picked once
 // and kept; the Dashboard card invites people to try the taskbar until they pick.
 const DESK_REL = "https://github.com/Dipson-bot/personal-clickup-manager/releases";
-const DESK_TAG = "desktop-v0.3.0";
+const DESK_TAG = "desktop-v0.3.1";
 let deskOs = "";
 async function deskPlatform() {
   if (deskOs) return deskOs;

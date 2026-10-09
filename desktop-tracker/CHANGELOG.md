@@ -1,5 +1,8 @@
 # ClickUp Tracker changelog
 
+## 0.3.1
+- ✓ Done asks first when the task has nothing to show for it yet (no Description: "…", no File: "…" and no comment) - Complete anyway or Cancel. Follows the extension's setting.
+
 ## 0.3.0
 - The strip shows the task's time against its estimate AND today's total against your daily target, in the look you pick in the extension (General › Floating tracker › Strip style): batteries (default), Task | Today halves, two thin bars, two rings or edge lines - gently animated unless you switch that off. Its colour goes from light blue to green as you reach the estimate and to red past it, and the face moves with its mood.
 - Point at the strip: a card opens just above it (below it if there's no room) with the task name, client and due date, and buttons - ⇄ Extra Task, Stop, Done; ↩ Back to task while on the Extra Task; Start Extra Task / Resume last / next tasks when no timer runs.

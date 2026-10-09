@@ -1557,6 +1557,7 @@ const DEFAULT_SETTINGS = {
   clickupWrapUp: true,
   // ---- Close the weekly Extra Task (see maybeCloseExtraTask) ----
   clickupExtraAutoClose: true,
+  clickupWarnEmptyComplete: true,
   // ---- Daily "needs tidying" reminder ----
   // One short, actionable summary a day of what the Insights tab flags:
   // overdue, no estimate, no due date, blocked - plus a "dependency resolved,
@@ -2584,8 +2585,8 @@ async function deskLink(force) {
   if (!force && place !== "taskbar" && place !== "both" && !da.seenAt && !da.wanted) return null;
   const show = place === "taskbar" || place === "both";
   let r = null;
-  const style = ["B", "L", "F", "H", "J"].includes(s.stripStyle) ? s.stripStyle : "B", anim = s.stripAnim !== false;
-  try { r = await deskPost({ show, style, anim, ext: chrome.runtime.id }); } catch (e) { r = null; }
+  const style = ["B", "L", "F", "H", "J"].includes(s.stripStyle) ? s.stripStyle : "B", anim = s.stripAnim !== false, warnEmpty = s.clickupWarnEmptyComplete !== false;
+  try { r = await deskPost({ show, style, anim, warnEmpty, ext: chrome.runtime.id }); } catch (e) { r = null; }
   if (!r || r.app !== "clickup-tracker") {
     const out = { ...da, running: false, checkedAt: Date.now() };
     await chrome.storage.local.set({ deskApp: out });
@@ -2593,7 +2594,7 @@ async function deskLink(force) {
   }
   if (!r.signedIn) {
     const cfg = await getClickupConfig().catch(() => null);
-    if (cfg && cfg.token) { try { r = (await deskPost({ show, style, anim, ext: chrome.runtime.id, token: cfg.token, teamId: cfg.teamId || "" })) || r; } catch (e) {} }
+    if (cfg && cfg.token) { try { r = (await deskPost({ show, style, anim, warnEmpty, ext: chrome.runtime.id, token: cfg.token, teamId: cfg.teamId || "" })) || r; } catch (e) {} }
   }
   const out = { ...da, running: true, seenAt: Date.now(), checkedAt: Date.now(), version: String(r.version || ""), signedIn: !!r.signedIn, user: String(r.user || ""), shown: r.shown !== false };
   await chrome.storage.local.set({ deskApp: out });
@@ -2918,6 +2919,7 @@ async function clickupPublic() {
     awayMin: Number(settings.clickupAwayMin) || 15,
     wrapUp: settings.clickupWrapUp !== false,
     extraAutoClose: settings.clickupExtraAutoClose !== false,
+    warnEmptyComplete: settings.clickupWarnEmptyComplete !== false,
     wrapUpTime: settings.clickupWrapUpTime || "16:45",
     // Daily "needs tidying" reminder (see maybeTidyNotify / lib-tidy.js).
     tidyNotify: settings.clickupTidyNotify !== false,
@@ -6176,7 +6178,8 @@ async function maybeAutoUpdate() {
   let tabs = [];
   try {
     const ctx = await chrome.runtime.getContexts({ contextTypes: ["TAB"] });
-    tabs = ctx.map((c) => c.documentUrl).filter((u) => u && String(u).startsWith(chrome.runtime.getURL("")));
+    // Not an update tab itself: after the restart it would only ask again.
+    tabs = ctx.map((c) => c.documentUrl).filter((u) => u && String(u).startsWith(chrome.runtime.getURL("")) && !/\/auto-update\.html/.test(String(u)));
   } catch (e) {}
   st.lastTry = now;
   await ensureOffscreenDocument();
@@ -6196,8 +6199,13 @@ async function maybeAutoUpdate() {
   // a fresh tab in front every 30 minutes is what made it "keep coming back".)
   const openTabs = await chrome.tabs.query({ url: chrome.runtime.getURL("auto-update.html") + "*" }).catch(() => []);
   const waitingForClick = /^(needs-click|permission)$/.test(String(st.reason || ""));
-  if (!(r && r.ok) && (openTabs.length || waitingForClick)) trace.push("update tab: not opened again (" + (openTabs.length ? "one is already open" : "waiting for your click") + ")");
-  else if (!(r && r.ok) && !(r && /^(no-update|no-folder)$/.test(r.reason || ""))) {
+  if (!(r && r.ok) && (openTabs.length || waitingForClick)) {
+    trace.push("update tab: not opened again (" + (openTabs.length ? "one is already open" : "waiting for your click") + ")");
+    // Still waiting for the same click: keep saying so, quietly. (Recording the
+    // hidden page's "permission" here fired a second notice - "set up again" -
+    // whose button opened the update page in yet another tab.)
+    r = { ok: false, reason: waitingForClick ? st.reason : "needs-click" };
+  } else if (!(r && r.ok) && !(r && /^(no-update|no-folder)$/.test(r.reason || ""))) {
     const t = await installViaTab();
     if (t) {
       trace.push((t.woke ? "tab (brought to the front): " : "background tab: ") + (t.ok ? "installed" : t.reason + (t.error ? " (" + String(t.error).slice(0, 80) + ")" : "")));
@@ -6320,6 +6328,24 @@ async function installViaTab() {
     }
   }
   return { ok: !!r.ok, version: r.version, reason: r.reason || "", error: r.error || "", woke };
+}
+
+// A task about to be completed with nothing to show for it: no filled
+// Description: "..." or File: "..." in its description, and no comment. Returns
+// { name } then, else null - also null when it can't be checked (a failed read
+// never stops a task being completed) and for the recurring Extra Task.
+const EVIDENCE_FIELD = (name) => new RegExp("(?:^|\\n)[ \\t*_>-]*" + name + "\\s*:\\s*[*_]*\\s*\"([\\s\\S]*?)\"", "i");
+function hasEvidenceText(desc) {
+  return ["Description", "File"].some((n) => { const m = EVIDENCE_FIELD(n).exec(String(desc || "")); return !!(m && m[1].replace(/[*_\s]/g, "")); });
+}
+async function completionEvidenceMissing(cfg, taskId) {
+  try {
+    const d = await getTaskDetail(cfg.token, taskId);
+    if (/\bextra(?:\(s\)|s)?\s+task(?:\(s\)|s)?\b/i.test(d.name || "")) return null;
+    if (hasEvidenceText(d.description)) return null;
+    const cs = await getTaskCommentsLite(cfg.token, taskId);
+    return cs.length ? null : { name: d.name || "" };
+  } catch (e) { return null; }
 }
 
 async function confirmUpdateApplied() {
@@ -7946,6 +7972,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         // ones stop here so the page can ask; "Send automatically" ones (and the
         // asked ones once you say Send) are posted before the task is completed.
         const held = await heldList(taskId);
+        let sentHeld = false;
         if (held.length) {
           const asked = held.filter((c) => !c.auto);
           if (asked.length && msg.held !== "send" && msg.held !== "skip") {
@@ -7953,11 +7980,17 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
             break;
           }
           const toSend = msg.held === "send" ? held : held.filter((c) => c.auto);
-          try { await sendHeldComments(cfg, taskId, toSend); }
+          try { await sendHeldComments(cfg, taskId, toSend); sentHeld = toSend.length > 0; }
           catch (e) {
             sendResponse({ ok: false, error: "The waiting comment couldn't be posted, so the task was not completed: " + String(e && e.message ? e.message : e) + " - it's still kept in ▸ details." });
             break;
           }
+        }
+        // Nothing to show for it (no filled Description: / File: and no comment):
+        // the page asks "complete anyway?" and sends evidence:"skip" if so.
+        if (!sentHeld && msg.evidence !== "skip" && (await getSettings()).clickupWarnEmptyComplete !== false) {
+          const miss = await completionEvidenceMissing(cfg, taskId);
+          if (miss) { sendResponse({ ok: false, reason: "no-evidence", taskName: miss.name }); break; }
         }
         try {
           await setTaskStatus(cfg.token, taskId, "complete");
@@ -8063,6 +8096,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         }
         if (p.clickupWrapUp !== undefined) patch.clickupWrapUp = !!p.clickupWrapUp;
         if (p.clickupExtraAutoClose !== undefined) patch.clickupExtraAutoClose = !!p.clickupExtraAutoClose;
+        if (p.clickupWarnEmptyComplete !== undefined) patch.clickupWarnEmptyComplete = !!p.clickupWarnEmptyComplete;
         if (p.clickupWrapUpTime !== undefined && parseHM(p.clickupWrapUpTime, null)) {
           const [h, m] = parseHM(p.clickupWrapUpTime, null);
           patch.clickupWrapUpTime = String(h).padStart(2, "0") + ":" + String(m).padStart(2, "0");

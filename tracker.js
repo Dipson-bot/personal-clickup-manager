@@ -716,6 +716,12 @@
           ? await send({ type: "CLICKUP_TASK_COMPLETE", taskId: String(run.taskId), held: "send" })
           : null;
       }
+      if (r && r.reason === "no-evidence") {
+        // Nothing to show for the task yet: ask before completing it.
+        const name = r.taskName || run.taskName;
+        const w = (pip && pip.window) || window;
+        r = w.confirm("\u201c" + (name || "This task") + "\u201d has nothing to show for it yet: no Description: \"\u2026\", no File: \"\u2026\" and no comment.\n\nOK = complete it anyway. Cancel = go back and add one.") ? await send({ type: "CLICKUP_TASK_COMPLETE", taskId: String(run.taskId), evidence: "skip" }) : null;
+      }
     }
     else if (act === "extra" && st.extraTask) r = await send({ type: "CLICKUP_TASK_START", taskId: String(st.extraTask.id), force: true });
     else if (act === "resume" && data.last) {

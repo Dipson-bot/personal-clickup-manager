@@ -719,6 +719,23 @@ export async function fetchDoneLite(token, teamId, userId, fromTs, toTs) {
   return out;
 }
 
+// Extra facts the export reads (tags, people, filled-in custom fields, files,
+// where the task lives) - from the same task answer, no extra request.
+function exportExtras(t) {
+  const fields = [];
+  for (const cf of Array.isArray(t && t.custom_fields) ? t.custom_fields : []) {
+    const v = resolveCustomFieldValue(cf);
+    if (v && cf && cf.name) fields.push({ name: String(cf.name), value: v });
+  }
+  return {
+    tags: (Array.isArray(t && t.tags) ? t.tags : []).map((g) => g && g.name).filter(Boolean),
+    assignees: (Array.isArray(t && t.assignees) ? t.assignees : []).filter((a) => a && a.id != null).map((a) => ({ id: String(a.id), name: a.username || a.email || "" })),
+    fields,
+    attachments: (Array.isArray(t && t.attachments) ? t.attachments : []).filter((a) => a && a.url).map((a) => ({ title: a.title || a.url, url: a.url })),
+    listName: (t && t.list && t.list.name) || "",
+    folderName: (t && t.folder && t.folder.hidden !== true && t.folder.name) || "",
+  };
+}
 export async function getTaskDetail(token, taskId) {
   const t = await cuFetch(token, "/task/" + encodeURIComponent(String(taskId)), [["include_markdown_description", "true"]]);
   const rows = Array.isArray(t && t.dependencies) ? t.dependencies : [];
@@ -737,6 +754,7 @@ export async function getTaskDetail(token, taskId) {
     estimateMs: Number(t && t.time_estimate) || 0,
     spentMs: Number(t && t.time_spent) || 0,
     url: taskUrlFor(t && t.id),
+    xp: exportExtras(t),
   };
 }
 
@@ -1142,6 +1160,7 @@ export async function getTaskTree(token, parentId, userId) {
     estimateMs: Number(t && t.time_estimate) || 0,
     spentMs: Number(t && t.time_spent) || 0,
     url: taskUrlFor(t && t.id),
+    xp: exportExtras(t),
   });
   return {
     parent: j && j.parent != null ? String(j.parent) : null,

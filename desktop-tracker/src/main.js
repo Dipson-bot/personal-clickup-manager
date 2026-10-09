@@ -4,7 +4,7 @@
 // process; the window only gets the data it shows (never the token).
 "use strict";
 
-const { app, BrowserWindow, Tray, Menu, ipcMain, screen, safeStorage, nativeImage, shell, nativeTheme } = require("electron");
+const { app, BrowserWindow, Tray, Menu, ipcMain, screen, safeStorage, nativeImage, shell, nativeTheme, dialog } = require("electron");
 const path = require("path");
 const http = require("http");
 const fs = require("fs");
@@ -349,6 +349,8 @@ async function fromExtension(m) {
   // The strip style picked in the extension (General › Floating tracker › Strip style).
   if (STYLES.includes(m.style) && m.style !== settings.stripStyle) { settings.stripStyle = m.style; saveSettings(); send("settings", publicSettings()); }
   if (typeof m.anim === "boolean" && m.anim !== (settings.stripAnim !== false)) { settings.stripAnim = m.anim; saveSettings(); send("settings", publicSettings()); }
+  // "Ask before completing a task with nothing to show for it" (the extension's setting).
+  if (typeof m.warnEmpty === "boolean" && m.warnEmpty !== (settings.warnEmpty !== false)) { settings.warnEmpty = m.warnEmpty; saveSettings(); }
   if (typeof m.show === "boolean" && m.show !== extShow) {
     extShow = m.show;
     settings.hiddenByExt = !m.show; saveSettings();
@@ -437,6 +439,17 @@ ipcMain.handle("comments", async (e, force) => { await checkComments(!!force); }
 ipcMain.handle("seen", (e, taskId) => { settings.commentsSeen[taskId] = Date.now(); saveSettings(); });
 ipcMain.handle("action", async (e, a) => doAction(a));
 ipcMain.handle("menu", () => { showStripMenu(); });
+// Nothing to show for a task: no filled Description: "..." or File: "..." in its
+// description and no comment. A failed read never stops it being completed.
+async function nothingToShow(taskId) {
+  try {
+    const t = await cu.task(taskId, true);
+    const desc = String((t && t.description) || "");
+    const filled = (n) => { const m = new RegExp("(?:^|\\n)[ \\t*_>-]*" + n + "\\s*:\\s*[*_]*\\s*\"([\\s\\S]*?)\"", "i").exec(desc); return !!(m && m[1].replace(/[*_\s]/g, "")); };
+    if (filled("Description") || filled("File")) return false;
+    return !(await cu.comments(taskId)).length;
+  } catch (e) { return false; }
+}
 async function doAction(a) {
   try {
     const run = state && state.running;
@@ -446,6 +459,14 @@ async function doAction(a) {
       lastStopped = state.task && state.task.isExtra ? lastStopped : { id: run.taskId, name: run.taskName };
     } else if (a.type === "complete" && run) {
       if (state.task && state.task.isExtra) throw new Error("The recurring Extra Task can't be completed here.");
+      if (settings.warnEmpty !== false && (await nothingToShow(run.taskId))) {
+        const r = await dialog.showMessageBox(win && !win.isDestroyed() ? win : undefined, {
+          type: "warning", buttons: ["Complete anyway", "Cancel"], defaultId: 1, cancelId: 1, noLink: true,
+          title: "ClickUp Tracker", message: "\u201c" + (run.taskName || "This task") + "\u201d has nothing to show for it yet",
+          detail: "No Description: \"\u2026\", no File: \"\u2026\" and no comment. Add one in ClickUp (or a comment here), or complete it anyway.",
+        });
+        if (r.response !== 0) return { ok: true, cancelled: true };
+      }
       await cu.stopTimer().catch(() => {});
       await cu.setStatus(run.taskId, "complete");
       if (resumeTask && resumeTask.id === run.taskId) resumeTask = null;

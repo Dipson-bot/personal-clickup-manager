@@ -31,6 +31,9 @@
     .xp-sep { height: 1px; background: var(--border); margin: 6px 0; }
     .xp-msg { margin: 6px 4px 2px; font-size: 11.5px; color: var(--muted); }
     .xp-msg.err { color: var(--red); }
+    .xp-stop { display: block; margin: 6px 4px 2px; font: inherit; font-size: 12px; font-weight: 600; padding: 4px 12px; width: auto; border: 1px solid var(--red, #dc2626); border-radius: 7px; background: var(--card); color: var(--red, #dc2626); cursor: pointer; }
+    .xp-stop[hidden] { display: none; }
+    .xp-stop:hover { background: rgba(220,38,38,.08); }
     .xp-cr { margin: 2px 0 4px; padding: 6px 8px; border-radius: 8px; background: var(--bg2); display: flex; flex-direction: column; gap: 5px; }
     .xp-cr[hidden] { display: none; }
     .xp-cr-h { font-size: 11px; color: var(--muted); line-height: 1.4; }
@@ -41,6 +44,34 @@
     .xp-cr-sel { flex: 1; min-width: 0; font: inherit; font-size: 11.5px; padding: 3px 5px; border: 1px solid var(--border); border-radius: 6px; background: var(--card); color: var(--text); }
     .xp-cr-row button { flex: none; font: inherit; font-size: 11px; padding: 2px 8px; border: 1px solid var(--border); border-radius: 6px; background: var(--card); color: var(--text); cursor: pointer; }
     .xp-cr-row button:hover { border-color: var(--indigo); color: var(--indigo); }
+    .xp-ct { display: flex; flex-wrap: wrap; gap: 4px 10px; margin: 0 0 6px 24px; font-size: 11.5px; }
+    .xp-ct[hidden] { display: none; }
+    .xp-ct label { display: inline-flex; align-items: center; gap: 4px; cursor: pointer; }
+    .xp-ct input { margin: 0; }
+    .xp-pv { position: fixed; inset: 0; z-index: 1001; background: rgba(0,0,0,.35); display: grid; place-items: center; padding: 16px; }
+    .xp-pv-card { width: min(760px, 100%); max-height: calc(100vh - 32px); box-sizing: border-box; display: flex; flex-direction: column; gap: 8px; background: var(--card); color: var(--text);
+      border: 1px solid var(--border); border-radius: 12px; box-shadow: 0 18px 40px rgba(0,0,0,.3); padding: 14px 16px; font-size: 12.5px; }
+    .xp-pv-card h3 { margin: 0; font-size: 15px; }
+    .xp-pv-n { color: var(--muted); font-size: 12px; }
+    .xp-pv-list { flex: 1; min-height: 0; overflow: auto; border: 1px solid var(--border); border-radius: 8px; padding: 4px; background: var(--bg2); }
+    .xp-pv-h { font-weight: 700; font-size: 11.5px; text-transform: uppercase; letter-spacing: .04em; color: var(--muted); padding: 8px 6px 4px; }
+    .xp-pv-list label { display: grid; grid-template-columns: auto 1fr auto; gap: 2px 8px; align-items: start; padding: 5px 6px; border-radius: 6px; cursor: pointer; }
+    .xp-pv-list label:hover { background: var(--card); }
+    .xp-pv-list input { margin: 2px 0 0; }
+    .xp-pv-list .cat { font-size: 11px; padding: 0 6px; border-radius: 999px; border: 1px solid var(--border); white-space: nowrap; }
+    .xp-pv-list .fl { grid-column: 2 / 4; font-size: 11px; color: var(--amber, #d97706); }
+    .xp-pv-list .fl:empty { display: none; }
+    .xp-pv-foot { display: flex; justify-content: flex-end; gap: 8px; }
+    .xp-pv-foot button { font: inherit; font-size: 12.5px; padding: 6px 14px; margin: 0; width: auto; border: 1px solid var(--border); border-radius: 8px; background: var(--card); color: var(--text); cursor: pointer; }
+    .xp-pv-foot button.pri { background: var(--indigo, #4f46e5); border-color: var(--indigo, #4f46e5); color: #fff; font-weight: 600; }
+    .xp-pv-foot button:disabled { opacity: .5; cursor: default; }
+    .xp-pick { display: flex; align-items: center; gap: 6px; margin: -2px 4px 8px; font-size: 11.5px; }
+    .xp-pick .n { flex: 1; color: var(--muted); }
+    .xp-pick button { font: inherit; font-size: 11px; line-height: 1.4; padding: 2px 8px; margin: 0; min-height: 0; width: auto; border: 1px solid var(--border); border-radius: 6px; background: var(--card); color: var(--text); cursor: pointer; }
+    .xp-pick button:hover { border-color: var(--indigo); color: var(--indigo); }
+    input.xp-rowpick { margin: 0 4px 0 0; flex: none; width: 14px; height: 14px; cursor: pointer; accent-color: var(--indigo, #4f46e5); }
+    .cu-task.xp-off > :not(input.xp-rowpick) { opacity: .45; }
+    .cu-task.xp-off .nm { text-decoration: line-through; }
   `;
   document.head.appendChild(css);
 
@@ -921,6 +952,194 @@
   PCM.clientReady = { build: buildClientReady, matrix: crReadyMatrix, doc: crReadyDocHtml, markdown: crReadyMarkdown, sheetHtml: crReadySheetHtml,
     weekRange: crWeekRange, rangeLabel: crRangeLabel, realLink: crRealLink, fileLinks: crFileLinks, clean: crClean };
 
+  // Tasks left out of exports (Choose tasks): task id -> when, kept 120 days.
+  const SKIP_KEY = "pcm.exportSkip";
+  function loadSkip() {
+    let o = {};
+    try { o = JSON.parse(localStorage.getItem(SKIP_KEY) || "{}") || {}; } catch (e) { o = {}; }
+    const cut = Date.now() - 120 * 864e5;
+    for (const k of Object.keys(o)) if (!(Number(o[k]) > cut)) delete o[k];
+    return o;
+  }
+  function saveSkip(o) { try { localStorage.setItem(SKIP_KEY, JSON.stringify(o)); } catch (e) {} }
+  // Left out: unticked itself, or its parent (in this view) is unticked.
+  function isSkipped(t, skip, rows) {
+    if (skip[String(t.id)]) return true;
+    return !!(t.parentId && skip[String(t.parentId)] && rows.some((r) => String(r.id) === String(t.parentId)));
+  }
+
+  // ---------- Client tasks sheet ----------
+  // One client's tasks, one row per task in the client sheet's 12 columns,
+  // after a preview where tasks can be added or left out. Every department is
+  // in until it is unticked for that client (e.g. only On-Page, Technical and
+  // Development for a client who only gets those reported).
+  // Read-only: nothing is changed in ClickUp. Nothing is made up - an empty
+  // cell stays empty and the preview flags it.
+  // GMB / Google Business Profile work is done by Off-Page, so it counts as Off-Page.
+  const CT_DEPTS = ["On-Page", "Off-Page", "Technical", "Development", "Content"];
+  const CT_ALL = CT_DEPTS.concat(["Other"]);
+  const CT_COLS = ["Date (Range)", "Task", "Task Info", "Category", "Assignee", "Status", "Estimated Completion Time", "Checklist File", "Work File", "Task Description", "Due Date", "Priority"];
+  const CT_KNOWN = /on[\s-]?page|off[\s-]?page|\btech|\bdev|\bgmb\b|\bgbp\b|google business|\bcontent\b/i;
+  function ctNormDept(s) {
+    const k = String(s || "").replace(/[*_"]/g, "").trim();
+    if (!k) return "";
+    if (/on[\s-]?page/i.test(k)) return "On-Page";
+    if (/off[\s-]?page/i.test(k)) return "Off-Page";
+    if (/\btech/i.test(k)) return "Technical";
+    if (/\bdev/i.test(k)) return "Development";
+    if (/\bgmb\b|\bgbp\b|google business/i.test(k)) return "Off-Page";
+    if (/\bcontent\b/i.test(k)) return "Content";
+    return k.length > 40 ? "" : k.replace(/\b\w/g, (c) => c.toUpperCase());
+  }
+  // A task's department: its Department / Category / Team field, a
+  // "DEPARTMENT:" line in the description, a tag, the list or folder name, or
+  // the department its assignees are in - the first one that says.
+  function ctCategory(t, deptOfUser) {
+    const x = t.xp || {};
+    const f = (x.fields || []).find((g) => /depart|categor|\bteam\b/i.test(g.name));
+    if (f && ctNormDept(f.value)) return ctNormDept(f.value);
+    const m = String(t.info || "").match(/^[ \t*_>-]*(?:department|category)\b[^:\n]{0,20}:\s*[*_"]*([^\n"*]+)/im);
+    if (m && ctNormDept(m[1])) return ctNormDept(m[1]);
+    for (const g of x.tags || []) if (CT_KNOWN.test(g)) return ctNormDept(g);
+    for (const n of [x.listName, x.folderName]) if (n && CT_KNOWN.test(n)) return ctNormDept(n);
+    const ds = new Set();
+    for (const a of x.assignees || []) for (const d of (deptOfUser && deptOfUser.get(String(a.id))) || []) if (ctNormDept(d)) ds.add(ctNormDept(d));
+    return [...ds].join(" / ");
+  }
+  // The text inside a NAME: "..." block of the description (not "Pre NAME").
+  function ctField(desc, name) {
+    const re = new RegExp("(?:^|\\n)[ \\t*_>-]*" + name.replace(/ /g, "\\s+") + "\\s*:\\s*[*_]*\\s*\"([\\s\\S]*?)\"[*_ \\t]*(?=\\r?\\n|$)", "i");
+    const m = re.exec(String(desc || ""));
+    return m ? crStripMd(m[1]).trim() : "";
+  }
+  // Every link of a task: description, its own links, fields, attachments and
+  // the links in its comments - each once, in that order.
+  function ctLinks(t, commentLinks) {
+    const x = t.xp || {};
+    const out = [];
+    const add = (u) => { u = String(u || "").trim(); if (u && crRealLink(u) && !out.includes(u)) out.push(u); };
+    crUrls(t.info).forEach(add);
+    (t.links || []).forEach(add);
+    for (const f of x.fields || []) crUrls(f.value).forEach(add);
+    for (const a of x.attachments || []) add(a.url);
+    (commentLinks || []).forEach(add);
+    return out;
+  }
+  // One row per task: subtasks in the list fold into their top task (their
+  // notes and links go with it); a subtask whose parent isn't listed is a row.
+  function ctTasks(rows, deptOfUser) {
+    const byId = new Map(rows.map((t) => [String(t.id), t]));
+    const listedParent = (t) => t.isSubtask && t.parentId != null && byId.has(String(t.parentId));
+    const out = rows.filter((t) => !listedParent(t)).map((t) => ({ t, subs: [] }));
+    const top = new Map(out.map((o) => [String(o.t.id), o]));
+    const rootOf = (t) => { let c = t, n = 0; while (listedParent(c) && n++ < 10) c = byId.get(String(c.parentId)); return c; };
+    for (const t of rows) if (listedParent(t)) { const r = top.get(String(rootOf(t).id)); if (r) r.subs.push(t); }
+    for (const o of out) o.category = ctCategory(o.t, deptOfUser) || o.subs.map((s) => ctCategory(s, deptOfUser)).find(Boolean) || "";
+    return out;
+  }
+  function ctRow(o, commentLinks, dateLabel) {
+    const t = o.t;
+    const info = ctField(t.info, "Pre Description") || cleanInfo(t.info).replace(/\nWhy: [\s\S]*$/, "");
+    const notes = [ctField(t.info, "Description")].concat(o.subs.map((s) => { const n = ctField(s.info, "Description"); return n ? crStripCode(s.name) + ": " + n : ""; })).filter(Boolean);
+    const note = notes.join("\n");
+    const links = [];
+    for (const r of [t].concat(o.subs)) for (const u of ctLinks(r, commentLinks[String(r.id)])) if (!links.includes(u)) links.push(u);
+    const checklist = [ctField(t.info, "Checklist File")].concat(((t.xp && t.xp.fields) || []).filter((f) => /checklist/i.test(f.name)).map((f) => f.value)).filter(Boolean).join("\n");
+    const work = note || links.length ? 'Description: "' + note + '"\n\nFile: "' + links.join("\n") + '"' : "";
+    const who = [...new Set(((t.xp && t.xp.assignees) || []).map((a) => a.name).filter(Boolean))].join(", ");
+    return {
+      cells: [dateLabel, t.name || "", info, o.category, who, crStatus(t), t.estimateMs ? fmtEstimate(t.estimateMs) : "", checklist, work, note,
+        t.dueDateMs ? new Date(Number(t.dueDateMs)).toLocaleDateString([], { month: "short", day: "numeric", year: "numeric" }) : "",
+        String(t.priority || "").replace(/\b\w/g, (c) => c.toUpperCase())],
+      noNote: !note, noLinks: !links.length,
+    };
+  }
+  function ctSheetHtml(m, title) {
+    const rows = m.map((r, i) => "<tr>" + r.map((c) => i
+      ? '<td style="vertical-align:top">' + esc(c).replace(/\n/g, "<br>") + "</td>"
+      : '<td style="background:#4a86e8;color:#ffffff;font-weight:bold">' + esc(c) + "</td>").join("") + "</tr>").join("");
+    return '<html><head><meta charset="utf-8"><title>' + esc(title) + "</title></head><body>" +
+      '<table border="1" cellspacing="0" cellpadding="4">' + rows + "</table></body></html>";
+  }
+  function ctMarkdown(m, title) {
+    const cell = (c) => String(c == null ? "" : c).replace(/\|/g, "\\|").replace(/\n/g, "<br>");
+    return "# " + title + "\n\n| " + m[0].map(cell).join(" | ") + " |\n|" + m[0].map(() => " --- |").join("") + "\n" +
+      m.slice(1).map((r) => "| " + r.map(cell).join(" | ") + " |").join("\n") + "\n";
+  }
+  // Per client, on this computer: the departments picked and the tasks added
+  // to / left out of the sheet by hand in the preview.
+  const ctKey = (client) => "pcm.ct." + (clientKey(client) || "_");
+  function ctPrefs(client) {
+    let o = null;
+    try { o = JSON.parse(localStorage.getItem(ctKey(client)) || "null"); } catch (e) {}
+    return { depts: Array.isArray(o && o.depts) ? o.depts : CT_ALL.slice(), pick: (o && o.pick) || {} };
+  }
+  function ctSavePrefs(client, p) { try { localStorage.setItem(ctKey(client), JSON.stringify(p)); } catch (e) {} }
+  // In or out by department: a task in several departments is in when any of
+  // them is ticked; "Other" covers departments that aren't in the list and
+  // tasks with none found.
+  function ctDeptOk(cat, want) {
+    const parts = String(cat || "").split(" / ").filter(Boolean);
+    if (!parts.length) return want.has("Other");
+    return parts.some((p) => want.has(p) || (want.has("Other") && !CT_DEPTS.includes(p)));
+  }
+  // The preview: what goes in and what is left out (and why), flags for empty
+  // notes / links, a tick per task. Resolves with the items, or null.
+  function ctPreview(items, title) {
+    return new Promise((resolve) => {
+      const wrap = document.createElement("div");
+      wrap.className = "xp-pv";
+      wrap.onclick = (e) => e.stopPropagation();
+      const card = document.createElement("div");
+      card.className = "xp-pv-card";
+      wrap.appendChild(card);
+      const head = document.createElement("h3"); head.textContent = "Preview · " + title;
+      const counts = document.createElement("div"); counts.className = "xp-pv-n";
+      const box = document.createElement("div"); box.className = "xp-pv-list";
+      const foot = document.createElement("div"); foot.className = "xp-pv-foot";
+      const go = document.createElement("button"); go.type = "button"; go.className = "pri";
+      const no = document.createElement("button"); no.type = "button"; no.textContent = "Cancel";
+      foot.append(no, go);
+      card.append(head, counts, box, foot);
+      const paint = () => {
+        const inc = items.filter((i) => i.on);
+        const flagged = inc.filter((i) => i.row.noNote || i.row.noLinks).length;
+        counts.textContent = inc.length + " included · " + (items.length - inc.length) + " left out" +
+          (flagged ? " · " + flagged + " included without a completion note or links (those cells stay empty)" : "");
+        go.textContent = "Create (" + inc.length + ")";
+        go.disabled = !inc.length;
+      };
+      const section = (label, list) => {
+        if (!list.length) return;
+        const h = document.createElement("div"); h.className = "xp-pv-h"; h.textContent = label + " (" + list.length + ")";
+        box.appendChild(h);
+        for (const it of list) {
+          const l = document.createElement("label");
+          const c = document.createElement("input"); c.type = "checkbox"; c.checked = it.on;
+          c.onchange = () => { it.on = c.checked; it.touched = true; paint(); };
+          const n = document.createElement("span"); n.className = "nm"; n.textContent = it.name;
+          const cat = document.createElement("span"); cat.className = "cat"; cat.textContent = it.category || "no department";
+          const fl = document.createElement("span"); fl.className = "fl";
+          fl.textContent = [it.why, it.row.noNote ? "no completion note" : "", it.row.noLinks ? "no links" : ""].filter(Boolean).join(" · ");
+          l.append(c, n, cat, fl);
+          box.appendChild(l);
+        }
+      };
+      section("Included", items.filter((i) => i.on));
+      section("Left out", items.filter((i) => !i.on));
+      paint();
+      const done = (v) => { wrap.remove(); document.removeEventListener("keydown", onKey, true); resolve(v); };
+      const onKey = (e) => { if (e.key === "Escape") { e.stopPropagation(); done(null); } };
+      document.addEventListener("keydown", onKey, true);
+      no.onclick = () => done(null);
+      go.onclick = () => done(items);
+      document.body.appendChild(wrap);
+      go.focus();
+    });
+  }
+
+  // The error a cancelled export stops with.
+  const CANCELLED = new Error("cancelled");
   function download(name, mime, text) {
     const url = URL.createObjectURL(new Blob([text], { type: mime }));
     const a = document.createElement("a");
@@ -970,6 +1189,7 @@
         blocks: d.blocks || t.blocks || [],
         estimateMs: Number(d.estimateMs) || Number(t.estimateMs) || 0,
         links: Array.isArray(d.links) ? d.links : (t.links || []),
+        xp: d.xp || t.xp,
       };
     });
     const byId = new Map(rows.map((t) => [String(t.id), t]));
@@ -1055,6 +1275,67 @@
       sub.style.color = "var(--red)";
       sub.textContent += " - nothing to export. Close this, change the filter (the list above is what gets exported), then try again.";
     }
+    // Choose tasks: while this menu is open, every task row of the list it was
+    // opened from gets a tick box (before its ▶). Untick the ones that shouldn't
+    // go in (planning, "what's next", in-house work…). Unticked tasks are
+    // remembered (per task, on this computer) and their subtasks go with them.
+    const skip = loadSkip();
+    const pickBar = document.createElement("div");
+    pickBar.className = "xp-pick";
+    const pickN = document.createElement("span"); pickN.className = "n";
+    const allB = document.createElement("button"); allB.type = "button"; allB.textContent = "All";
+    const noneB = document.createElement("button"); noneB.type = "button"; noneB.textContent = "None";
+    allB.title = "Tick every task in the list"; noneB.title = "Untick every task in the list";
+    pickBar.append(pickN, allB, noneB);
+    const pickHint = document.createElement("div");
+    pickHint.className = "xp-cr-h"; pickHint.style.margin = "-4px 4px 8px";
+    pickHint.textContent = "Untick tasks in the list to leave them out (remembered).";
+    const ids = new Set(data.rows.map((r) => String(r.id)));
+    const parentOf = new Map(data.rows.filter((r) => r.parentId != null).map((r) => [String(r.id), String(r.parentId)]));
+    const scope = btn.closest(".card") || btn.closest("section") || document;
+    const paintPickN = () => {
+      const n = data.rows.filter((r) => !isSkipped(r, skip, data.rows)).length;
+      pickN.textContent = n + " of " + data.rows.length + " task" + (data.rows.length === 1 ? "" : "s") + " included";
+      pickN.style.color = n < data.rows.length ? "var(--amber, #d97706)" : "";
+    };
+    const paintRows = () => {
+      if (!menu.isConnected) return;
+      for (const chev of scope.querySelectorAll(".cu-task .pcm-chev[data-task-id]")) {
+        const id = String(chev.dataset.taskId);
+        if (!ids.has(id)) continue;
+        const row = chev.closest(".cu-task");
+        let c = row.querySelector(":scope > input.xp-rowpick");
+        if (!c) {
+          c = document.createElement("input");
+          c.type = "checkbox"; c.className = "xp-rowpick";
+          c.addEventListener("click", (e) => e.stopPropagation()); // don't close the menu or open the row
+          c.addEventListener("change", () => { if (c.checked) delete skip[id]; else skip[id] = Date.now(); saveSkip(skip); paintRows(); });
+          chev.before(c);
+        }
+        const p = parentOf.get(id);
+        const parentOff = !!(p && ids.has(p) && skip[p]);
+        c.checked = !skip[id] && !parentOff;
+        c.disabled = parentOff;
+        c.title = parentOff ? "Its parent task is left out" : c.checked ? "In the export - untick to leave it out" : "Left out of the export";
+        row.classList.toggle("xp-off", !c.checked);
+      }
+      paintPickN();
+    };
+    const unpaintRows = () => {
+      scope.querySelectorAll("input.xp-rowpick").forEach((c) => c.remove());
+      scope.querySelectorAll(".cu-task.xp-off").forEach((r) => r.classList.remove("xp-off"));
+    };
+    allB.onclick = () => { for (const r of data.rows) delete skip[String(r.id)]; saveSkip(skip); paintRows(); };
+    noneB.onclick = () => { for (const r of data.rows) skip[String(r.id)] = Date.now(); saveSkip(skip); paintRows(); };
+    if (data.rows.length) {
+      menu.append(pickBar, pickHint);
+      paintRows();
+      // The list redraws itself (timer ticks, refreshes): put the boxes back;
+      // when the menu goes away, take them out again.
+      const mo = new MutationObserver(() => { if (menu.isConnected) { mo.disconnect(); paintRows(); mo.observe(scope === document ? document.body : scope, { childList: true, subtree: true }); } });
+      mo.observe(scope === document ? document.body : scope, { childList: true, subtree: true });
+      const gone = setInterval(() => { if (!menu.isConnected) { clearInterval(gone); mo.disconnect(); unpaintRows(); } }, 300);
+    }
 
     const mkOpt = (label, checked) => {
       const l = document.createElement("label");
@@ -1086,6 +1367,32 @@
     crAudit.parentElement.title = "If you have the client's audit (the HTML file), attach it below: its plain-language titles and explanations help the AI describe each task.";
     crReadyHint.after(crAudit.parentElement);
     crReadyHint.hidden = !crReady.checked;
+    // Client tasks sheet: only the chosen departments' tasks, 12 columns, preview first.
+    let ctOnSaved = false;
+    try { ctOnSaved = localStorage.getItem("pcm.ctSheet") === "1"; } catch (e) {}
+    const ctOn = mkOpt("Client tasks sheet (12 columns, by department)", ctOnSaved);
+    ctOn.parentElement.title = "One client's tasks, one row per task in the client sheet's columns. Untick the departments this client doesn't get reported (remembered per client). A preview shows what goes in before the file is made.";
+    const ctBox = document.createElement("div");
+    ctBox.className = "xp-ct";
+    ctOn.parentElement.after(ctBox);
+    let ctClient = "";
+    const paintCt = () => {
+      ctBox.hidden = !ctOn.checked;
+      if (!ctOn.checked) return;
+      const cl = viewClients();
+      ctClient = forClient && forClient !== ALL && cl.includes(forClient) ? forClient : cl[0] || "";
+      const p = ctPrefs(ctClient);
+      ctBox.textContent = "";
+      for (const dname of [...new Set(CT_ALL.concat(p.depts))]) {
+        const l = document.createElement("label");
+        const c = document.createElement("input"); c.type = "checkbox"; c.checked = p.depts.includes(dname);
+        c.onchange = () => { const q = ctPrefs(ctClient); q.depts = c.checked ? [...new Set(q.depts.concat(dname))] : q.depts.filter((x) => x !== dname); ctSavePrefs(ctClient, q); };
+        l.append(c, document.createTextNode(dname));
+        ctBox.appendChild(l);
+      }
+      ctBox.title = ctClient ? "Remembered for " + clientName(ctClient) : "";
+    };
+    ctOn.onchange = () => { try { localStorage.setItem("pcm.ctSheet", ctOn.checked ? "1" : "0"); } catch (e) {} paintCr(); };
     let crOn = false;
     try { crOn = localStorage.getItem("pcm.clientReport") === "1"; } catch (e) {}
     // The older report option is kept in code but no longer offered.
@@ -1153,8 +1460,8 @@
     let forClient = "";
     const paintCr = async () => {
       const ready = crReady.checked;
-      crBox.hidden = !cr.checked && !ready;
-      if (!cr.checked && !ready) return;
+      crBox.hidden = !cr.checked && !ready && !ctOn.checked;
+      if (!cr.checked && !ready && !ctOn.checked) { paintCt(); return; }
       crBox.textContent = "";
       const clients = viewClients().sort((x, y) => clientName(x).localeCompare(clientName(y)));
       if (!clients.length) { const r = document.createElement("div"); r.className = "xp-cr-h"; r.textContent = "No client tasks in this view."; crBox.appendChild(r); return; }
@@ -1177,7 +1484,7 @@
         o.value = c; o.textContent = clientName(c) + (have.get(c) ? " \u2713" : "");
         sel.appendChild(o);
       }
-      if (clients.length > 1 && !ready) { const o = document.createElement("option"); o.value = ALL; o.textContent = "All clients (a section each, internal use)"; sel.appendChild(o); }
+      if (clients.length > 1 && !ready && !ctOn.checked) { const o = document.createElement("option"); o.value = ALL; o.textContent = "All clients (a section each, internal use)"; sel.appendChild(o); }
       sel.value = forClient;
       sel.onchange = () => {
         forClient = sel.value;
@@ -1186,6 +1493,8 @@
       };
       row.append(lab, sel);
       crBox.appendChild(row);
+      paintCt();
+      if (!ready && !cr.checked) return; // Client tasks sheet alone: just the client
       if (ready && !crAudit.checked) return; // the audit file is optional (off by default)
       const auditRow = (c) => {
         const a = have.get(c);
@@ -1238,6 +1547,7 @@
     menu.appendChild(Object.assign(document.createElement("div"), { className: "xp-sep" }));
     const msg = document.createElement("div");
     msg.className = "xp-msg";
+    const stopBtn = document.createElement("button");
 
     // Asked once, before any task text goes to the free online AI.
     const askOnlineConsent = () => new Promise((resolve) => {
@@ -1253,12 +1563,30 @@
       const buttons = [...menu.querySelectorAll(".xp-item")];
       buttons.forEach((b) => (b.disabled = true));
       msg.className = "xp-msg";
-      const note = (t) => { msg.textContent = t; };
+      // Cancel: stops at the next step - nothing is saved or created in Google
+      // Drive after it (a ClickUp read already under way finishes unseen).
+      const ctl = new AbortController();
+      stopBtn.hidden = false;
+      stopBtn.onclick = (e) => {
+        e.stopPropagation();
+        ctl.abort();
+        stopBtn.hidden = true;
+        msg.className = "xp-msg";
+        msg.textContent = "Cancelled - no file was made.";
+        buttons.forEach((b) => (b.disabled = false));
+      };
+      const note = (t) => { if (ctl.signal.aborted) throw CANCELLED; msg.textContent = t; };
+      const save = (...args) => { if (!ctl.signal.aborted) download(...args); }; // never for a cancelled run
       try {
         const d = getData() || { rows: [], title: "tasks" };
         if (!d.rows.length) throw new Error("This view has no tasks (" + (d.title || "current view") + "), so there is nothing to export.");
-        let rows = d.rows.slice();
+        const skipNow = loadSkip();
+        let rows = d.rows.filter((t) => !isSkipped(t, skipNow, d.rows));
+        if (!rows.length) throw new Error("Every task in this view is unticked under Choose tasks - tick at least one.");
         rows = await withSubtasks(rows, note, subs.checked);
+        // Subtasks fetched by "Include subtasks" follow their parent: an unticked
+        // task's subtasks stay out, and so does an unticked subtask.
+        rows = rows.filter((t) => !skipNow[String(t.id)] && !(t.parentId && skipNow[String(t.parentId)]));
         // Keep to the filter's dates: "Include subtasks" fetches every subtask of a
         // task, so a monthly task would drag in its whole month. A subtask stays if
         // its own due date is in range (or it has none and its task is in range).
@@ -1270,6 +1598,72 @@
             if (!t.isSubtask) { lastMain = t; return !t.dueDateMs || inR(t.dueDateMs); }
             return t.dueDateMs ? inR(t.dueDateMs) : !!(lastMain && inR(lastMain.dueDateMs));
           });
+        }
+        if (ctOn.checked) {
+          const clients = viewClients();
+          const client = forClient && forClient !== ALL && clients.includes(forClient) ? forClient : clients[0] || "";
+          if (client) rows = rows.filter((t) => clientKey(t.client) === clientKey(client));
+          if (!rows.length) throw new Error("No tasks for " + clientName(client) + " in this view.");
+          let dd = null;
+          try { dd = await chrome.runtime.sendMessage({ type: "CLICKUP_DEPT_DATA" }); } catch (e) { dd = null; }
+          const deptOfUser = new Map();
+          for (const dep of (dd && dd.ok && dd.departments) || []) for (const u of dep.users || []) {
+            const k = String(u.id);
+            if (!deptOfUser.has(k)) deptOfUser.set(k, []);
+            deptOfUser.get(k).push(dep.name);
+          }
+          const prefs = ctPrefs(client);
+          const want = new Set(prefs.depts);
+          const tasks = ctTasks(rows, deptOfUser);
+          note("Reading the tasks' comments for their links\u2026");
+          let cl = null;
+          try { cl = await chrome.runtime.sendMessage({ type: "CLICKUP_EXPORT_COMMENT_LINKS", taskIds: rows.map((t) => String(t.id)) }); } catch (e) { cl = null; }
+          const commentLinks = (cl && cl.ok && cl.links) || {};
+          const dateLabel = range ? crRangeLabel(range) : crWeekRange(rows);
+          const items = tasks.map((o) => {
+            const id = String(o.t.id);
+            const internal = INTERNAL_RE.test(o.t.name || "");
+            const byDept = ctDeptOk(o.category, want) && !internal;
+            const manual = prefs.pick[id];
+            const why = manual === true && !byDept ? "added by you" : manual === false && byDept ? "left out by you"
+              : internal ? "internal work" : !byDept ? (o.category ? o.category + " isn't ticked" : "no department found") : "";
+            return { o, id, name: o.t.name || "(no name)", category: o.category, on: manual != null ? !!manual : byDept, byDept, why, row: ctRow(o, commentLinks, dateLabel) };
+          });
+          note("Preview open - tick what goes in, then Create.");
+          const picked = await ctPreview(items, clientName(client) + (dateLabel ? " \u00b7 " + dateLabel : ""));
+          if (!picked) { note("Cancelled - no file was made."); buttons.forEach((b) => (b.disabled = false)); return; }
+          // Remember only what differs from the department rule.
+          const p2 = ctPrefs(client);
+          for (const it of picked) if (it.touched) { if (it.on === it.byDept) delete p2.pick[it.id]; else p2.pick[it.id] = it.on; }
+          ctSavePrefs(client, p2);
+          const chosen = picked.filter((i) => i.on);
+          if (!crReady.checked) {
+            const m = [CT_COLS].concat(chosen.map((i) => i.row.cells));
+            const who = clientName(client) || "Client";
+            const title = who + " \u00b7 Client tasks" + (dateLabel ? " \u00b7 " + dateLabel : "");
+            const file = safeName(who + " client tasks " + (dateLabel || new Date().toISOString().slice(0, 10)));
+            const tail = "  " + chosen.length + " task" + (chosen.length === 1 ? "" : "s") + "." + (cl && cl.ok ? "" : "  (Couldn't read the comments, so their links aren't in.)");
+            if (kind === "csv") { save(file + ".csv", "text/csv;charset=utf-8", "\ufeff" + toCsv(m)); note("Saved " + file + ".csv" + tail); }
+            else if (kind === "xls") { save(file + ".xls", "application/vnd.ms-excel", ctSheetHtml(m, title)); note("Saved " + file + ".xls (opens in Excel)" + tail); }
+            else if (kind === "md") {
+              const text = ctMarkdown(m, title);
+              save(file + ".md", "text/markdown;charset=utf-8", text);
+              try { await navigator.clipboard.writeText(text); note("Saved " + file + ".md and copied to the clipboard" + tail); } catch (e) { note("Saved " + file + ".md" + tail); }
+            } else {
+              note("Creating in Google Drive\u2026");
+              const g = await chrome.runtime.sendMessage({ type: "EXPORT_TO_GOOGLE", kind, name: title, share: share.checked, html: ctSheetHtml(m, title), csv: toCsv(m) });
+              if (!g || !g.ok) throw new Error((g && (g.error || g.reason)) || "Google export failed");
+              note("Opening\u2026" + tail);
+              chrome.tabs.create({ url: g.url }).catch(() => {});
+            }
+            buttons.forEach((b) => (b.disabled = false));
+            if (item) item.blur();
+            return;
+          }
+          // With the client work report too: the report is written from the same tasks.
+          const keep = new Set();
+          for (const i of chosen) { keep.add(i.id); for (const s of i.o.subs) keep.add(String(s.id)); }
+          rows = rows.filter((t) => keep.has(String(t.id)));
         }
         if (crReady.checked) {
           // The list's own tasks (the rest were fetched by "Include subtasks").
@@ -1315,11 +1709,11 @@
             (crAudit.checked && !audit ? "  (No audit attached for " + who + ", so the task names were used.)" : "") +
             (audit ? "  Audit used for " + res.auditHits + " of " + res.jobs + " tasks" + (res.auditHits < res.jobs ? " (the rest have no matching code like ACT-054 in their name)" : "") + "." : "") +
             "  A draft - read it before sending.";
-          if (kind === "csv") { download(file + ".csv", "text/csv;charset=utf-8", "\ufeff" + toCsv(m)); note("Saved " + file + ".csv" + tail); }
-          else if (kind === "xls") { download(file + ".xls", "application/vnd.ms-excel", crReadySheetHtml(who, res)); note("Saved " + file + ".xls (opens in Excel)" + tail); }
+          if (kind === "csv") { save(file + ".csv", "text/csv;charset=utf-8", "\ufeff" + toCsv(m)); note("Saved " + file + ".csv" + tail); }
+          else if (kind === "xls") { save(file + ".xls", "application/vnd.ms-excel", crReadySheetHtml(who, res)); note("Saved " + file + ".xls (opens in Excel)" + tail); }
           else if (kind === "md") {
             const text = crReadyMarkdown(who, res);
-            download(file + ".md", "text/markdown;charset=utf-8", text);
+            save(file + ".md", "text/markdown;charset=utf-8", text);
             try { await navigator.clipboard.writeText(text); note("Saved " + file + ".md and copied to the clipboard" + tail); } catch (e) { note("Saved " + file + ".md" + tail); }
           } else {
             note("Creating in Google Drive\u2026");
@@ -1349,7 +1743,7 @@
               if (!agreed) throw new Error("Cancelled. Untick \"Rewrite with AI\" to export without it.");
               window.PcmAI.allowOnline();
             }
-            const r = await aiRewriteReport(report, note, undefined, pick);
+            const r = await aiRewriteReport(report, note, ctl.signal, pick);
             aiNote = "  AI rewrote " + r.ok + " of " + r.total + " lines" + (r.ok < r.total ? "; the rest kept the report wording" : "") + "." +
               (!r.ok && r.lastErr ? " (AI error: " + r.lastErr + ". Try another AI in the list.)" : "");
           }
@@ -1375,11 +1769,11 @@
             catch (e) { aiNote = "  Couldn't open the AI: " + (e && e.message ? e.message : e); }
           }
           const tail = (noAudit.length ? "  (No audit for " + noAudit.join(", ") + ": those lines use the task names.)" : "") + aiNote;
-          if (kind === "csv") { download(file + ".csv", "text/csv;charset=utf-8", "\ufeff" + toCsv(lead.concat(m))); note("Saved " + file + ".csv" + tail); }
-          else if (kind === "xls") { download(file + ".xls", "application/vnd.ms-excel", crHtmlTable(m, title, summary)); note("Saved " + file + ".xls (opens in Excel)" + tail); }
+          if (kind === "csv") { save(file + ".csv", "text/csv;charset=utf-8", "\ufeff" + toCsv(lead.concat(m))); note("Saved " + file + ".csv" + tail); }
+          else if (kind === "xls") { save(file + ".xls", "application/vnd.ms-excel", crHtmlTable(m, title, summary)); note("Saved " + file + ".xls (opens in Excel)" + tail); }
           else if (kind === "md") {
             const text = crMarkdown(report, title);
-            download(file + ".md", "text/markdown;charset=utf-8", text);
+            save(file + ".md", "text/markdown;charset=utf-8", text);
             // With "your own AI" the clipboard already holds the AI prompt: keep it.
             if (aiRow.checked && external) note("Saved " + file + ".md" + tail);
             else try { await navigator.clipboard.writeText(text); note("Saved " + file + ".md and copied to the clipboard" + tail); } catch (e) { note("Saved " + file + ".md" + tail); }
@@ -1398,11 +1792,11 @@
         const m = toMatrix(rows);
         const title = d.title || "tasks";
         const file = safeName(title) + "_" + new Date().toISOString().slice(0, 10);
-        if (kind === "csv") { download(file + ".csv", "text/csv;charset=utf-8", "﻿" + toCsv(m)); note("Saved " + file + ".csv"); }
-        else if (kind === "xls") { download(file + ".xls", "application/vnd.ms-excel", toHtml(m, title)); note("Saved " + file + ".xls (opens in Excel)"); }
+        if (kind === "csv") { save(file + ".csv", "text/csv;charset=utf-8", "﻿" + toCsv(m)); note("Saved " + file + ".csv"); }
+        else if (kind === "xls") { save(file + ".xls", "application/vnd.ms-excel", toHtml(m, title)); note("Saved " + file + ".xls (opens in Excel)"); }
         else if (kind === "md") {
           const text = toMarkdown(rows, title);
-          download(file + ".md", "text/markdown;charset=utf-8", text);
+          save(file + ".md", "text/markdown;charset=utf-8", text);
           try { navigator.clipboard.writeText(text).then(() => note("Saved " + file + ".md and copied to the clipboard")).catch(() => note("Saved " + file + ".md")); }
           catch (e) { note("Saved " + file + ".md"); }
         }
@@ -1419,9 +1813,15 @@
           setTimeout(close, 700);
         }
       } catch (e) {
-        msg.className = "xp-msg err";
-        msg.textContent = String((e && e.message) || e);
+        if (!ctl.signal.aborted) {
+          msg.className = "xp-msg err";
+          msg.textContent = String((e && e.message) || e);
+        }
+      } finally {
+        // Also after the early returns of a finished export.
+        stopBtn.hidden = true;
       }
+      if (ctl.signal.aborted) return;
       buttons.forEach((b) => (b.disabled = false));
       if (item) item.blur();
     };
@@ -1434,6 +1834,9 @@
       menu.appendChild(b);
     }
     menu.appendChild(msg);
+    stopBtn.type = "button"; stopBtn.className = "xp-stop"; stopBtn.textContent = "\u2715 Cancel"; stopBtn.hidden = true;
+    stopBtn.title = "Stop this export - nothing is saved or created";
+    menu.appendChild(stopBtn);
     paintCr();
     // Now that its height is known: no room below the button (Explore tasks sits
     // low on the page) -> open above it, and never start off the top.
@@ -1444,6 +1847,17 @@
       }
     };
     fit();
+    // Keep the tick boxes in the list visible: a menu that would sit over them
+    // moves to the right of the list (or its right edge when there is no room).
+    const box0 = data.rows.length ? (btn.closest(".card") || document).querySelector("input.xp-rowpick") : null;
+    if (box0) {
+      const b = box0.getBoundingClientRect(), m = menu.getBoundingClientRect();
+      if (m.left < b.right + 4 && m.right > b.left - 4) {
+        const card = (btn.closest(".card") || document.body).getBoundingClientRect();
+        const left = card.right + 8 + m.width <= window.innerWidth - 4 ? card.right + 8 : Math.max(b.right + 12, Math.min(window.innerWidth - m.width - 8, card.right - m.width - 8));
+        menu.style.left = Math.round(left) + "px";
+      }
+    }
     // Again whenever it grows (the Client report rows paint a moment later),
     // unless the user has already dragged it somewhere.
     try { new ResizeObserver(() => { if (!menu.dataset.moved && menu.isConnected) fit(); }).observe(menu); } catch (e) {}
