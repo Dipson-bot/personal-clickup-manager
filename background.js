@@ -27,7 +27,7 @@ import {
 import { runAllAccounts, runAccountLogin, readAgentRouterLogin, URLS, GITHUB_KEEP_COOKIES } from "./lib-automation.js";
 import { getTaskCommentsLite, getUserGroups, getUser, verifyToken, getTeams, fetchTodayEstimate, fetchWeeklySummary, fetchDateRangeEstimate, createTaskCache, fetchTeamMembers, fetchWorkspaceTags, cuTagNames, fmtDuration, findExtraTaskByName, parseTaskIdFromUrl, getCurrentTimeEntry, getRunningTaskProgress, startTimer, stopTimer, getTaskById, setTaskStatus, taskUrlFor, clientLabelFromContainer, resolveSpaceNamesFor, taskContainer, cuPriorityName, isTaskDone, getSubtasksOfParent, getTaskTree, getTaskDetail, updateTimeEntry, setTaskDueDate, clearTaskTreeCache, listWorkspaceClients, cuRowAssignees, fetchDoneBetween, fetchDoneLite, fetchTrackedHistory, getTaskPanel, addTaskComment, postTaskComment, setTaskDescription, getTaskCommentLinks, createTask, removeTaskAssignee, postAssignedComment, addTimeEntry, weeklyWithToday, listClientFieldOptions, listReachableClients } from "./lib-clickup.js";
 import { resolveRelayKey, pickProbeModel, probeRelay } from "./lib-availability.js";
-import { tidyCollect, tidyLines, tidyResolved, tidyDayOk, tidyUrgent } from "./lib-tidy.js";
+import { tidyCollect, tidyLines, tidyResolved, tidyDayOk, tidyUrgent, tidyDateShort } from "./lib-tidy.js";
 
 const CHECK_ALARM = "dailyLoginCheck";
 const CLICKUP_ALARM = "clickupRefresh";
@@ -1568,7 +1568,7 @@ const DEFAULT_SETTINGS = {
   clickupTidyDays: "weekdays", // "weekdays" | "every" | "0,3,5" (0 = Sunday)
   clickupTidyMax: 3, // tasks named per line, 1-6
   clickupTidyResolved: true, // "a dependency cleared, this can move again"
-  clickupTidyCats: { overdue: true, noEst: true, noDue: true, blocked: true },
+  clickupTidyCats: { overdue: true, noEst: true, noDue: true, blocked: true, offDay: true },
   // ---- Updates ----
   // Install new versions automatically in the background (needs the one-time
   // folder choice on the update page, with Chrome's "Allow on every visit").
@@ -3636,6 +3636,31 @@ function syncMinutes(s) {
   return SYNC_CHOICES.includes(n) ? n : 5;
 }
 
+// Bumped by every setting change that alters what the lists hold. A refresh
+// started before the change notices on its way out and throws its result away
+// (it would put tasks counted the old way back on screen), so the new one never
+// has to wait for it.
+let settingsGen = 0;
+let rebuildTimer = 0, rebuildWaiters = [];
+// A setting that changes what the task lists hold: the pages hide the old rows
+// and say "Updating…" (cuRebuild, read by task-sort.js) until TODAY's list is
+// built with the new setting - saved straight away (onToday), the week views
+// follow when they're done. Quick clicks back and forth share one refresh.
+function rebuildListsFor(what, opts) {
+  settingsGen++;
+  chrome.storage.local.set({ cuRebuild: { at: Date.now(), what } }).catch(() => {});
+  const done = () => chrome.storage.local.remove("cuRebuild").catch(() => {});
+  return new Promise((resolve) => {
+    rebuildWaiters.push(resolve);
+    clearTimeout(rebuildTimer);
+    rebuildTimer = setTimeout(() => {
+      const waiters = rebuildWaiters; rebuildWaiters = [];
+      refreshClickup({ ...opts, after: true, onToday: done })
+        .catch((e) => ({ ok: false, error: String(e && e.message ? e.message : e) }))
+        .then((r) => { done(); for (const w of waiters) w(r); });
+    }, 400);
+  });
+}
 async function refreshClickup(opts = {}) {
   const { viaAlarm = false } = opts;
   if (viaAlarm) {
@@ -3653,18 +3678,24 @@ async function refreshClickup(opts = {}) {
       }
     }
   }
-  // Share one in-flight refresh across concurrent triggers.
-  if (clickupRefreshInFlight) return clickupRefreshInFlight;
-  clickupRefreshInFlight = (async () => {
+  // Share one in-flight refresh across concurrent triggers - except after a
+  // setting changed (opts.after): the running one was started with the OLD
+  // setting and will throw its result away (settingsGen), so start the new one
+  // now instead of waiting behind it. (Joining it kept "Spread over days" rows -
+  // tasks due later - under "Due today" after switching to "By due date"; waiting
+  // for it made "Updating the list…" last over a minute.)
+  if (clickupRefreshInFlight && !opts.after) return clickupRefreshInFlight;
+  const run = (async () => {
     try {
       const r = await refreshClickupImpl(opts);
       refreshWaitingInfo().catch(() => {}); // "Waiting on …" chips (cached, throttled)
       return r;
     } finally {
-      clickupRefreshInFlight = null;
+      if (clickupRefreshInFlight === run) clickupRefreshInFlight = null;
     }
   })();
-  return clickupRefreshInFlight;
+  clickupRefreshInFlight = run;
+  return run;
 }
 
 // Opening the popup or the options page asks for a forced rebuild of the weekly
@@ -3720,7 +3751,9 @@ function keepLastGoodConfigured(data, prev) {
 
 // forceWeeks: also bypass the due-this/next-week bundles' 60-min TTL. Only set by
 // an estimate edit or an explicit Refresh click - never by popup-open/alarms.
-async function refreshClickupImpl({ includeTasks = false, viaAlarm = false, forceWeekly = false, forceWeeks = false } = {}) {
+async function refreshClickupImpl({ includeTasks = false, viaAlarm = false, forceWeekly = false, forceWeeks = false, onToday = null } = {}) {
+  const gen = settingsGen; // a setting changed after this = our result is stale (see rebuildListsFor)
+  const t0 = Date.now();
   const cfg = await getClickupConfig();
   if (!cfg || !cfg.token) return { ok: false, reason: "not-configured" };
   if (!cfg.teamId || cfg.userId == null) return { ok: false, reason: "incomplete-setup" };
@@ -3750,6 +3783,23 @@ async function refreshClickupImpl({ includeTasks = false, viaAlarm = false, forc
     const data = await fetchTodayEstimate({ token: cfg.token, teamId: cfg.teamId, userId: cfg.userId, targetHours, deadlineTaskUrls, extendedMode, taskCache, spread });
     // One failed request must not knock the Extra Task out of today's total.
     keepLastGoodConfigured(data, await getClickupState().catch(() => null));
+    if (gen !== settingsGen) return { ok: false, reason: "superseded" };
+    // After a setting change: today's list (the Tasks card, the popup) is saved
+    // the moment it's built, and the "Updating…" line ends; the week views below
+    // can take a while (many requests) and are saved when they're done.
+    if (typeof onToday === "function") {
+      try {
+        const prevQ = (await getClickupState().catch(() => null)) || {};
+        const quick = { ...prevQ, estimateMs: data.estimateMs, spentMs: data.spentMs, targetMs: data.targetMs, targetHours: data.targetHours,
+          taskCount: data.taskCount, noEstimateCount: data.noEstimateCount, targetMet: data.targetMet, deadlineTasks: data.deadlineTasks,
+          deadlineEstimateMs: data.deadlineEstimateMs, deadlineSpentMs: data.deadlineSpentMs, tasks: data.tasks, error: null };
+        // The filter list for the Tasks card; if ClickUp is slow it follows with
+        // the full refresh instead of holding today's list back.
+        quick.todayFilter = await Promise.race([getTodayFilterData(cfg, settings), new Promise((r) => setTimeout(() => r(prevQ.todayFilter || null), 10000))]);
+        await annotateClients(cfg.token, quick, settings.cuClientLevel || "auto");
+        if (gen === settingsGen) { await setClickupState(quick); onToday(); diagLog("ClickUp", "setting change: today's list rebuilt in " + Math.round((Date.now() - t0) / 100) / 10 + " s"); }
+      } catch (e) {}
+    }
 
     // Weekly accumulation (current week Mon→Fri). fetchWeeklySummary computes BOTH
     // the Mon→today and Mon→Friday aggregates in one pass, so the popup's
@@ -3814,6 +3864,9 @@ async function refreshClickupImpl({ includeTasks = false, viaAlarm = false, forc
     // bounds change). Best-effort: a failure leaves whichever bundle already built and
     // the rest of the refresh proceeds. (This is DUE-date bounded, distinct from the
     // Mon→Fri `weekly` summary card, which is tracked-time accumulated and untouched.)
+    // Superseded by a newer setting while the weekly summary was fetched: stop
+    // here rather than spend more ClickUp requests on week views nobody will see.
+    if (gen !== settingsGen) return { ok: false, reason: "superseded" };
     let thisWeek = null;
     let thisWorkweek = null;
     let nextWeek = null;
@@ -3937,6 +3990,7 @@ async function refreshClickupImpl({ includeTasks = false, viaAlarm = false, forc
     // The currently-running timer (if any) so the popup/options can render the
     // right Start/Stop toggle. Best-effort: a failure here must not abort the
     // whole refresh, so default to null.
+    if (gen !== settingsGen) return { ok: false, reason: "superseded" };
     let running = null;
     try { running = await getCurrentTimeEntry(cfg.token, cfg.teamId); } catch (e) { running = null; }
     const state = {
@@ -3977,6 +4031,7 @@ async function refreshClickupImpl({ includeTasks = false, viaAlarm = false, forc
     // completed" card. Costs no requests (see recordDoneHistory) and must never
     // be able to sink a refresh, hence the catch.
     await recordDoneHistory(state).catch(() => {});
+    if (gen !== settingsGen) return { ok: false, reason: "superseded" }; // a newer setting's refresh owns the state
     await setClickupState(state);
     await maybeNotifyClickup(state, { viaAlarm });
     await maybeNotifyRunningTask(cfg).catch(() => {});
@@ -4363,6 +4418,8 @@ async function maybeNotifyRunningTask(cfg) {
     estimateMs: progress ? progress.estimateMs : 0,
     closedMs: progress ? Math.max(0, progress.trackedMs - Math.max(0, Date.now() - (entry.startMs || Date.now()))) : 0,
     closedTodayMs: progress ? Math.max(0, Number(progress.closedTodayMs) || 0) : 0,
+    // Its dates: the strip shows today's time against the task's share for a day.
+    startDateMs: (progress && progress.startDateMs) || null, dueDateMs: (progress && progress.dueDateMs) || null,
     at: Date.now(),
   } });
   const { clickupNotified } = await chrome.storage.local.get("clickupNotified");
@@ -4766,7 +4823,7 @@ async function tidyReminderPayload(opts = {}) {
     return { ok: false, reason: "no-tasks", error: res && res.error };
   }
   const todayStart = new Date().setHours(0, 0, 0, 0);
-  const model = tidyCollect(res.data.tasks, st.waiting, todayStart);
+  const model = tidyCollect(res.data.tasks, st.waiting, todayStart, { offDay: offDayReason(s.clickupWeekMode) });
   // Yesterday's blocked list, so we can spot what has been freed up since.
   const { cuTidyBlocked } = await chrome.storage.local.get("cuTidyBlocked");
   const snap = cuTidyBlocked && typeof cuTidyBlocked === "object" ? cuTidyBlocked : {};
@@ -4775,6 +4832,20 @@ async function tidyReminderPayload(opts = {}) {
     ? tidyResolved(snap.ids || [], model, res.data.tasks) : [];
   const say = tidyLines(model, { cats: t.cats, max: t.max, resolved });
   return { ok: true, model, resolved, say, urgent: tidyUrgent(model, resolved), blockedIds: model.blockedIds };
+}
+// A due date on a day off: a company holiday (from the team calendar) or the
+// weekend - the days outside the working week ("A week runs": Sun-Thu teams are
+// off Fri-Sat, everyone else Sat-Sun). Returns why ("Sat 10 Oct", "Dashain
+// holidays · 21 Oct"), "" for a working day.
+function offDayReason(weekMode) {
+  const off = weekMode === "sun-thu" ? [5, 6] : [6, 0];
+  const DAY = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+  return (ms) => {
+    const hol = companyOn(ms).find((e) => e.kind === "holiday");
+    if (hol) return (hol.title || "Company holiday") + " \u00b7 " + tidyDateShort(ms);
+    const d = new Date(ms).getDay();
+    return off.includes(d) ? DAY[d] + " " + tidyDateShort(ms) : "";
+  };
 }
 // The Insights lists a "needs tidying" notification talks about, in its order:
 // counts keys (lib-tidy) -> the Insights drill ids. Kept IN the notification id
@@ -8132,7 +8203,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
           const c = p.clickupTidyCats;
           patch.clickupTidyCats = {
             overdue: c.overdue !== false, noEst: c.noEst !== false,
-            noDue: c.noDue !== false, blocked: c.blocked !== false,
+            noDue: c.noDue !== false, blocked: c.blocked !== false, offDay: c.offDay !== false,
           };
         }
         if (p.clickupWorkdayEndHour !== undefined) {
@@ -8167,17 +8238,17 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
           // Every card and filter counts differently now: rebuild them all.
           clearFilterCache();
           sendResponse({ ok: true, settings: next });
-          refreshClickup({ includeTasks: true, forceWeeks: true, forceWeekly: true }).catch(() => {});
+          rebuildListsFor("Multi-day tasks", { includeTasks: true, forceWeeks: true, forceWeekly: true }).catch(() => {});
           break;
         }
         if (patch.clickupWeekMode !== undefined) {
           // Same here: the week bundles rebuild in the background.
           sendResponse({ ok: true, settings: next });
-          refreshClickup({ includeTasks: false, forceWeeks: true }).catch(() => {});
+          refreshClickup({ includeTasks: false, forceWeeks: true, after: true }).catch(() => {});
           break;
         }
         if (patch.clickupDeadlineTaskUrls !== undefined || patch.clickupExtendedMode !== undefined) {
-          await refreshClickup({ includeTasks: false });
+          await rebuildListsFor("Recurring or multi-day tasks", { includeTasks: false }).catch(() => {});
           sendResponse({ ok: true, settings: next });
           break;
         }

@@ -273,6 +273,7 @@ async function refresh() {
       const [run, today, extra] = await Promise.all([cu.running(), cu.todayEntries(), cu.extraTask().catch(() => ({ id: null }))]);
       let task = null;
       if (run) task = await cu.task(run.taskId).catch(() => null);
+      const totalMs = run ? await cu.trackedTotal(run.taskId, run.startMs).catch(() => null) : null;
       const nexts = run ? [] : await cu.dueToday().catch(() => []);
       state = {
         at: Date.now(),
@@ -280,7 +281,8 @@ async function refresh() {
         running: run ? { ...run, taskName: (task && task.name) || run.taskName } : null,
         task: run ? {
           id: run.taskId, estimateMs: (task && task.estimateMs) || 0, client: (task && task.client) || "", url: task && task.url,
-          closedMs: today.byTask.get(run.taskId) || 0, dueDateMs: task && task.dueDateMs, status: task && task.status,
+          // closedMs = today's time on it before this timer; totalClosedMs = every day's.
+          closedMs: today.byTask.get(run.taskId) || 0, totalClosedMs: totalMs, dueDateMs: task && task.dueDateMs, startDateMs: task && task.startDateMs, status: task && task.status,
           isExtra: !!(extra.id && extra.id === run.taskId) || /\bextra(?:\(s\)|s)?\s+task(?:\(s\)|s)?\b/i.test(run.taskName || ""),
         } : null,
         today: { closedMs: today.total, targetMs: (Number(settings.targetHours) || 7) * 3600000 },
@@ -403,22 +405,28 @@ ipcMain.handle("expand", (e, on) => { if (on) peek(false); setExpanded(!!on); re
 // The hover card over the strip: the window grows up (or down, at the top of the
 // screen) by PEEK_H while the pointer is on it, then goes back exactly.
 const PEEK_H = 92;
-let peekBase = null, peekDir = "up";
+// peekOn = the window is grown right now; peekBase = the strip's own place,
+// kept a moment after shrinking so a "moved" from the resize isn't remembered.
+// (Before, pointing back within that moment found peekBase still set, answered
+// "open" without growing the window, and the card was drawn squashed.)
+let peekBase = null, peekDir = "up", peekOn = false, peekClear = 0;
 function peek(on) {
   if (!win || win.isDestroyed()) return null;
   if (on) {
     if (expanded) return null;
-    if (peekBase) return { dir: peekDir, stripH: peekBase.height };
-    const b = win.getBounds(), disp = screen.getDisplayMatching(b);
+    if (peekOn && peekBase) return { dir: peekDir, stripH: peekBase.height };
+    clearTimeout(peekClear);
+    const b = peekBase || win.getBounds(), disp = screen.getDisplayMatching(b);
     peekDir = b.y - PEEK_H >= disp.bounds.y ? "up" : "down";
-    peekBase = b;
+    peekBase = b; peekOn = true;
     win.setBounds({ x: b.x, y: peekDir === "up" ? b.y - PEEK_H : b.y, width: b.width, height: b.height + PEEK_H });
     return { dir: peekDir, stripH: b.height };
   }
-  if (!peekBase) return null;
-  const b = peekBase;
-  win.setBounds(b);
-  setTimeout(() => { peekBase = null; }, 250); // let the resize settle before "moved" counts again
+  if (!peekOn || !peekBase) return null;
+  peekOn = false;
+  win.setBounds(peekBase);
+  clearTimeout(peekClear);
+  peekClear = setTimeout(() => { if (!peekOn) peekBase = null; }, 250);
   return null;
 }
 ipcMain.handle("peek", (e, on) => peek(!!on));

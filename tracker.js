@@ -106,6 +106,18 @@
   // green as the time reaches the estimate, then amber to red past it. The day
   // cell does the same towards the daily target but never turns red.
   const STRIP_STYLES = ["B", "L", "F", "H", "J"];
+  // A task's share of its estimate for ONE day: the estimate spread over its
+  // working days (Mon-Fri, start date to due date). A week-long 7h task is 1h24
+  // a day; a one-day task (or one without a start date) gets all of it.
+  function workDays(fromMs, toMs) {
+    if (!fromMs || !toMs || toMs < fromMs) return 1;
+    const d = new Date(fromMs), e = new Date(toMs);
+    d.setHours(12, 0, 0, 0); e.setHours(12, 0, 0, 0);
+    let wk = 0, all = 0;
+    for (let i = 0; d <= e && i < 400; i++, d.setDate(d.getDate() + 1)) { all++; if (d.getDay() !== 0 && d.getDay() !== 6) wk++; }
+    return wk || all || 1;
+  }
+  const dailyShare = (estMs, fromMs, toMs) => (estMs > 0 ? estMs / workDays(fromMs, toMs) : 0);
   const shortDur = (ms) => { const m = Math.round(Math.max(0, ms) / 60000); const h = Math.floor(m / 60); return h ? h + "h" + (m % 60 ? String(m % 60).padStart(2, "0") : "") : m + "m"; };
   function ssRing(pct, color) {
     const r = 9, c = 2 * Math.PI * r, f = Math.max(0, Math.min(100, pct)) / 100;
@@ -416,7 +428,10 @@
     const dayStart = new Date(now); dayStart.setHours(0, 0, 0, 0);
     const trackedToday = earlierToday + Math.max(0, now - Math.max(run.startMs || now, dayStart.getTime()));
     const multiDay = !!rp && (rp.closedMs || 0) > earlierToday + 60000;
-    const todayTrk = multiDay ? fmt(trackedToday) + " today" : "";
+    // Today against the task's share for a day (its estimate over its working days).
+    const share = rp ? dailyShare(Number(rp.estimateMs) || 0, rp.startDateMs, rp.dueDateMs) : 0;
+    const dp = share ? trackedToday / share : null;
+    const todayTrk = share && Math.abs(share - (Number(rp.estimateMs) || 0)) > 60000 ? "today " + fmt(trackedToday) + " / " + fmt(share) : multiDay ? fmt(trackedToday) + " today" : "";
     const p = est > 0 ? tracked / est : null;
     const over = p != null && tracked - est >= 60000; // a full minute past the estimate
     const barColor = p == null ? "var(--blue)" : p > 1.07 ? "var(--red)" : p >= 0.8 ? "var(--green)" : "var(--blue)";
@@ -489,13 +504,15 @@
       // name, Extra Task, Stop and Done are on hover.
       root.dataset.key = "";
       const tgt = Number(st.targetMs) || 0;
-      root.innerHTML = '<div class="' + faceCls(p, data.settings.stripAnim) + '">' + faceSVG(p, 22) + "</div>" + stripStyleHtml(data.settings.stripStyle || "B", {
-        tp: width, tc: ssColor(p), dc: tgt ? ssColor(spent / tgt, true) : "", tt: p == null ? shortDur(tracked) : over ? "+" + shortDur(tracked - est) : shortDur(tracked) + "/" + shortDur(est),
+      // Task cell: this task TODAY against its share for a day (a 7h task over a
+      // week: 1h24 a day). The overall "+4h39 / 7h" is on hover.
+      root.innerHTML = '<div class="' + faceCls(dp, data.settings.stripAnim) + '">' + faceSVG(dp, 22) + "</div>" + stripStyleHtml(data.settings.stripStyle || "B", {
+        tp: dp == null ? 100 : Math.min(100, dp * 100), tc: ssColor(dp), dc: tgt ? ssColor(spent / tgt, true) : "", tt: share ? shortDur(trackedToday) + "/" + shortDur(share) : shortDur(trackedToday),
         dp: tgt ? Math.min(100, (spent / tgt) * 100) : 0, dt: tgt ? shortDur(spent) + "/" + shortDur(tgt) : shortDur(spent),
         anim: data.settings.stripAnim !== false,
       });
       ssPhase(root);
-      root.title = (run.taskName || "") + " - " + time + (today ? " · " + today : "");
+      root.title = (run.taskName || "") + (share ? " - today " + fmt(trackedToday) + " / " + fmt(share) : "") + " - overall " + time + (today ? " · " + today : "");
     } else {
       root.dataset.key = "";
       // Today's total sits under the mood word in the small view too, so it no

@@ -38,7 +38,11 @@ export function tidyClip(name, max = 38) {
 
 // The four Insights buckets, from the open-task rows + clickupState.waiting.
 // Mirrors options.js insBuildModel() on purpose - see the drift test.
-export function tidyCollect(rows, waiting, todayStart) {
+// Plus one the notification adds: tasks due on a day off (opts.offDay(dueMs)
+// says why - "Sat 10 Oct", "Dashain holidays · 21 Oct" - or "" for a working
+// day), today or in the next opts.aheadDays (30), so the person can get the
+// date moved before the work is missed.
+export function tidyCollect(rows, waiting, todayStart, opts = {}) {
   const list = [], hasKids = Object.create(null);
   for (const r of rows || []) {
     if (!r || r.done) continue;
@@ -54,8 +58,14 @@ export function tidyCollect(rows, waiting, todayStart) {
   const byId = Object.create(null);
   for (const r of list) byId[r.id] = r;
 
-  const overdueList = [], noEstList = [], noDueList = [], blockedList = [];
+  const overdueList = [], noEstList = [], noDueList = [], blockedList = [], offDayList = [];
+  const offDay = typeof opts.offDay === "function" ? opts.offDay : null;
+  const aheadEnd = todayStart + (Number(opts.aheadDays) || 30) * 86400000;
   for (const r of list) {
+    if (offDay && r.due && r.due >= todayStart && r.due < aheadEnd) {
+      const why = offDay(r.due);
+      if (why) offDayList.push({ ...r, reason: why });
+    }
     const umbrella = !!hasKids[r.id]; // a parent whose subtasks are in this list
     if (r.due && r.due < todayStart) {
       r.reason = tidyOverdueBy(r.due, todayStart); // "3 days late" for the line
@@ -101,6 +111,7 @@ export function tidyCollect(rows, waiting, todayStart) {
   noEstList.sort((a, b) => (b.est - a.est) || a.name.localeCompare(b.name));
   noDueList.sort((a, b) => a.name.localeCompare(b.name));
   blockedList.sort((a, b) => a.name.localeCompare(b.name));
+  offDayList.sort((a, b) => a.due - b.due);
 
   return {
     todayStart,
@@ -108,6 +119,7 @@ export function tidyCollect(rows, waiting, todayStart) {
     noEst: noEstList,
     noDue: noDueList,
     blocked: blockedList,
+    offDay: offDayList,
     blockedIds: blockedList.map((b) => b.id),
     openList: list, // every open task, for the "was blocked, isn't now" check
     k: {
@@ -115,6 +127,7 @@ export function tidyCollect(rows, waiting, todayStart) {
       noEst: noEstList.length,
       noDue: noDueList.length,
       blocked: blockedList.length,
+      offDay: offDayList.length,
       open: list.length,
     },
   };
@@ -160,6 +173,7 @@ const CATS = [
   ["noEst", "No estimate"],
   ["noDue", "No due date"],
   ["blocked", "Blocked"],
+  ["offDay", "Due on a day off"],
 ];
 
 // "A, B and 3 more" - the compact way to name a bucket in one line.
@@ -191,6 +205,7 @@ export function tidyLines(model, opts = {}) {
   add("noEst", "No estimate", model.noEst, false);
   add("noDue", "No due date", model.noDue, false);
   add("blocked", "Blocked", model.blocked, true);
+  add("offDay", "Due on a day off - ask to move the date", model.offDay || [], true);
   if (resolved.length) {
     // The one the user asked for by name: a dependency cleared, so the task can
     // be finished and closed.

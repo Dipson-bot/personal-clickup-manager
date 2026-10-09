@@ -28,6 +28,18 @@
   // green as the time reaches the estimate, then amber to red past it. The day
   // cell does the same towards the daily target but never turns red.
   const STRIP_STYLES = ["B", "L", "F", "H", "J"];
+  // A task's share of its estimate for ONE day: the estimate spread over its
+  // working days (Mon-Fri, start date to due date). A week-long 7h task is 1h24
+  // a day; a one-day task (or one without a start date) gets all of it.
+  function workDays(fromMs, toMs) {
+    if (!fromMs || !toMs || toMs < fromMs) return 1;
+    const d = new Date(fromMs), e = new Date(toMs);
+    d.setHours(12, 0, 0, 0); e.setHours(12, 0, 0, 0);
+    let wk = 0, all = 0;
+    for (let i = 0; d <= e && i < 400; i++, d.setDate(d.getDate() + 1)) { all++; if (d.getDay() !== 0 && d.getDay() !== 6) wk++; }
+    return wk || all || 1;
+  }
+  const dailyShare = (estMs, fromMs, toMs) => (estMs > 0 ? estMs / workDays(fromMs, toMs) : 0);
   const shortDur = (ms) => { const m = Math.round(Math.max(0, ms) / 60000); const h = Math.floor(m / 60); return h ? h + "h" + (m % 60 ? String(m % 60).padStart(2, "0") : "") : m + "m"; };
   function ssRing(pct, color) {
     const r = 9, c = 2 * Math.PI * r, f = Math.max(0, Math.min(100, pct)) / 100;
@@ -131,14 +143,22 @@
   function numbers() {
     const run = st && st.running, t = st && st.task;
     const live = run ? Math.max(0, Date.now() - run.startMs) : 0;
-    const tracked = (t ? t.closedMs : 0) + live;
+    // Today on this task (before this timer + the part of it since midnight) and
+    // every day's (for the hover card); its share for one day (estimate over its
+    // working days) is what the strip measures against.
+    const dayStart = new Date(); dayStart.setHours(0, 0, 0, 0);
+    const todayTask = (t ? t.closedMs : 0) + (run ? Math.max(0, Date.now() - Math.max(run.startMs, dayStart.getTime())) : 0);
+    const tracked = t && t.totalClosedMs != null ? t.totalClosedMs + live : (t ? t.closedMs : 0) + live;
     const est = t ? t.estimateMs : 0;
+    const share = dailyShare(est, t && t.startDateMs, t && t.dueDateMs);
+    const dp = share ? todayTask / share : null;
     const p = est > 0 ? tracked / est : null;
     const over = p != null && tracked - est >= 60000;
     const today = st && st.today ? st.today.closedMs + live : 0;
     const target = st && st.today ? st.today.targetMs : 0;
     return {
-      p, over, tracked, est, todayMs: today, target,
+      p, over, tracked, est, todayMs: today, target, todayTask, share, dp,
+      overall: est > 0 ? "Overall " + fmt(tracked) + " / " + fmt(est) + (over ? " \u00b7 +" + fmt(tracked - est) + " over" : "") : "Overall " + fmt(tracked),
       time: p == null ? fmt(tracked) : over ? "+" + fmt(tracked - est) + " over" : fmt(tracked) + " / " + fmt(est),
       color: p == null ? "var(--blue)" : p > 1.07 ? "var(--red)" : p >= 0.8 ? "var(--green)" : "var(--blue)",
       width: p == null ? 100 : Math.min(100, p * 100),
@@ -188,7 +208,7 @@
     const t = st.task || {}, run = st.running;
     const meta = [t.client, t.dueDateMs ? "due " + new Date(t.dueDateMs).toLocaleDateString([], { month: "short", day: "numeric" }) : ""].filter(Boolean).join(" · ");
     return '<div class="row"><a class="nm" data-url="' + esc(t.url || "") + '" title="' + esc(run.taskName) + '">' + esc(run.taskName || "(task)") + '</a><button class="x" data-act="big" title="Bigger view: note, comments, files">&#10529;</button></div>' +
-      (meta ? '<div class="sub">' + esc(meta) + "</div>" : "") +
+      '<div class="sub"><span id="pkAll"></span>' + (meta ? " \u00b7 " + esc(meta) : "") + "</div>" +
       '<div class="btns">' + (t.isExtra ? (st.last ? '<button class="pri" data-act="resume" title="Stop the Extra Task and go back to: ' + esc(st.last.name) + '">&#8617; Back to task</button>' : "")
         : (st.extra ? '<button data-act="extra" title="Stop this timer and start the Extra Task now">&#8644; Extra Task</button>' : "")) +
       '<span class="sp"></span><button data-act="stop">&#9632; Stop</button>' + (t.isExtra ? "" : '<button data-act="complete">&#10003; Done</button>') + '<button data-act="menu" title="More">&#9662;</button></div>';
@@ -260,11 +280,14 @@
     b.textContent = "\u{1F4AC} " + comments.newCount;
     if (!st || !st.running) { const td = $("today"); if (td && st) td.textContent = numbers().today; return; }
     const n = numbers();
-    const f = $("face"); if (f) { f.innerHTML = face(n.p, stripMode() && !big ? 22 : big ? 36 : full ? 42 : compact() ? 40 : 50); f.className = faceCls(n.p, settings.anim); ssPhase(f); }
+    const fp = stripMode() && !big ? n.dp : n.p; // the strip measures today against the day's share
+    const f = $("face"); if (f) { f.innerHTML = face(fp, stripMode() && !big ? 22 : big ? 36 : full ? 42 : compact() ? 40 : 50); f.className = faceCls(fp, settings.anim); ssPhase(f); }
+    const pa = $("pkAll"); if (pa) pa.textContent = n.overall;
     card.title = "";
     const ss = $("ssbox");
     if (ss) {
-      const html = stripStyleHtml(settings.style || "B", { tp: n.width, tc: ssColor(n.p), dc: n.target ? ssColor(n.todayMs / n.target, true) : "", tt: n.p == null ? shortDur(n.tracked) : n.over ? "+" + shortDur(n.tracked - n.est) : shortDur(n.tracked) + "/" + shortDur(n.est),
+      // Task cell: this task today / its share for a day (7h over a week = 1h24).
+      const html = stripStyleHtml(settings.style || "B", { tp: n.dp == null ? 100 : Math.min(100, n.dp * 100), tc: ssColor(n.dp), dc: n.target ? ssColor(n.todayMs / n.target, true) : "", tt: n.share ? shortDur(n.todayTask) + "/" + shortDur(n.share) : shortDur(n.todayTask),
         dp: n.target ? Math.min(100, (n.todayMs / n.target) * 100) : 0, dt: n.target ? shortDur(n.todayMs) + "/" + shortDur(n.target) : shortDur(n.todayMs), anim: settings.anim !== false });
       if (ss._html !== html) { ss._html = html; ss.innerHTML = html; ssPhase(ss); }
     }
@@ -376,29 +399,43 @@
   // Pointing at it shows the full view (the app watches the cursor and sets the opacity).
   T.on("pointer", (inside) => {
     // The strip: pointing at it opens the hover card (name, Extra Task, Stop, Done).
-    if (stripMode() && !big) { if (inside) startPeek(); else { clearTimeout(peekT); peekT = setTimeout(endPeek, 350); } return; }
+    if (stripMode() && !big) { wantPeek(inside); return; }
     if (inside) { if (!full && !big && key !== "extra") { full = true; render(); } return; }
     if (big || !full || key === "extra") return;
     const a = document.activeElement;
     if ((a && (a.id === "cmt")) || pending()) return; // keep it open while writing
     full = false; render();
   });
-  let peekT = 0;
-  async function startPeek() {
+  // The hover card: one wanted state, applied one step at a time. Opening waits
+  // a moment (passing over the strip doesn't flash it), closing waits a bit
+  // longer (a slip off the edge doesn't close it). A pointer that leaves while it
+  // is still opening simply closes it afterwards - it can't get stuck or be
+  // drawn before the window has grown.
+  let peekT = 0, peekWant = false, peekBusy = false;
+  function wantPeek(on) {
+    peekWant = !!on;
     clearTimeout(peekT);
-    if (peek.on || peek.busy || !st) return;
-    peek.busy = true;
-    const r = await T.peek(true);
-    peek.busy = false;
-    if (r) { peek = { on: true, dir: r.dir, h: r.stripH, busy: false }; render(true); }
+    peekT = setTimeout(applyPeek, on ? 120 : 380);
   }
-  async function endPeek() {
-    if (!peek.on) return;
-    peek = { on: false, dir: "up", h: 0, busy: false };
-    await T.peek(false);
-    render(true);
+  async function applyPeek() {
+    if (peekBusy) return;
+    peekBusy = true;
+    try {
+      for (let i = 0; i < 4 && !big && !!st && peek.on !== peekWant; i++) {
+        if (peekWant) {
+          const r = await T.peek(true);
+          if (!r) break;
+          peek = { on: true, dir: r.dir, h: r.stripH, busy: false };
+        } else {
+          await T.peek(false);
+          peek = { on: false, dir: "up", h: 0, busy: false };
+        }
+        render(true);
+      }
+    } finally { peekBusy = false; }
   }
   async function setBig(on) {
+    if (on) { peekWant = false; clearTimeout(peekT); }
     if (on && peek.on) { peek = { on: false, dir: "up", h: 0, busy: false }; await T.peek(false); }
     if (on && !(st && st.running)) return;
     big = on;

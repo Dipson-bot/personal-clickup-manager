@@ -2532,6 +2532,7 @@ function renderClickupSettings(cu) {
   $("cuTidyCatNoEst").checked = tc.noEst !== false;
   $("cuTidyCatNoDue").checked = tc.noDue !== false;
   $("cuTidyCatBlocked").checked = tc.blocked !== false;
+  if ($("cuTidyCatOffDay")) $("cuTidyCatOffDay").checked = tc.offDay !== false;
   if ($("cuTidyDaysRow")) $("cuTidyDaysRow").style.display = cu.tidyNotify === false ? "none" : "";
   if ($("cuTidyCatsRow")) $("cuTidyCatsRow").style.display = cu.tidyNotify === false ? "none" : "";
   if (configured) {
@@ -5541,6 +5542,7 @@ $("cuSave").onclick = async () => {
         clickupTidyCats: {
           overdue: $("cuTidyCatOverdue").checked, noEst: $("cuTidyCatNoEst").checked,
           noDue: $("cuTidyCatNoDue").checked, blocked: $("cuTidyCatBlocked").checked,
+          offDay: $("cuTidyCatOffDay") ? $("cuTidyCatOffDay").checked : true,
         },
         clickupDeadlineTaskUrls: deadlineUrls,
       },
@@ -8756,7 +8758,7 @@ if ($("admCalCard")) {
 // Where the timer shows (Floating window / Taskbar / Both / Neither) is picked once
 // and kept; the Dashboard card invites people to try the taskbar until they pick.
 const DESK_REL = "https://github.com/Dipson-bot/personal-clickup-manager/releases";
-const DESK_TAG = "desktop-v0.3.1";
+const DESK_TAG = "desktop-v0.3.2";
 let deskOs = "";
 async function deskPlatform() {
   if (deskOs) return deskOs;

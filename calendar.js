@@ -320,7 +320,7 @@
     } else {
       const todayBtn = el("button", "", "Today"); todayBtn.type = "button";
       todayBtn.onclick = (e) => { e.stopPropagation(); goTo(ymd(Date.now())); };
-      const jump = el("input"); jump.type = "date"; jump.title = "Go to a date";
+      const jump = el("input"); jump.type = "date"; jump.title = "Go to a date (type it)"; jump.dataset.pcalJump = "1";
       jump.value = ymd(new Date(y, m, 1).getTime());
       jump.onchange = (e) => { e.stopPropagation(); if (/^\d{4}-\d{2}-\d{2}$/.test(jump.value)) goTo(jump.value); };
       jump.onclick = (e) => e.stopPropagation();
@@ -470,5 +470,68 @@
   try { chrome.storage.onChanged.addListener((ch, area) => { if (area === "local" && (ch.companyCalendar || ch.clickupState || ch.reminders)) load(); }); } catch (e) {}
   setInterval(paintChip, 60000); // the date rolls over at midnight
   if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", load); else load();
-  window.PcmCalendar = { toBS, bsLabel, isHoliday, isWfh, eventsOn, remindersOn, open, pick: pickDate, refresh: load };
+  // ---- every date field on the page uses THIS calendar ----
+  // A date (or date + time) field anywhere - filters, Bulk edit, Wrap up, Add
+  // missed time, reminders, notices - opens this calendar instead of the
+  // browser's plain one: clicking it, Enter / Space / Alt+Down in it, or a page
+  // calling its showPicker(). The pick is written back as the field's normal
+  // value with input + change events, so the page's own code works unchanged.
+  // Date + time fields keep their time (typed as before). The browser's own
+  // calendar button is hidden on them.
+  const DATE_SEL = 'input[type="date"]:not([data-pcal-jump]), input[type="datetime-local"]';
+  const takeCss = document.createElement("style");
+  takeCss.textContent = DATE_SEL.split(", ").map((s) => s + "::-webkit-calendar-picker-indicator").join(", ") + " { display: none; }\n" +
+    "input[data-pcal-jump]::-webkit-calendar-picker-indicator { display: none; }\n" +
+    DATE_SEL.split(", ").map((s) => s + ":not(:disabled)").join(", ") + " { cursor: pointer; }";
+  document.head.appendChild(takeCss);
+  const fieldDay = (inp) => { const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(String(inp.value || "")); return m ? new Date(+m[1], +m[2] - 1, +m[3], 12).getTime() : 0; };
+  function pickFor(inp, anchor) {
+    if (!inp || inp.disabled || inp.readOnly) return;
+    const withTime = inp.type === "datetime-local";
+    // A hidden field behind a button ("Move all to date…") is an action, not a
+    // value to clear; a field you can see may be emptied ("No date").
+    const hidden = inp.offsetWidth < 4 || inp.offsetHeight < 4 || getComputedStyle(inp).opacity === "0";
+    pickDate(anchor && anchor.isConnected ? anchor : inp, {
+      value: fieldDay(inp) || 0,
+      canClear: !inp.required && !hidden,
+      what: inp.dataset.pcalWhat || (withTime ? "day" : "date"),
+      onPick: (ms) => {
+        let v = ms ? ymd(ms) : "";
+        if (v && inp.min && v < String(inp.min).slice(0, 10)) return; // before the earliest allowed day
+        if (v && inp.max && v > String(inp.max).slice(0, 10)) return;
+        if (v && withTime) v += "T" + ((/T(\d{2}:\d{2})/.exec(inp.value) || [])[1] || "09:00");
+        inp.value = v;
+        inp.dispatchEvent(new Event("input", { bubbles: true }));
+        inp.dispatchEvent(new Event("change", { bubbles: true }));
+      },
+      onClose: () => {},
+    });
+  }
+  // What was just pressed: a hidden field opened by a button ("Move all to
+  // date…") shows the calendar next to that button.
+  let lastPress = null, lastPressAt = 0;
+  document.addEventListener("pointerdown", (e) => { lastPress = e.target && e.target.closest ? e.target.closest("button, a, [role=button], label, input") || e.target : null; lastPressAt = Date.now(); }, true);
+  document.addEventListener("click", (e) => {
+    const inp = e.target && e.target.closest ? e.target.closest(DATE_SEL) : null;
+    if (!inp) return;
+    e.preventDefault();
+    pickFor(inp, inp);
+  }, true);
+  document.addEventListener("keydown", (e) => {
+    const inp = e.target && e.target.matches && e.target.matches(DATE_SEL) ? e.target : null;
+    if (!inp || !((e.key === "Enter" || e.key === " ") || (e.altKey && e.key === "ArrowDown"))) return;
+    e.preventDefault(); e.stopPropagation();
+    pickFor(inp, inp);
+  }, true);
+  try {
+    const native = HTMLInputElement.prototype.showPicker;
+    HTMLInputElement.prototype.showPicker = function () {
+      if (this.matches && this.matches(DATE_SEL)) {
+        const hidden = this.offsetWidth < 4 || this.offsetHeight < 4 || getComputedStyle(this).opacity === "0";
+        return pickFor(this, hidden && lastPress && Date.now() - lastPressAt < 1500 ? lastPress : this);
+      }
+      return native ? native.call(this) : undefined;
+    };
+  } catch (e) {}
+  window.PcmCalendar = { toBS, bsLabel, isHoliday, isWfh, eventsOn, remindersOn, open, pick: pickDate, pickFor, refresh: load };
 })();

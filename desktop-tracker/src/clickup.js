@@ -18,6 +18,7 @@ class ClickUp {
     this.teams = [];
     this.extra = null; // { id, name, at }
     this.taskCache = new Map(); // id -> { at, t }
+    this.totalCache = new Map(); // task id + timer start -> { at, ms }
   }
 
   async req(path, opts = {}) {
@@ -68,7 +69,7 @@ class ClickUp {
     const t = {
       id: String(j.id), name: j.name || "(task)", url: j.url || "https://app.clickup.com/t/" + j.id,
       estimateMs: Number(j.time_estimate) || 0, status: (j.status && j.status.status) || "",
-      dueDateMs: j.due_date ? Number(j.due_date) : null, client: (j.list && j.list.name) || "",
+      dueDateMs: j.due_date ? Number(j.due_date) : null, startDateMs: j.start_date ? Number(j.start_date) : null, client: (j.list && j.list.name) || "",
       assigneeCount: Array.isArray(j.assignees) ? j.assignees.length : 0,
       description: String(j.text_content || j.description || "").trim(),
     };
@@ -91,12 +92,32 @@ class ClickUp {
     let total = 0;
     for (const e of (j && j.data) || []) {
       const dur = Number(e.duration) || 0;
-      if (dur <= 0) continue; // the running one is added live
+      if (dur <= 0 || !Number(e.end)) continue; // the running one is added live
       total += dur;
       const id = e.task && e.task.id ? String(e.task.id) : "";
       if (id) byTask.set(id, (byTask.get(id) || 0) + dur);
     }
     return { total, byTask };
+  }
+
+  // My time on one task over the last year, without the running entry (the
+  // strip adds that live). For the hover card's "Overall 11h 39m / 7h". Cached
+  // 5 minutes per task and timer.
+  async trackedTotal(taskId, runStartMs) {
+    const key = String(taskId) + ":" + (runStartMs || "");
+    const hit = this.totalCache.get(key);
+    if (hit && Date.now() - hit.at < 300000) return hit.ms;
+    const { end } = ClickUp.dayBounds();
+    const j = await this.req("/team/" + this.teamId + "/time_entries?start_date=" + (end - 365 * 86400000) + "&end_date=" + end + "&task_id=" + encodeURIComponent(String(taskId)) + "&assignee=" + this.userId);
+    let ms = 0;
+    for (const e of (j && j.data) || []) {
+      const dur = Number(e.duration) || 0;
+      if (dur <= 0 || !Number(e.end) || (runStartMs && Number(e.start) === Number(runStartMs))) continue;
+      ms += dur;
+    }
+    this.totalCache.set(key, { at: Date.now(), ms });
+    if (this.totalCache.size > 40) this.totalCache.delete(this.totalCache.keys().next().value);
+    return ms;
   }
 
   // Open tasks assigned to me that are due today (for "Next" suggestions).

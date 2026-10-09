@@ -1708,6 +1708,10 @@ export async function getRunningTaskProgress(token, teamId, taskId, startMs, now
   for (const e of entries) {
     const dur = Number(e.duration) || 0;
     if (dur <= 0) continue; // the live entry reports 0/negative while running - skip it here
+    // ...and when it comes back with its time so far instead: it has no end yet
+    // (or is the very entry that's running) - the page adds the live part itself,
+    // so counting it here too doubled the running time ("+7h40" for 4h40 over).
+    if (!Number(e.end) || (startMs && Number(e.start) === Number(startMs))) continue;
     closedMs += dur;
     // Today's own share, so a task tracked across several days can show both
     // figures. An entry counts for today when it OVERLAPS today and then counts
@@ -1718,7 +1722,7 @@ export async function getRunningTaskProgress(token, teamId, taskId, startMs, now
     if (eEnd > start) closedTodayMs += dur;
   }
   const liveMs = Math.max(0, now - startMs);
-  return { estimateMs: task.estimateMs, trackedMs: closedMs + liveMs, closedTodayMs, taskName: task.name || "" };
+  return { estimateMs: task.estimateMs, trackedMs: closedMs + liveMs, closedTodayMs, taskName: task.name || "", startDateMs: task.startDateMs || null, dueDateMs: task.dueDateMs || null };
 }
 
 // ---------- time entries (today-only tracked time) ----------

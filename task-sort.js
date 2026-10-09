@@ -312,3 +312,33 @@
   if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", start); else start();
   window.PcmTaskSort = { refresh: refreshAll };
 })();
+
+// While the lists are rebuilt for a changed setting (background: cuRebuild),
+// every task list hides its old rows and says it's updating, so tasks counted
+// the old way (e.g. "Spread over days" rows under "Due today") are never shown
+// as if they were current. Recently completed (stored history) is left alone.
+// At most 15 seconds, whatever happens: never stuck on "Updating".
+(() => {
+  if (typeof chrome === "undefined" || !chrome.storage) return;
+  const css = document.createElement("style");
+  css.textContent = `
+  .cu-tasklist.pcm-rebuild > * { display: none !important; }
+  .cu-tasklist.pcm-rebuild::before { content: attr(data-rebuild); display: block; padding: 16px 12px; text-align: center; color: var(--muted); font-size: 12.5px; animation: pcmRebuild 1.4s ease-in-out infinite; }
+  @keyframes pcmRebuild { 0%, 100% { opacity: .55; } 50% { opacity: 1; } }`;
+  document.head.appendChild(css);
+  let cur = null;
+  const apply = () => {
+    const on = !!(cur && Date.now() - (Number(cur.at) || 0) < 15000);
+    for (const l of document.querySelectorAll(".cu-tasklist")) {
+      if (l.id === "dashDoneList") continue;
+      if (on) l.dataset.rebuild = "\u27F3 Updating the list for the new setting" + (cur.what ? " (" + cur.what + ")" : "") + "\u2026";
+      l.classList.toggle("pcm-rebuild", on);
+    }
+    if (!on) cur = null;
+  };
+  chrome.storage.local.get("cuRebuild").then((g) => { cur = (g && g.cuRebuild) || null; apply(); }).catch(() => {});
+  chrome.storage.onChanged.addListener((ch, area) => { if (area === "local" && ch.cuRebuild) { cur = ch.cuRebuild.newValue || null; apply(); } });
+  // Lists drawn while it's updating get the same; the time limit is checked too.
+  new MutationObserver(() => { if (cur) apply(); }).observe(document.documentElement, { childList: true, subtree: true });
+  setInterval(() => { if (cur) apply(); }, 1000);
+})();
