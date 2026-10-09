@@ -14,6 +14,7 @@ contextBridge.exposeInMainWorld("tracker", {
   comments: (force) => ipcRenderer.invoke("comments", force),
   seen: (taskId) => ipcRenderer.invoke("seen", taskId),
   menu: () => ipcRenderer.invoke("menu"),
+  peek: (on) => ipcRenderer.invoke("peek", on),
   on: (ch, cb) => {
     if (!["state", "comments", "settings", "update", "pointer", "big", "error"].includes(ch)) return;
     ipcRenderer.on(ch, (e, v) => cb(v));

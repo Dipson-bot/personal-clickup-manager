@@ -5141,16 +5141,20 @@ function renderClickupPreviewBody(st) {
       parentRows.sort(mainOrder ? cuManualCmp(mainOrder) : cuPrioCmp);
       const sorted = [];
       const emittedSubs = new Set();
+      const lastSubs = new Set();
       for (const p of parentRows) {
         sorted.push(p);
         const subs = subsByParent.get(String(p.id));
-        if (subs) for (const s of subs) { sorted.push(s); emittedSubs.add(s); }
+        if (subs) { for (const s of subs) { sorted.push(s); emittedSubs.add(s); } lastSubs.add(subs[subs.length - 1]); }
       }
       // Orphaned subtasks (parent filtered out by a refine box) - append so none vanish.
       for (const subs of subsByParent.values()) for (const s of subs) if (!emittedSubs.has(s)) sorted.push(s);
       for (const t of sorted) {
         const row = document.createElement("div");
-        row.className = "cu-task" + (t.isSubtask ? " cu-sub" : "");
+        // A parent with its subtasks right under it: tinted, bold, "N subtasks";
+        // its subtasks hang off a line from it (└ on the last one).
+        const nSubs = !t.isSubtask && subsByParent.has(String(t.id)) ? subsByParent.get(String(t.id)).length : 0;
+        row.className = "cu-task" + (t.isSubtask ? " cu-sub" + (lastSubs.has(t) ? " cu-sub-last" : "") : "") + (nSubs ? " cu-parent" : "");
         const nm = document.createElement("a");
         nm.className = "nm";
         // Subtasks of a due-today parent render indented with a ↳ marker.
@@ -5158,6 +5162,8 @@ function renderClickupPreviewBody(st) {
         nm.title = nm.textContent;
         if (t.url) { nm.href = t.url; nm.target = "_blank"; nm.rel = "noopener"; }
         appendDoneTickOpt(nm, t);
+        let subChip = null;
+        if (nSubs) { subChip = document.createElement("span"); subChip.className = "cu-subcount"; subChip.textContent = nSubs + " subtask" + (nSubs === 1 ? "" : "s"); subChip.title = "Its subtasks are listed right under it"; }
         const spans = document.createElement("span");
         spans.className = "estpairs";
         const est = document.createElement("span");
@@ -5171,6 +5177,7 @@ function renderClickupPreviewBody(st) {
           spans.appendChild(trk);
         }
         appendNameCellOpt(row, nm, t);
+        if (subChip) nm.after(subChip);
         row.appendChild(spans);
         cuAllNote(spans, row._cuTask);
         appendTaskControlsOpt(row, t);
@@ -7924,7 +7931,7 @@ async function renderAutoUpdate() {
   const when = (t) => new Date(t).toLocaleString([], { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" });
   if (ui && ui.newer) {
     if (st && st.version === ui.latest && st.reason === "needs-click") {
-      line.textContent = "v" + ui.latest + " needs one click: press \"Finish update\" in the update tab (or Update now). Chrome asks for your OK once to let the extension update its folder.";
+      line.textContent = "v" + ui.latest + " needs one click: press Update now (or \"Finish update\" in the update tab if it is still open). Chrome asks for your OK to let the extension update its folder - pick \"Allow on every visit\" and later updates install without asking. The update tab is not opened again by itself.";
     } else if (st && st.version === ui.latest && st.reason && !/^(no-folder|permission|moved)$/.test(st.reason)) {
       line.textContent = "Still trying to install v" + ui.latest + " for you (" + st.reason + (st.error ? ": " + st.error : "") + "). It keeps retrying; Update now also works.";
     } else if (Number(ui.autoAt) > Date.now()) {
@@ -8620,6 +8627,12 @@ if ($("driveSettingsBtn")) $("driveSettingsBtn").onclick = () => chrome.tabs.cre
 
 // ---- General: floating tracker (tracker.html) ----
 const FLOAT_KEYS = ["floatTracker", "floatAutoOpen", "floatAutoAnywhere", "floatHover", "floatToday"];
+// Strip style: the slim floating timer and the taskbar app (sent with the app's link).
+if ($("floatStyle")) {
+  chrome.storage.local.get("settings").then((g) => { $("floatStyle").value = (g.settings && g.settings.stripStyle) || "B"; if ($("floatAnim")) $("floatAnim").checked = !(g.settings && g.settings.stripAnim === false); }).catch(() => {});
+  $("floatStyle").onchange = () => { send({ type: "SET_SETTINGS", patch: { stripStyle: $("floatStyle").value } }).then(() => send({ type: "DESK_STATUS" })).catch(() => {}); };
+  if ($("floatAnim")) $("floatAnim").onchange = () => { send({ type: "SET_SETTINGS", patch: { stripAnim: $("floatAnim").checked } }).then(() => send({ type: "DESK_STATUS" })).catch(() => {}); };
+}
 if ($("floatSize")) {
   chrome.storage.local.get("settings").then((g) => { const fs0 = (g.settings && g.settings.floatSize) || "slim"; $("floatSize").value = fs0 === "compact" || fs0 === "normal" ? fs0 : "slim"; }).catch(() => {});
   $("floatSize").onchange = () => { send({ type: "SET_SETTINGS", patch: { floatSize: $("floatSize").value } }).catch(() => {}); };
@@ -8735,7 +8748,7 @@ if ($("admCalCard")) {
 // Where the timer shows (Floating window / Taskbar / Both / Neither) is picked once
 // and kept; the Dashboard card invites people to try the taskbar until they pick.
 const DESK_REL = "https://github.com/Dipson-bot/personal-clickup-manager/releases";
-const DESK_TAG = "desktop-v0.2.0";
+const DESK_TAG = "desktop-v0.3.0";
 let deskOs = "";
 async function deskPlatform() {
   if (deskOs) return deskOs;
@@ -8753,13 +8766,17 @@ async function deskDownload() {
     if (r.ok) { const j = await r.json(); if (!(j.assets || []).some((x) => x && x.name === file)) return "The taskbar app for this computer isn't ready yet - try again in a little while. Nothing was changed."; }
   } catch (e) { /* offline or GitHub busy: try the download anyway */ }
   const g = await chrome.storage.local.get("deskApp").catch(() => ({}));
+  // Already installed (the app has answered this extension): don't fetch another copy by accident.
+  if (g && g.deskApp && g.deskApp.seenAt && !confirm("The taskbar timer is already installed on this computer" + (g.deskApp.running ? " and running" : "") + ". Download the installer again?")) return "";
   await chrome.storage.local.set({ deskApp: { ...((g && g.deskApp) || {}), wanted: Date.now() } });
   // Taskbar from now on (the floating window stops opening by itself); Settings can change it.
   await send({ type: "SET_SETTINGS", patch: { timerPlace: "taskbar", timerPlaceChosen: true } }).catch(() => {});
-  const a = document.createElement("a");
-  a.href = DESK_REL + "/download/" + DESK_TAG + "/" + file;
-  a.rel = "noopener";
-  document.body.appendChild(a); a.click(); a.remove();
+  // Chrome's own download, never a page navigation: a tab that had gone to the
+  // file's address was restored with the browser the next day and quietly
+  // downloaded the installer again.
+  const url = DESK_REL + "/download/" + DESK_TAG + "/" + file;
+  try { await chrome.downloads.download({ url, filename: file, conflictAction: "overwrite", saveAs: false }); }
+  catch (e) { return "Couldn't start the download (" + (e && e.message ? e.message : e) + "). Get it from " + DESK_REL + "/tag/" + DESK_TAG + " instead."; }
   deskWatch();
   return os === "win"
     ? "Downloading… Open ClickUp-Tracker-Setup.exe when it finishes. If Windows says \"Windows protected your PC\", click More info › Run anyway (the app isn't from the Microsoft Store). It then appears on your taskbar and signs in by itself within a minute."

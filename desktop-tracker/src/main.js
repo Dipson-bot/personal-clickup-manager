@@ -12,16 +12,28 @@ const { ClickUp } = require("./clickup");
 
 if (!app.requestSingleInstanceLock()) { app.quit(); }
 
-const SIZES = { normal: [340, 124], compact: [300, 92] };
+// "slim" = the one-line strip (same as on the taskbar), used off the taskbar and on Mac.
+const SIZES = { normal: [340, 124], compact: [300, 92], slim: [300, 46] };
+const STYLES = ["B", "L", "F", "H", "J"];
 const BIG = [460, 640];
 const SETUP = [400, 300];
 const REPO = "Dipson-bot/personal-clickup-manager";
 
 // ---------- settings (userData/settings.json) ----------
 const settingsFile = () => path.join(app.getPath("userData"), "settings.json");
-let settings = { size: "normal", opacity: 0.92, targetHours: 7, bounds: null, teamId: null, tokenEnc: null, commentsSeen: {} };
+let settings = { size: "slim", stripStyle: "B", stripAnim: true, opacity: 0.92, targetHours: 7, bounds: null, teamId: null, tokenEnc: null, commentsSeen: {} };
 function loadSettings() {
-  try { settings = { ...settings, ...JSON.parse(fs.readFileSync(settingsFile(), "utf8")) }; } catch (e) {}
+  try {
+    const saved = JSON.parse(fs.readFileSync(settingsFile(), "utf8"));
+    // Up to 0.2.0 "Normal" was the default and got saved with everything else:
+    // move those copies to the new default (the slim strip) once.
+    if (saved && saved.stripStyle === undefined && saved.size === "normal") {
+      saved.size = "slim";
+      const b = saved.bounds; // keep its bottom-right corner where it was
+      if (b && b.width && b.height) saved.bounds = { x: b.x + b.width - SIZES.slim[0], y: b.y + b.height - SIZES.slim[1], width: SIZES.slim[0], height: SIZES.slim[1] };
+    }
+    settings = { ...settings, ...saved };
+  } catch (e) {}
 }
 let saveTimer = null;
 function saveSettings() {
@@ -101,7 +113,7 @@ function createWindow() {
   win.once("ready-to-show", () => { if (!settings.hiddenByExt) win.showInactive(); });
   // Remember where it is (only the small window's place).
   const remember = () => {
-    if (!win || expanded || !cu) return;
+    if (!win || expanded || !cu || peekBase) return; // not while the hover card has it grown
     if (docked()) {
       // Slide along the taskbar only: keep the new left/right place, snap back into the band.
       const tb = taskbarOf(screen.getPrimaryDisplay()), nb = win.getBounds();
@@ -152,7 +164,9 @@ function paintTrayText() {
   if (!tray) return;
   const tt = timeText(), today = state && state.today ? "Today " + fmtD(state.today.closedMs + (state.running ? Math.max(0, Date.now() - state.running.startMs) : 0)) + "/" + fmtD(state.today.targetMs) : "";
   tray.setToolTip("ClickUp Tracker" + (state && state.running ? " - " + (state.running.taskName || "") + " - " + tt : " - no timer running") + (today ? " · " + today : ""));
-  if (process.platform === "darwin") tray.setTitle(settings.menubar !== false && !settings.hiddenByExt && tt ? " " + tt : "");
+  // Mac menu bar: this task's time and today's, e.g. "25m / 1h · 3h 10m/7h".
+  const todayShort = state && state.today ? fmtD(state.today.closedMs + (state.running ? Math.max(0, Date.now() - state.running.startMs) : 0)) + "/" + fmtD(state.today.targetMs) : "";
+  if (process.platform === "darwin") tray.setTitle(settings.menubar !== false && !settings.hiddenByExt && tt ? " " + tt + (todayShort ? " · " + todayShort : "") : "");
 }
 
 // ---------- the actions menu (the strip's ▾, the tray) ----------
@@ -210,7 +224,8 @@ function buildTray() {
     { label: "Refresh now", click: () => refresh(true) },
     { type: "separator" },
     { label: "Size", submenu: [
-      { label: "Normal", type: "radio", checked: settings.size !== "compact", click: () => setSize("normal") },
+      { label: "Slim strip", type: "radio", checked: settings.size === "slim", click: () => setSize("slim") },
+      { label: "Normal", type: "radio", checked: settings.size === "normal" || !SIZES[settings.size], click: () => setSize("normal") },
       { label: "Compact", type: "radio", checked: settings.size === "compact", click: () => setSize("compact") },
     ] },
     { label: "See-through (when not pointed at)", submenu: [1, 0.9, 0.8, 0.7, 0.6, 0.5].map(op) },
@@ -247,7 +262,7 @@ let state = null;
 let resumeTask = null; // the task switched away from for the Extra Task
 let lastStopped = null;
 function send(ch, v) { if (win && !win.isDestroyed()) win.webContents.send(ch, v); }
-function publicSettings() { return { size: settings.size, opacity: settings.opacity, targetHours: settings.targetHours, dark: nativeTheme.shouldUseDarkColors, dock: docked() }; }
+function publicSettings() { return { size: settings.size, opacity: settings.opacity, targetHours: settings.targetHours, dark: nativeTheme.shouldUseDarkColors, dock: docked(), slim: settings.size === "slim", style: STYLES.includes(settings.stripStyle) ? settings.stripStyle : "B", anim: settings.stripAnim !== false }; }
 let refreshing = null;
 async function refresh() {
   if (!cu) return null;
@@ -331,6 +346,9 @@ function startLink() {
 }
 let linking = false;
 async function fromExtension(m) {
+  // The strip style picked in the extension (General › Floating tracker › Strip style).
+  if (STYLES.includes(m.style) && m.style !== settings.stripStyle) { settings.stripStyle = m.style; saveSettings(); send("settings", publicSettings()); }
+  if (typeof m.anim === "boolean" && m.anim !== (settings.stripAnim !== false)) { settings.stripAnim = m.anim; saveSettings(); send("settings", publicSettings()); }
   if (typeof m.show === "boolean" && m.show !== extShow) {
     extShow = m.show;
     settings.hiddenByExt = !m.show; saveSettings();
@@ -379,7 +397,29 @@ ipcMain.handle("setup", async (e, token) => {
     return { ok: false, error: err.status === 401 ? "ClickUp didn't accept that token." : String(err.message || err) };
   }
 });
-ipcMain.handle("expand", (e, on) => { setExpanded(!!on); return expanded; });
+ipcMain.handle("expand", (e, on) => { if (on) peek(false); setExpanded(!!on); return expanded; });
+// The hover card over the strip: the window grows up (or down, at the top of the
+// screen) by PEEK_H while the pointer is on it, then goes back exactly.
+const PEEK_H = 92;
+let peekBase = null, peekDir = "up";
+function peek(on) {
+  if (!win || win.isDestroyed()) return null;
+  if (on) {
+    if (expanded) return null;
+    if (peekBase) return { dir: peekDir, stripH: peekBase.height };
+    const b = win.getBounds(), disp = screen.getDisplayMatching(b);
+    peekDir = b.y - PEEK_H >= disp.bounds.y ? "up" : "down";
+    peekBase = b;
+    win.setBounds({ x: b.x, y: peekDir === "up" ? b.y - PEEK_H : b.y, width: b.width, height: b.height + PEEK_H });
+    return { dir: peekDir, stripH: b.height };
+  }
+  if (!peekBase) return null;
+  const b = peekBase;
+  win.setBounds(b);
+  setTimeout(() => { peekBase = null; }, 250); // let the resize settle before "moved" counts again
+  return null;
+}
+ipcMain.handle("peek", (e, on) => peek(!!on));
 ipcMain.handle("hover", (e, on) => { if (win && !expanded) win.setOpacity(on ? 1 : Number(settings.opacity) || 1); });
 // Windows doesn't send mouse events over a drag area, so watch the cursor here.
 let pointerIn = false;
@@ -458,7 +498,7 @@ app.whenReady().then(async () => {
   setInterval(watchPointer, 200);
   setInterval(keepOnTop, 1500);                      // back above the taskbar if Windows covered it
   setInterval(paintTrayText, 15000);                 // menu-bar time / tooltip
-  screen.on("display-metrics-changed", () => { if (win && docked() && !expanded) win.setBounds(dockBounds()); });
+  screen.on("display-metrics-changed", () => { if (win && docked() && !expanded && !peekBase) win.setBounds(dockBounds()); });
   setInterval(() => refresh(), 60000);       // the timer, today's time, next tasks
   setInterval(() => checkComments(false), 30000); // each task at most every 3 minutes
   checkUpdate();

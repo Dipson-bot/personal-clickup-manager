@@ -30,6 +30,7 @@
   .pcm-ib:hover, .pcm-ib:focus-visible { color: var(--text) !important; border-color: var(--indigo, #6366f1) !important; }
   .pcm-ib::before { content: ""; width: ${isPopup ? 15 : 17}px; height: ${isPopup ? 15 : 17}px; background: currentColor; -webkit-mask: var(--ico) center / contain no-repeat; mask: var(--ico) center / contain no-repeat; }
   .pcm-ib > svg { display: none !important; }
+  .pcm-ib[hidden] { display: none !important; }
   .pcm-ib .rm-n { position: absolute; top: -5px; right: -5px; font: 700 9px/14px system-ui, sans-serif !important; }
   .pcm-ib.muted { color: var(--amber, #d97706) !important; }
   .pcm-ib[data-ico="moon"] { --ico: ${ICONS.moon}; }

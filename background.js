@@ -1584,6 +1584,9 @@ const DEFAULT_SETTINGS = {
   // Where the timer shows while you track: "float" (the floating window), "taskbar"
   // (the ClickUp Tracker app), "both" or "off". timerPlaceChosen = picked once, kept.
   timerPlace: "float", timerPlaceChosen: false,
+  // How the slim floating timer and the taskbar app draw their strip: L (Task | Today), F, H, J or B (battery).
+  stripStyle: "B",
+  stripAnim: true,
   // Task files: back the files' text up to Drive (hidden app data).
   taskFilesDrive: true,
   clickupWrapUpTime: "16:45", // local "HH:MM"
@@ -2581,7 +2584,8 @@ async function deskLink(force) {
   if (!force && place !== "taskbar" && place !== "both" && !da.seenAt && !da.wanted) return null;
   const show = place === "taskbar" || place === "both";
   let r = null;
-  try { r = await deskPost({ show, ext: chrome.runtime.id }); } catch (e) { r = null; }
+  const style = ["B", "L", "F", "H", "J"].includes(s.stripStyle) ? s.stripStyle : "B", anim = s.stripAnim !== false;
+  try { r = await deskPost({ show, style, anim, ext: chrome.runtime.id }); } catch (e) { r = null; }
   if (!r || r.app !== "clickup-tracker") {
     const out = { ...da, running: false, checkedAt: Date.now() };
     await chrome.storage.local.set({ deskApp: out });
@@ -2589,7 +2593,7 @@ async function deskLink(force) {
   }
   if (!r.signedIn) {
     const cfg = await getClickupConfig().catch(() => null);
-    if (cfg && cfg.token) { try { r = (await deskPost({ show, ext: chrome.runtime.id, token: cfg.token, teamId: cfg.teamId || "" })) || r; } catch (e) {} }
+    if (cfg && cfg.token) { try { r = (await deskPost({ show, style, anim, ext: chrome.runtime.id, token: cfg.token, teamId: cfg.teamId || "" })) || r; } catch (e) {} }
   }
   const out = { ...da, running: true, seenAt: Date.now(), checkedAt: Date.now(), version: String(r.version || ""), signedIn: !!r.signedIn, user: String(r.user || ""), shown: r.shown !== false };
   await chrome.storage.local.set({ deskApp: out });
@@ -6186,7 +6190,14 @@ async function maybeAutoUpdate() {
   // "Allow on every visit" to the extension's tabs - or anything else that went
   // wrong there): do the same install from a tab opened in the background; if
   // that tab isn't allowed either, it is brought to the front (see installViaTab).
-  if (!(r && r.ok) && !(r && /^(no-update|no-folder)$/.test(r.reason || ""))) {
+  // Never a second update tab: not while one is still open, and not again for a
+  // version that is waiting for the person's click (needs-click / permission) -
+  // the notice and the Version and updates card say how to finish it. (Opening
+  // a fresh tab in front every 30 minutes is what made it "keep coming back".)
+  const openTabs = await chrome.tabs.query({ url: chrome.runtime.getURL("auto-update.html") + "*" }).catch(() => []);
+  const waitingForClick = /^(needs-click|permission)$/.test(String(st.reason || ""));
+  if (!(r && r.ok) && (openTabs.length || waitingForClick)) trace.push("update tab: not opened again (" + (openTabs.length ? "one is already open" : "waiting for your click") + ")");
+  else if (!(r && r.ok) && !(r && /^(no-update|no-folder)$/.test(r.reason || ""))) {
     const t = await installViaTab();
     if (t) {
       trace.push((t.woke ? "tab (brought to the front): " : "background tab: ") + (t.ok ? "installed" : t.reason + (t.error ? " (" + String(t.error).slice(0, 80) + ")" : "")));
@@ -6288,6 +6299,9 @@ async function installViaTab() {
   });
   const cleanup = () => { chrome.runtime.onMessage.removeListener(onMsg); clearTimeout(timer); clearInterval(keep); };
   keep = setInterval(() => { chrome.runtime.getPlatformInfo().catch(() => {}); }, 20000);
+  // The tab checks this on load: one Chrome restored after a restart (session
+  // storage is empty then) or left from an earlier try closes itself.
+  await chrome.storage.session.set({ autoUpdateTab: { nonce, at: Date.now() } }).catch(() => {});
   try {
     tab = await chrome.tabs.create({ url: chrome.runtime.getURL("auto-update.html?n=" + nonce), active: false });
   } catch (e) {

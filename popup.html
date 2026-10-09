@@ -219,6 +219,18 @@
   .cu-tasklist { margin-top: 6px; border-top: 1px dashed var(--border); padding-top: 5px; max-height: 200px; overflow-y: auto; overflow-x: hidden; }
   .cu-task { display: flex; gap: 8px; padding: 3px 0; font-size: 11px; align-items: baseline; }
   .cu-task.cu-sub { padding-left: 12px; }
+  /* Group subtasks under their parent: the parent tinted + bold with "N subtasks",
+     its subtasks indented on a line that hangs from it (└ on the last one). */
+  .cu-task.cu-parent { background: rgba(99,102,241,.07); }
+  .cu-task.cu-parent .nm { font-weight: 700; }
+  .cu-subcount { flex: none; margin-left: 6px; padding: 0 7px; border-radius: 999px; font-size: 10px; font-weight: 700; line-height: 16px; color: var(--indigo, #6366f1); background: rgba(99,102,241,.14); white-space: nowrap; }
+  .cu-task.cu-sub { position: relative; padding-left: 30px !important; }
+  .cu-task.cu-sub::before { content: ""; position: absolute; left: 16px; top: -1px; bottom: -1px; border-left: 2px solid rgba(99,102,241,.45); pointer-events: none; }
+  .cu-task.cu-sub.cu-sub-last::before { bottom: 50%; }
+  .cu-task.cu-sub::after { content: ""; position: absolute; left: 16px; top: 50%; width: 9px; border-top: 2px solid rgba(99,102,241,.45); pointer-events: none; }
+  .cu-task.cu-sub .nm { font-size: .95em; opacity: .9; }
+  html[data-theme="dark"] .cu-task.cu-parent { background: rgba(129,140,248,.12); }
+  html[data-theme="dark"] .cu-subcount { color: #c7d2fe; background: rgba(129,140,248,.22); }
   .cu-task .nm { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text); cursor: pointer; text-decoration: none; }
   .cu-task .nm:hover { color: var(--indigo); text-decoration: underline; }
   .cu-task .estpairs { display: inline-flex; gap: 5px; flex-shrink: 0; align-items: baseline; }

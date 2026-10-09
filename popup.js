@@ -182,10 +182,11 @@ function initHeaderExtras() {
     if (!IN_PANEL) window.close();
   };
   const side = $("sideBtn");
-  if (side && IN_PANEL) {
+  if (side) {
     side.hidden = false;
-    // Chrome decides left/right for every extension's panel (Settings > Appearance).
-    side.onclick = () => chrome.tabs.create({ url: "chrome://settings/appearance" }).catch(() => {});
+    // Chrome decides left/right for every extension's side panel (Settings >
+    // Appearance). From the popup too: open that setting, then the popup closes.
+    side.onclick = () => chrome.tabs.create({ url: "chrome://settings/appearance" }).then(() => { if (!IN_PANEL) window.close(); }).catch(() => {});
   }
   const b = $("panelBtn");
   if (!b) return;
@@ -1296,14 +1297,28 @@ function appendFilterTaskRows(container, tasks, deadlineTasks, trackedTasks = []
   const mainOrder = useOrder ? cuOrderFor(scope, "main") : null;
   const deadlineOrder = useOrder ? cuOrderFor(scope, "deadline") : null;
   const trackedOrder = useOrder ? cuOrderFor(scope, "tracked") : null;
-  for (const t of sortByPriority(tasks, mainOrder)) {
+  const ordered = sortByPriority(tasks, mainOrder);
+  // A parent with its subtasks right under it: tinted, bold, "N subtasks"; its
+  // subtasks hang off a line from it (└ on the last one).
+  const subCount = new Map();
+  ordered.forEach((t, i) => {
+    if (t.isSubtask || !ordered[i + 1] || !ordered[i + 1].isSubtask) return;
+    let n = 0;
+    for (let j = i + 1; j < ordered.length && ordered[j].isSubtask && String(ordered[j].parentId) === String(t.id); j++) n++;
+    if (n) subCount.set(t, n);
+  });
+  ordered.forEach((t, i) => {
     const row = document.createElement("div");
-    row.className = "cu-task" + (t.isSubtask ? " cu-sub" : "");
+    const nSubs = subCount.get(t) || 0;
+    const lastSub = t.isSubtask && !(ordered[i + 1] && ordered[i + 1].isSubtask && String(ordered[i + 1].parentId) === String(t.parentId));
+    row.className = "cu-task" + (t.isSubtask ? " cu-sub" + (lastSub ? " cu-sub-last" : "") : "") + (nSubs ? " cu-parent" : "");
     const nm = document.createElement("a");
     makeTaskLink(nm, t.url, t.name);
     // Subtasks of a due-today parent render indented under it with a ↳ marker.
     nm.textContent = (t.isSubtask ? "↳ " : "") + truncName(t.name || "(untitled task)");
     appendDoneTick(nm, t);
+    let subChip = null;
+    if (nSubs) { subChip = document.createElement("span"); subChip.className = "cu-subcount"; subChip.textContent = nSubs + " sub" + (nSubs === 1 ? "" : "s"); subChip.title = nSubs + " subtask" + (nSubs === 1 ? "" : "s") + " listed right under it"; }
     const spans = document.createElement("span");
     spans.className = "estpairs";
     const estSpan = document.createElement("span");
@@ -1320,12 +1335,13 @@ function appendFilterTaskRows(container, tasks, deadlineTasks, trackedTasks = []
       spans.appendChild(trk);
     }
     appendNameCell(row, nm, t, opts);
+    if (subChip) nm.after(subChip);
     row.appendChild(spans);
     cuAllNote(spans, row._cuTask);
     if (withControls) appendTaskControls(row, t);
     cuDecorateRow(row, t, "main", canDrag, opts.group);
     container.appendChild(row);
-  }
+  });
   for (const dt of sortByPriority(deadlineTasks, deadlineOrder)) {
     if (dt.error) continue;
     const row = document.createElement("div");

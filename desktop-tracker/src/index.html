@@ -54,6 +54,25 @@
   .file button { border: 0; background: none; padding: 0 3px; }
   .bfoot { margin-top: 12px; padding-top: 8px; border-top: 1px solid var(--border); }
   .err { color: var(--red); white-space: normal; }
+  /* The strip (on the taskbar, or the slim size): a row, plus the hover card. */
+  #card.stripwrap { background: transparent; border: 0; padding: 0; display: flex; flex-direction: column; align-items: stretch; gap: 4px; border-radius: 0; }
+  .srow { flex: 1 1 auto; min-height: 0; box-sizing: border-box; display: flex; align-items: center; gap: 6px; padding: 2px 6px 2px 8px; background: var(--bg); border: 1px solid var(--border); border-radius: 8px; }
+  .peek .srow { flex: none; }
+  .srow button.x { padding: 0 6px; font-size: 12px; line-height: 18px; flex: none; }
+  .srow button.done, .srow button.go { color: var(--green); }
+  .srow .idle { flex: 1; }
+  .ssbox { flex: 1; min-width: 0; display: flex; align-self: stretch; align-items: center; }
+  .pk { flex: 1; min-height: 0; box-sizing: border-box; background: var(--bg); border: 1px solid var(--border); border-radius: 10px; padding: 7px 10px; display: flex; flex-direction: column; justify-content: center; gap: 5px; overflow: hidden; }
+  .pk .btns { display: flex; gap: 5px; align-items: center; }
+  .pk .btns .sp { flex: 1; }
+  .pk button { padding: 2px 8px; font-size: 11.5px; }
+  .pk button.pri { background: var(--indigo); border-color: var(--indigo); color: #fff; }
+  .pk button.next { max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; text-align: left; }
+  .pk, .srow { width: 100%; min-width: 0; }
+  .pk > * { min-width: 0; }
+  .pk .row { display: flex; align-items: center; gap: 6px; }
+  .pk .nm { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 600; }
+  .pk .sub { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   /* on the taskbar: one slim line */
   #card.strip { padding: 2px 6px 2px 8px; gap: 6px; border-radius: 8px; }
   #card.strip .trk { min-width: 70px; }

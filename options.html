@@ -240,6 +240,18 @@
   .cu-tasklist { margin-top: 10px; max-height: 340px; overflow: auto; padding-right: 4px; }
   .cu-task { display: flex; flex-wrap: wrap; gap: 10px; padding: 5px 0; border-bottom: 1px dashed var(--border); font-size: 12.5px; align-items: baseline; }
   .cu-task.cu-sub { padding-left: 14px; }
+  /* Group subtasks under their parent: the parent tinted + bold with "N subtasks",
+     its subtasks indented on a line that hangs from it (└ on the last one). */
+  .cu-task.cu-parent { background: rgba(99,102,241,.07); }
+  .cu-task.cu-parent .nm { font-weight: 700; }
+  .cu-subcount { flex: none; margin-left: 6px; padding: 0 7px; border-radius: 999px; font-size: 10px; font-weight: 700; line-height: 16px; color: var(--indigo, #6366f1); background: rgba(99,102,241,.14); white-space: nowrap; }
+  .cu-task.cu-sub { position: relative; padding-left: 40px !important; }
+  .cu-task.cu-sub::before { content: ""; position: absolute; left: 24px; top: -1px; bottom: -1px; border-left: 2px solid rgba(99,102,241,.45); pointer-events: none; }
+  .cu-task.cu-sub.cu-sub-last::before { bottom: 50%; }
+  .cu-task.cu-sub::after { content: ""; position: absolute; left: 24px; top: 50%; width: 9px; border-top: 2px solid rgba(99,102,241,.45); pointer-events: none; }
+  .cu-task.cu-sub .nm { font-size: .95em; opacity: .9; }
+  html[data-theme="dark"] .cu-task.cu-parent { background: rgba(129,140,248,.12); }
+  html[data-theme="dark"] .cu-subcount { color: #c7d2fe; background: rgba(129,140,248,.22); }
   /* Custom (drag) order: a faint ⠿ handle at the left of each top-level row, and
      a coloured line marking where a dragged row will land. */
   .cu-task .cu-drag { flex: 0 0 auto; align-self: stretch; display: inline-flex; align-items: center; padding: 0 5px 0 1px; margin-right: 2px; color: var(--muted); opacity: .5; cursor: grab; font-size: 12px; line-height: 1; user-select: none; }
@@ -2507,6 +2519,16 @@
     <div class="checkbox" style="margin:6px 0 4px;align-items:center;"><label for="floatSize" style="margin:0;font-weight:400;">Size</label>
       <select id="floatSize" style="width:auto;padding:3px 6px;"><option value="normal">Normal</option><option value="compact">Compact (covers less of the screen)</option><option value="slim">Slim strip - one line, to rest right on top of the taskbar</option></select>
       <span class="hint">- takes effect the next time you open the tracker</span></div>
+    <div class="checkbox" style="margin:6px 0 4px;align-items:center;"><label for="floatStyle" style="margin:0;font-weight:400;">Strip style</label>
+      <select id="floatStyle" style="width:auto;padding:3px 6px;">
+        <option value="B">Battery - two cells with the time inside</option>
+        <option value="L">Task | Today - two halves, each a label over a bar</option>
+        <option value="F">Two thin bars, both times on the right</option>
+        <option value="H">Two small rings</option>
+        <option value="J">Lines along the top and bottom edges</option>
+      </select>
+      <span class="hint">- the slim floating timer and the taskbar timer</span></div>
+    <div class="checkbox" style="margin:0 0 4px;"><input type="checkbox" id="floatAnim" /><label for="floatAnim" style="margin:0;font-weight:400;">Animate the bars (a flowing shine, bubbles in the batteries)</label></div>
     <div class="btns" style="margin-top:10px;">
       <button type="button" id="floatNow">Float it now</button>
     </div>

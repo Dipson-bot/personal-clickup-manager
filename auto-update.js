@@ -81,7 +81,23 @@ $("go").onclick = () => attempt(true).then((r) => {
   if (r && !r.ok && r.reason === "permission") done({ ok: false, reason: "permission", clicked: true });
 });
 
+// A tab Chrome brought back after a restart, or one left over from an earlier
+// try, or the update is already in: close it instead of asking again.
+const closeMe = async () => {
+  try { const t = await chrome.tabs.getCurrent(); if (t && t.id != null) { await chrome.tabs.remove(t.id); return; } } catch (e) {}
+  window.close();
+};
+const newer = (a, b) => { const x = String(a).split(".").map(Number), y = String(b).split(".").map(Number); for (let i = 0; i < Math.max(x.length, y.length); i++) { const d = (x[i] || 0) - (y[i] || 0); if (d) return d > 0; } return false; };
+async function stale() {
+  const s = await chrome.storage.session.get("autoUpdateTab").catch(() => ({}));
+  if (!s.autoUpdateTab || s.autoUpdateTab.nonce !== nonce) return true;
+  const g = await chrome.storage.local.get("updateInfo");
+  const u = g.updateInfo;
+  return !u || !u.latest || !newer(u.latest, chrome.runtime.getManifest().version);
+}
+
 (async () => {
+  if (await stale().catch(() => false)) { finished = true; closeMe(); return; }
   let r = await attempt(false);
   if (!r || r.ok || r.reason !== "permission") return;
   // Not allowed while hidden: ask to be shown, then try once more.

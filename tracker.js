@@ -94,6 +94,91 @@
   };
   const esc = (s) => String(s == null ? "" : s).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
 
+  // ---------- strip styles (shared by the extension's floating timer and the taskbar app) ----------
+  // d = { tp, tc, tt, dp, dt, anim }: task bar % / colour / text, day bar % / text, animate.
+  // B (default): two "batteries" with the time inside.
+  // L: two halves, "Task" and "Today", each a label over a bar.
+  // F: two thin bars stacked, both times on the right. H: two small rings.
+  // J: hairlines on the top / bottom edge.
+  // anim: the fills flow (a shine runs along the bars, bubbles rise in the
+  // batteries, the rings breathe); off with the system's "reduce motion".
+  // Colours follow progress (ssColor): a light cool blue at the start, turning
+  // green as the time reaches the estimate, then amber to red past it. The day
+  // cell does the same towards the daily target but never turns red.
+  const STRIP_STYLES = ["B", "L", "F", "H", "J"];
+  const shortDur = (ms) => { const m = Math.round(Math.max(0, ms) / 60000); const h = Math.floor(m / 60); return h ? h + "h" + (m % 60 ? String(m % 60).padStart(2, "0") : "") : m + "m"; };
+  function ssRing(pct, color) {
+    const r = 9, c = 2 * Math.PI * r, f = Math.max(0, Math.min(100, pct)) / 100;
+    return '<svg width="22" height="22" viewBox="0 0 22 22" class="ring"><circle cx="11" cy="11" r="9" fill="none" stroke="var(--track)" stroke-width="3"/>' +
+      '<circle cx="11" cy="11" r="9" fill="none" stroke="' + color + '" stroke-width="3" stroke-linecap="round" stroke-dasharray="' + (c * f).toFixed(1) + " " + c.toFixed(1) + '" transform="rotate(-90 11 11)"/></svg>';
+  }
+  function ssColor(p, noRed) {
+    if (p == null) return "var(--blue)";
+    if (p <= 1) { const t = Math.max(0, p); return "hsl(" + (200 - 70 * t).toFixed(0) + " " + (78 - 18 * t).toFixed(0) + "% " + (66 - 20 * t).toFixed(0) + "%)"; }
+    if (noRed || p <= 1.07) return "hsl(130 60% 46%)";
+    const t = Math.min(1, (p - 1.07) / 0.35);
+    return "hsl(" + (130 - 130 * t).toFixed(0) + " " + (60 + 12 * t).toFixed(0) + "% " + (46 + 6 * t).toFixed(0) + "%)";
+  }
+  // The face's mood for its animation: calm floats, on-estimate bounces, over
+  // shakes, idle breathes - and it blinks now and then.
+  const faceMood = (p) => (p === "sleep" ? "fz" : p == null ? "fn" : p > 1.07 ? "fo" : p >= 0.93 ? "fh" : "fc");
+  const faceCls = (p, anim) => "face" + (anim === false ? "" : " live " + faceMood(p));
+  function stripStyleHtml(style, d) {
+    const s = STRIP_STYLES.includes(style) ? style : "B";
+    const an = d.anim === false ? "" : " an";
+    const tb = '<b style="width:' + d.tp.toFixed(1) + "%;background-color:" + d.tc + '"></b>', dc = d.dc || "var(--green)", db = '<b style="width:' + d.dp.toFixed(1) + "%;background-color:" + dc + '"></b>';
+    if (s === "L") return '<div class="ss ssL' + an + '"><div class="c"><span class="lb">Task ' + d.tt + '</span><i class="tr">' + tb + '</i></div><div class="c"><span class="lb day">Today ' + d.dt + '</span><i class="tr">' + db + "</i></div></div>";
+    if (s === "F") return '<div class="ss ssF' + an + '"><div class="bars"><i class="tr">' + tb + '</i><i class="tr">' + db + '</i></div><div class="tms"><span>' + d.tt + '</span><span class="day">' + d.dt + "</span></div></div>";
+    if (s === "H") return '<div class="ss ssH' + an + '">' + ssRing(d.tp, d.tc) + "<span>" + d.tt + "</span>" + ssRing(d.dp, dc) + '<span class="day">' + d.dt + "</span></div>";
+    if (s === "J") return '<div class="ss ssJ' + an + '"><i class="edge top" style="width:' + d.tp.toFixed(1) + "%;background-color:" + d.tc + '"></i><span class="big">' + d.tt + '</span><span class="sp"></span><span class="day">today ' + d.dt + '</span><i class="edge bot" style="width:' + d.dp.toFixed(1) + "%;background-color:" + dc + '"></i></div>';
+    return '<div class="ss ssB' + an + '"><div class="cell">' + tb + "<span>" + d.tt + '</span></div><div class="cell day">' + db + "<span>Today " + d.dt + "</span></div></div>";
+  }
+  // The strip is redrawn often: start its animations where the clock says they
+  // are, so a redraw never makes them jump back.
+  function ssPhase(el) { if (el && el.style) el.style.setProperty("--ph", -((Date.now() % 12000) / 1000).toFixed(2) + "s"); }
+  const STRIP_CSS = `
+    .ss { flex: 1; min-width: 0; display: flex; align-items: center; gap: 6px; font-variant-numeric: tabular-nums; }
+    .ss .tr { display: block; height: 4px; border-radius: 2px; background: var(--track); overflow: hidden; }
+    .ss .tr b { display: block; position: relative; overflow: hidden; height: 100%; border-radius: 2px; transition: width .6s; }
+    .ss .day { color: var(--green); }
+    .ssL .c { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 3px; }
+    .ssL .lb { font-size: 10.5px; line-height: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; color: var(--text); }
+    .ssL .lb.day { color: var(--green); }
+    .ssF .bars { flex: 1; display: flex; flex-direction: column; gap: 5px; }
+    .ssF .tms { display: flex; flex-direction: column; align-items: flex-end; font-size: 11px; line-height: 13px; white-space: nowrap; }
+    .ssH { gap: 4px; } .ssH .ring { flex: none; } .ssH span { flex: 1; min-width: 0; font-size: 11px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .ssJ { align-self: stretch; position: relative; }
+    .ssJ .edge { position: absolute; left: 0; height: 2px; border-radius: 0; overflow: hidden; }
+    .ssJ .edge.top { top: 1px; } .ssJ .edge.bot { bottom: 1px; background-color: var(--green); }
+    .ssJ .big { font-size: 13px; font-weight: 700; } .ssJ .sp { flex: 1; } .ssJ .day { font-size: 11px; white-space: nowrap; }
+    .ssB .cell { flex: 1; min-width: 0; position: relative; height: 20px; border: 1px solid var(--border); border-radius: 5px; overflow: hidden; }
+    .ssB .cell b { position: absolute; left: 0; top: 0; bottom: 0; opacity: .38; border-radius: 0; overflow: hidden; transition: width .6s; }
+    .ssB .cell span { position: relative; display: block; text-align: center; font-size: 10.5px; line-height: 18px; font-weight: 700; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; padding: 0 3px; }
+    /* animations: a shine flowing along each fill; bubbles rising in the batteries; rings breathing */
+    .ss.an .tr b::after, .ss.an .edge::after, .ssB.an .cell b::after { content: ""; position: absolute; inset: 0; pointer-events: none;
+      background: linear-gradient(90deg, transparent, rgba(255,255,255,.55), transparent) no-repeat; background-size: 36px 100%;
+      animation: ssFlow 2.6s linear infinite; animation-delay: var(--ph, 0s); }
+    .ssB.an .cell b::before { content: ""; position: absolute; inset: 0; pointer-events: none;
+      background-image: radial-gradient(circle, rgba(255,255,255,.85) 0 1.2px, transparent 1.7px), radial-gradient(circle, rgba(255,255,255,.6) 0 .9px, transparent 1.4px);
+      background-size: 17px 18px, 12px 14px; background-position: 0 0, 6px 5px; animation: ssRise 3.4s linear infinite; animation-delay: var(--ph, 0s); }
+    .ssB.an .cell b { box-shadow: inset -2px 0 0 rgba(255,255,255,.5); }
+    .ssH.an .ring circle + circle { animation: ssBreathe 2.8s ease-in-out infinite; animation-delay: var(--ph, 0s); }
+    @keyframes ssFlow { from { background-position: -36px 0; } to { background-position: calc(100% + 36px) 0; } }
+    @keyframes ssRise { from { background-position: 0 36px, 6px 33px; } to { background-position: 0 0, 6px 5px; } }
+    @keyframes ssBreathe { 0%, 100% { opacity: 1; } 50% { opacity: .55; } }
+    .face.live svg { transform-origin: 50% 60%; animation: fcFloat 3.2s ease-in-out infinite; animation-delay: var(--ph, 0s); }
+    .face.live.fh svg { animation: fcBounce 1.4s ease-in-out infinite; animation-delay: var(--ph, 0s); }
+    .face.live.fo svg { animation: fcShake 1.1s ease-in-out infinite; animation-delay: var(--ph, 0s); }
+    .face.live.fz svg { animation: fcBreathe 4s ease-in-out infinite; animation-delay: var(--ph, 0s); }
+    .face.live:not(.fz) svg ellipse { transform-box: fill-box; transform-origin: center; animation: fcBlink 4.6s linear infinite; animation-delay: var(--ph, 0s); }
+    @keyframes fcFloat { 0%, 100% { transform: translateY(0) rotate(-3deg); } 50% { transform: translateY(-1.5px) rotate(3deg); } }
+    @keyframes fcBounce { 0%, 100% { transform: translateY(0) scale(1); } 35% { transform: translateY(-2.5px) scale(1.06); } 55% { transform: translateY(0) scale(.97, 1.03); } }
+    @keyframes fcShake { 0%, 60%, 100% { transform: rotate(0); } 10%, 30%, 50% { transform: rotate(-8deg); } 20%, 40% { transform: rotate(8deg); } }
+    @keyframes fcBreathe { 0%, 100% { transform: scale(1); } 50% { transform: scale(1.05); } }
+    @keyframes fcBlink { 0%, 92%, 100% { transform: scaleY(1); } 95% { transform: scaleY(.1); } }
+    @media (prefers-reduced-motion: reduce) { .ss.an *, .ss.an *::before, .ss.an *::after, .face.live svg, .face.live svg * { animation: none !important; } }
+  `;
+
   // ---------- the floating window ----------
   const PIP_CSS = `
     :root { --bg: #faf7f2; --text: #2e2a26; --muted: #7b7064; --border: #e0d7ca; --track: #ece5da; --blue: #378ADD; --green: #16a34a; --red: #dc2626; --amber: #b45309; color-scheme: light; }
@@ -186,7 +271,7 @@
     }
     .newtag { font-size: 9.5px; font-weight: 700; padding: 0 5px; border-radius: 999px; background: #ef4444; color: #fff; margin-left: 4px; }
     .close { margin-left: auto; background: none; border: 0; color: var(--muted); font-size: 14px; padding: 0 2px; }
-  `;
+  ` + STRIP_CSS;
   let full = false;
   let busy = false;
   // "Switch to Extra Task" panel (meeting / quick note). While it's open the
@@ -398,6 +483,19 @@
       tm.title = todayTrk ? fmt(tracked) + " on this task in total · " + todayTrk : "";
       tm.style.color = over ? "var(--red)" : "";
       d.getElementById("fToday").textContent = today || label;
+    } else if (slim()) {
+      // Slim at rest: the face and the chosen strip style (General › Floating
+      // tracker › Strip style) - this task and today, side by side. The task's
+      // name, Extra Task, Stop and Done are on hover.
+      root.dataset.key = "";
+      const tgt = Number(st.targetMs) || 0;
+      root.innerHTML = '<div class="' + faceCls(p, data.settings.stripAnim) + '">' + faceSVG(p, 22) + "</div>" + stripStyleHtml(data.settings.stripStyle || "B", {
+        tp: width, tc: ssColor(p), dc: tgt ? ssColor(spent / tgt, true) : "", tt: p == null ? shortDur(tracked) : over ? "+" + shortDur(tracked - est) : shortDur(tracked) + "/" + shortDur(est),
+        dp: tgt ? Math.min(100, (spent / tgt) * 100) : 0, dt: tgt ? shortDur(spent) + "/" + shortDur(tgt) : shortDur(spent),
+        anim: data.settings.stripAnim !== false,
+      });
+      ssPhase(root);
+      root.title = (run.taskName || "") + " - " + time + (today ? " · " + today : "");
     } else {
       root.dataset.key = "";
       // Today's total sits under the mood word in the small view too, so it no
