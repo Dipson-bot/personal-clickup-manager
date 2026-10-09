@@ -655,7 +655,7 @@
           sentChip(n) +
           '<span class="sp"></span>' +
           (canSend ? '<button type="button" class="tn-btn" data-send title="Send this note to a teammate on this task - it appears in their extension">🔔 Send</button>' : "") +
-          '<button type="button" class="tn-btn" data-rem title="Get reminded about this note at a date and time you pick">⏰ Remind me</button><button type="button" class="tn-btn" data-edit-btn>Edit</button><button type="button" class="tn-btn" data-del title="Delete this note">✕</button></div></div>';
+          '<button type="button" class="tn-btn" data-copy title="Copy this note (keeps its formatting)">⧉ Copy</button><button type="button" class="tn-btn" data-rem title="Get reminded about this note at a date and time you pick">⏰ Remind me</button><button type="button" class="tn-btn" data-edit-btn>Edit</button><button type="button" class="tn-btn" data-del title="Delete this note">✕</button></div></div>';
       }
     }
     h += '<div class="tn-new"><div data-newhost></div>' + filesHtml(st.draftFiles, true) +
@@ -784,6 +784,14 @@
       };
       const sl = box.querySelector("[data-sentlist]");
       if (sl) sl.onclick = (e) => { e.stopPropagation(); alert(sl.title); };
+      const cpb = box.querySelector("[data-copy]");
+      if (cpb) cpb.onclick = async (e) => {
+        e.stopPropagation();
+        const txt = box.querySelector(".tn-txt");
+        if (window.PcmCopy) { window.PcmCopy.copyText(note.text, txt ? txt.innerHTML : "", cpb); return; }
+        try { await navigator.clipboard.writeText(note.text); cpb.textContent = "Copied \u2713"; } catch (x) { cpb.textContent = "Couldn't copy"; }
+        setTimeout(() => { cpb.textContent = "\u29C9 Copy"; }, 1500);
+      };
       const eb = box.querySelector("[data-edit-btn]");
       if (eb) eb.onclick = () => { st.editing[nid] = note.text; st.editFiles[nid] = (note.files || []).slice(); rerender(); };
       const del = box.querySelector("[data-del]");

@@ -68,7 +68,10 @@
   .pcm-cm:first-child { border-top: 0; }
   .pcm-av { flex: none; width: 22px; height: 22px; border-radius: 50%; color: #fff; font-size: 9.5px; font-weight: 700; display: flex; align-items: center; justify-content: center; background: var(--muted); }
   .pcm-cm-b { min-width: 0; flex: 1; }
-  .pcm-cm-h { font-size: 11px; color: var(--muted); }
+  .pcm-cm-h { font-size: 11px; color: var(--muted); display: flex; align-items: center; gap: 4px; }
+  .pcm-cm-h .pcm-cp { margin-left: auto; }
+  .pcm-cp { font: inherit; font-size: 10.5px; padding: 0 7px; line-height: 18px; border-radius: 6px; border: 1px solid var(--border); background: var(--card); color: var(--muted); cursor: pointer; opacity: .75; }
+  .pcm-cp:hover, .pcm-cm:hover .pcm-cp { opacity: 1; color: var(--text); border-color: var(--indigo); }
   .pcm-cm-h b { color: var(--text); }
   .pcm-cm-t { white-space: pre-wrap; line-height: 1.45; word-break: break-word; }
   .pcm-compose { display: flex; flex-direction: column; gap: 6px; }
@@ -89,6 +92,36 @@
 
   // ---------- small helpers ----------
   const el = (tag, cls, text) => { const e = document.createElement(tag); if (cls) e.className = cls; if (text != null) e.textContent = text; return e; };
+  // ⧉ Copy: the text formatted (pastes with its headings, lists and links into
+  // Docs, Slack, email) and as plain Markdown for plain-text boxes. Also used by
+  // My notes (task-notes.js) through window.PcmCopy.
+  async function copyText(text, html, btn) {
+    const plain = String(text || "");
+    let ok = false;
+    try {
+      if (html && window.ClipboardItem && navigator.clipboard.write) {
+        await navigator.clipboard.write([new ClipboardItem({ "text/plain": new Blob([plain], { type: "text/plain" }), "text/html": new Blob([html], { type: "text/html" }) })]);
+      } else await navigator.clipboard.writeText(plain);
+      ok = true;
+    } catch (e) {
+      try { await navigator.clipboard.writeText(plain); ok = true; } catch (e2) {}
+    }
+    if (btn) {
+      const was = btn.dataset.label || btn.textContent;
+      btn.dataset.label = was;
+      btn.textContent = ok ? "Copied \u2713" : "Couldn't copy";
+      clearTimeout(btn._copyT);
+      btn._copyT = setTimeout(() => { btn.textContent = btn.dataset.label; }, 1500);
+    }
+    return ok;
+  }
+  const copyBtn = (cls, title, getText, getHtml) => {
+    const b = el("button", cls, "\u29C9 Copy");
+    b.type = "button"; b.title = title;
+    b.onclick = (e) => { e.stopPropagation(); copyText(getText(), getHtml ? getHtml() : "", b); };
+    return b;
+  };
+  window.PcmCopy = { copyText };
   const send = (msg) => new Promise((res) => {
     try { chrome.runtime.sendMessage(msg, (r) => { void chrome.runtime.lastError; res(r || null); }); } catch (e) { res(null); }
   });
@@ -968,6 +1001,7 @@
       const t = el("div", "pcm-cm-t");
       // Shown formatted (headings, lists, ☑ boxes) like notes; plain links otherwise.
       if (window.PcmMd) { t.classList.add("md"); t.innerHTML = window.PcmMd.render(c.text); } else renderRichText(t, c.text);
+      h.appendChild(copyBtn("pcm-cp", "Copy this comment", () => c.text, () => t.innerHTML));
       b.append(h, t);
       row.append(av, b);
       list.appendChild(row);
@@ -1027,7 +1061,7 @@
         edit.onclick = () => { ta.value = c.text; editing = c.id; later.textContent = "Save for when I complete it"; ta.focus(); };
         const del = el("button", "pcm-btn", "Delete"); del.type = "button";
         del.onclick = async () => { if (!confirm("Delete this waiting comment?")) return; const res = await send({ type: "HELD_COMMENTS", op: "delete", taskId: d.id, id: c.id }); if (res && res.ok) paintHeld(res.list); };
-        bar.append(mode, el("span", "sp"), del, edit, now);
+        bar.append(mode, el("span", "sp"), copyBtn("pcm-btn", "Copy this comment", () => c.text, () => t.innerHTML), del, edit, now);
         it.append(h, t, bar);
         heldBox.appendChild(it);
       }
@@ -1102,6 +1136,11 @@
     edit.type = "button";
     edit.title = "Write in the description (e.g. fill in File: \"\" with links or notes). Double-clicking the text works too.";
     h.appendChild(edit);
+    if (d.description) {
+      const cp = copyBtn("pcm-edit", "Copy the description", () => d.description, () => desc.innerHTML);
+      cp.style.marginLeft = "6px";
+      h.appendChild(cp);
+    }
     ds.appendChild(h);
     const desc = el("div", "pcm-desc pcm-editable");
     desc.title = "Double-click to edit";

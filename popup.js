@@ -3983,13 +3983,16 @@ send({ type: "CLICKUP_REFRESH", forceWeekly: true, forceWeeks: true }).catch(() 
 // ---------- "Update available" banner ----------
 (async function showUpdateBanner() {
   try {
-    const { updateInfo: ui } = await chrome.storage.local.get("updateInfo");
+    const { updateInfo: ui, autoUpdateState: aus } = await chrome.storage.local.get(["updateInfo", "autoUpdateState"]);
     if (!ui || !ui.newer || document.getElementById("updateBanner")) return;
+    // Waiting for the browser's OK (the click): say it's ready, not just "available".
+    const waiting = !!(aus && aus.version === ui.latest && /^(needs-click|permission)$/.test(String(aus.reason || "")));
     const bar = document.createElement("a");
     bar.id = "updateBanner";
     bar.className = "update-banner";
     bar.href = ui.url; bar.target = "_blank"; bar.rel = "noopener";
-    bar.textContent = "Update available: v" + ui.latest + " (you have v" + ui.current + ") - click to update";
+    bar.textContent = waiting ? "v" + ui.latest + " is ready - click here to finish the update (you have v" + ui.current + ")"
+      : "Update available: v" + ui.latest + " (you have v" + ui.current + ") - click to update";
     // One click downloads the zip; Ctrl/middle-click still opens the release page.
     bar.addEventListener("click", (e) => {
       if (e.ctrlKey || e.metaKey || e.button === 1) return;

@@ -1,5 +1,9 @@
 # Changelog
 
+## v4.1.7
+- New: ⧉ Copy in a task's details - on the description, on each comment, on each of My notes and on comments waiting to be sent. It copies with the formatting (headings, lists, links paste as they look into Docs, Slack or an email) and as plain text for plain boxes.
+- Fixed: in a browser that asks for its OK with every update (Comet, for example), the "One click to finish the update" page no longer pops up by itself for each new version. The update waits for you instead: one notice, "v… is ready - click here to finish the update" at the top of the popup, and Update now in Version and updates. Browsers that install updates by themselves stay silent, and if the browser starts allowing it again, updates go back to installing by themselves.
+
 ## v4.1.6
 - Fixed: the client work report left out real client work - tasks with "internal" in the name ("Fix internal links…", "Internal Linking Audit") and tasks starting with Re-inspect, Re-check, Monitor, Hold or Wait. The extension no longer decides what is in-house: every ticked task is in, and you leave tasks out with the tick boxes in the list.
 - Fixed: report lines could change what a task did ("Removed itemReviewed" for an Add task, "Replaced" for Compress, an invented widget change for a Review task). A line must keep the task's own action; otherwise the AI is asked again and then the task's own words are used. The task's department from ClickUp now decides On-page / Off-page / Technical (a technical task no longer lands under Off-page), and the report says which lines have no link or screenshot yet.

@@ -6199,8 +6199,15 @@ async function maybeAutoUpdate() {
   // a fresh tab in front every 30 minutes is what made it "keep coming back".)
   const openTabs = await chrome.tabs.query({ url: chrome.runtime.getURL("auto-update.html") + "*" }).catch(() => []);
   const waitingForClick = /^(needs-click|permission)$/.test(String(st.reason || ""));
-  if (!(r && r.ok) && (openTabs.length || waitingForClick)) {
-    trace.push("update tab: not opened again (" + (openTabs.length ? "one is already open" : "waiting for your click") + ")");
+  // A browser where even the update tab in front needed a click (Comet doesn't
+  // keep "Allow on every visit") would get that tab popping up with EVERY
+  // release. There, no tab is opened by itself any more: the update waits for
+  // the person - one notice, the popup's banner, Version and updates › Update now.
+  // (Ends as soon as the hidden page manages an update by itself.)
+  const { autoUpdateClickOnly: clickFlag, autoUpdateViaTab: lastTab } = await chrome.storage.local.get(["autoUpdateClickOnly", "autoUpdateViaTab"]);
+  const clickOnly = !!clickFlag || !!(lastTab && lastTab.reason === "needs-click");
+  if (!(r && r.ok) && (openTabs.length || waitingForClick || (clickOnly && r && r.reason === "permission"))) {
+    trace.push("update tab: not opened " + (openTabs.length ? "again (one is already open)" : waitingForClick ? "again (waiting for your click)" : "(this browser always needs a click - waiting for you)"));
     // Still waiting for the same click: keep saying so, quietly. (Recording the
     // hidden page's "permission" here fired a second notice - "set up again" -
     // whose button opened the update page in yet another tab.)
@@ -6210,11 +6217,14 @@ async function maybeAutoUpdate() {
     if (t) {
       trace.push((t.woke ? "tab (brought to the front): " : "background tab: ") + (t.ok ? "installed" : t.reason + (t.error ? " (" + String(t.error).slice(0, 80) + ")" : "")));
       await chrome.storage.local.set({ autoUpdateViaTab: { ok: !!t.ok || !/^(permission|no-folder|moved|tab-timeout|no-update|needs-click)$/.test(t.reason || ""), at: now, reason: t.reason || "" } });
+      if (t.reason === "needs-click") await chrome.storage.local.set({ autoUpdateClickOnly: true });
       r = t;
       autoReadyCache = null;
     } else trace.push("background tab: couldn't open one");
   }
   diagLog("automatic update", trace.join(" -> "));
+  // The hidden page installed it by itself: this browser keeps the permission now.
+  if (r && r.ok && /^hidden page: installed/.test(trace[0])) await chrome.storage.local.remove(["autoUpdateClickOnly", "autoUpdateViaTab"]).catch(() => {});
   if (r && r.ok) {
     // Put back the tab the person was using if the update tab came to the front.
     try {
@@ -6243,7 +6253,7 @@ async function maybeAutoUpdate() {
       chrome.notifications.create("auto-update-click-" + ui.latest, {
         type: "basic", iconUrl: chrome.runtime.getURL("icons/icon128.png"), priority: 2, requireInteraction: true,
         title: "One click to finish updating to v" + ui.latest,
-        message: "Chrome needs your OK once to let the extension update its folder. Click \"Finish update\" in the update tab - it installs and restarts the extension.",
+        message: "The browser needs your OK to let the extension update its folder. Click here when it suits you, then Install / Finish update - it installs and restarts the extension.",
       }, () => void chrome.runtime.lastError);
     }
     await chrome.storage.local.set({ autoUpdateState: st });
