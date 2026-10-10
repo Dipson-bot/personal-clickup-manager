@@ -31,6 +31,11 @@
   .pcm-empty { color: var(--muted); font-style: italic; }
   .pcm-files { display: flex; flex-wrap: wrap; gap: 6px; }
   .pcm-file { font-size: 11px; padding: 2px 8px; border: 1px solid var(--border); border-radius: 10px; background: var(--card); text-decoration: none; max-width: 240px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; word-break: normal !important; }
+  .pcm-te { margin: 4px 0 8px; display: grid; gap: 4px; }
+  .pcm-te-row { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; padding: 4px 6px; border-radius: 7px; background: var(--bg2, rgba(127,127,127,.06)); font-size: 12px; }
+  .pcm-te-row .w { flex: 1; min-width: 160px; }
+  .pcm-te-row.editing input { font: inherit; font-size: 12px; padding: 3px 6px; border: 1px solid var(--border); border-radius: 6px; background: var(--card); color: var(--text); }
+  .pcm-te-row.editing input[type="text"] { flex: 1; min-width: 120px; }
   .pcm-btn { font-size: 11px; font-weight: 600; padding: 4px 10px; border: 1px solid var(--border); border-radius: 6px; background: var(--card); color: var(--text); cursor: pointer; }
   .pcm-btn:hover:not(:disabled) { border-color: var(--indigo); color: var(--indigo); }
   .pcm-btn.pri { background: var(--indigo); border-color: var(--indigo); color: #fff; }
@@ -1009,6 +1014,82 @@
     more.hidden = comments.length <= 5 || showAll;
     more.textContent = "Show all " + comments.length + " comments";
   }
+  // ---------- time tracked (your entries on this task) ----------
+  // Loaded when opened (one ClickUp request), each entry editable: day, start,
+  // end, note - or deleted. The task's time and the day's totals refresh after.
+  const teDur = (ms) => { const m = Math.round(Math.max(0, ms) / 60000), h = Math.floor(m / 60); return h ? h + "h" + (m % 60 ? " " + (m % 60) + "m" : "") : m + "m"; };
+  const tePad = (n) => String(n).padStart(2, "0");
+  const dayVal = (ms) => { const x = new Date(ms); return x.getFullYear() + "-" + tePad(x.getMonth() + 1) + "-" + tePad(x.getDate()); };
+  const timeVal = (ms) => { const x = new Date(ms); return tePad(x.getHours()) + ":" + tePad(x.getMinutes()); };
+  const at = (day, time) => { const [y, mo, da] = day.split("-").map(Number), [h, mi] = time.split(":").map(Number); return new Date(y, mo - 1, da, h, mi).getTime(); };
+  function buildTimeEntries(sec, d) {
+    sec.textContent = "";
+    const h = el("div", "pcm-sec-h");
+    const tog = el("button", "pcm-link", "\u25B8 Time tracked - show your entries");
+    tog.type = "button";
+    tog.title = "Your time on this task, entry by entry - fix or delete one tracked by mistake";
+    h.appendChild(tog);
+    sec.appendChild(h);
+    const box = el("div", "pcm-te");
+    box.hidden = true;
+    sec.appendChild(box);
+    let open = false, list = [];
+    const msg = el("div", "pcm-note");
+    const paint = () => {
+      box.textContent = "";
+      if (!list.length) { box.appendChild(el("div", "pcm-empty", "No time tracked by you on this task.")); box.appendChild(msg); return; }
+      const total = list.reduce((s, e) => s + e.durationMs, 0);
+      box.appendChild(el("div", "pcm-note", list.length + " entr" + (list.length === 1 ? "y" : "ies") + " \u00b7 " + teDur(total) + " in all"));
+      for (const e of list) {
+        const row = el("div", "pcm-te-row");
+        const when = new Date(e.startMs).toLocaleDateString([], { weekday: "short", month: "short", day: "numeric" }) + " \u00b7 " +
+          new Date(e.startMs).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" }) + (e.running ? " - now" : " \u2013 " + new Date(e.endMs).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" }));
+        const tx = el("span", "w"); tx.append(el("b", "", teDur(e.durationMs)), document.createTextNode("  " + when + (e.description ? " \u00b7 " + e.description : "")));
+        row.appendChild(tx);
+        if (e.running) { row.appendChild(el("span", "pcm-note", "running")); box.appendChild(row); continue; }
+        const ed = el("button", "pcm-btn", "Edit"); ed.type = "button";
+        const del = el("button", "pcm-btn", "\u2715"); del.type = "button"; del.title = "Delete this entry";
+        ed.onclick = () => editRow(row, e);
+        del.onclick = async () => {
+          if (!confirm("Delete this time entry (" + teDur(e.durationMs) + ", " + when + ") from ClickUp?")) return;
+          await act({ op: "delete", entryId: e.id }, "Deleted \u2713");
+        };
+        row.append(ed, del);
+        box.appendChild(row);
+      }
+      box.appendChild(msg);
+    };
+    const act = async (extra, okText) => {
+      msg.className = "pcm-note"; msg.textContent = extra && extra.op ? "Saving in ClickUp\u2026" : "Loading\u2026";
+      const res = await send({ type: "TASK_TIME_ENTRIES", taskId: d.id, ...(extra || {}) });
+      if (res && res.ok) { list = res.entries || []; paint(); if (okText) { msg.textContent = okText + " - the totals update in a moment."; } }
+      else { msg.className = "pcm-err"; msg.textContent = "Couldn't " + (extra && extra.op ? extra.op : "load") + ": " + ((res && (res.error || res.reason)) || "no reply"); if (!box.contains(msg)) box.appendChild(msg); }
+    };
+    const editRow = (row, e) => {
+      row.textContent = "";
+      const day = el("input"); day.type = "date"; day.value = dayVal(e.startMs); day.setAttribute("aria-label", "Day");
+      const st = el("input"); st.type = "time"; st.value = timeVal(e.startMs); st.setAttribute("aria-label", "Start");
+      const en = el("input"); en.type = "time"; en.value = timeVal(e.endMs); en.setAttribute("aria-label", "End");
+      const note = el("input"); note.type = "text"; note.value = e.description; note.placeholder = "Note (optional)"; note.maxLength = 500;
+      const len = el("span", "pcm-note");
+      const calc = () => { let s = at(day.value, st.value), x = at(day.value, en.value); if (x <= s) x += 86400000; len.textContent = "= " + teDur(x - s); return [s, x]; };
+      [day, st, en].forEach((i) => i.addEventListener("input", calc)); day.addEventListener("change", calc);
+      calc();
+      const save = el("button", "pcm-btn pri", "Save"); save.type = "button";
+      const cancel = el("button", "pcm-btn", "Cancel"); cancel.type = "button";
+      save.onclick = async () => { const [s, x] = calc(); await act({ op: "save", entryId: e.id, startMs: s, endMs: x, description: note.value.trim() }, "Saved \u2713"); };
+      cancel.onclick = () => paint();
+      row.append(day, st, el("span", "", "\u2013"), en, len, note, save, cancel);
+      row.classList.add("editing");
+    };
+    tog.onclick = async () => {
+      open = !open;
+      box.hidden = !open;
+      tog.textContent = (open ? "\u25BE" : "\u25B8") + " Time tracked - " + (open ? "your entries" : "show your entries");
+      if (open) { box.textContent = ""; box.appendChild(msg); await act(null, ""); }
+    };
+  }
+
   function buildComments(sec, d) {
     // Seen: the comments are on screen now (Unread comments counts them as read).
     send({ type: "COMMENTS_SEEN", taskId: d.id }).catch(() => {});
@@ -1262,6 +1343,11 @@
 
     // My notes + pin (task-notes.js): personal, never sent to ClickUp.
     if (window.PcmTaskNotes) { const tn = el("div"); p.appendChild(tn); window.PcmTaskNotes.renderPanel(tn, d); }
+
+    // Your tracked time on this task: each entry, to fix or delete a wrong one.
+    const te = el("div");
+    buildTimeEntries(te, d);
+    p.appendChild(te);
 
     const cs = el("div");
     const h = el("div", "pcm-sec-h");

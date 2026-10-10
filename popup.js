@@ -3586,7 +3586,7 @@ $("cuRefresh").onclick = async () => {
     // Explicit click: also recompute the due-this/next-week bundles (60-min TTL)
     // so estimates edited in ClickUp itself show up now. A full refresh can take
     // a while, so wait up to 25 s instead of the default.
-    const res = await send({ type: "CLICKUP_REFRESH", forceWeekly: true, forceWeeks: true }, 25000);
+    const res = await send({ type: "CLICKUP_REFRESH", forceWeekly: true, forceWeeks: true, manual: true }, 25000);
     await load();
     if (res && res.ok) say("Updated " + new Date().toLocaleTimeString([], { hour: "numeric", minute: "2-digit" }) + " ✓", "ok");
     else say("Couldn't refresh: " + ((res && (res.error || res.reason)) || "no answer"), "err");

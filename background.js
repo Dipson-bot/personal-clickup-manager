@@ -25,7 +25,7 @@ import {
   driveQuota,
 } from "./lib-drive.js";
 import { runAllAccounts, runAccountLogin, readAgentRouterLogin, URLS, GITHUB_KEEP_COOKIES } from "./lib-automation.js";
-import { getTaskCommentsLite, getUserGroups, getUser, verifyToken, getTeams, fetchTodayEstimate, fetchWeeklySummary, fetchDateRangeEstimate, createTaskCache, fetchTeamMembers, fetchWorkspaceTags, cuTagNames, fmtDuration, findExtraTaskByName, parseTaskIdFromUrl, getCurrentTimeEntry, getRunningTaskProgress, startTimer, stopTimer, getTaskById, setTaskStatus, taskUrlFor, clientLabelFromContainer, resolveSpaceNamesFor, taskContainer, cuPriorityName, isTaskDone, getSubtasksOfParent, getTaskTree, getTaskDetail, updateTimeEntry, setTaskDueDate, clearTaskTreeCache, listWorkspaceClients, cuRowAssignees, fetchDoneBetween, fetchDoneLite, fetchTrackedHistory, getTaskPanel, addTaskComment, postTaskComment, setTaskDescription, getTaskCommentLinks, createTask, removeTaskAssignee, postAssignedComment, addTimeEntry, weeklyWithToday, listClientFieldOptions, listReachableClients } from "./lib-clickup.js";
+import { getTaskCommentsLite, getTaskTimeEntries, deleteTimeEntry, getUserGroups, getUser, verifyToken, getTeams, fetchTodayEstimate, fetchWeeklySummary, fetchDateRangeEstimate, createTaskCache, fetchTeamMembers, fetchWorkspaceTags, cuTagNames, fmtDuration, findExtraTaskByName, parseTaskIdFromUrl, getCurrentTimeEntry, getRunningTaskProgress, startTimer, stopTimer, getTaskById, setTaskStatus, setTaskDates, taskUrlFor, clientLabelFromContainer, resolveSpaceNamesFor, taskContainer, cuPriorityName, isTaskDone, getSubtasksOfParent, getTaskTree, getTaskDetail, updateTimeEntry, setTaskDueDate, clearTaskTreeCache, listWorkspaceClients, cuRowAssignees, fetchDoneBetween, fetchDoneLite, fetchTrackedHistory, getTaskPanel, addTaskComment, postTaskComment, setTaskDescription, getTaskCommentLinks, createTask, removeTaskAssignee, postAssignedComment, addTimeEntry, weeklyWithToday, listClientFieldOptions, listReachableClients } from "./lib-clickup.js";
 import { resolveRelayKey, pickProbeModel, probeRelay } from "./lib-availability.js";
 import { tidyCollect, tidyLines, tidyResolved, tidyDayOk, tidyUrgent, tidyDateShort } from "./lib-tidy.js";
 
@@ -1558,6 +1558,7 @@ const DEFAULT_SETTINGS = {
   // ---- Close the weekly Extra Task (see maybeCloseExtraTask) ----
   clickupExtraAutoClose: true,
   clickupWarnEmptyComplete: true,
+  clickupHolidayHeadsUp: true,
   // ---- Daily "needs tidying" reminder ----
   // One short, actionable summary a day of what the Insights tab flags:
   // overdue, no estimate, no due date, blocked - plus a "dependency resolved,
@@ -2920,6 +2921,7 @@ async function clickupPublic() {
     wrapUp: settings.clickupWrapUp !== false,
     extraAutoClose: settings.clickupExtraAutoClose !== false,
     warnEmptyComplete: settings.clickupWarnEmptyComplete !== false,
+    holidayHeadsUp: settings.clickupHolidayHeadsUp !== false,
     wrapUpTime: settings.clickupWrapUpTime || "16:45",
     // Daily "needs tidying" reminder (see maybeTidyNotify / lib-tidy.js).
     tidyNotify: settings.clickupTidyNotify !== false,
@@ -2952,16 +2954,17 @@ async function clickupPublic() {
 // the found task or null.
 // Detect the "Extra(s) Task(s)" task for a SPECIFIC member (not just the signed-in
 // user). This is what lets a department/Jack-scoped filter list Jack's own extra
-// task instead of the viewer's. Cached per user for an hour. `hint` (name/email)
+// task instead of the viewer's. Cached per user and range for an hour. `hint` (name/email)
 // sharpens which match is preferred when someone has several Extra-named tasks.
-// Which week's occurrence to look for depends on the day being asked about, so
-// the cache is keyed per user PER WEEK. One entry for everything is what made
-// "Due tomorrow" reuse the current week's answer when tomorrow is next week.
-function extraRangeKey(userId, fromTs) {
-  const d = new Date(fromTs);
-  d.setHours(0, 0, 0, 0);
-  d.setDate(d.getDate() - ((d.getDay() + 6) % 7)); // that week's Monday
-  return String(userId) + ":" + d.getTime();
+// Which occurrence to look for depends on the range being asked about, so the
+// cache is keyed per user PER RANGE (see extraRangeKey).
+// Cached per person AND per exact range (first day - last day). It used to be
+// keyed by "that week's Monday": a Sun-Sat "Due next week" (Oct 11-17) then got
+// Mon Oct 5 - the same key as today (Fri Oct 9) - and kept showing today's
+// finished Extra Task instead of next week's new one.
+function extraRangeKey(userId, fromTs, toTs) {
+  const day = (ts) => new Date(ts).setHours(0, 0, 0, 0);
+  return String(userId) + ":" + day(fromTs) + ":" + day(toTs || fromTs);
 }
 
 // Detect the "Extra(s) Task(s)" occupying `range` for a SPECIFIC member (not just
@@ -2973,9 +2976,14 @@ function extraRangeKey(userId, fromTs) {
 async function discoverExtraTaskFor(cfg, userId, hint, range) {
   const from = (range && Number(range.fromTs)) || Date.now();
   const to = (range && Number(range.toTs)) || from;
-  const key = extraRangeKey(userId, from);
+  const key = extraRangeKey(userId, from, to);
   const hit = extraTaskCache.get(key);
-  if (hit && Date.now() - hit.at < EXTRA_TASK_CACHE_MS) return hit.value;
+  // A FINISHED occurrence due before the range asked about is "the next one
+  // isn't there yet" (ClickUp creates it a moment after the close): check again
+  // after 5 minutes instead of keeping that answer for an hour, or Due next week
+  // went on missing the new Extra Task that already existed.
+  const stale = hit && hit.value && hit.value.done && Number(hit.value.dueDateMs) && Number(hit.value.dueDateMs) < from;
+  if (hit && Date.now() - hit.at < (stale ? 5 * 60000 : EXTRA_TASK_CACHE_MS)) return hit.value;
   let value = null;
   try {
     // A lookup that FAILED (ClickUp rate limit, network) is not "this person has
@@ -3642,20 +3650,25 @@ function syncMinutes(s) {
 // has to wait for it.
 let settingsGen = 0;
 let rebuildTimer = 0, rebuildWaiters = [];
-// A setting that changes what the task lists hold: the pages hide the old rows
-// and say "Updating…" (cuRebuild, read by task-sort.js) until TODAY's list is
-// built with the new setting - saved straight away (onToday), the week views
-// follow when they're done. Quick clicks back and forth share one refresh.
+// A setting that changes what the task lists and cards hold. The pages show
+// "Updating…" (cuRebuild, read by task-sort.js) in two stages:
+//   phase "today" - nothing is rebuilt yet: lists hide their rows, number cards dim;
+//   phase "week"  - today's list and numbers are saved (onToday): they come back,
+//                   the week cards / week lists stay dimmed until the rest is in;
+//   (removed)     - everything is saved.
+// Quick clicks back and forth share one refresh; an older rebuild never clears
+// the mark of a newer one.
 function rebuildListsFor(what, opts) {
-  settingsGen++;
-  chrome.storage.local.set({ cuRebuild: { at: Date.now(), what } }).catch(() => {});
-  const done = () => chrome.storage.local.remove("cuRebuild").catch(() => {});
+  const myGen = ++settingsGen;
+  const mark = (phase) => { if (settingsGen === myGen) chrome.storage.local.set({ cuRebuild: { at: Date.now(), what, phase } }).catch(() => {}); };
+  const done = () => { if (settingsGen === myGen) chrome.storage.local.remove("cuRebuild").catch(() => {}); };
+  mark("today");
   return new Promise((resolve) => {
     rebuildWaiters.push(resolve);
     clearTimeout(rebuildTimer);
     rebuildTimer = setTimeout(() => {
       const waiters = rebuildWaiters; rebuildWaiters = [];
-      refreshClickup({ ...opts, after: true, onToday: done })
+      refreshClickup({ ...opts, after: true, onToday: () => mark("week") })
         .catch((e) => ({ ok: false, error: String(e && e.message ? e.message : e) }))
         .then((r) => { done(); for (const w of waiters) w(r); });
     }, 400);
@@ -4011,7 +4024,8 @@ async function refreshClickupImpl({ includeTasks = false, viaAlarm = false, forc
       nextWeek, // next Sun→Sat "due next week" bundle (own ~60-min TTL)
       tomorrow, // tomorrow's one-day bundle (see buildDay) - popup AND badge read this
       custom, // the saved filter's custom range / chart day (buildRangeBundle) - every page + badge
-      extraTask: extraTask || null, // auto-detected "Extra(s) Task(s)"
+      // auto-detected "Extra(s) Task(s)"; datesFix = the Mon-Fri it should have when its dates are off
+      extraTask: extraTask ? { ...extraTask, datesFix: (extraWeekDates(extraTask) || {}).label || "" } : null,
       extraLookup, // "failed" = couldn't check this time (the dashboard says so instead of "not found")
       running: running || null, // live timer (taskId/taskName/startMs) or null
       at: data.at,
@@ -4068,6 +4082,7 @@ function officeHourBounds(settings) {
 // has the same list and the admin can change it without a new version. The dates
 // below are the built-in fallback until the file has a list.
 const DEFAULT_COMPANY_CAL = [
+  { from: "2026-08-28", to: "2026-08-28", kind: "holiday", title: "Janai Purnima / Raksha Bandhan" },
   { from: "2026-10-12", to: "2026-11-13", kind: "wfh", title: "Work from home (Dashain & Tihar)" },
   { from: "2026-10-19", to: "2026-10-23", kind: "holiday", title: "Dashain holidays" },
   { from: "2026-11-09", to: "2026-11-12", kind: "holiday", title: "Tihar holidays" },
@@ -4076,7 +4091,7 @@ function normalizeCompanyCal(list) {
   const ok = /^\d{4}-\d{2}-\d{2}$/;
   return (Array.isArray(list) ? list : []).filter((e) => e && ok.test(String(e.from || ""))).slice(0, 200).map((e) => ({
     from: String(e.from), to: ok.test(String(e.to || "")) && String(e.to) >= String(e.from) ? String(e.to) : String(e.from),
-    kind: ["holiday", "wfh", "event"].includes(e.kind) ? e.kind : "event",
+    kind: ["holiday", "wfh", "event", "festival"].includes(e.kind) ? e.kind : "event",
     title: String(e.title || (e.kind === "holiday" ? "Holiday" : e.kind === "wfh" ? "Work from home" : "Event")).slice(0, 80),
     // Events (Admin › Company calendar & events): a time, a note, and when to remind
     // everyone (minutes before; 0 = at the time).
@@ -4084,6 +4099,10 @@ function normalizeCompanyCal(list) {
     ...(e.note ? { note: String(e.note).slice(0, 300) } : {}),
     ...(Array.isArray(e.remind) && e.remind.length ? { remind: [...new Set(e.remind.map(Number).filter((n) => Number.isFinite(n) && n >= 0 && n <= 10080))].slice(0, 6) } : {}),
     ...(e.id ? { id: String(e.id).slice(0, 40) } : {}),
+    // Festival days (a name for the day, not a day off): short label, group ("Dashain"), main day.
+    ...(e.kind === "festival" && e.short ? { short: String(e.short).slice(0, 24) } : {}),
+    ...(e.kind === "festival" && e.group ? { group: String(e.group).slice(0, 24) } : {}),
+    ...(e.kind === "festival" && e.main ? { main: true } : {}),
   }));
 }
 // When an event starts (its day at its time; no time = 9:00 that morning).
@@ -4762,11 +4781,98 @@ async function maybeCloseExtraTask() {
   const keep = Object.entries(done).sort((a, b) => b[1] - a[1]).slice(0, 20);
   await chrome.storage.local.set({ extraAutoClosed: Object.fromEntries(keep) });
   clearFilterCache();
+  // ClickUp creates next week's occurrence a moment after the close: forget the
+  // Extra Task each week had, refresh now, and once more a bit later with the
+  // week views rebuilt so "Due next week" shows the new one.
+  extraTaskCache.clear();
   refreshClickup({ includeTasks: true }).catch(() => {});
+  setTimeout(() => { extraTaskCache.clear(); clearFilterCache(); refreshClickup({ includeTasks: true, forceWeeks: true, forceWeekly: true }).catch(() => {}); }, 90000);
   await notify("cu-extra-closed-" + now, "Extra Task closed for this week",
     (ex.name || "Your Extra Task") + " was still open after 5 PM on its due day, so it was marked complete. ClickUp now creates next week's one.",
     undefined, t.url || ex.url || null);
 }
+// ---------- the Extra Task's dates: Monday to Friday of one week ----------
+// A recurring Extra Task whose repeat rule is off comes out e.g. "Fri -> Mon".
+// Its week is the one it's due in (a weekend due date: the week after); the fix
+// keeps both times of day. null = the dates are fine (or nothing to check).
+function extraWeekDates(ex) {
+  if (!ex || ex.done || !Number(ex.dueDateMs)) return null;
+  const due = new Date(Number(ex.dueDateMs));
+  const d0 = new Date(due); d0.setHours(0, 0, 0, 0);
+  const dow = d0.getDay();
+  const mon = new Date(d0);
+  if (dow === 0) mon.setDate(mon.getDate() + 1); else if (dow === 6) mon.setDate(mon.getDate() + 2); else mon.setDate(mon.getDate() - (dow - 1));
+  const fri = new Date(mon); fri.setDate(mon.getDate() + 4);
+  const s = Number(ex.startDateMs) ? new Date(Number(ex.startDateMs)) : null;
+  const okStart = !!s && new Date(s).setHours(0, 0, 0, 0) === mon.getTime();
+  if (okStart && d0.getTime() === fri.getTime()) return null;
+  const st = new Date(mon); if (s) st.setHours(s.getHours(), s.getMinutes(), 0, 0); else st.setHours(9, 0, 0, 0);
+  const du = new Date(fri); du.setHours(due.getHours(), due.getMinutes(), 0, 0);
+  const f = (d) => d.toLocaleDateString([], { weekday: "short", month: "short", day: "numeric" });
+  return { startMs: st.getTime(), dueMs: du.getTime(), label: f(mon) + " \u2013 " + f(fri) };
+}
+// Once per occurrence and its dates: say so, with a one-click fix.
+async function maybeCheckExtraDates() {
+  const st = await getClickupState().catch(() => null);
+  const ex = st && st.extraTask;
+  const fix = extraWeekDates(ex);
+  if (!fix) return;
+  const key = ex.id + ":" + (ex.startDateMs || 0) + ":" + ex.dueDateMs;
+  const { extraDatesWarned } = await chrome.storage.local.get("extraDatesWarned");
+  if (extraDatesWarned === key) return;
+  await chrome.storage.local.set({ extraDatesWarned: key });
+  await notify("cu-extradates-" + Date.now(), "Your Extra Task's dates look off",
+    (ex.name || "The Extra Task") + " isn't set Monday to Friday of one week. Fix it to " + fix.label + "? (Its repeat rule in ClickUp may need the same fix.)",
+    undefined, null, { buttons: [{ title: "Fix dates to " + fix.label }], requireInteraction: true });
+}
+async function fixExtraDates() {
+  const cfg = await getClickupConfig();
+  const st = await getClickupState().catch(() => null);
+  const ex = st && st.extraTask;
+  const fix = extraWeekDates(ex);
+  if (!cfg || !cfg.token || !fix) return { ok: !fix, already: !fix };
+  await setTaskDates(cfg.token, ex.id, fix.startMs, fix.dueMs);
+  extraTaskCache.clear(); clearFilterCache();
+  refreshClickup({ includeTasks: true, forceWeeks: true }).catch(() => {});
+  return { ok: true, label: fix.label };
+}
+
+// ---------- heads-up before an office holiday ----------
+// On the last working day before a company holiday (from 2 PM): one notice per
+// holiday with your open tasks due while the office is closed, so they can be
+// moved in time - or "nothing due then".
+async function maybeHolidayHeadsUp(now = Date.now()) {
+  const s = await getSettings();
+  if (s.clickupHolidayHeadsUp === false) return;
+  const d = new Date(now);
+  if (d.getHours() < 14 || d.getDay() === 0 || d.getDay() === 6 || isCompanyHoliday(now)) return;
+  const n = new Date(d); n.setHours(12, 0, 0, 0); n.setDate(n.getDate() + 1);
+  for (let i = 0; i < 4 && (n.getDay() === 0 || n.getDay() === 6); i++) n.setDate(n.getDate() + 1);
+  const k = calYmd(n.getTime());
+  const hol = companyCal.find((e) => e.kind === "holiday" && k >= e.from && k <= (e.to || e.from));
+  if (!hol) return;
+  const key = hol.from + "|" + hol.title;
+  const { holidayHeadsUp } = await chrome.storage.local.get("holidayHeadsUp");
+  const seen = Array.isArray(holidayHeadsUp) ? holidayHeadsUp : [];
+  if (seen.includes(key)) return;
+  await chrome.storage.local.set({ holidayHeadsUp: seen.concat(key).slice(-20) });
+  const end = new Date((hol.to || hol.from) + "T23:59:59").getTime();
+  const from = new Date(d); from.setHours(23, 59, 59, 999);
+  let due = [];
+  try {
+    const cfg = await getClickupConfig();
+    const r = cfg && cfg.token ? await getOpenTasks(cfg, false) : null;
+    due = ((r && r.ok && r.data && r.data.tasks) || []).filter((t) => t && !t.done && Number(t.dueDateMs) > from.getTime() && Number(t.dueDateMs) <= end);
+  } catch (e) {}
+  const f = (ymdS) => new Date(ymdS + "T12:00:00").toLocaleDateString([], { weekday: "short", month: "short", day: "numeric" });
+  const when = f(hol.from) + (hol.to && hol.to !== hol.from ? " \u2013 " + f(hol.to) : "");
+  const names = due.slice(0, 3).map((t) => "\u2022 " + String(t.name || "").slice(0, 60)).join("\n");
+  await notify("cu-holiday-" + Date.now(), hol.title + " - " + when,
+    due.length ? "The office is closed then and " + due.length + " of your tasks " + (due.length === 1 ? "is" : "are") + " due:\n" + names + (due.length > 3 ? "\n\u2026 and " + (due.length - 3) + " more" : "") + "\nMove the dates today (or ask your senior)."
+      : "The office is closed then. Nothing of yours is due in those days \u2713",
+    undefined, chrome.runtime.getURL("options.html#dashboard"), due.length ? { requireInteraction: true } : undefined);
+}
+
 async function maybeWrapUp() {
   const s = await getSettings();
   if (s.clickupWrapUp === false) return;
@@ -6511,6 +6617,10 @@ chrome.notifications.onButtonClicked.addListener((id, btn) => {
       chrome.notifications.clear(id).catch(() => {});
       const { cuNudgeTask: t } = await chrome.storage.local.get("cuNudgeTask");
       if (t && t.id) await startTaskFromNudge(t.id);
+    } else if (id.startsWith("cu-extradates-")) {
+      chrome.notifications.clear(id).catch(() => {});
+      const r = await fixExtraDates().catch((e) => ({ ok: false, error: String(e && e.message ? e.message : e) }));
+      if (r && r.ok && r.label) notify("cu-extradates-done-" + Date.now(), "Extra Task dates fixed", "It now runs " + r.label + ".");
     } else if (id.startsWith("cu-tidy-")) {
       // "needs tidying" summary: straight to the Insights tab that produced it.
       chrome.notifications.clear(id).catch(() => {});
@@ -6861,6 +6971,8 @@ chrome.alarms.onAlarm.addListener(async (alarm) => {
     // of day, so checking every minute is free and a missed alarm still lands.
     await maybeTidyNotify().catch(() => {});
     await maybeCloseExtraTask().catch(() => {});
+    await maybeCheckExtraDates().catch(() => {});
+    await maybeHolidayHeadsUp().catch(() => {});
     // Backstop for reminder alarms (asleep / missed).
     await fireDueReminders();
     await maybeCompanyHeadsUp().catch(() => {});
@@ -8178,6 +8290,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         if (p.clickupWrapUp !== undefined) patch.clickupWrapUp = !!p.clickupWrapUp;
         if (p.clickupExtraAutoClose !== undefined) patch.clickupExtraAutoClose = !!p.clickupExtraAutoClose;
         if (p.clickupWarnEmptyComplete !== undefined) patch.clickupWarnEmptyComplete = !!p.clickupWarnEmptyComplete;
+        if (p.clickupHolidayHeadsUp !== undefined) patch.clickupHolidayHeadsUp = !!p.clickupHolidayHeadsUp;
         if (p.clickupWrapUpTime !== undefined && parseHM(p.clickupWrapUpTime, null)) {
           const [h, m] = parseHM(p.clickupWrapUpTime, null);
           patch.clickupWrapUpTime = String(h).padStart(2, "0") + ":" + String(m).padStart(2, "0");
@@ -8265,6 +8378,36 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
           await updateBadge();
         }
         sendResponse({ ok: true, settings: next });
+        break;
+      }
+      case "EXTRA_FIX_DATES": {
+        try { sendResponse(await fixExtraDates()); }
+        catch (e) { sendResponse({ ok: false, error: String(e && e.message ? e.message : e) }); }
+        break;
+      }
+      case "TASK_TIME_ENTRIES": {
+        // Task details › Time tracked: list, change or delete your own entries.
+        const cfg = await getClickupConfig();
+        if (!cfg || !cfg.token || !cfg.teamId) { sendResponse({ ok: false, reason: "not-configured" }); break; }
+        const taskId = String(msg.taskId || "");
+        if (!taskId) { sendResponse({ ok: false, error: "no task" }); break; }
+        try {
+          if (msg.op === "delete" && msg.entryId) {
+            await deleteTimeEntry(cfg.token, cfg.teamId, String(msg.entryId));
+          } else if (msg.op === "save" && msg.entryId) {
+            const s = Number(msg.startMs), e = Number(msg.endMs);
+            if (!(s > 0) || !(e > s)) { sendResponse({ ok: false, error: "The end has to be after the start." }); break; }
+            const body = { start: s, end: e, duration: e - s, tid: taskId };
+            if (typeof msg.description === "string") body.description = msg.description.slice(0, 500);
+            await updateTimeEntry(cfg.token, cfg.teamId, String(msg.entryId), body);
+          }
+          const entries = await getTaskTimeEntries(cfg.token, cfg.teamId, taskId);
+          sendResponse({ ok: true, entries });
+          // The task's time, today's and the week's totals follow.
+          if (msg.op) { clearFilterCache(); refreshClickup({ includeTasks: true }).catch(() => {}); }
+        } catch (e) {
+          sendResponse({ ok: false, error: String(e && e.message ? e.message : e) });
+        }
         break;
       }
       case "CLICKUP_SET_ENTRY_NOTE": {
@@ -9099,6 +9242,8 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       }
       case "CLICKUP_REFRESH": {
         clearFilterCache();
+        // The ↻ / Refresh now buttons: find each week's Extra Task afresh too.
+        if (msg.manual) extraTaskCache.clear();
         const r = await refreshClickup({ includeTasks: !!msg.includeTasks, forceWeekly: !!msg.forceWeekly, forceWeeks: !!msg.forceWeeks });
         sendResponse(r);
         break;

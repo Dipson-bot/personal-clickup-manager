@@ -313,32 +313,55 @@
   window.PcmTaskSort = { refresh: refreshAll };
 })();
 
-// While the lists are rebuilt for a changed setting (background: cuRebuild),
-// every task list hides its old rows and says it's updating, so tasks counted
-// the old way (e.g. "Spread over days" rows under "Due today") are never shown
-// as if they were current. Recently completed (stored history) is left alone.
-// At most 15 seconds, whatever happens: never stuck on "Updating".
+// While the lists and cards are rebuilt for a changed setting (background:
+// cuRebuild { phase }), nothing counted the old way is shown as if current:
+//  - phase "today": task lists hide their rows ("Updating…"), number cards dim;
+//  - phase "week": today's card and today's lists are back (rebuilt); the week
+//    cards, week-by-day, Explore and a Tasks list showing a week stay dimmed;
+//  - no mark: everything is current.
+// Recently completed (stored history) is left alone. Lists are never hidden for
+// more than 15 s and cards never dimmed for more than 2 minutes.
 (() => {
   if (typeof chrome === "undefined" || !chrome.storage) return;
   const css = document.createElement("style");
   css.textContent = `
   .cu-tasklist.pcm-rebuild > * { display: none !important; }
   .cu-tasklist.pcm-rebuild::before { content: attr(data-rebuild); display: block; padding: 16px 12px; text-align: center; color: var(--muted); font-size: 12.5px; animation: pcmRebuild 1.4s ease-in-out infinite; }
+  .pcm-rebuild-dim { position: relative; }
+  .pcm-rebuild-dim > * { opacity: .4; transition: opacity .2s; }
+  .pcm-rebuild-dim::after { content: "\u27F3 Updating\u2026"; position: absolute; top: 10px; right: 12px; z-index: 2; font-size: 11.5px; font-weight: 600; padding: 2px 9px; border-radius: 999px; background: var(--card); color: var(--muted); border: 1px solid var(--border); animation: pcmRebuild 1.4s ease-in-out infinite; }
   @keyframes pcmRebuild { 0%, 100% { opacity: .55; } 50% { opacity: 1; } }`;
   document.head.appendChild(css);
   let cur = null;
+  const byId = (id) => document.getElementById(id);
+  // Number cards: today's and the week's (dashboard + popup).
+  const todayCards = () => [byId("cuTodayWrap"), byId("cuTotal") && byId("cuTotal").closest(".card")].filter(Boolean);
+  const weekCards = () => [byId("dashWeekCard"), byId("dashWeekDaysCard"), byId("dashExploreCard"), byId("weekCard")].filter(Boolean);
+  // A Tasks card showing more than today (Due this week / next week / a range).
+  const tasksIsWeek = () => { const c = byId("dashTasksCard"); const h = c && c.querySelector(".dash-h, h2, h3"); return !!(h && !/\btoday\b/i.test(h.textContent || "")); };
   const apply = () => {
-    const on = !!(cur && Date.now() - (Number(cur.at) || 0) < 15000);
+    const age = cur ? Date.now() - (Number(cur.at) || 0) : Infinity;
+    const phase = cur && cur.phase === "week" ? "week" : "today";
+    const hideLists = !!cur && phase === "today" && age < 15000;
+    const dimWeek = !!cur && age < 120000;
+    const dimToday = dimWeek && phase === "today";
+    const label = "\u27F3 Updating the list for the new setting" + (cur && cur.what ? " (" + cur.what + ")" : "") + "\u2026";
     for (const l of document.querySelectorAll(".cu-tasklist")) {
       if (l.id === "dashDoneList") continue;
-      if (on) l.dataset.rebuild = "\u27F3 Updating the list for the new setting" + (cur.what ? " (" + cur.what + ")" : "") + "\u2026";
-      l.classList.toggle("pcm-rebuild", on);
+      const inWeek = !!l.closest("#dashWeekDaysCard, #dashExploreCard") || (!!l.closest("#dashTasksCard") && tasksIsWeek());
+      const hide = hideLists || (inWeek && dimWeek && age < 15000);
+      if (hide) l.dataset.rebuild = label;
+      l.classList.toggle("pcm-rebuild", hide);
     }
-    if (!on) cur = null;
+    for (const c of todayCards()) c.classList.toggle("pcm-rebuild-dim", dimToday);
+    for (const c of weekCards()) c.classList.toggle("pcm-rebuild-dim", dimWeek);
+    const tc = byId("dashTasksCard");
+    if (tc) tc.classList.toggle("pcm-rebuild-dim", dimWeek && !hideLists && tasksIsWeek());
+    if (!dimWeek) cur = null;
   };
   chrome.storage.local.get("cuRebuild").then((g) => { cur = (g && g.cuRebuild) || null; apply(); }).catch(() => {});
   chrome.storage.onChanged.addListener((ch, area) => { if (area === "local" && ch.cuRebuild) { cur = ch.cuRebuild.newValue || null; apply(); } });
-  // Lists drawn while it's updating get the same; the time limit is checked too.
+  // Lists drawn while it's updating get the same; the time limits are checked too.
   new MutationObserver(() => { if (cur) apply(); }).observe(document.documentElement, { childList: true, subtree: true });
   setInterval(() => { if (cur) apply(); }, 1000);
 })();

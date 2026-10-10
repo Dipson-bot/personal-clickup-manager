@@ -125,6 +125,13 @@
     return { bg, card, bg2: mixHex(card, text, 0.06), border: mixHex(card, text, 0.16), field: darkCard ? card : "#ffffff", text, muted: mixHex(text, card, 0.42), indigo: acc, "indigo-dark": mixHex(acc, "#000000", 0.15) };
   }
   let customs = { light: null, dark: null };
+  // Saved looks (☀ menu › Your looks, General › Appearance): light / dark, both
+  // palettes, your own colours and the wallpaper with its settings - switched in
+  // one click. themeLooks = [{ id, name, theme, palLight, palDark, customLight,
+  // customDark, wall, imgKey, thumb }]; each picture is kept once under its own
+  // key (themeLookImg_…), shared by looks that use the same one.
+  const LOOK_MAX = 8;
+  let looks = [];
   // The Appearance card's colour boxes, refilled whenever the saved palettes
   // arrive (they load a moment after the page) - otherwise the boxes showed the
   // defaults and changing one colour saved the other two as defaults.
@@ -153,6 +160,17 @@
   html.pcm-wall body { background: transparent !important; }
   #pcmWall { position: fixed; inset: 0; z-index: -1; pointer-events: none; overflow: hidden; }
   #pcmWall .wimg { position: absolute; inset: -40px; background-position: center; background-repeat: no-repeat; background-size: var(--wfit, cover); filter: blur(var(--wblur, 0px)); }
+  .lk-list { display: flex; flex-wrap: wrap; gap: 6px; margin: 0 0 10px; }
+  .lk { position: relative; display: inline-flex; }
+  .lk-use { display: inline-flex; flex-direction: column; align-items: center; gap: 3px; font: inherit; font-size: 11px; width: 74px; padding: 4px; margin: 0; border: 1px solid var(--border); border-radius: 9px; background: var(--card); color: var(--text); cursor: pointer; }
+  .lk-use:hover { border-color: var(--indigo); }
+  .lk-use span { max-width: 66px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .lk-th { position: relative; display: block; width: 64px; height: 38px; border-radius: 6px; border: 1px solid var(--border); }
+  .lk-th b { position: absolute; right: 3px; bottom: 3px; width: 10px; height: 10px; border-radius: 50%; border: 1.5px solid #fff; }
+  .lk-x { position: absolute; top: -6px; right: -6px; width: 18px; height: 18px; padding: 0; margin: 0; font-size: 10px; line-height: 16px; border-radius: 50%; border: 1px solid var(--border); background: var(--card); color: var(--muted); cursor: pointer; display: none; }
+  .lk:hover .lk-x { display: block; }
+  .lk-save { font: inherit; font-size: 11.5px; padding: 4px 10px; margin: 0; width: auto; border: 1px dashed var(--border); border-radius: 9px; background: none; color: var(--indigo); cursor: pointer; align-self: center; }
+  .ap-looks { margin: 0 0 14px; }
   #pcmWall .wdim { position: absolute; inset: 0; background: var(--bg); opacity: var(--wdim, .35); }
   html.pcm-wall.pcm-glass .card, html.pcm-wall.pcm-glass .sidenav { background: color-mix(in srgb, var(--card) 84%, transparent) !important; backdrop-filter: blur(10px); }
   `;
@@ -166,6 +184,10 @@
       (customs.dark ? 'html[data-theme="dark"][data-pal-dark="custom"] { ' + vars(deriveCustom(customs.dark, "dark")) + " }" : "");
   }
   function setPal(g) {
+    if (g && "themeLooks" in g) {
+      looks = (Array.isArray(g.themeLooks) ? g.themeLooks : []).filter((l) => l && l.id).slice(0, LOOK_MAX);
+      apRefills.forEach((fn) => { try { fn(); } catch (e) {} });
+    }
     if (g && ("themeCustomLight" in g || "themeCustomDark" in g)) {
       customs = { light: (g.themeCustomLight && typeof g.themeCustomLight === "object") ? g.themeCustomLight : null, dark: (g.themeCustomDark && typeof g.themeCustomDark === "object") ? g.themeCustomDark : null };
       paintCustomCss();
@@ -175,7 +197,7 @@
     if (okPal("light", l)) root.dataset.palLight = l; else delete root.dataset.palLight;
     if (okPal("dark", d)) root.dataset.palDark = d; else delete root.dataset.palDark;
   }
-  const PAL_KEYS = ["themePaletteLight", "themePaletteDark", "themeCustomLight", "themeCustomDark"];
+  const PAL_KEYS = ["themePaletteLight", "themePaletteDark", "themeCustomLight", "themeCustomDark", "themeLooks"];
   try {
     chrome.storage.local.get(PAL_KEYS).then(setPal).catch(() => {});
     chrome.storage.onChanged.addListener((ch, area) => {
@@ -210,11 +232,17 @@
         const v = deriveCustom(c, m);
         return '<button type="button" class="sw' + (cur[m] === "custom" && mode === m ? " on" : "") + '" data-m="' + m + '" data-p="custom" title="Your own palette"><i style="--a:' + v.bg + ";--b:" + v.indigo + '"></i>Custom</button>';
       })();
-      menu.innerHTML = '<div class="seg"><button type="button" data-mode="light" class="' + (mode === "light" ? "on" : "") + '">☀ Light</button><button type="button" data-mode="dark" class="' + (mode === "dark" ? "on" : "") + '">☾ Dark</button></div>' +
+      menu.innerHTML ='<div class="seg"><button type="button" data-mode="light" class="' + (mode === "light" ? "on" : "") + '">☀ Light</button><button type="button" data-mode="dark" class="' + (mode === "dark" ? "on" : "") + '">☾ Dark</button></div>' +
+        "<h4>Your looks</h4><div class=\"lk-list\">" + defaultTile() + looks.map(lookTile).join("") + '<button type="button" class="lk-save" data-look-save="1" title="Keep the colours, light / dark and the wallpaper you have on now">\uFF0B Save current look\u2026</button></div>' +
         "<h4>Light palettes</h4><div class=\"sws\">" + sws("light") + "</div><h4>Dark palettes</h4><div class=\"sws\">" + sws("dark") + "</div>" +
         '<button type="button" class="thm-more" data-edit="1">🎨 Custom colours &amp; wallpaper…</button>';
       menu.querySelectorAll("[data-edit]").forEach((b) => { b.onclick = () => { closeMenu(); openAppearance(); }; });
       menu.querySelectorAll("[data-mode]").forEach((b) => { b.onclick = async () => { await setMode(b.dataset.mode); paint(); }; });
+      menu.querySelectorAll("[data-look]").forEach((b) => { b.onclick = async () => { await useLook(looks.find((l) => l.id === b.dataset.look)); paint(); }; });
+      menu.querySelectorAll("[data-look-default]").forEach((b) => { b.onclick = async () => { await useDefaultLook(); paint(); }; });
+      menu.querySelectorAll("[data-look-x]").forEach((b) => { b.onclick = async (e) => { e.stopPropagation(); const l = looks.find((x) => x.id === b.dataset.lookX); if (l && confirm("Delete the look \u201c" + l.name + "\u201d?")) { await deleteLook(l); paint(); } }; });
+      const ls = menu.querySelector("[data-look-save]");
+      if (ls) ls.onclick = async (e) => { e.stopPropagation(); if (await askSaveLook(null)) paint(); };
       menu.querySelectorAll("[data-p]").forEach((b) => {
         b.onclick = async () => {
           const m = b.dataset.m, p = b.dataset.p;
@@ -301,6 +329,114 @@
     return { data: out, w: 0, h: 0, src: [bmp.width, bmp.height] };
   }
 
+  // ---------- saved looks ----------
+  async function lookThumb(img) {
+    if (!img) return "";
+    try {
+      const bmp = await createImageBitmap(await (await fetch(img)).blob());
+      const cv = document.createElement("canvas"); cv.width = 96; cv.height = 60;
+      const k = Math.max(96 / bmp.width, 60 / bmp.height);
+      cv.getContext("2d").drawImage(bmp, (96 - bmp.width * k) / 2, (60 - bmp.height * k) / 2, bmp.width * k, bmp.height * k);
+      return cv.toDataURL("image/jpeg", 0.7);
+    } catch (e) { return ""; }
+  }
+  async function saveLook(name) {
+    const g = await chrome.storage.local.get(["theme", "themePaletteLight", "themePaletteDark", "themeCustomLight", "themeCustomDark", "themeWall", "themeWallImg"]).catch(() => ({}));
+    const img = typeof g.themeWallImg === "string" && /^data:image\//.test(g.themeWallImg) ? g.themeWallImg : "";
+    const same = looks.find((l) => l.name.toLowerCase() === name.toLowerCase());
+    if (!same && looks.length >= LOOK_MAX) throw new Error("You can keep " + LOOK_MAX + " looks - delete one first (✕).");
+    let imgKey = "";
+    if (img) {
+      // The same picture as another look: share its copy.
+      for (const l of looks) {
+        if (!l.imgKey) continue;
+        const h = await chrome.storage.local.get(l.imgKey).catch(() => ({}));
+        if (h[l.imgKey] === img) { imgKey = l.imgKey; break; }
+      }
+      if (!imgKey) { imgKey = "themeLookImg_" + Date.now().toString(36); await chrome.storage.local.set({ [imgKey]: img }); }
+    }
+    const look = {
+      id: same ? same.id : "lk" + Date.now().toString(36), name: name.slice(0, 24),
+      theme: g.theme === "dark" ? "dark" : "light",
+      palLight: g.themePaletteLight || "classic", palDark: g.themePaletteDark || "classic",
+      customLight: g.themeCustomLight || null, customDark: g.themeCustomDark || null,
+      wall: img ? { ...WALL_DEF, ...(g.themeWall || {}) } : null, imgKey, thumb: await lookThumb(img),
+    };
+    const next = looks.filter((l) => l.id !== look.id).concat(look);
+    await chrome.storage.local.set({ themeLooks: next });
+    looks = next;
+    await dropUnusedLookImgs(same && same.imgKey !== imgKey ? [same.imgKey] : []);
+    return look;
+  }
+  async function dropUnusedLookImgs(keys) {
+    const gone = keys.filter((k) => k && !looks.some((l) => l.imgKey === k));
+    if (gone.length) await chrome.storage.local.remove(gone).catch(() => {});
+  }
+  async function useLook(look) {
+    if (!look) return;
+    const patch = {
+      theme: look.theme, themePaletteLight: look.palLight || "classic", themePaletteDark: look.palDark || "classic",
+      themeCustomLight: look.customLight || null, themeCustomDark: look.customDark || null,
+    };
+    if (look.imgKey) {
+      const h = await chrome.storage.local.get(look.imgKey).catch(() => ({}));
+      if (h[look.imgKey]) { patch.themeWallImg = h[look.imgKey]; patch.themeWall = { ...WALL_DEF, ...(look.wall || {}) }; }
+    }
+    await chrome.storage.local.set(patch).catch(() => {});
+    if (!patch.themeWallImg) { await chrome.storage.local.set({ themeWallImg: "" }).catch(() => {}); await chrome.storage.local.remove("themeWallImg").catch(() => {}); }
+    setPal(patch);
+    if (typeof window.applyTheme === "function") window.applyTheme(look.theme); else root.dataset.theme = look.theme;
+    loadWall();
+  }
+  // The plain look: no wallpaper, Classic in both modes (light / dark stays as it is).
+  async function useDefaultLook() {
+    await chrome.storage.local.set({ themeWallImg: "", themePaletteLight: "classic", themePaletteDark: "classic" }).catch(() => {});
+    await chrome.storage.local.remove("themeWallImg").catch(() => {});
+    setPal({ themePaletteLight: "classic", themePaletteDark: "classic" });
+    paintWall(lastWall, ""); lastImg = "";
+    loadWall();
+  }
+  const defaultTile = () => '<span class="lk"><button type="button" class="lk-use" data-look-default="1" title="Plain: no wallpaper, the Classic colours"><i class="lk-th" style="background:linear-gradient(135deg,#f1ece4 50%,#0f1115 50%)"><b style="background:#6366f1"></b></i><span>Default</span></button></span>';
+  async function deleteLook(look) {
+    looks = looks.filter((l) => l.id !== look.id);
+    await chrome.storage.local.set({ themeLooks: looks }).catch(() => {});
+    await dropUnusedLookImgs([look.imgKey]);
+  }
+  // A look's tile: its wallpaper (or its background colour) with its accent.
+  function lookTile(l) {
+    const c = l.theme === "dark" ? (l.customDark && l.palDark === "custom" ? deriveCustom(l.customDark, "dark") : null) : (l.customLight && l.palLight === "custom" ? deriveCustom(l.customLight, "light") : null);
+    const pal = l.theme === "dark" ? PALETTES.dark[l.palDark] : PALETTES.light[l.palLight];
+    const bg = c ? c.bg : pal && pal.v ? pal.v.bg : pal && pal.sw ? pal.sw[0] : "#888";
+    const acc = c ? c.indigo : pal && pal.v ? pal.v.indigo : pal && pal.sw ? pal.sw[1] : "#6366f1";
+    const name = String(l.name || "Look").replace(/[<>&"]/g, "");
+    return '<span class="lk"><button type="button" class="lk-use" data-look="' + l.id + '" title="Switch to ' + name + '"><i class="lk-th" style="background:' + (l.thumb ? 'url(' + l.thumb + ') center/cover' : bg) + '"><b style="background:' + acc + '"></b></i><span>' + name + '</span></button>' +
+      '<button type="button" class="lk-x" data-look-x="' + l.id + '" title="Delete ' + name + '">\u2715</button></span>';
+  }
+  async function askSaveLook(say) {
+    const name = (prompt("Name this look (the colours, light / dark and the wallpaper you have on now):", "My look " + (looks.length + 1)) || "").trim();
+    if (!name) return null;
+    try { const l = await saveLook(name); if (say) say("Saved \u201c" + l.name + "\u201d - switch to it in the \u2600 menu."); return l; }
+    catch (e) { const msg = String((e && e.message) || e); if (say) say(msg, true); else alert(msg); return null; }
+  }
+  function wireLooks(c, say) {
+    if (c.querySelector(".ap-looks")) return;
+    const box = document.createElement("div");
+    box.className = "ap-looks";
+    box.innerHTML = '<h3 style="font-size:13px;margin:0 0 6px;">Your looks</h3><p class="hint" style="margin:0 0 8px;">A look keeps light / dark, the palettes and the wallpaper together; switch between them in one click here or in the \u2600 menu at the top of every page.</p><div class="lk-list"></div><button type="button" class="lk-save">\uFF0B Save this look\u2026</button>';
+    const h = c.querySelector("h3");
+    (h ? h : c.lastChild).before(box);
+    const list = box.querySelector(".lk-list");
+    const paint = () => {
+      list.innerHTML = defaultTile() + looks.map(lookTile).join("");
+      list.querySelectorAll("[data-look-default]").forEach((b) => { b.onclick = async () => { await useDefaultLook(); say("Back to the plain look (no wallpaper, Classic colours)."); }; });
+      list.querySelectorAll("[data-look]").forEach((b) => { b.onclick = async () => { await useLook(looks.find((l) => l.id === b.dataset.look)); say("\u201c" + b.textContent + "\u201d is on."); }; });
+      list.querySelectorAll("[data-look-x]").forEach((b) => { b.onclick = async () => { const l = looks.find((x) => x.id === b.dataset.lookX); if (l && confirm("Delete the look \u201c" + l.name + "\u201d?")) { await deleteLook(l); paint(); } }; });
+    };
+    box.querySelector(".lk-save").onclick = async () => { if (await askSaveLook(say)) paint(); };
+    paint();
+    apRefills.push(paint);
+  }
+
   // ---------- Appearance card (Options › General) ----------
   function openAppearance() {
     const card = document.getElementById("appearanceCard");
@@ -366,6 +502,8 @@
       const use = $c("apUse_" + m);
       if (use) use.onclick = () => { save(true); say("Your " + m + " palette is on."); };
     }
+    // Your saved looks (palette + wallpaper), with Save this look…
+    wireLooks(c, say);
     // Wallpaper.
     const setWall = (patch) => { const w = { ...lastWall, ...patch }; lastWall = w; paintWall(w, lastImg); chrome.storage.local.set({ themeWall: w }).catch(() => {}); };
     if ($c("apWallPick")) $c("apWallPick").onclick = () => $c("apWallFile") && $c("apWallFile").click();

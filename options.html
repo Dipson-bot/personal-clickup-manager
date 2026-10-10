@@ -1490,6 +1490,8 @@
             <p class="hint">Move leftover tasks to tomorrow and copy a standup for Slack.</p></div>
           <div class="set-line"><input type="checkbox" id="cuExtraAutoClose" /><label for="cuExtraAutoClose">Close my weekly Extra Task at 5 PM on its due day (Friday) if it's still open</label>
             <p class="hint">It's a recurring task: ClickUp only makes next week's one when this week's is closed. Waits if its timer is still running.</p></div>
+          <div class="set-line"><input type="checkbox" id="cuHolidayHeadsUp" /><label for="cuHolidayHeadsUp">Heads-up the working day before an office holiday</label>
+            <p class="hint">From 2 PM on the last working day before it: which of your tasks are due while the office is closed, so you can move them in time.</p></div>
           <div class="set-line"><input type="checkbox" id="cuWarnEmpty" /><label for="cuWarnEmpty">Ask before completing a task with nothing to show for it</label>
             <p class="hint">No filled Description: "…" or File: "…" in its description and no comment yet. You can still complete it.</p></div>
           <div class="set-line"><input type="checkbox" id="cuTidyNotify" /><label for="cuTidyNotify">Daily "needs tidying" summary at</label><input type="time" id="cuTidyTime" /></div>
@@ -2230,13 +2232,18 @@
       <div id="admCalList" class="hint" style="margin:0 0 12px;" data-long="adm-cal" data-long-rows=".adm-cal-item"></div>
       <div class="adm-cal-form">
         <div class="adm-cal-row">
-          <label>What<select id="admCalKind"><option value="event">Event / notice</option><option value="holiday">Holiday</option><option value="wfh">Work from home</option></select></label>
+          <label>What<select id="admCalKind"><option value="event">Event / notice</option><option value="holiday">Holiday</option><option value="wfh">Work from home</option><option value="festival">Festival day (a name, not a day off)</option></select></label>
           <label style="flex:2 1 220px;">Title<input type="text" id="admCalTitle" maxlength="80" placeholder="e.g. Dashain program" /></label>
         </div>
         <div class="adm-cal-row">
           <label>Day<button type="button" class="adm-cal-date" id="admCalFrom">Pick a day…</button></label>
           <label id="admCalToWrap">Until<button type="button" class="adm-cal-date" id="admCalTo">Same day</button></label>
           <label id="admCalTimeWrap">Time<input type="time" id="admCalTime" value="14:00" /></label>
+        </div>
+        <div class="adm-cal-row" id="admCalFestWrap" style="display:none;">
+          <label>Short name <span class="hint">(on the day's box)</span><input type="text" id="admCalShort" maxlength="24" placeholder="e.g. Tika" /></label>
+          <label>Group <span class="hint">(one line in the list)</span><input type="text" id="admCalGroup" maxlength="24" placeholder="e.g. Dashain" /></label>
+          <label style="flex:0 0 auto;align-self:end;"><input type="checkbox" id="admCalMain" /> main day</label>
         </div>
         <label id="admCalNoteWrap">Note <span class="hint">(optional - where, what to bring…)</span><input type="text" id="admCalNote" maxlength="300" placeholder="e.g. In the meeting room. Everyone is welcome." /></label>
         <div id="admCalRemWrap" class="adm-cal-rem">Remind everyone:

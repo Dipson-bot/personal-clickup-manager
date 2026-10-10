@@ -121,6 +121,50 @@
     return null;
   }
   const bsLabel = (date) => { const b = toBS(date); return b ? BS_NAMES[b.m - 1] + " " + b.d + ", " + b.y : ""; };
+  // BS { y, m (1-12), d } -> that local date (midnight), or 0 outside the table.
+  function fromBS(y, m, d) {
+    const i = y - BS_START;
+    if (i < 0 || i >= BS_MONTHS.length || m < 1 || m > 12) return 0;
+    let days = d - 1;
+    for (let a = 0; a < i; a++) for (const len of BS_MONTHS[a]) days += len;
+    for (let b = 0; b < m - 1; b++) days += BS_MONTHS[i][b];
+    const u = new Date(BS_EPOCH + days * 86400000);
+    return new Date(u.getUTCFullYear(), u.getUTCMonth(), u.getUTCDate()).getTime();
+  }
+  const bsMonthLen = (y, m) => (BS_MONTHS[y - BS_START] || [])[m - 1] || 30;
+
+  // ---- named days (festivals) ----
+  // What a day is, for everyone, whether or not the office closes (holidays come
+  // from the team calendar). Built in for 2083 (checked against the Nepali
+  // calendar); the team calendar file can add more years or correct a day with
+  // entries of kind "festival" ({ from, title, short, group, main }), which win.
+  // [full name, short label, group, main day (named in its box)]
+  const FESTIVALS_BUILTIN = {
+    "2026-08-28": ["Janai Purnima / Raksha Bandhan", "Janai Purnima", "", true],
+    "2026-10-11": ["Ghatasthapana (Dashain begins)", "Ghatasthapana", "Dashain", false],
+    "2026-10-17": ["Fulpati", "Fulpati", "Dashain", false],
+    "2026-10-18": ["Maha Ashtami", "Ashtami", "Dashain", false],
+    "2026-10-20": ["Maha Navami", "Navami", "Dashain", false],
+    "2026-10-21": ["Vijaya Dashami - Dashain Tika", "Tika", "Dashain", true],
+    "2026-10-22": ["Papankusha Ekadashi", "Ekadashi", "Dashain", false],
+    "2026-10-25": ["Kojagrat Purnima (Dashain ends)", "Purnima", "Dashain", false],
+    "2026-11-07": ["Kag Tihar (Tihar begins)", "Kag Tihar", "Tihar", false],
+    "2026-11-08": ["Kukur Tihar · Gai Tihar · Laxmi Puja", "Laxmi Puja", "Tihar", true],
+    "2026-11-10": ["Govardhan Puja · Mha Puja (Nepal Sambat new year)", "Govardhan", "Tihar", false],
+    "2026-11-11": ["Bhai Tika (Tihar ends)", "Bhai Tika", "Tihar", true],
+  };
+  function festivals() {
+    const out = { ...FESTIVALS_BUILTIN };
+    for (const e of company) {
+      if (!e || e.kind !== "festival" || !e.from) continue;
+      out[e.from] = [e.title || "Festival", e.short || e.title || "Festival", e.group || "", !!e.main];
+    }
+    return out;
+  }
+  const festivalOn = (ts) => festivals()[ymd(ts)] || null;
+  // English or Nepali months (the switch in the calendar's head), every page.
+  let calMode = "ad";
+  try { chrome.storage.local.get("calMode").then((g) => { if (g && (g.calMode === "bs" || g.calMode === "ad")) calMode = g.calMode; }).catch(() => {}); } catch (e) {}
 
   // ---- company days (holidays, work from home) ----
   let company = [];
@@ -128,12 +172,12 @@
   const parseYmd = (s) => { const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(s || "")); return m ? new Date(+m[1], +m[2] - 1, +m[3]).getTime() : 0; };
   function eventsOn(ts) {
     const k = ymd(ts);
-    return company.filter((e) => e && e.from && k >= e.from && k <= (e.to || e.from));
+    return company.filter((e) => e && e.kind !== "festival" && e.from && k >= e.from && k <= (e.to || e.from));
   }
   const isHoliday = (ts) => eventsOn(ts).some((e) => e.kind === "holiday");
   const isWfh = (ts) => eventsOn(ts).some((e) => e.kind === "wfh");
   const fmtShort = (ts) => new Date(ts).toLocaleDateString(undefined, { month: "short", day: "numeric" });
-  const icon = (kind) => kind === "holiday" ? "\uD83C\uDF89" : kind === "wfh" ? "\uD83C\uDFE0" : "\uD83D\uDCCC";
+  const icon = (kind) => kind === "holiday" ? "\uD83C\uDF89" : kind === "wfh" ? "\uD83C\uDFE0" : kind === "fest" ? "\uD83E\uDE94" : "\uD83D\uDCCC";
   // An event's time ("2:00 PM") after its title.
   const evTime = (e) => { if (!e || !e.time) return ""; const [h, m] = e.time.split(":").map(Number); return " \u00b7 " + new Date(2000, 0, 1, h, m).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" }); };
   // Today's status or the next thing starting within two weeks, for the chip.
@@ -199,6 +243,12 @@
     .pcal-head .t { flex: 1; text-align: center; }
     .pcal-head .t b { display: block; font-size: 13.5px; }
     .pcal-head .t span { color: var(--muted); font-size: 11.5px; }
+    .pcal-mode { display: inline-flex; margin-top: 4px; border: 1px solid var(--border); border-radius: 999px; overflow: hidden; }
+    .pcal-head .pcal-mode button { width: auto; height: 20px; padding: 0 9px; border: 0; border-radius: 0; background: transparent; font-size: 10.5px; font-weight: 700; line-height: 20px; color: var(--muted); }
+    .pcal-head .pcal-mode button.on { background: var(--indigo, #6366f1); color: #fff; }
+    .pcal-day .fn { display: block; margin-top: 1px; font-size: 8.5px; line-height: 10px; font-weight: 700; color: #b45309; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    html[data-theme="dark"] .pcal-day .fn { color: #fbbf24; }
+    .pcal-day.fest { box-shadow: inset 0 -2px 0 rgba(217,119,6,.55); }
     .pcal-head button { flex: none; display: inline-flex; align-items: center; justify-content: center; width: 30px; height: 30px; padding: 0; border: 1px solid var(--border); background: var(--bg2, transparent); color: var(--text); border-radius: 8px; cursor: pointer; line-height: 0; }
     .pcal-head button:hover { border-color: var(--indigo, #6366f1); color: var(--indigo, #6366f1); }
     .pcal-head button svg { width: 16px; height: 16px; display: block; }
@@ -252,6 +302,13 @@
     .pcal-ev button { display: flex; align-items: center; gap: 6px; width: 100%; text-align: left; font: inherit; color: var(--text); background: none; border: 0; border-radius: 6px; padding: 4px 6px; cursor: pointer; }
     .pcal-ev button:hover { background: var(--bg2, rgba(99,102,241,.08)); color: var(--indigo, #6366f1); }
     .pcal-ev small { color: var(--muted); margin-left: auto; white-space: nowrap; }
+    .pcal-ev button.grp { align-items: flex-start; }
+    .pcal-ev .gt { line-height: 1.5; font-size: 12px; }
+    .pcal-ev .gt b { font-weight: 700; }
+    .pcal-ev .gt span, .pcal-ev .gt b + b { white-space: nowrap; }
+    .pcal-ev .pcal-more { justify-content: center; color: var(--muted); font-size: 11.5px; }
+    .pcal-ev { max-height: 190px; overflow: auto; }
+    .pcal-day .fd { position: absolute; left: 5px; bottom: 4px; width: 6px; height: 6px; border-radius: 50%; background: #d97706; }
     .pcal-hint { color: var(--muted); font-size: 11px; margin-top: 6px; }
   `;
   document.head.appendChild(css);
@@ -282,21 +339,51 @@
   });
   document.addEventListener("keydown", (e) => { if (e.key === "Escape") close(); });
 
+  // The month to show starting from a day: its English month, or in Nepali mode
+  // the Nepali month it's in.
+  function monthOf(ts) {
+    const d = new Date(ts);
+    if (calMode === "bs") { const b = toBS(d); if (b) return new Date(fromBS(b.y, b.m, 1)); }
+    return new Date(d.getFullYear(), d.getMonth(), 1);
+  }
   function paintMonth() {
     pop.textContent = "";
+    const bsMode = calMode === "bs" && !!toBS(view);
     const y = view.getFullYear(), m = view.getMonth();
-    const first = new Date(y, m, 1), last = new Date(y, m + 1, 0);
+    const bv = bsMode ? toBS(view) : null;
+    const first = bsMode ? new Date(fromBS(bv.y, bv.m, 1)) : new Date(y, m, 1);
+    const last = bsMode ? new Date(fromBS(bv.y, bv.m, bsMonthLen(bv.y, bv.m))) : new Date(y, m + 1, 0);
     const head = el("div", "pcal-head");
     const prev = el("button"); prev.type = "button"; prev.title = "Previous month"; prev.setAttribute("aria-label", "Previous month");
     const next = el("button"); next.type = "button"; next.title = "Next month"; next.setAttribute("aria-label", "Next month");
     prev.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M15 18l-6-6 6-6"/></svg>';
     next.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 18l6-6-6-6"/></svg>';
-    prev.onclick = (e) => { e.stopPropagation(); view = new Date(y, m - 1, 1); paintMonth(); };
-    next.onclick = (e) => { e.stopPropagation(); view = new Date(y, m + 1, 1); paintMonth(); };
+    const step = (n) => {
+      if (!bsMode) return new Date(y, m + n, 1);
+      let yy = bv.y, mm = bv.m + n;
+      if (mm < 1) { mm = 12; yy--; } else if (mm > 12) { mm = 1; yy++; }
+      return new Date(fromBS(yy, mm, 1) || view.getTime());
+    };
+    prev.onclick = (e) => { e.stopPropagation(); view = step(-1); paintMonth(); };
+    next.onclick = (e) => { e.stopPropagation(); view = step(1); paintMonth(); };
     const t = el("div", "t");
-    t.appendChild(el("b", "", first.toLocaleDateString(undefined, { month: "long", year: "numeric" })));
-    const bA = toBS(first), bB = toBS(last);
-    if (bA && bB) t.appendChild(el("span", "", BS_NAMES[bA.m - 1] + (bA.m !== bB.m || bA.y !== bB.y ? " \u2013 " + BS_NAMES[bB.m - 1] : "") + " " + bB.y));
+    if (bsMode) {
+      t.appendChild(el("b", "", BS_NAMES[bv.m - 1] + " " + bv.y));
+      const f = first.toLocaleDateString(undefined, { month: "short" }), l = last.toLocaleDateString(undefined, { month: "short", year: "numeric" });
+      t.appendChild(el("span", "", f + " \u2013 " + l));
+    } else {
+      t.appendChild(el("b", "", first.toLocaleDateString(undefined, { month: "long", year: "numeric" })));
+      const bA = toBS(first), bB = toBS(last);
+      if (bA && bB) t.appendChild(el("span", "", BS_NAMES[bA.m - 1] + (bA.m !== bB.m || bA.y !== bB.y ? " \u2013 " + BS_NAMES[bB.m - 1] : "") + " " + bB.y));
+    }
+    // English / Nepali months - remembered on every page.
+    const modeSw = el("div", "pcal-mode");
+    for (const [k, lab, tip] of [["ad", "AD", "English months"], ["bs", "BS", "Nepali months (Bikram Sambat)"]]) {
+      const mb = el("button", calMode === k ? "on" : "", lab); mb.type = "button"; mb.title = tip;
+      mb.onclick = (e) => { e.stopPropagation(); if (calMode === k) return; const keep = first.getTime() + 15 * 86400000; calMode = k; try { chrome.storage.local.set({ calMode: k }); } catch (x) {} view = monthOf(Math.min(keep, last.getTime())); paintMonth(); };
+      modeSw.appendChild(mb);
+    }
+    t.appendChild(modeSw);
     head.append(prev, t, next);
     pop.appendChild(head);
     // Jump to any date: Today, or pick one (the month opens and the day is pointed at).
@@ -331,13 +418,14 @@
     for (const w of ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"]) grid.appendChild(el("div", "pcal-wd", w));
     const counts = dueCounts();
     const todayK = ymd(Date.now());
-    const start = new Date(y, m, 1 - first.getDay());
+    const start = new Date(first.getFullYear(), first.getMonth(), first.getDate() - first.getDay());
+    const inMonth = (d) => d.getTime() >= first.getTime() && d.getTime() <= last.getTime();
     for (let i = 0; i < 42; i++) {
       const d = new Date(start.getFullYear(), start.getMonth(), start.getDate() + i);
-      if (i >= 35 && d.getMonth() !== m) break;
+      if (i >= 35 && !inMonth(d)) break;
       const k = ymd(d), ts = d.getTime();
       const b = el("button", "pcal-day"); b.type = "button";
-      if (d.getMonth() !== m) b.classList.add("out");
+      if (!inMonth(d)) b.classList.add("out");
       const weekend = d.getDay() === 0 || d.getDay() === 6;
       b.dataset.k = k;
       if (k === todayK) b.classList.add("today");
@@ -346,14 +434,23 @@
       if (evs.some((e) => e.kind === "holiday")) b.classList.add("hol");
       else if (weekend) b.classList.add("we");
       else if (evs.some((e) => e.kind === "wfh")) b.classList.add("wfh");
-      b.appendChild(el("span", "ad", String(d.getDate())));
       const bs = toBS(d);
-      if (bs) b.appendChild(el("span", "bsd", bs.d === 1 ? BS_NAMES[bs.m - 1].slice(0, 3) + " 1" : String(bs.d)));
+      if (bsMode && bs) {
+        // Nepali month: its day big, the English date small.
+        b.appendChild(el("span", "ad", String(bs.d)));
+        b.appendChild(el("span", "bsd", d.getDate() === 1 ? d.toLocaleDateString(undefined, { month: "short" }) + " 1" : String(d.getDate())));
+      } else {
+        b.appendChild(el("span", "ad", String(d.getDate())));
+        if (bs) b.appendChild(el("span", "bsd", bs.d === 1 ? BS_NAMES[bs.m - 1].slice(0, 3) + " 1" : String(bs.d)));
+      }
+      const fest = festivalOn(ts);
+      if (fest) { b.classList.add("fest"); b.appendChild(fest[3] ? el("span", "fn", fest[1]) : el("span", "fd")); }
       const c = counts.get(k);
       if (c && c.n) { const n = el("span", "n" + (c.open && k < todayK ? " late" : ""), String(c.n)); n.title = c.n + " task" + (c.n === 1 ? "" : "s") + " due" + (c.open ? " (" + c.open + " not done)" : ""); b.appendChild(n); }
       const rms = remindersOn(ts);
       if (rms.length) { const rm = el("span", "rm", "\u23F0" + (rms.length > 1 ? rms.length : "")); b.appendChild(rm); }
       b.title = d.toLocaleDateString(undefined, { weekday: "long", month: "long", day: "numeric" }) + (bs ? " \u00b7 " + BS_NAMES[bs.m - 1] + " " + bs.d + ", " + bs.y : "") +
+        (fest ? "\n\uD83E\uDE94 " + fest[0] : "") +
         (evs.length ? "\n" + evs.map((e) => icon(e.kind) + " " + e.title + evTime(e) + (e.note ? " - " + e.note : "")).join("\n") : "") + (c && c.n ? "\n" + c.n + " task" + (c.n === 1 ? "" : "s") + " due" : "") +
         (rms.length ? "\n" + rms.map((r) => "\u23F0 " + r.time + "  " + r.text).join("\n") : "") +
         (picker ? (picker.sel === k ? "\nThe " + picker.what + " now" : "\nClick to make this the " + picker.what) : "\nClick to list this day's tasks");
@@ -364,21 +461,61 @@
     }
     pop.appendChild(grid);
     const lg = el("div", "pcal-legend");
-    lg.innerHTML = '<span>\u23F0 Reminder</span><span><i class="lg-we"></i>Weekend</span><span><i class="lg-hol"></i>Holiday</span><span><i class="lg-wfh"></i>Work from home</span><span><i style="background:var(--indigo,#6366f1)"></i>Tasks due</span>';
+    lg.innerHTML = '<span>\u23F0 Reminder</span><span><i class="lg-we"></i>Weekend</span><span><i class="lg-hol"></i>Holiday</span><span><i class="lg-wfh"></i>Work from home</span><span><i style="background:#d97706;border-radius:50%"></i>Festival</span><span><i style="background:var(--indigo,#6366f1)"></i>Tasks due</span>';
     pop.appendChild(lg);
     // Company days in this month and the next few weeks.
-    const fromK = ymd(new Date(y, m, 1)), toK = ymd(new Date(y, m + 2, 0));
-    const list = company.filter((e) => (e.to || e.from) >= fromK && e.from <= toK).sort((a, b) => a.from.localeCompare(b.from));
-    if (list.length) {
+    const fromK = ymd(first.getTime()), toK = ymd(new Date(last.getFullYear(), last.getMonth() + 1, last.getDate()).getTime());
+    // Named days (festivals) in the same weeks, listed with the office's days.
+    const groups = new Map();
+    const singles = [];
+    for (const [k, v] of Object.entries(festivals())) {
+      if (k < fromK || k > toK) continue;
+      if (!v[2]) { singles.push({ from: k, to: k, kind: "fest", title: v[0] }); continue; }
+      if (!groups.has(v[2])) groups.set(v[2], []);
+      groups.get(v[2]).push([k, v]);
+    }
+    const fests = singles.concat([...groups].map(([g, days]) => {
+      days.sort((a, b) => a[0].localeCompare(b[0]));
+      return { from: days[0][0], to: days[days.length - 1][0], kind: "fest", title: g, days };
+    }));
+    const all = company.filter((e) => e.kind !== "festival" && (e.to || e.from) >= fromK && e.from <= toK).concat(fests).sort((a, b) => a.from.localeCompare(b.from));
+    // Only what's still ahead, unless the whole month is in the past; the rest
+    // folds into "Show earlier".
+    const past = all.filter((e) => (e.to || e.from) < todayK && toK >= todayK);
+    const list = all.filter((e) => !past.includes(e));
+    if (list.length || past.length) {
       const ev = el("div", "pcal-ev");
-      for (const e of list) {
+      const addRow = (e) => {
         const row = el("button"); row.type = "button";
         row.title = "Show where it starts (" + fmtShort(parseYmd(e.from)) + ")";
+        if (e.days) {
+          // A festival group on one line: its days with their dates, the main ones bold.
+          row.classList.add("grp");
+          const tx = el("span", "gt");
+          tx.append(icon("fest") + " ", el("b", "", e.title));
+          for (const [k, v] of e.days) {
+            tx.append(" \u00b7 ");
+            const dn = el(v[3] ? "b" : "span", "", v[1] + " " + new Date(parseYmd(k)).getDate());
+            dn.title = v[0] + " - " + fmtShort(parseYmd(k));
+            tx.appendChild(dn);
+          }
+          row.appendChild(tx);
+          row.title = e.days.map(([k, v]) => fmtShort(parseYmd(k)) + "  " + v[0]).join("\n");
+          row.onclick = (ev2) => { ev2.stopPropagation(); goTo(e.from); };
+          ev.appendChild(row);
+          return;
+        }
         row.append(icon(e.kind) + " " + e.title + evTime(e));
         if (e.note) row.title = e.note + "\n" + row.title;
         row.appendChild(el("small", "", fmtShort(parseYmd(e.from)) + (e.to && e.to !== e.from ? " \u2013 " + fmtShort(parseYmd(e.to)) : "")));
         row.onclick = (ev2) => { ev2.stopPropagation(); goTo(e.from); };
         ev.appendChild(row);
+      };
+      for (const e of list) addRow(e);
+      if (past.length) {
+        const more = el("button", "pcal-more", "Show earlier (" + past.length + ")"); more.type = "button";
+        more.onclick = (ev2) => { ev2.stopPropagation(); more.remove(); for (const e of past) addRow(e); };
+        ev.appendChild(more);
       }
       pop.appendChild(ev);
     }
@@ -388,8 +525,7 @@
   }
   // Show the month of a date and point at that day.
   function goTo(k) {
-    const d = new Date(parseYmd(k));
-    view = new Date(d.getFullYear(), d.getMonth(), 1);
+    view = monthOf(parseYmd(k));
     paintMonth();
     const cell = pop && pop.querySelector('.pcal-day[data-k="' + k + '"]');
     if (cell) { cell.classList.add("flash"); cell.focus({ preventScroll: true }); }
@@ -409,8 +545,7 @@
     pop.onclick = (e) => e.stopPropagation();
     pop._anchor = anchor;
     document.body.appendChild(pop);
-    const d = new Date(ts || Date.now());
-    view = new Date(d.getFullYear(), d.getMonth(), 1);
+    view = monthOf(ts || Date.now());
     paintMonth();
     place(anchor);
   }
@@ -468,6 +603,7 @@
     if (pop) paintMonth();
   }
   try { chrome.storage.onChanged.addListener((ch, area) => { if (area === "local" && (ch.companyCalendar || ch.clickupState || ch.reminders)) load(); }); } catch (e) {}
+  try { chrome.storage.onChanged.addListener((ch, area) => { if (area === "local" && ch.calMode && (ch.calMode.newValue === "bs" || ch.calMode.newValue === "ad")) calMode = ch.calMode.newValue; }); } catch (e) {}
   setInterval(paintChip, 60000); // the date rolls over at midnight
   if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", load); else load();
   // ---- every date field on the page uses THIS calendar ----
@@ -533,5 +669,5 @@
       return native ? native.call(this) : undefined;
     };
   } catch (e) {}
-  window.PcmCalendar = { toBS, bsLabel, isHoliday, isWfh, eventsOn, remindersOn, open, pick: pickDate, pickFor, refresh: load };
+  window.PcmCalendar = { toBS, fromBS, festivalOn, bsLabel, isHoliday, isWfh, eventsOn, remindersOn, open, pick: pickDate, pickFor, refresh: load };
 })();

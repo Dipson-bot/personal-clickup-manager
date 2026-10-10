@@ -2483,6 +2483,15 @@ function renderClickupSettings(cu) {
       link.textContent = extra.name;
       const stEl = $("cuAutoExtraStatus");
       if (stEl) { stEl.textContent = extra.status || ""; stEl.hidden = !extra.status; }
+      // Dates not Monday to Friday: one click sets them.
+      let fx = $("cuAutoExtraFix");
+      if (!fx && link.parentNode) { fx = document.createElement("button"); fx.type = "button"; fx.id = "cuAutoExtraFix"; fx.className = "link-btn"; fx.style.cssText = "margin-left:6px;color:var(--amber,#d97706);font-weight:600;background:none;border:0;cursor:pointer;font-size:12px;padding:0;"; (stEl || link).after(fx); }
+      if (fx) {
+        fx.hidden = !extra.datesFix;
+        fx.textContent = extra.datesFix ? "\u26A0 Fix dates (" + extra.datesFix + ")" : "";
+        fx.title = "This Extra Task isn't Monday to Friday of one week - set it to " + (extra.datesFix || "") + " in ClickUp";
+        fx.onclick = async () => { fx.disabled = true; fx.textContent = "Fixing\u2026"; const r = await send({ type: "EXTRA_FIX_DATES" }, 20000).catch(() => null); fx.disabled = false; fx.textContent = r && r.ok ? "\u2713 Dates fixed" : "Couldn't fix: " + ((r && r.error) || "no reply"); };
+      }
       if (extra.url) {
         link.href = extra.url;
         link.title = extra.url;
@@ -2521,6 +2530,7 @@ function renderClickupSettings(cu) {
   $("cuWrapUp").checked = cu.wrapUp !== false;
   if ($("cuExtraAutoClose")) $("cuExtraAutoClose").checked = cu.extraAutoClose !== false;
   if ($("cuWarnEmpty")) $("cuWarnEmpty").checked = cu.warnEmptyComplete !== false;
+  if ($("cuHolidayHeadsUp")) $("cuHolidayHeadsUp").checked = cu.holidayHeadsUp !== false;
   $("cuWrapUpTime").value = cu.wrapUpTime || "16:45";
   $("cuTidyNotify").checked = cu.tidyNotify !== false;
   $("cuTidyTime").value = cu.tidyTime || "14:00";
@@ -5533,6 +5543,7 @@ $("cuSave").onclick = async () => {
         clickupWrapUp: $("cuWrapUp").checked,
         clickupExtraAutoClose: $("cuExtraAutoClose") ? $("cuExtraAutoClose").checked : true,
         clickupWarnEmptyComplete: $("cuWarnEmpty") ? $("cuWarnEmpty").checked : true,
+        clickupHolidayHeadsUp: $("cuHolidayHeadsUp") ? $("cuHolidayHeadsUp").checked : true,
         clickupWrapUpTime: wrapUpTime,
         clickupTidyNotify: $("cuTidyNotify").checked,
         clickupTidyTime: tidyTime,
@@ -5566,7 +5577,7 @@ $("cuRefreshNow").onclick = async () => {
     // forced weekly recompute is slow, so the default 8s often expired first - that
     // was the "Refresh now does nothing / No response from the extension" bug. Give
     // it real time to wake and finish.
-    const res = await send({ type: "CLICKUP_REFRESH", includeTasks: true, forceWeekly: true, forceWeeks: true }, 25000);
+    const res = await send({ type: "CLICKUP_REFRESH", includeTasks: true, forceWeekly: true, forceWeeks: true, manual: true }, 25000);
     if (res && res.ok && res.data) renderClickupPreview(res.data);
     // On failure the background keeps the last-good numbers and annotates the
     // error, so reload to repaint from that cached state ("showing last total…").
@@ -7723,7 +7734,7 @@ if ($("dashRefresh")) $("dashRefresh").onclick = async () => {
   b.classList.add("spin"); b.disabled = true;
   say("Refreshing from ClickUp…");
   try {
-    const res = await send({ type: "CLICKUP_REFRESH", includeTasks: true, forceWeekly: true, forceWeeks: true }, 25000);
+    const res = await send({ type: "CLICKUP_REFRESH", includeTasks: true, forceWeekly: true, forceWeeks: true, manual: true }, 25000);
     if (res && res.ok && res.data) {
       renderClickupPreview(res.data);
       say("Updated " + new Date().toLocaleTimeString([], { hour: "numeric", minute: "2-digit" }) + " ✓", "ok");
@@ -8663,10 +8674,11 @@ const admYmd = (ts) => { const d = new Date(ts); return d.getFullYear() + "-" + 
 const admDay = (k) => new Date(k + "T12:00:00").getTime();
 function admCalPaintForm() {
   const kind = $("admCalKind").value, ev = kind === "event";
+  if ($("admCalFestWrap")) $("admCalFestWrap").style.display = kind === "festival" ? "" : "none";
   $("admCalTimeWrap").style.display = ev ? "" : "none";
   $("admCalRemWrap").style.display = ev ? "" : "none";
   $("admCalNoteWrap").style.display = ev ? "" : "none";
-  $("admCalToWrap").style.display = ev ? "none" : "";
+  $("admCalToWrap").style.display = ev || kind === "festival" ? "none" : "";
   const f = (ms) => new Date(ms).toLocaleDateString([], { weekday: "short", month: "short", day: "numeric", year: "numeric" });
   $("admCalFrom").textContent = admCalDates.from ? f(admCalDates.from) : "Pick a day…";
   $("admCalTo").textContent = admCalDates.to ? f(admCalDates.to) : "Same day";
@@ -8677,7 +8689,7 @@ function admCalRender() {
   if (!admCal) { box.textContent = "Loading…"; return; }
   if (!admCal.length) { box.textContent = "Nothing on the company calendar yet."; return; }
   const today = admYmd(Date.now());
-  const icon = (k) => k === "holiday" ? "\uD83C\uDF89" : k === "wfh" ? "\uD83C\uDFE0" : "\uD83D\uDCCC";
+  const icon = (k) => k === "holiday" ? "\uD83C\uDF89" : k === "wfh" ? "\uD83C\uDFE0" : k === "festival" ? "\uD83E\uDE94" : "\uD83D\uDCCC";
   box.innerHTML = admCal.map((e, i) => {
     const d = (k) => new Date(k + "T12:00:00").toLocaleDateString([], { month: "short", day: "numeric" });
     const when = d(e.from) + (e.to && e.to !== e.from ? " - " + d(e.to) : "") + (e.time ? " · " + new Date(e.from + "T" + e.time).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" }) : "");
@@ -8722,6 +8734,12 @@ if ($("admCalCard")) {
     if (!admCalDates.from) { $("admCalMsg").textContent = "Pick the day."; return; }
     const from = admYmd(admCalDates.from);
     const e = { from, to: kind !== "event" && admCalDates.to && admYmd(admCalDates.to) > from ? admYmd(admCalDates.to) : from, kind, title };
+    if (kind === "festival") {
+      const sh = ($("admCalShort").value || "").trim(), gr = ($("admCalGroup").value || "").trim();
+      if (sh) e.short = sh;
+      if (gr) e.group = gr;
+      if ($("admCalMain").checked) e.main = true;
+    }
     if (kind === "event") {
       if ($("admCalTime").value) e.time = $("admCalTime").value;
       if ($("admCalNote").value.trim()) e.note = $("admCalNote").value.trim();
@@ -8739,6 +8757,7 @@ if ($("admCalCard")) {
       const e = admCal[Number(ed.dataset.admCalEdit)]; if (!e) return;
       admCalEdit = Number(ed.dataset.admCalEdit);
       $("admCalKind").value = e.kind; $("admCalTitle").value = e.title; $("admCalNote").value = e.note || ""; $("admCalTime").value = e.time || "14:00";
+      if ($("admCalShort")) { $("admCalShort").value = e.short || ""; $("admCalGroup").value = e.group || ""; $("admCalMain").checked = !!e.main; }
       admCalDates.from = admDay(e.from); admCalDates.to = e.to && e.to !== e.from ? admDay(e.to) : 0;
       $("admCalRemWrap").querySelectorAll("input").forEach((x) => { x.checked = Array.isArray(e.remind) && e.remind.includes(Number(x.value)); });
       $("admCalAdd").textContent = "Save & publish"; $("admCalCancel").style.display = "";

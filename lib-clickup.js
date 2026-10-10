@@ -1198,7 +1198,13 @@ export const EXTRA_TASK_NAME_RE = /extra\s*\(?\s*s?\s*\)?\s*-?\s*tasks?/i;
 // finished, then the nearest - counting a past occurrence as twice as far away so
 // an upcoming one wins when nothing covers the day (a weekend, or ClickUp has not
 // created the next occurrence yet).
-function chooseExtraOccurrence(found, hint, target) {
+// For a range of several days (a week): the occurrence DUE inside it comes
+// first, finished or not - by due date that week is its week. (Closing last
+// week's task can make ClickUp create the next one starting that same day, so
+// it overlaps the old week too; preferring the open one counted next week's task
+// in this week, and the two "this week" cards disagreed.) A single day keeps
+// preferring the open occurrence ("Start Extra Task" never starts a closed one).
+export function chooseExtraOccurrence(found, hint, target) {
   if (!found.length) return null;
   let pool = found;
   if (hint && pool.some((m) => m.hasHint)) pool = pool.filter((m) => m.hasHint);
@@ -1211,7 +1217,11 @@ function chooseExtraOccurrence(found, hint, target) {
     const eDay = new Date(e).setHours(23, 59, 59, 999);
     return sDay <= target.to && eDay >= target.from; // the two spans overlap
   };
-  const rank = (m) => (covers(m) ? 0 : 2) + (m.done ? 1 : 0);
+  const multiDay = target.to - target.from > 36 * 3600000;
+  const dueIn = (m) => !!m.dueDateMs && m.dueDateMs >= target.from && m.dueDateMs <= target.to;
+  const rank = multiDay
+    ? (m) => (dueIn(m) ? 0 : covers(m) ? 2 : 4) + (m.done ? 1 : 0)
+    : (m) => (covers(m) ? 0 : 2) + (m.done ? 1 : 0);
   const dist = (m) => {
     const d = m.dueDateMs || m.startDateMs || 0;
     const gap = Math.abs(d - target.from);
@@ -1659,6 +1669,36 @@ export async function addTimeEntry(token, teamId, taskId, startMs, durationMs, d
 export async function updateTimeEntry(token, teamId, entryId, body) {
   return cuPut(token, "/team/" + teamId + "/time_entries/" + encodeURIComponent(entryId), body || {});
 }
+// DELETE sibling of cuPut (same auth + error mapping).
+async function cuDelete(token, path) {
+  meterRequest(path);
+  let res;
+  try {
+    res = await guardedFetch(token, API + path, { method: "DELETE", headers: { Authorization: token } });
+  } catch (e) {
+    if (e && e.status === 429) throw e;
+    const err = new Error("Couldn't reach ClickUp (network error).");
+    err.status = 0;
+    throw err;
+  }
+  if (res.status === 401 || res.status === 403) { const err = new Error("ClickUp refused (HTTP " + res.status + ") - you can only change your own time."); err.status = res.status; throw err; }
+  if (res.status === 429) { reportRateLimit(); throw rateLimitError(res); }
+  if (!res.ok) { const err = new Error("ClickUp API error (HTTP " + res.status + ")."); err.status = res.status; throw err; }
+  try { return await res.json(); } catch (e) { return {}; }
+}
+// Your own time entries on one task over the last year, newest first (the
+// task details' "Time tracked" list: edit or delete a wrong one).
+export async function getTaskTimeEntries(token, teamId, taskId, now = Date.now()) {
+  const end = now + 86400000, start = end - 366 * 86400000;
+  const j = await cuFetchTimeEntries(token, teamId, [["start_date", String(start)], ["end_date", String(end)], ["task_id", String(taskId)]], null);
+  return ((j && j.data) || []).map((e) => {
+    const s = Number(e.start) || 0, en = Number(e.end) || 0, dur = Number(e.duration) || 0;
+    return { id: String(e.id), startMs: s, endMs: en, durationMs: dur > 0 ? dur : en > s ? en - s : 0, running: !en || dur < 0, description: String(e.description || "") };
+  }).filter((e) => e.id && e.startMs).sort((a, b) => b.startMs - a.startMs);
+}
+export async function deleteTimeEntry(token, teamId, entryId) {
+  return cuDelete(token, "/team/" + teamId + "/time_entries/" + encodeURIComponent(entryId));
+}
 
 // Change a task's due date. hasTime null = leave ClickUp's date-only/timed flag alone.
 // Take one person off a task (the ✕ next to an assignee).
@@ -1666,6 +1706,10 @@ export async function removeTaskAssignee(token, taskId, userId) {
   return cuPut(token, "/task/" + encodeURIComponent(taskId), { assignees: { add: [], rem: [Number(userId)] } });
 }
 
+// Set a task's start AND due date (with their times of day) in one go.
+export async function setTaskDates(token, taskId, startMs, dueMs) {
+  return cuPut(token, "/task/" + encodeURIComponent(taskId), { start_date: Number(startMs), start_date_time: true, due_date: Number(dueMs), due_date_time: true });
+}
 export async function setTaskDueDate(token, taskId, dueMs, hasTime) {
   // dueMs null/0 clears the due date.
   const body = { due_date: dueMs ? Number(dueMs) : null };
@@ -3055,7 +3099,12 @@ export async function fetchDateRangeEstimate({ token, teamId, userId, fromTs, to
             ? await fetchExtendedTaskEstimate({ token: taskToken, teamId, taskUrl: url, todayByTask: null, byDayTracked: rangeByDay, now: ts, mode: extendedMode, taskCache })
             : await fetchDeadlineTaskEstimate({ token: taskToken, teamId, taskUrl: url, todayByTask: null, now: ts, taskCache });
           let add = (r && !r.error) ? (r.dayEstimateMs || 0) : 0;
-          if (!add) add = extraTaskWeekdayShare(task, ts);
+          // The flat "weekly ÷ 5" share is only for an Extra Task WITHOUT dates. One
+          // with dates counts on the days inside its own span only - a day outside
+          // it isn't that occurrence's day (next week's task added ~1h 24m to every
+          // day of this week: "Configured +8h 52m" for a 7h task).
+          const inSpan = (!cStart && !cDue) || (ts >= new Date(cStart || cDue).setHours(0, 0, 0, 0) && ts <= new Date(cDue || cStart).setHours(23, 59, 59, 999));
+          if (!add && inSpan) add = extraTaskWeekdayShare(task, ts);
           dayEst += add;
         }
       }
