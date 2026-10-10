@@ -7,7 +7,7 @@
   "notifyNonce": "3evkvxzv",
   "notifiedAllAt": 1791560608311,
   "sitesAt": 1790937886566,
-  "updatedAt": 1791560608311,
+  "updatedAt": 1791647050350,
   "latest": "4.1.8",
   "zip": "https://github.com/Dipson-bot/personal-clickup-manager/releases/download/v4.1.8/personal-clickup-manager-v4.1.8.zip",
   "url": "https://github.com/Dipson-bot/personal-clickup-manager/releases/tag/v4.1.8",
@@ -15,18 +15,6 @@
   "quietFor": "",
   "preview": null,
   "calendar": [
-    {
-      "from": "2026-10-09",
-      "to": "2026-10-09",
-      "kind": "event",
-      "title": "Dashain Program",
-      "time": "14:00",
-      "remind": [
-        15,
-        0
-      ],
-      "id": "ev-dashain-program-2026"
-    },
     {
       "from": "2026-10-12",
       "to": "2026-11-13",
