@@ -932,6 +932,172 @@ export async function getTaskCommentLinks(token, taskId) {
   }
   return extractTaskLinks(parts.join("\n"));
 }
+// ---------- related tasks for an AI brief (open AND closed, read-only) ----------
+// A brief about open tasks also needs the tasks they hang on - including ones
+// already finished, where the answer to a question or an approval may sit in a
+// comment ("approved - go with option B"). For one task: its dependencies and task
+// links, its parent and siblings, tasks its description or comments mention (a
+// ClickUp link or a reference ID such as Q-8 / AP-20 / ACT-070.S2 / BLOG 4), and
+// tasks in the same List whose NAME carries the same reference ID. Only GETs;
+// cached 10 minutes; capped per task.
+const REL_TTL = 10 * 60000;
+const relTaskCache = new Map(); // id -> { at, data }
+const relListCache = new Map(); // listId -> { at, tasks: [{ id, name }] }
+export const REF_ID_DEFAULT = "\\b[A-Z]{1,8}-\\d{1,4}(?:\\.[A-Z]{0,2}\\d{1,3})?(?![0-9])|\\bBLOG \\d{1,4}\\b";
+// Reference IDs in a text, by the default pattern plus any the user added (one
+// regular expression per line, or comma-separated).
+export function refIds(text, extra) {
+  const pats = [REF_ID_DEFAULT].concat(String(extra || "").split(/[\n,]+/).map((x) => x.trim()).filter(Boolean));
+  const out = new Set();
+  for (const p of pats) {
+    let re; try { re = new RegExp(p, "g"); } catch (e) { continue; }
+    for (const m of String(text || "").matchAll(re)) if (m[0]) out.add(m[0].toUpperCase());
+  }
+  return [...out];
+}
+// One spelling per ID: case, a "-" / "_" / space or nothing between letters and
+// number, and leading zeros don't matter (tec06 = TEC_6 = TEC-06 -> TEC-6).
+export function normId(id) {
+  const m = /^([A-Za-z]{1,8})[-_ ]?0*(\d{1,4})((?:\.[A-Za-z]{0,2}\d{1,3})?)$/.exec(String(id || "").trim());
+  return m ? m[1].toUpperCase() + "-" + m[2] + m[3].toUpperCase() : String(id || "").trim().toUpperCase();
+}
+const idBase = (n) => n.replace(/\.[A-Z]{0,2}\d{1,3}$/, ""); // ACT-70.S2 -> ACT-70
+// The IDs a text mentions, normalised: the strict forms (and the user's own
+// patterns), plus loose spellings (cro02, onp_2, Tec 06…) of the PREFIXES the
+// client's own tasks use - learned from their names, so a random word with a
+// number in it (mp3, h1, utf8) never counts.
+export function idsIn(text, prefixes, extra) {
+  const out = new Set(refIds(text, extra).map(normId));
+  const pre = [...(prefixes || [])].filter((p) => /^[A-Z]{1,8}$/.test(p) && p !== "BLOG");
+  if (pre.length) {
+    const re = new RegExp("(^|[^A-Za-z0-9])(" + pre.join("|") + ")[-_ ]?(\\d{1,4})((?:\\.[A-Za-z]{0,2}\\d{1,3})?)(?![0-9])", "gi");
+    for (const m of String(text || "").matchAll(re)) out.add(normId(m[2] + "-" + m[3] + (m[4] || "")));
+  }
+  return [...out];
+}
+const QUESTION_RE = /\bQ-\d|\?|\bquestion|\bconfirm|\bdecid|\bdecision|\bapprov|\bwhich\b|\bchoose|\bclarif|\bsign[- ]?off/i;
+const DECISION_RE = /\b(approved?|go ahead|go with|confirmed?|decided|decision|publish|use the|yes[,.!]|no[,.!]|agreed|signed off|please (?:use|keep|remove|add))\b/i;
+async function relTask(token, id) {
+  const hit = relTaskCache.get(id);
+  if (hit && Date.now() - hit.at < REL_TTL) return hit.data;
+  const [t, cj] = await Promise.all([
+    cuFetch(token, "/task/" + encodeURIComponent(id)),
+    cuFetch(token, "/task/" + encodeURIComponent(id) + "/comment").catch(() => ({ comments: [] })),
+  ]);
+  const comments = (Array.isArray(cj && cj.comments) ? cj.comments : []).map((c) => ({
+    who: (c.user && (c.user.username || c.user.email)) || "Someone", at: Number(c.date) || 0, text: commentText(c),
+  })).filter((c) => c.text).sort((a, b) => b.at - a.at);
+  const data = {
+    id: String((t && t.id) || id), name: (t && t.name) || "", url: (t && t.url) || taskUrlFor(id),
+    status: (t && t.status && t.status.status) || "", closed: isTaskDone(t),
+    closedAt: Number(t && (t.date_done || t.date_closed)) || 0,
+    dueDateMs: t && t.due_date ? Number(t.due_date) : 0,
+    assignees: (Array.isArray(t && t.assignees) ? t.assignees : []).map((a) => a && (a.username || a.email)).filter(Boolean),
+    parentId: t && t.parent != null ? String(t.parent) : "",
+    subtaskIds: (Array.isArray(t && t.subtasks) ? t.subtasks : []).map((s) => String(s.id)),
+    comments,
+  };
+  relTaskCache.set(id, { at: Date.now(), data });
+  return data;
+}
+// Task names in a List, open and closed (a few pages), for "same reference ID".
+async function relListTasks(token, listId) {
+  const hit = relListCache.get(listId);
+  if (hit && Date.now() - hit.at < REL_TTL) return hit.tasks;
+  const tasks = [];
+  for (let page = 0; page < 3; page++) {
+    const j = await cuFetch(token, "/list/" + encodeURIComponent(listId) + "/task", [["page", String(page)], ["include_closed", "true"], ["subtasks", "true"], ["archived", "false"]]).catch(() => null);
+    const batch = j && Array.isArray(j.tasks) ? j.tasks : [];
+    for (const x of batch) tasks.push({ id: String(x.id), name: x.name || "" });
+    if (batch.length < 100 || (j && j.last_page)) break;
+  }
+  relListCache.set(listId, { at: Date.now(), tasks });
+  return tasks;
+}
+// Task names across every List of a Folder (open and closed) - audit questions
+// often live in another List of the same client. One paged search, cached.
+const relFolderCache = new Map(); // folderId -> { at, tasks }
+async function relFolderTasks(token, teamId, folderId) {
+  const hit = relFolderCache.get(folderId);
+  if (hit && Date.now() - hit.at < REL_TTL) return hit.tasks;
+  const lj = await cuFetch(token, "/folder/" + encodeURIComponent(folderId) + "/list", [["archived", "false"]]);
+  const listIds = (Array.isArray(lj && lj.lists) ? lj.lists : []).map((l) => String(l.id)).filter(Boolean).slice(0, 40);
+  const tasks = [];
+  if (listIds.length) {
+    for (let page = 0; page < 5; page++) {
+      const params = [["page", String(page)], ["include_closed", "true"], ["subtasks", "true"]].concat(listIds.map((id) => ["list_ids[]", id]));
+      const j = await cuFetch(token, "/team/" + encodeURIComponent(teamId) + "/task", params).catch(() => null);
+      const batch = j && Array.isArray(j.tasks) ? j.tasks : [];
+      for (const x of batch) tasks.push({ id: String(x.id), name: x.name || "" });
+      if (batch.length < 100 || (j && j.last_page)) break;
+    }
+  }
+  relFolderCache.set(folderId, { at: Date.now(), tasks });
+  return tasks;
+}
+// The related tasks of one loaded task (getTaskPanel's data). opts: { cap, ids, teamId }.
+export async function getRelatedTasks(token, d, opts = {}) {
+  const cap = Math.max(1, Math.min(60, Number(opts.cap) || 25));
+  const self = String(d.id);
+  const want = new Map(); // id -> relation (first one wins: the strongest)
+  const add = (id, rel) => { id = String(id || ""); if (id && id !== self && !want.has(id)) want.set(id, rel); };
+  for (const x of d.waitsOn || []) add(x, "it waits on this (dependency)");
+  for (const x of d.blocks || []) add(x, "this waits on it (dependency)");
+  for (const x of d.linked || []) add(x, "linked task");
+  if (d.parentId) add(d.parentId, "parent");
+  // ClickUp links in the description and comments.
+  const text = [d.name, d.description].concat((d.comments || []).map((c) => c.text)).join("\n");
+  for (const u of extractTaskLinks(text)) { const m = /app\.clickup\.com\/t\/(?:\d+\/)?([a-z0-9]+)/i.exec(u); if (m) add(m[1], "mentioned"); }
+  // Reference IDs (Q-8, AP-20, cro02, TEC-06 …) -> tasks in the same List whose
+  // name has the same ID (exact), or the same ID family (ACT-070 <-> ACT-070.S2).
+  // Same ID: across the task's whole Folder when it has one, else its own List.
+  let list = [];
+  if (d.folderId && opts.teamId) list = await relFolderTasks(token, opts.teamId, d.folderId).catch(() => []);
+  if (!list.length && d.listId) list = await relListTasks(token, d.listId).catch(() => []);
+  const prefixes = new Set();
+  for (const x of list) for (const id of refIds(x.name, opts.ids)) { const m = /^([A-Z]{1,8})-/.exec(normId(id)); if (m) prefixes.add(m[1]); }
+  for (const id of refIds(text, opts.ids)) { const m = /^([A-Z]{1,8})-/.exec(normId(id)); if (m) prefixes.add(m[1]); }
+  const ids = idsIn(text, prefixes, opts.ids);
+  const own = new Set(idsIn(d.name, prefixes, opts.ids));
+  if (ids.length && list.length) {
+    const fam = [];
+    for (const x of list) {
+      if (x.id === self) continue;
+      const xIds = idsIn(x.name, prefixes, opts.ids);
+      const exact = ids.find((id) => xIds.includes(id));
+      if (exact) { add(x.id, own.has(exact) ? "same ID " + exact : "mentioned by ID " + exact); continue; }
+      const base = ids.find((id) => xIds.some((y) => idBase(y) === idBase(id)));
+      if (base) fam.push([x.id, "same ID family " + idBase(base)]);
+    }
+    for (const [id, rel] of fam) add(id, rel); // after the exact matches
+  }
+  const missing = ids.filter((id) => !own.has(id)); // IDs it mentions that aren't its own
+  // Siblings come last (several, no comments needed beyond their state).
+  let parent = null;
+  if (d.parentId) { try { parent = await relTask(token, d.parentId); } catch (e) {} }
+  if (parent) for (const sid of parent.subtaskIds) add(sid, "sibling (same parent)");
+  const out = [];
+  const queue = [...want].slice(0, cap);
+  let next = 0;
+  const worker = async () => {
+    while (next < queue.length) {
+      const [id, rel] = queue[next++];
+      try {
+        const r = id === d.parentId && parent ? parent : await relTask(token, id);
+        const lastC = r.comments.slice(0, 3);
+        const decision = r.comments.slice(3).find((c) => DECISION_RE.test(c.text));
+        const answer = QUESTION_RE.test(r.name) && r.comments[0] ? r.comments[0] : null;
+        out.push({ ...r, rel, comments: lastC.concat(decision ? [{ ...decision, decision: true }] : []), answer, subtaskIds: undefined });
+      } catch (e) { out.push({ id, rel, name: "", error: (e && e.status === 404) ? "not found or no access" : "couldn't load" }); }
+    }
+  };
+  await Promise.all([worker(), worker()]); // two at a time (the request guard paces them too)
+  const foundIds = new Set(out.flatMap((r) => idsIn(r.name || "", prefixes, opts.ids)));
+  const notFound = missing.filter((id) => !foundIds.has(id));
+  const order = (r) => (/dependency/.test(r.rel) ? 0 : /linked/.test(r.rel) ? 1 : r.rel === "parent" ? 2 : /family/.test(r.rel) ? 4 : /mentioned|same ID/.test(r.rel) ? 3 : 5);
+  out.sort((a, b) => order(a) - order(b));
+  return { tasks: out, notFound, more: Math.max(0, want.size - cap) };
+}
 export async function getTaskPanel(token, taskId, force) {
   const key = String(taskId);
   const hit = panelCache.get(key);
@@ -990,6 +1156,11 @@ export async function getTaskPanel(token, taskId, force) {
     tags: (Array.isArray(t && t.tags) ? t.tags : []).map((g) => g && g.name).filter(Boolean),
     priority: cuPriorityName(t),
     parentId: t && t.parent != null ? String(t.parent) : "",
+    listId: (t && t.list && t.list.id != null) ? String(t.list.id) : "",
+    // The Folder (not the hidden one of a folderless List): reference IDs are looked for across all its Lists.
+    folderId: (t && t.folder && t.folder.hidden !== true && t.folder.id != null) ? String(t.folder.id) : "",
+    // ClickUp "task links" (either direction): the other task's id.
+    linked: (Array.isArray(t && t.linked_tasks) ? t.linked_tasks : []).map((l) => String(String(l.task_id) === key ? l.link_id : l.task_id)).filter((x) => x && x !== key),
     waitsOn: deps.filter((x) => String(x.task_id) === key && x.depends_on).map((x) => String(x.depends_on)),
     blocks: deps.filter((x) => String(x.depends_on) === key && x.task_id).map((x) => String(x.task_id)),
     subtasks,

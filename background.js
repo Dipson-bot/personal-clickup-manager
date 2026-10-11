@@ -25,7 +25,7 @@ import {
   driveQuota,
 } from "./lib-drive.js";
 import { runAllAccounts, runAccountLogin, readAgentRouterLogin, URLS, GITHUB_KEEP_COOKIES } from "./lib-automation.js";
-import { getTaskCommentsLite, getTaskTimeEntries, deleteTimeEntry, getUserGroups, getUser, verifyToken, getTeams, fetchTodayEstimate, fetchWeeklySummary, fetchDateRangeEstimate, createTaskCache, fetchTeamMembers, fetchWorkspaceTags, cuTagNames, fmtDuration, findExtraTaskByName, parseTaskIdFromUrl, getCurrentTimeEntry, getRunningTaskProgress, startTimer, stopTimer, getTaskById, setTaskStatus, setTaskDates, taskUrlFor, clientLabelFromContainer, resolveSpaceNamesFor, taskContainer, cuPriorityName, isTaskDone, getSubtasksOfParent, getTaskTree, getTaskDetail, updateTimeEntry, setTaskDueDate, clearTaskTreeCache, listWorkspaceClients, cuRowAssignees, fetchDoneBetween, fetchDoneLite, fetchTrackedHistory, getTaskPanel, addTaskComment, postTaskComment, setTaskDescription, getTaskCommentLinks, createTask, removeTaskAssignee, postAssignedComment, addTimeEntry, weeklyWithToday, listClientFieldOptions, listReachableClients, bgToken, cuRawFetch } from "./lib-clickup.js";
+import { getTaskCommentsLite, getTaskTimeEntries, deleteTimeEntry, getUserGroups, getUser, verifyToken, getTeams, fetchTodayEstimate, fetchWeeklySummary, fetchDateRangeEstimate, createTaskCache, fetchTeamMembers, fetchWorkspaceTags, cuTagNames, fmtDuration, findExtraTaskByName, parseTaskIdFromUrl, getCurrentTimeEntry, getRunningTaskProgress, startTimer, stopTimer, getTaskById, setTaskStatus, setTaskDates, taskUrlFor, clientLabelFromContainer, resolveSpaceNamesFor, taskContainer, cuPriorityName, isTaskDone, getSubtasksOfParent, getTaskTree, getTaskDetail, updateTimeEntry, setTaskDueDate, clearTaskTreeCache, listWorkspaceClients, cuRowAssignees, fetchDoneBetween, fetchDoneLite, fetchTrackedHistory, getTaskPanel, addTaskComment, postTaskComment, setTaskDescription, getTaskCommentLinks, createTask, removeTaskAssignee, postAssignedComment, addTimeEntry, weeklyWithToday, listClientFieldOptions, listReachableClients, bgToken, cuRawFetch, getRelatedTasks } from "./lib-clickup.js";
 import { resolveRelayKey, pickProbeModel, probeRelay } from "./lib-availability.js";
 import { tidyCollect, tidyLines, tidyResolved, tidyDayOk, tidyUrgent, tidyDateShort } from "./lib-tidy.js";
 
@@ -1594,6 +1594,9 @@ const DEFAULT_SETTINGS = {
   // ---- Close the weekly Extra Task (see maybeCloseExtraTask) ----
   clickupExtraAutoClose: true,
   clickupWarnEmptyComplete: true,
+  clickupRelatedOn: true, // AI briefs look up related tasks (open and closed)
+  clickupRelatedCap: 25, // at most this many related tasks per task
+  clickupRelatedIds: "", // extra reference-ID patterns (one per line)
   clickupHolidayHeadsUp: true,
   // ---- Daily "needs tidying" reminder ----
   // One short, actionable summary a day of what the Insights tab flags:
@@ -2957,6 +2960,9 @@ async function clickupPublic() {
     wrapUp: settings.clickupWrapUp !== false,
     extraAutoClose: settings.clickupExtraAutoClose !== false,
     warnEmptyComplete: settings.clickupWarnEmptyComplete !== false,
+    relatedOn: settings.clickupRelatedOn !== false,
+    relatedCap: Number(settings.clickupRelatedCap) || 25,
+    relatedIds: String(settings.clickupRelatedIds || ""),
     holidayHeadsUp: settings.clickupHolidayHeadsUp !== false,
     wrapUpTime: settings.clickupWrapUpTime || "16:45",
     // Daily "needs tidying" reminder (see maybeTidyNotify / lib-tidy.js).
@@ -3284,6 +3290,170 @@ async function computeFilterData(cfg, settings, assigneeIds, fromTs, toTs) {
 // produces for its default "Today + My tasks" view - so the upper (today) stats
 // card and the filter card always agree on numbers AND task listing. Reuses the
 // shared filterCache (popup default uses assigneeIds=[]) to avoid recompute.
+// A due date changed from the extension: move that task in the saved state at
+// once (Today list, This week by day, the week / next-week / range bundles), so
+// every card shows it straight away instead of after the whole refresh. The full
+// refresh still runs behind it. Spread (multi-day) rows, configured tasks and the
+// Extra Task are left to that refresh.
+async function patchStateDue(taskId, dueMs) {
+  const st = await getClickupState();
+  if (!st || !taskId) return;
+  const id = String(taskId), due = Number(dueMs) || 0;
+  const day = (ms) => new Date(Number(ms)).setHours(0, 0, 0, 0);
+  const same = (t) => t && String(t.id != null ? t.id : t.taskId) === id;
+  const plain = (t) => !t.extended && t.type !== "cfg" && t.type !== "extra" && !("dayEstimateMs" in t);
+  // A row to copy onto a new day (any plain copy of it).
+  let tpl = null;
+  const lists = [st.tasks, st.thisWeek && st.thisWeek.tasks, st.nextWeek && st.nextWeek.tasks, st.custom && st.custom.tasks];
+  if (st.weekly && Array.isArray(st.weekly.perDay)) for (const p of st.weekly.perDay) lists.push(p && p.tasks);
+  for (const l of lists) for (const t of l || []) if (same(t) && plain(t)) { tpl = tpl || t; }
+  if (!tpl) return; // not a plain row anywhere: the refresh handles it
+  const moved = { ...tpl, dueDateMs: due || null };
+  const est = Number(tpl.estimateMs) || 0;
+  const inDay = (ts) => !!due && day(due) === day(ts);
+  // Today list
+  const today = Date.now();
+  if (Array.isArray(st.tasks)) {
+    const had = st.tasks.some(same);
+    if (had && !inDay(today)) { st.tasks = st.tasks.filter((t) => !same(t)); st.estimateMs = Math.max(0, (Number(st.estimateMs) || 0) - est); }
+    else if (!had && inDay(today)) { st.tasks = st.tasks.concat([moved]); st.estimateMs = (Number(st.estimateMs) || 0) + est; }
+    else st.tasks = st.tasks.map((t) => (same(t) ? { ...t, dueDateMs: due || null } : t));
+  }
+  // This week by day
+  const wk = st.weekly;
+  if (wk && Array.isArray(wk.perDay)) {
+    for (const p of wk.perDay) {
+      if (!p) continue;
+      const rows = Array.isArray(p.tasks) ? p.tasks : [];
+      const had = rows.some((t) => same(t) && plain(t));
+      if (had && !inDay(p.ts)) { p.tasks = rows.filter((t) => !(same(t) && plain(t))); p.estimateMs = Math.max(0, (Number(p.estimateMs) || 0) - est); }
+      else if (!had && inDay(p.ts)) { p.tasks = rows.concat([moved]); p.estimateMs = (Number(p.estimateMs) || 0) + est; }
+    }
+    if (wk.today && wk.friday) {
+      const ts = new Date().setHours(0, 0, 0, 0);
+      const sum = (arr) => arr.reduce((n, p) => n + (Number(p.estimateMs) || 0), 0);
+      wk.today = { ...wk.today, estimateMs: sum(wk.perDay.filter((p) => p.ts <= ts)) };
+      wk.friday = { ...wk.friday, estimateMs: sum(wk.perDay) };
+    }
+    wk.at = Date.now();
+  }
+  // Range bundles (this / next week, the filter's range)
+  for (const b of [st.thisWeek, st.nextWeek, st.custom]) {
+    if (!b || !Array.isArray(b.tasks) || !b.fromTs || !b.toTs) continue;
+    if (b.basis && b.basis !== "due") continue; // by start date: the refresh decides
+    const inside = !!due && due >= b.fromTs && due <= b.toTs;
+    const had = b.tasks.some(same);
+    if (had && !inside) { b.tasks = b.tasks.filter((t) => !same(t)); b.estimateMs = Math.max(0, (Number(b.estimateMs) || 0) - est); }
+    else if (!had && inside) { b.tasks = b.tasks.concat([moved]); b.estimateMs = (Number(b.estimateMs) || 0) + est; }
+    else b.tasks = b.tasks.map((t) => (same(t) ? { ...t, dueDateMs: due || null } : t));
+    b.at = Date.now();
+  }
+  st.at = Date.now();
+  await setClickupState(st);
+}
+// This week by day › drag: the whole batch is handed over here, so it finishes
+// even if the page is reloaded or closed. Every page shows it from storage
+// (cuPendingMoves): still moving (on the new day, marked), saved, or refused.
+let movesRunning = false;
+async function pendingMoves() { const g = await chrome.storage.local.get("cuPendingMoves"); return g && g.cuPendingMoves && Array.isArray(g.cuPendingMoves.items) ? g.cuPendingMoves : { items: [] }; }
+async function savePendingMoves(p) { await chrome.storage.local.set({ cuPendingMoves: { ...p, at: Date.now() } }); }
+async function runPendingMoves() {
+  if (movesRunning) return;
+  movesRunning = true;
+  const stop = startKeepAlive();
+  let any = false;
+  try {
+    const cfg = await getClickupConfig();
+    for (;;) {
+      const p = await pendingMoves();
+      const it = p.items.find((x) => x.status === "pending");
+      if (!it) break;
+      try {
+        if (!cfg || !cfg.token) throw new Error("ClickUp isn't connected.");
+        if (it.clear) await setTaskDueDate(cfg.token, it.id, null, null); // Undo of a task that had no due date
+        else if (Number(it.startMs) > 0) await setTaskDates(cfg.token, it.id, Number(it.startMs), Number(it.dueMs));
+        else { const task = await getTaskById(cfg.token, it.id).catch(() => null); await setTaskDueDate(cfg.token, it.id, Number(it.dueMs), task ? task.dueDateHasTime : null); }
+        await patchStateDue(it.id, it.clear ? 0 : Number(it.dueMs)).catch(() => {});
+        it.status = "done"; any = true;
+      } catch (e) { it.status = "failed"; it.error = String((e && e.message) || e); }
+      it.doneAt = Date.now();
+      const cur = await pendingMoves();
+      cur.items = cur.items.map((x) => (x.key === it.key ? it : x));
+      await savePendingMoves(cur);
+    }
+  } finally {
+    stop(); movesRunning = false;
+    if (any) { clearFilterCache(); refreshClickup({ includeTasks: true, forceWeeks: true }).catch(() => {}); }
+    // Finished ones stay visible for a little while (the "Moved ✓" line), then go.
+    setTimeout(async () => { const p = await pendingMoves(); const keep = p.items.filter((x) => x.status === "pending" || Date.now() - (x.doneAt || 0) < 60000); if (keep.length !== p.items.length) await savePendingMoves({ ...p, items: keep }); }, 61000);
+  }
+}
+// A task changed from the extension (status, done, priority, estimate): change
+// it in the saved state at once, so every card shows it before the full refresh.
+async function patchStateTask(taskId, fields) {
+  const st = await getClickupState();
+  if (!st || !taskId || !fields) return;
+  const id = String(taskId), seen = new Set();
+  const walk = (o) => {
+    if (!o || typeof o !== "object" || seen.has(o)) return;
+    seen.add(o);
+    if (Array.isArray(o)) { o.forEach(walk); return; }
+    const oid = o.id != null ? o.id : o.taskId;
+    if (oid != null && String(oid) === id && ("name" in o || "status" in o)) {
+      for (const [k, v] of Object.entries(fields)) {
+        if (k === "estimateMs" && ("dayEstimateMs" in o || o.extended || o.type === "cfg")) continue; // a share keeps its share
+        o[k] = v;
+      }
+    }
+    for (const v of Object.values(o)) if (v && typeof v === "object") walk(v);
+  };
+  walk(st);
+  st.at = Date.now();
+  await setClickupState(st);
+}
+// One task in two snapshots with different due days - e.g. its date changed
+// between the today fetch and the week fetch, or ClickUp's search still had the
+// old date for a moment: the NEWER snapshot wins and the older copy is dropped
+// (with its estimate), so a task never shows on two days at once.
+function dropStaleDueRows(state) {
+  if (!state) return;
+  const day = (ms) => new Date(Number(ms)).setHours(0, 0, 0, 0);
+  const idOf = (t) => (t && t.id != null ? String(t.id) : "");
+  const dated = (t) => idOf(t) && Number(t.dueDateMs) > 0 && !t.extended && t.type !== "cfg" && t.type !== "extra";
+  const wk = state.weekly && Array.isArray(state.weekly.perDay) ? state.weekly : null;
+  const sources = [[state.tasks, state.at], [state.thisWeek && state.thisWeek.tasks, state.thisWeek && state.thisWeek.at],
+    [state.nextWeek && state.nextWeek.tasks, state.nextWeek && state.nextWeek.at], [state.custom && state.custom.tasks, state.custom && state.custom.at]];
+  if (wk) for (const p of wk.perDay) sources.push([p && p.tasks, p && p.live ? state.at : wk.at]);
+  const best = new Map(); // id -> { due, at } from the newest snapshot that has it
+  for (const [rows, at] of sources) {
+    const a = Number(at) || 0;
+    if (!a || !Array.isArray(rows)) continue;
+    for (const t of rows) { if (!dated(t)) continue; const cur = best.get(idOf(t)); if (!cur || a > cur.at) best.set(idOf(t), { due: day(t.dueDateMs), at: a }); }
+  }
+  const stale = (t, at) => { if (!dated(t)) return false; const b = best.get(idOf(t)); return !!b && b.at > (Number(at) || 0) && b.due !== day(t.dueDateMs); };
+  // Drops the stale rows from a list; returns the estimate that went with them.
+  const prune = (holder, key, at) => {
+    const rows = holder && holder[key];
+    if (!Array.isArray(rows)) return 0;
+    let less = 0;
+    const keep = rows.filter((t) => { if (stale(t, at)) { less += Number(t.estimateMs) || 0; return false; } return true; });
+    if (keep.length !== rows.length) holder[key] = keep;
+    return less;
+  };
+  const lessToday = prune(state, "tasks", state.at);
+  if (lessToday) state.estimateMs = Math.max(0, (Number(state.estimateMs) || 0) - lessToday);
+  for (const b of [state.thisWeek, state.nextWeek, state.custom]) { const l = prune(b, "tasks", b && b.at); if (l) b.estimateMs = Math.max(0, (Number(b.estimateMs) || 0) - l); }
+  if (wk) {
+    let changed = false;
+    for (const p of wk.perDay) { const l = prune(p, "tasks", p && p.live ? state.at : wk.at); if (l) { p.estimateMs = Math.max(0, (Number(p.estimateMs) || 0) - l); changed = true; } }
+    if (changed && wk.today && wk.friday) {
+      const ts = new Date().setHours(0, 0, 0, 0);
+      const sum = (arr) => arr.reduce((n, p) => n + (Number(p.estimateMs) || 0), 0);
+      wk.today = { ...wk.today, estimateMs: sum(wk.perDay.filter((p) => p.ts <= ts)) };
+      wk.friday = { ...wk.friday, estimateMs: sum(wk.perDay) };
+    }
+  }
+}
 async function getTodayFilterData(cfg, settings) {
   const now = new Date();
   const start = new Date(now); start.setHours(0, 0, 0, 0);
@@ -4183,6 +4353,7 @@ async function refreshClickupImpl({ includeTasks = false, viaAlarm = false, forc
     // completed" card. Costs no requests (see recordDoneHistory) and must never
     // be able to sink a refresh, hence the catch.
     await recordDoneHistory(state).catch(() => {});
+    dropStaleDueRows(state);
     if (gen !== settingsGen) return { ok: false, reason: "superseded" }; // a newer setting's refresh owns the state
     await setClickupState(state);
     await maybeNotifyClickup(state, { viaAlarm });
@@ -6772,6 +6943,7 @@ chrome.notifications.onButtonClicked.addListener((id, btn) => {
 });
 
 chrome.runtime.onStartup.addListener(() => {
+  runPendingMoves().catch(() => {}); // week-card moves left half done
   // No floating window survives a browser restart: a leftover "open" flag would
   // stop it opening by itself for the running timer.
   chrome.storage.local.set({ floatOpen: false }).catch(() => {});
@@ -7110,6 +7282,8 @@ chrome.alarms.onAlarm.addListener(async (alarm) => {
     await maybeCloseExtraTask().catch(() => {});
     await maybeCheckExtraDates().catch(() => {});
     await maybeHolidayHeadsUp().catch(() => {});
+    // Week-card moves left pending (the worker was stopped mid-batch): carry on.
+    if (!movesRunning) { const pm = await pendingMoves().catch(() => ({ items: [] })); if (pm.items.some((x) => x.status === "pending")) runPendingMoves().catch(() => {}); }
     // Backstop for reminder alarms (asleep / missed).
     await fireDueReminders();
     await maybeCompanyHeadsUp().catch(() => {});
@@ -7237,6 +7411,25 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       }
       case "DOWNLOAD_UPDATE": {
         try { sendResponse(await downloadUpdate()); } catch (e) { sendResponse({ ok: false, reason: String(e && e.message ? e.message : e) }); }
+        break;
+      }
+      case "CLICKUP_TASK_RELATED": {
+        // A brief's "Related tasks" for one task: dependencies, links, parent,
+        // siblings, tasks mentioned / sharing a reference ID - open AND closed,
+        // with their last comments. Read-only; the token never leaves here.
+        const cfg = await getClickupConfig();
+        if (!cfg || !cfg.token) { sendResponse({ ok: false, reason: "not-configured" }); break; }
+        const s = await getSettings();
+        if (s.clickupRelatedOn === false) { sendResponse({ ok: true, off: true, tasks: [] }); break; }
+        try {
+          const d = await getTaskPanel(cfg.token, String(msg.taskId || ""));
+          // A plan passes its share of the plan's budget (msg.cap) - never more than the setting.
+          const cap = Math.max(1, Math.min(Number(s.clickupRelatedCap) || 25, Number(msg.cap) || Infinity));
+          const r = await getRelatedTasks(cfg.token, d, { cap, ids: s.clickupRelatedIds, teamId: cfg.teamId });
+          sendResponse({ ok: true, ...r });
+        } catch (e) {
+          sendResponse({ ok: false, error: String(e && e.message ? e.message : e), status: e && e.status });
+        }
         break;
       }
       case "CLICKUP_TASK_PANEL": {
@@ -7484,7 +7677,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         try {
           const cfg = await getClickupConfig();
           if (!cfg || !cfg.token || !msg.taskId) { sendResponse({ ok: false }); break; }
-          const res = await fetch(
+          const res = await cuRawFetch(cfg.token,
             "https://api.clickup.com/api/v2/task/" + encodeURIComponent(String(msg.taskId)),
             {
               method: "PUT",
@@ -8259,6 +8452,9 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
           // Set this task in progress + start its timer.
           await setTaskStatus(cfg.token, taskId, "in progress");
           await startTimer(cfg.token, cfg.teamId, taskId);
+          // Every card shows it straight away (the refresh below confirms).
+          for (const rid of toRevert) await patchStateTask(rid, { status: "to do" }).catch(() => {});
+          await patchStateTask(taskId, { status: "in progress" }).catch(() => {});
           const st2 = (await getClickupState().catch(() => null)) || {};
           await setClickupState({ ...st2, activeTaskId: taskId });
           // Bust the filter cache so the today/filter views recompute with the
@@ -8283,6 +8479,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
           const cur = await getCurrentTimeEntry(cfg.token, cfg.teamId).catch(() => null);
           if (cur) await stopTimer(cfg.token, cfg.teamId).catch(() => {});
           await setTaskStatus(cfg.token, taskId, "to do");
+          await patchStateTask(taskId, { status: "to do" }).catch(() => {}); // every card at once
           // The start/stop shortcut starts this one again next time.
           await chrome.storage.local.set({ lastStoppedTask: { id: taskId, name: (cur && String(cur.taskId) === taskId && cur.taskName) || "", at: Date.now() } });
           const st = (await getClickupState().catch(() => null)) || {};
@@ -8330,6 +8527,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         }
         try {
           await setTaskStatus(cfg.token, taskId, "complete");
+          await patchStateTask(taskId, { status: "complete", done: true }).catch(() => {}); // every card at once
           const cur = await getCurrentTimeEntry(cfg.token, cfg.teamId).catch(() => null);
           if (cur && String(cur.taskId) === taskId) await stopTimer(cfg.token, cfg.teamId).catch(() => {});
           const st = (await getClickupState().catch(() => null)) || {};
@@ -8433,6 +8631,9 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         if (p.clickupWrapUp !== undefined) patch.clickupWrapUp = !!p.clickupWrapUp;
         if (p.clickupExtraAutoClose !== undefined) patch.clickupExtraAutoClose = !!p.clickupExtraAutoClose;
         if (p.clickupWarnEmptyComplete !== undefined) patch.clickupWarnEmptyComplete = !!p.clickupWarnEmptyComplete;
+        if (p.clickupRelatedOn !== undefined) patch.clickupRelatedOn = !!p.clickupRelatedOn;
+        if (p.clickupRelatedCap !== undefined) patch.clickupRelatedCap = Math.max(1, Math.min(60, Number(p.clickupRelatedCap) || 25));
+        if (p.clickupRelatedIds !== undefined) patch.clickupRelatedIds = String(p.clickupRelatedIds || "").slice(0, 2000);
         if (p.clickupHolidayHeadsUp !== undefined) patch.clickupHolidayHeadsUp = !!p.clickupHolidayHeadsUp;
         if (p.clickupWrapUpTime !== undefined && parseHM(p.clickupWrapUpTime, null)) {
           const [h, m] = parseHM(p.clickupWrapUpTime, null);
@@ -8640,6 +8841,22 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         }
         break;
       }
+      case "CLICKUP_MOVE_MANY": {
+        // msg.moves: [{ taskId, name, dueMs, startMs, fromTs, toTs }] - queued, answered at once.
+        const moves = Array.isArray(msg.moves) ? msg.moves.filter((m) => m && m.taskId && (Number(m.dueMs) > 0 || m.clear)).slice(0, 50) : [];
+        if (!moves.length) { sendResponse({ ok: false, error: "Nothing to move." }); break; }
+        const p = await pendingMoves();
+        const batch = Date.now().toString(36);
+        const items = p.items.filter((x) => !moves.some((m) => String(m.taskId) === x.id && x.status === "pending"));
+        for (const m of moves) items.push({ key: batch + ":" + m.taskId, batch, id: String(m.taskId), name: String(m.name || "task").slice(0, 200), dueMs: Number(m.dueMs) || 0, clear: !!m.clear, startMs: Number(m.startMs) || 0,
+          // what it was, for Undo
+          oldDueMs: Number(m.oldDueMs) || 0, oldStartMs: Number(m.oldStartMs) || 0, undo: !!m.undo,
+          from: Number(m.fromTs) || 0, to: Number(m.toTs) || 0, status: "pending", at: Date.now() });
+        await savePendingMoves({ ...p, items });
+        sendResponse({ ok: true, queued: moves.length, batch });
+        runPendingMoves().catch(() => {});
+        break;
+      }
       case "CLICKUP_SET_DUE": {
         // Row due-date editor: msg.dueMs (ms) or null to clear it.
         const cfg = await getClickupConfig();
@@ -8653,6 +8870,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
           if (due && Number(msg.startMs) > 0) await setTaskDates(cfg.token, taskId, Number(msg.startMs), due);
           else await setTaskDueDate(cfg.token, taskId, due, task ? task.dueDateHasTime : null);
           clearFilterCache();
+          await patchStateDue(taskId, due).catch(() => {}); // every card shows it at once
           refreshClickup({ includeTasks: true, forceWeeks: true }).catch(() => {});
           sendResponse({ ok: true, dueDateMs: due });
         } catch (e) {
@@ -9348,6 +9566,15 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
           }
           if (!body) throw new Error("nothing to change");
           await put(body);
+          // Every card shows the change at once (the refresh afterwards confirms).
+          try {
+            const f = {};
+            if (body.status) { f.status = body.status; f.done = /^(complete|done|closed)$/i.test(body.status); }
+            if ("time_estimate" in body) f.estimateMs = Number(body.time_estimate) || 0;
+            if ("priority" in body) { const nm = Object.keys(PRIO).find((k) => PRIO[k] === body.priority); f.priority = nm && nm !== "none" ? nm : ""; }
+            if (Object.keys(f).length) await patchStateTask(taskId, f);
+            if ("due_date" in body) await patchStateDue(taskId, Number(body.due_date) || 0);
+          } catch (pe) {}
           let comment = null, commentError = null;
           const cText = String(msg.comment || "").replace(/\s+/g, " ").trim().slice(0, 5000);
           if (cText) {
@@ -9385,6 +9612,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
           const due = shiftDueToDay(task && task.dueDateMs, dayMs);
           await setTaskDueDate(cfg.token, taskId, due, task ? task.dueDateHasTime : null);
           clearFilterCache();
+          await patchStateDue(taskId, due).catch(() => {}); // every card shows it at once
           refreshClickup({ includeTasks: true, forceWeeks: true }).catch(() => {});
           sendResponse({ ok: true, dueDateMs: due });
         } catch (e) {

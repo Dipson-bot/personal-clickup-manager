@@ -282,7 +282,10 @@
     });
     if (!r.isDefault) btn("Use default", "Back to Documents › Personal ClickUp Manager › Clients", async () => { await F.desk({ op: "resetRoot" }); paintFolders(); });
   }
+  // Per client: AI briefs look up related tasks (on unless switched off here).
+  let relatedOff = new Set();
   async function load() {
+    try { const g = await chrome.storage.local.get("relatedOffClients"); relatedOff = new Set(Array.isArray(g.relatedOffClients) ? g.relatedOffClients : []); } catch (e) {}
     paintFolders().then(() => render()).catch(() => {});
     files = await F.all().catch(() => []);
     notes = await F.allNotes().catch(() => ({}));
@@ -407,6 +410,7 @@
       if (isOpen) {
         body = '<div class="tf-body">' +
           '<div class="tf-sec"><div class="tf-sech">' + (deskOk ? '📎 Saved in the extension <span class="hint">Files added before client folders (or while the ClickUp Tracker app wasn\'t running). New files you add go into the folder below.</span>' : '📎 Files <span class="hint">Drop files here or use + Add files. Kept on this computer; their text is backed up to Drive (hidden app data).</span>') +
+          '<button type="button" class="tf-btn tf-relt" title="Copy for AI, Ask with and Plan with AI add each task\x27s related tasks (dependencies, parent, siblings, tasks it mentions or shares an ID with - finished ones too). Click to switch it for this client.">🔗 Related tasks: ' + (relatedOff.has(k) ? "off" : "on") + "</button>" +
           (deskOk ? '<button type="button" class="tf-btn tf-odir" title="Open ' + esc(name) + '\'s folder on this computer (made if it isn\'t there yet)">📂 Open folder</button><button type="button" class="tf-btn tf-ldir" title="Point ' + esc(name) + ' at a different folder, if its folder has another name">Use a different folder…</button>' : "") +
           (fs.length ? '<button type="button" class="tf-btn tf-drive" title="Copy these files to My Drive &gt; Personal ClickUp Manager &gt; Clients &gt; ' + esc(name) + ' (files already copied are skipped)">☁ Copy to Drive</button>' : "") + "</div>" +
           (fs.length ? fs.map(fileRow).join("") : '<div class="hint" style="padding:4px 2px;">' + (deskOk ? "None - " + esc(name) + "'s files are in its folder below." : "No files yet.") + "</div>") + "</div>" +
@@ -808,6 +812,13 @@
       const show = !!e.target.closest(".tf-fshow");
       const r = await F.desk({ op: show ? "showFile" : "openFile", client: name, rel: ff.dataset.rel });
       if (!r || !r.ok) say("Couldn't " + (show ? "show" : "open") + " it: " + ((r && r.error) || "the ClickUp Tracker app didn't answer"), "var(--red)");
+      return;
+    }
+    if (e.target.closest(".tf-relt")) {
+      if (relatedOff.has(ck)) relatedOff.delete(ck); else relatedOff.add(ck);
+      try { await chrome.storage.local.set({ relatedOffClients: [...relatedOff] }); } catch (x) {}
+      say("Related tasks in AI briefs: " + (relatedOff.has(ck) ? "off" : "on") + " for " + name + ".");
+      render();
       return;
     }
     if (e.target.closest(".tf-frel")) { delete folderList[ck]; render(); return; }

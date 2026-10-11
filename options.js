@@ -1887,6 +1887,7 @@ function appendNameCellOpt(row, nm, t) {
   // Every task row passes through here, so it's also where the row learns its
   // task object - the delegated estimate editor reads it back (row._cuTask).
   row._cuTask = t;
+  if (cuListSel && cuListSel.size && cuListSel.has(cuWeekId(t))) row.classList.add("tl-sel"); // picked in the Tasks list
   row.classList.toggle("cu-done", !!(t && t.done)); // finished: green tint + edge, name greyed
   const client = t && t.client ? String(t.client) : "";
   const due = dueChipOpt(t);
@@ -2530,6 +2531,9 @@ function renderClickupSettings(cu) {
   $("cuWrapUp").checked = cu.wrapUp !== false;
   if ($("cuExtraAutoClose")) $("cuExtraAutoClose").checked = cu.extraAutoClose !== false;
   if ($("cuWarnEmpty")) $("cuWarnEmpty").checked = cu.warnEmptyComplete !== false;
+  if ($("cuRelatedOn")) $("cuRelatedOn").checked = cu.relatedOn !== false;
+  if ($("cuRelatedCap") && document.activeElement !== $("cuRelatedCap")) $("cuRelatedCap").value = String(cu.relatedCap || 25);
+  if ($("cuRelatedIds") && document.activeElement !== $("cuRelatedIds")) $("cuRelatedIds").value = cu.relatedIds || "";
   if ($("cuHolidayHeadsUp")) $("cuHolidayHeadsUp").checked = cu.holidayHeadsUp !== false;
   $("cuWrapUpTime").value = cu.wrapUpTime || "16:45";
   $("cuTidyNotify").checked = cu.tidyNotify !== false;
@@ -2712,10 +2716,73 @@ const optWeekDayOpen = new Map();
 // Only a plain task due that day moves - not the Extra Task, a configured task,
 // a finished one, or a multi-day task's share (that would move every day of it).
 let optWeekMsg = null;
+// Tasks on their way to another day: drawn on the new day (dimmed) until
+// ClickUp has them, whatever redraws the card meanwhile. id -> { to, t }.
+const optWeekMoving = new Map();
+const optWeekUndone = new Set(); // batches already undone (no second Undo)
+// The background's move list (cuPendingMoves) - read at start and on every change.
+let optWeekPending = [];
+const readWeekPending = () => chrome.storage.local.get("cuPendingMoves").then((g) => { optWeekPending = (g && g.cuPendingMoves && Array.isArray(g.cuPendingMoves.items)) ? g.cuPendingMoves.items : []; }).catch(() => {});
+readWeekPending().then(() => { if (optWeekPending.length && optClickup) renderOptionsWeekly(optClickup); });
+chrome.storage.onChanged.addListener((ch, area) => { if (area === "local" && ch.cuPendingMoves) readWeekPending().then(() => { if (optClickup) renderOptionsWeekly(optClickup); }); });
 function cuWeekMovable(t, dayTs) {
   if (!t || t.local || t.done || t.type === "cfg" || t.extended || t.isExtra || /^extra tasks?\b/i.test(String(t.name || ""))) return false;
   const due = Number(t.dueDateMs) || 0;
   return !!due && new Date(due).setHours(0, 0, 0, 0) === new Date(dayTs).setHours(0, 0, 0, 0) && !!(t.id || t.taskId);
+}
+// Tasks card -> This week by day: a row of the Tasks list (or every row picked
+// there with Ctrl / Shift + click) can be dropped on a day of the week card, which
+// moves its due date there like a drag inside the card. cuDragTasks = in flight.
+var cuDragTasks = null; // var: read by the row builder, which can run before this line
+var cuListSel = new Set();
+function cuTaskMovable(t) {
+  return !!t && !t.local && !t.done && t.type !== "cfg" && !t.extended && !t.isExtra && !/^extra tasks?\b/i.test(String(t.name || "")) && !!(t.id || t.taskId);
+}
+function cuWireListToWeek(container) {
+  if (!container || container._toWeek) return;
+  container._toWeek = true;
+  const rowOf = (e) => (e.target && e.target.closest ? e.target.closest(".cu-task") : null);
+  const pickable = (r) => !!(r && r._cuTask && cuTaskMovable(r._cuTask) && !r.closest(".pcm-panel"));
+  // Grab a row anywhere but its buttons, links and fields (the ⠿ handle keeps reordering).
+  container.addEventListener("mousedown", (e) => {
+    if (e.button !== 0 || !e.target.closest || e.target.closest("button, input, select, textarea, a, .cu-drag, .pcm-panel")) return;
+    const row = rowOf(e);
+    if (!pickable(row) || row.draggable) return;
+    row.draggable = true;
+    const off = () => { document.removeEventListener("mouseup", off); setTimeout(() => { if (!row.classList.contains("wk-dragging")) row.draggable = false; }, 0); };
+    document.addEventListener("mouseup", off);
+  });
+  // Ctrl / Shift + click picks several (Esc clears).
+  container.addEventListener("click", (e) => {
+    if (!(e.ctrlKey || e.metaKey || e.shiftKey)) return;
+    const row = rowOf(e);
+    if (!pickable(row) || e.target.closest("button, input, select, textarea")) return;
+    e.preventDefault(); e.stopPropagation();
+    const id = cuWeekId(row._cuTask);
+    if (cuListSel.has(id)) cuListSel.delete(id); else cuListSel.add(id);
+    container.querySelectorAll(".cu-task").forEach((r) => { if (r._cuTask && cuWeekId(r._cuTask) === id) r.classList.toggle("tl-sel", cuListSel.has(id)); });
+  }, true);
+  document.addEventListener("keydown", (e) => { if (e.key === "Escape" && cuListSel.size) { cuListSel.clear(); container.querySelectorAll(".tl-sel").forEach((x) => x.classList.remove("tl-sel")); } });
+  container.addEventListener("dragstart", (e) => {
+    const row = rowOf(e);
+    if (!pickable(row)) return;
+    const id = cuWeekId(row._cuTask);
+    const rows = cuListSel.has(id) ? [...container.querySelectorAll(".cu-task.tl-sel")].filter(pickable) : [row];
+    const seen = new Set();
+    cuDragTasks = rows.map((r) => r._cuTask).filter((t) => { const k = cuWeekId(t); if (seen.has(k)) return false; seen.add(k); return true; });
+    try { e.dataTransfer.effectAllowed = "move"; if (!e.dataTransfer.getData("text/plain")) e.dataTransfer.setData("text/plain", id); } catch (x) {}
+    rows.forEach((r) => r.classList.add("wk-dragging"));
+    // Somewhere to drop: open This week by day if it's folded away.
+    const coll = $("optWeekColl"), card = $("dashWeekDaysCard");
+    if (coll && coll.classList.contains("collapsed") && card && card.style.display !== "none") {
+      coll.classList.remove("collapsed");
+      const b = card.querySelector("[data-optcollapse]"); if (b) { b.textContent = "\u25BE Hide"; b.setAttribute("aria-expanded", "true"); }
+    }
+  });
+  container.addEventListener("dragend", () => {
+    cuDragTasks = null;
+    container.querySelectorAll(".wk-dragging").forEach((r) => { r.classList.remove("wk-dragging"); if (!r.classList.contains("cu-draggable")) r.draggable = false; });
+  });
 }
 // Ctrl / Shift + click picks several (from any day); dragging a picked one
 // moves all of them to the day it's dropped on, each keeping its time of day.
@@ -2830,44 +2897,47 @@ function cuWireWeekDrag(box, cu) {
   });
   box.addEventListener("dragend", () => { if (drag) drag.rows.forEach((r) => r.classList.remove("wk-dragging")); drag = null; clear(); });
   box.addEventListener("dragover", (e) => {
-    const tg = drag && target(e);
-    if (!tg || (drag.rows.length === 1 && Number(tg.dataset.wkDay) === drag.from)) return;
+    const tg = (drag || cuDragTasks) && target(e);
+    if (!tg || (drag && drag.rows.length === 1 && Number(tg.dataset.wkDay) === drag.from)) return;
     e.preventDefault();
     e.dataTransfer.dropEffect = "move";
     clear();
     box.querySelectorAll('[data-wk-day="' + tg.dataset.wkDay + '"]').forEach((x) => x.classList.add("wk-drop"));
   });
   box.addEventListener("drop", async (e) => {
-    const tg = drag && target(e);
+    const tg = (drag || cuDragTasks) && target(e);
     if (!tg) return;
     e.preventDefault();
     const day = Number(tg.dataset.wkDay);
-    const rows = drag.rows.filter((r) => Number(r.dataset.wkFrom) !== day);
+    // From this card (rows) or from the Tasks list above (cuDragTasks).
+    const dayOf = (ms) => (Number(ms) > 0 ? new Date(Number(ms)).setHours(0, 0, 0, 0) : 0);
+    const items = (drag ? drag.rows.map((r) => ({ t: r._cuTask, from: Number(r.dataset.wkFrom) })) : cuDragTasks.map((t) => ({ t, from: dayOf(t.dueDateMs) })))
+      .filter((x) => x.t && x.from !== day);
     clear();
-    if (!rows.length) return;
-    const dayName = new Date(day).toLocaleDateString(undefined, { weekday: "short", month: "short", day: "numeric" });
-    // Show them on the new day at once; the week rebuilds from ClickUp right after.
-    const list = box.querySelector('.cu-tasklist[data-wk-day="' + day + '"]');
-    for (const r of rows) { if (list) list.insertBefore(r, list.querySelector(".wk-dayfoot") || null); r.classList.add("wk-moving"); r.draggable = false; }
-    const ok = [], bad = [];
-    let startToo = false;
-    for (const r of rows) { // one at a time: gentle on ClickUp
-      const t = r._cuTask;
-      // Same time of day on the new date; a start date that would come after it moves to that day too.
-      const old = new Date(Number(t.dueDateMs));
-      const nd = new Date(day); nd.setHours(old.getHours(), old.getMinutes(), 0, 0);
-      let startMs = null;
-      if (Number(t.startDateMs) > nd.getTime()) { const os = new Date(Number(t.startDateMs)); const ns = new Date(day); ns.setHours(os.getHours(), os.getMinutes(), 0, 0); startMs = Math.min(ns.getTime(), nd.getTime()); startToo = true; }
-      const res = await send({ type: "CLICKUP_SET_DUE", taskId: cuWeekId(t), dueMs: nd.getTime(), startMs }).catch(() => null);
-      r.classList.remove("wk-moving");
-      if (res && res.ok) ok.push(t.name || "task"); else bad.push((t.name || "task") + " (" + ((res && (res.error || res.reason)) || "no reply") + ")");
-      optWeekSel.delete(cuWeekId(t));
-    }
-    const what = ok.length === 1 ? "\u201c" + ok[0] + "\u201d" : ok.length + " tasks";
-    optWeekMsg = { at: Date.now(), err: !ok.length,
-      text: (ok.length ? "Moved " + what + " to " + dayName + " \u2713 (due date changed in ClickUp" + (startToo ? ", start date too where needed" : "") + ") - the week updates in a moment." : "") +
-        (bad.length ? (ok.length ? " " : "") + "Couldn't move: " + bad.join(", ") + "." : "") };
+    if (!items.length) return;
+    // Same time of day on the new date (5 PM when it had no due date); a start
+    // date that would come after it moves too.
+    const moves = items.map(({ t, from }) => {
+      const old = Number(t.dueDateMs) > 0 ? new Date(Number(t.dueDateMs)) : null;
+      const nd = new Date(day); nd.setHours(old ? old.getHours() : 17, old ? old.getMinutes() : 0, 0, 0);
+      let startMs = 0;
+      if (Number(t.startDateMs) > nd.getTime()) { const os = new Date(Number(t.startDateMs)); const ns = new Date(day); ns.setHours(os.getHours(), os.getMinutes(), 0, 0); startMs = Math.min(ns.getTime(), nd.getTime()); }
+      optWeekSel.delete(cuWeekId(t)); cuListSel.delete(cuWeekId(t));
+      return { taskId: cuWeekId(t), name: t.name || "task", dueMs: nd.getTime(), startMs, fromTs: from, toTs: day, t,
+        oldDueMs: Number(t.dueDateMs) || 0, oldStartMs: startMs ? Number(t.startDateMs) || 0 : 0 };
+    });
+    document.querySelectorAll("#dashTasks .tl-sel").forEach((x) => x.classList.remove("tl-sel"));
+    // On the new day at once, marked as moving (until the background reports back).
+    for (const m of moves) optWeekMoving.set(m.taskId, { to: day, t: m.t, due: m.dueMs, at: Date.now() });
     renderOptionsWeekly(optClickup || cu);
+    // The background does the saving (it carries on through a reload) and keeps
+    // everyone posted through storage (cuPendingMoves).
+    const res = await send({ type: "CLICKUP_MOVE_MANY", moves: moves.map(({ t, ...m }) => m) }).catch(() => null);
+    if (!res || !res.ok) {
+      for (const m of moves) optWeekMoving.delete(m.taskId);
+      optWeekMsg = { at: Date.now(), err: true, text: "Couldn't start the move: " + ((res && (res.error || res.reason)) || "no reply from the extension") + "." };
+      renderOptionsWeekly(optClickup || cu);
+    }
   });
 }
 // This week by day: its own All / Only me / Shared switch (remembered), apart
@@ -2986,8 +3056,60 @@ function renderOptionsWeekly(cu) {
     } else {
       listBox.style.display = "block";
       cuWireWeekDrag(listBox, cu);
-      if (optWeekMsg && Date.now() - optWeekMsg.at < 20000) { const m = document.createElement("div"); m.className = "hint wk-msg"; m.style.cssText = "margin:0 0 8px;color:" + (optWeekMsg.err ? "var(--red)" : "var(--green, #16a34a)"); m.textContent = optWeekMsg.text; listBox.appendChild(m); }
-      if (!listBox.querySelector(".wk-hint")) { const hi = document.createElement("div"); hi.className = "hint wk-hint"; hi.style.cssText = "margin:0 0 6px;font-size:11.5px"; hi.textContent = "Drag a task onto another day to move its due date there · pick several with Ctrl+click or Ctrl+drag a box over them (Esc clears), then drag one of them."; listBox.appendChild(hi); }
+      if (!listBox.querySelector(".wk-hint")) { const hi = document.createElement("div"); hi.className = "hint wk-hint"; hi.style.cssText = "margin:0 0 6px;font-size:11.5px"; hi.textContent = "Drag a task onto another day to move its due date there - from this card or from the Tasks list above · pick several with Ctrl+click (or Ctrl+drag a box here; Esc clears), then drag one of them."; listBox.appendChild(hi); }
+      // Moves the background is doing (or just did): from storage, so they show
+      // after a reload too. Still moving = on the new day, marked.
+      for (const it of optWeekPending) {
+        if (it.status === "pending" && !optWeekMoving.has(it.id)) {
+          const src = days.flatMap((dd) => dd.tasks || []).find((t) => cuWeekId(t) === it.id);
+          optWeekMoving.set(it.id, { to: Number(it.to) || new Date(it.dueMs).setHours(0, 0, 0, 0), t: src || { id: it.id, name: it.name, dueDateMs: it.dueMs }, due: it.dueMs, at: it.at });
+        }
+        if (it.status !== "pending") { const m = optWeekMoving.get(it.id); if (m) m.saved = it.status === "done"; if (it.status === "failed") optWeekMoving.delete(it.id); }
+      }
+      // A moved task stays pinned to its new day until the saved week shows it there (or 2 min).
+      for (const [mid, m] of optWeekMoving) {
+        const there = days.some((dd) => dd.ts === m.to && (dd.tasks || []).some((t) => cuWeekId(t) === mid));
+        const live = optWeekPending.some((x) => x.id === mid && x.status === "pending");
+        if (!live && ((m.saved && there) || Date.now() - (m.at || 0) > 120000)) optWeekMoving.delete(mid);
+      }
+      // The status line: what's still moving, what's saved, what was refused.
+      {
+        const recent = optWeekPending.filter((x) => x.status === "pending" || Date.now() - (x.doneAt || 0) < 60000);
+        if (recent.length) {
+          const pend = recent.filter((x) => x.status === "pending"), done = recent.filter((x) => x.status === "done"), bad = recent.filter((x) => x.status === "failed");
+          const dayOf = (x) => new Date(x.dueMs).toLocaleDateString(undefined, { weekday: "short", month: "short", day: "numeric" });
+          const names = (l) => (l.length === 1 ? "\u201c" + l[0].name + "\u201d" : l.length + " tasks");
+          const tos = [...new Set(recent.map(dayOf))].join(", ");
+          // Undo: the newest finished batch, for a minute (not for an undo itself).
+          const lastBatch = recent.reduce((b, x) => (x.batch && (!b || x.batch > b) ? x.batch : b), "");
+          const lb = recent.filter((x) => x.batch === lastBatch);
+          const undoable = !pend.length && lastBatch && !optWeekUndone.has(lastBatch) && lb.length && lb.every((x) => x.status === "done" && !x.undo) && Date.now() - Math.max(...lb.map((x) => x.doneAt || 0)) < 60000 ? lb : null;
+          optWeekMsg = { at: Date.now(), err: !pend.length && !done.length && !!bad.length, busy: !!pend.length, undo: undoable,
+            text: (pend.length ? "\u23F3 Moving " + names(recent.filter((x) => x.status !== "failed")) + " to " + tos + "\u2026 saving in ClickUp (" + done.length + " of " + (pend.length + done.length) + " saved)"
+              : done.length ? "Moved " + names(done) + " to " + tos + " \u2713 (due date changed in ClickUp)" : "") +
+              (bad.length ? (pend.length || done.length ? " \u00b7 " : "") + "Couldn't move: " + bad.map((x) => x.name + " (" + (x.error || "refused") + ")").join(", ") : "") };
+        }
+      }
+      // The status line (after the pending moves above, so it's never one step behind).
+      if (optWeekMsg && optWeekMsg.text && Date.now() - optWeekMsg.at < 20000) {
+        const m = document.createElement("div"); m.className = "hint wk-msg" + (optWeekMsg.busy ? " busy" : ""); m.style.cssText = "margin:0 0 8px;font-weight:600;color:" + (optWeekMsg.err ? "var(--red)" : optWeekMsg.busy ? "var(--amber, #d97706)" : "var(--green, #16a34a)"); m.textContent = optWeekMsg.text;
+        // Undo puts them back where they were (same background queue and status).
+        if (optWeekMsg.undo) {
+          const items = optWeekMsg.undo;
+          const u = document.createElement("button"); u.type = "button"; u.className = "wk-selclear"; u.textContent = "\u21B6 Undo";
+          u.title = "Put " + (items.length === 1 ? "it" : "them") + " back on " + (items.length === 1 ? "its" : "their") + " previous date";
+          u.onclick = async () => {
+            u.disabled = true; optWeekUndone.add(items[0].batch);
+            const back = items.map((x) => ({ taskId: x.id, name: x.name, dueMs: x.oldDueMs, clear: !x.oldDueMs, startMs: x.startMs && x.oldStartMs ? x.oldStartMs : 0, fromTs: x.to, toTs: x.from, undo: true }));
+            for (const b of back) optWeekMoving.set(b.taskId, { to: b.toTs, t: { id: b.taskId, name: b.name, dueDateMs: b.dueMs }, due: b.dueMs, at: Date.now() });
+            const res = await send({ type: "CLICKUP_MOVE_MANY", moves: back }).catch(() => null);
+            if (!res || !res.ok) { for (const b of back) optWeekMoving.delete(b.taskId); optWeekUndone.delete(items[0].batch); optWeekMsg = { at: Date.now(), err: true, text: "Couldn't undo: " + ((res && (res.error || res.reason)) || "no reply") + "." }; }
+            renderOptionsWeekly(optClickup);
+          };
+          m.append(" ", u);
+        }
+        listBox.appendChild(m);
+      }
       // Whose tasks (the card's own switch) and the card's total line on top.
       const waF = { onlyMe: optWeekAssign === "me", sharedTasks: optWeekAssign === "shared" };
       const byAssign = optWeekAssign !== "all";
@@ -3006,7 +3128,16 @@ function renderOptionsWeekly(cu) {
         const dateTxt = new Date(d.ts).toLocaleDateString(undefined, { month: "short", day: "numeric" });
         // The card's All / Only me / Shared switch narrows each day, and the
         // day's est / tracked are then those of the tasks shown.
-        const rows = dedupeExtraRows(Array.isArray(d.tasks) ? d.tasks : []).filter((t) => cuAssignPass(waF, t));
+        const rows = dedupeExtraRows(Array.isArray(d.tasks) ? d.tasks : []).filter((t) => cuAssignPass(waF, t))
+          .filter((t) => { const m = optWeekMoving.get(cuWeekId(t)); return !m || m.to === d.ts; });
+        // Tasks on their way here: shown here, marked "moving" until ClickUp has them.
+        for (const [mid, m] of optWeekMoving) {
+          if (m.to !== d.ts) continue;
+          const live = !m.saved;
+          const i = rows.findIndex((t) => cuWeekId(t) === mid);
+          if (i < 0) rows.push({ ...m.t, dueDateMs: m.due, _moving: live });
+          else if (live) rows[i] = { ...rows[i], _moving: true };
+        }
         const trackedRows = (Array.isArray(d.trackedTasks) ? d.trackedTasks : []).filter((t) => cuAssignPass(waF, t));
         const dEst = byAssign ? rows.reduce((a, t) => a + (Number(t.estimateMs) || 0), 0) : Number(d.estimateMs) || 0;
         const dTrk = byAssign ? rows.concat(trackedRows).reduce((a, t) => a + (Number(t.spentMs) || 0), 0) : Number(d.spentMs) || 0;
@@ -3037,9 +3168,11 @@ function renderOptionsWeekly(cu) {
             const row = document.createElement("div");
             row.className = "cu-task";
             // Drag it onto another day: its due date moves there (same time of day).
-            if (cuWeekMovable(t, d.ts)) { row.draggable = true; row.dataset.wkMove = "1"; row.dataset.wkFrom = String(d.ts); }
+            if (t._moving) { row.classList.add("wk-moving"); row.title = "Moving here - saving in ClickUp…"; }
+            else if (cuWeekMovable(t, d.ts)) { row.draggable = true; row.dataset.wkMove = "1"; row.dataset.wkFrom = String(d.ts); }
             const nm = makeLinkOpt(t.url, t.name || "(untitled task)");
             appendDoneTickOpt(nm, t);
+            if (t._moving) { const mv = document.createElement("span"); mv.className = "wk-mvchip"; mv.textContent = "\u23F3 moving"; nm.appendChild(mv); }
             appendNameCellOpt(row, nm, t);
             const spans = document.createElement("span");
             spans.className = "estpairs";
@@ -5312,6 +5445,7 @@ function renderClickupPreviewBody(st) {
   // (#dashTasks); the Today card keeps just the numbers and bars.
   const lists = $("dashTasks") || box;
   cuSetupDragOpt(lists); // one-time delegated drag wiring (self-guarded)
+  cuWireListToWeek(lists); // rows can be dropped on a day of This week by day
   {
     const scopeTxt = scopeLabel ? scopeLabel.charAt(0).toUpperCase() + scopeLabel.slice(1) : "Today";
     if ($("dashTodayTitle")) $("dashTodayTitle").textContent = scopeTxt;
@@ -5806,6 +5940,9 @@ $("cuSave").onclick = async () => {
         clickupWrapUp: $("cuWrapUp").checked,
         clickupExtraAutoClose: $("cuExtraAutoClose") ? $("cuExtraAutoClose").checked : true,
         clickupWarnEmptyComplete: $("cuWarnEmpty") ? $("cuWarnEmpty").checked : true,
+        clickupRelatedOn: $("cuRelatedOn") ? $("cuRelatedOn").checked : true,
+        clickupRelatedCap: $("cuRelatedCap") ? Number($("cuRelatedCap").value) || 25 : 25,
+        clickupRelatedIds: $("cuRelatedIds") ? $("cuRelatedIds").value : "",
         clickupHolidayHeadsUp: $("cuHolidayHeadsUp") ? $("cuHolidayHeadsUp").checked : true,
         clickupWrapUpTime: wrapUpTime,
         clickupTidyNotify: $("cuTidyNotify").checked,
@@ -9115,8 +9252,18 @@ async function deskRefresh() {
         ? "The taskbar timer isn't running right now - open ClickUp Tracker from the Start menu" + (os.startsWith("mac") ? " / Applications" : "") + "."
         : (os === "win" || os.startsWith("mac")) ? "The ClickUp Tracker app puts the timer in the " + where + ", with Stop and Done. One download; it starts with your computer and signs in by itself." : "The taskbar timer is for Windows and Mac.";
   }
-  if ($("deskGet")) $("deskGet").textContent = app.seenAt ? "Download it again" : "Get the taskbar timer";
+  // An older app than the newest one: say so and make the button the update.
+  const newest = DESK_TAG.replace(/^desktop-v/, "");
+  const older = !!(app.version && deskVerLess(app.version, newest));
+  if (el && older && app.running) el.innerHTML += " <b>v" + escapeHtml(newest) + " is out</b> - press Update below (it installs over this one and keeps your sign-in).";
+  if ($("deskGet")) $("deskGet").textContent = older ? "Update to v" + newest : app.seenAt ? "Download it again" : "Get the taskbar timer";
   return app;
+}
+// "0.3.5" < "0.3.6" (number by number).
+function deskVerLess(a, b) {
+  const x = String(a).split(".").map(Number), y = String(b).split(".").map(Number);
+  for (let i = 0; i < Math.max(x.length, y.length); i++) { const d = (x[i] || 0) - (y[i] || 0); if (d) return d < 0; }
+  return false;
 }
 async function renderDeskTry() {
   const card = $("deskTry");
