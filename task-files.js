@@ -224,7 +224,66 @@
     } catch (e) { return []; }
   }
 
+  // Client folders on this computer (the ClickUp Tracker app writes them; an
+  // extension can only save into Downloads). deskOk: the app answered.
+  let deskOk = false;
+  const folderList = {}; // ck -> { dir, files } | "loading"
+  // How many files a client's folder has (0 until it's been read).
+  const inFolder = (ck) => { const st = folderList[ck]; return st && st !== "loading" && st.files ? st.files.length : 0; };
+  // Read every listed client's folder once (on this computer, through the app),
+  // then draw once - so the counts show without opening each card.
+  let foldersBusy = false;
+  async function loadAllFolders(rows) {
+    if (foldersBusy || !deskOk) return;
+    const todo = rows.filter(([k]) => !folderList[k]);
+    if (!todo.length) return;
+    foldersBusy = true;
+    for (const [k, name] of todo) folderList[k] = "loading";
+    for (const [k, name] of todo) folderList[k] = (await F.folderFiles(name).catch(() => null)) || { dir: "", files: [], failed: true };
+    foldersBusy = false;
+    render();
+  }
+  async function loadFolder(ck, name) {
+    if (folderList[ck]) return;
+    folderList[ck] = "loading";
+    const r = await F.folderFiles(name).catch(() => null);
+    folderList[ck] = r || { dir: "", files: [], failed: true };
+    render();
+  }
+  const folderHtml = (ck, name) => {
+    const st = folderList[ck];
+    if (!st || st === "loading") return '<div class="hint" style="padding:4px 2px;">Reading ' + esc(name) + "'s folder…</div>";
+    if (st.failed) return '<div class="hint" style="padding:4px 2px;">Couldn\'t read the folder (is the ClickUp Tracker app v0.3.4 or later running?).</div>';
+    if (!st.exists) return '<div class="hint" style="padding:4px 2px;">No folder for ' + esc(name) + " yet - Open folder makes it.</div>";
+    if (!st.files.length) return '<div class="hint" style="padding:4px 2px;">The folder is empty.</div>';
+    return st.files.slice(0, 60).map((x) => '<div class="tf-file tf-ffile" data-rel="' + esc(x.rel) + '"><span>📄</span><div style="min-width:0"><div class="tf-fn" title="' + esc(x.rel) + '">' + esc(x.rel) + '</div><div class="tf-fm">' + fmtSize(x.size || 0) + " · changed " + day(x.mtime) + "</div></div>" +
+      '<div class="tf-facts"><button type="button" class="tf-btn tf-fopen" title="Open it with its usual program">Open</button><button type="button" class="tf-btn tf-fshow" title="Show it in File Explorer / Finder">Show in folder</button></div></div>').join("") +
+      (st.files.length > 60 ? '<div class="hint" style="padding:4px 2px;">…and ' + (st.files.length - 60) + " more (Open folder shows them all).</div>" : "");
+  };
+  async function paintFolders() {
+    const box = $("tfFolders");
+    if (!box || !F.desk) return;
+    const r = await F.desk({ op: "status" }, 3000);
+    deskOk = !!(r && r.ok);
+    box.hidden = false;
+    box.textContent = "";
+    const btn = (label, title, fn) => { const b = document.createElement("button"); b.type = "button"; b.className = "tf-btn"; b.textContent = label; b.title = title; b.onclick = fn; box.appendChild(b); return b; };
+    if (!deskOk) {
+      box.appendChild(document.createTextNode("📂 Client folders: with the ClickUp Tracker app running, each client's files and task briefs (📋 Copy for AI) go straight into that client's own folder on this computer. Without it, Show in folder saves to Downloads › Personal ClickUp Manager › Clients."));
+      return;
+    }
+    box.appendChild(document.createTextNode("📂 Client folders: "));
+    const c = document.createElement("code"); c.textContent = r.root; box.appendChild(c);
+    btn("Change…", "Pick the folder that holds your client folders (for example F:\\Clients). A client's existing folder is found by its name, ignoring capitals and spaces; missing ones are made.", async () => {
+      say("Pick the folder in the window that opened…");
+      const p = await F.desk({ op: "pickRoot" }, 600000);
+      say(p && p.picked ? "Client folders now go in " + p.root + "." : "Nothing changed.");
+      paintFolders();
+    });
+    if (!r.isDefault) btn("Use default", "Back to Documents › Personal ClickUp Manager › Clients", async () => { await F.desk({ op: "resetRoot" }); paintFolders(); });
+  }
   async function load() {
+    paintFolders().then(() => render()).catch(() => {});
     files = await F.all().catch(() => []);
     notes = await F.allNotes().catch(() => ({}));
     myClients = await mine();
@@ -253,7 +312,7 @@
       (img ? '<img class="tf-fthumb" data-thumb="' + esc(f.id) + '" alt="' + esc(f.name) + '" title="' + esc("Show " + f.name) + '" />' : "<span>" + icon(f) + "</span>") +
       '<div style="min-width:0"><div class="tf-fn" title="' + esc(f.name) + '">' + esc(f.name) + '</div><div class="tf-fm">' + fmtSize(f.size || 0) + " · added " + day(f.addedAt) + " · " + what + (kept ? "" : " · only its text is kept") + "</div></div>" +
       '<div class="tf-facts"><button type="button" class="tf-btn tf-open" title="' + (kept ? "Open it (images, PDF, web pages and text open in a tab; other files download)" : "Open the text that was read from it (the original wasn't kept - it was added before files were kept)") + '">Open</button>' +
-      '<button type="button" class="tf-btn tf-show" title="Opens the folder with this file. The first time, a copy is saved to Downloads &gt; Personal ClickUp Manager &gt; Clients &gt; ' + esc(f.client) + ' (the file itself is stored inside Chrome, not in a folder); after that the same copy is shown.">Show in folder</button>' +
+      '<button type="button" class="tf-btn tf-show" title="Opens the folder with this file: the client\'s own folder when the ClickUp Tracker app is running (see Client folders above), otherwise a copy in Downloads &gt; Personal ClickUp Manager &gt; Clients &gt; ' + esc(f.client) + ' (the file itself is stored inside Chrome).">Show in folder</button>' +
       '<button type="button" class="tf-btn tf-replace" title="Swap this file for a newer one (for example August\'s audit for September\'s). To keep both, use + Add files instead.">Replace</button>' +
       '<button type="button" class="tf-btn tf-rm" title="Remove this file">✕</button></div></div>';
   }
@@ -307,9 +366,12 @@
     const list = $("tfList");
     const rows = clientsShown();
     const withFiles = new Set(files.map((f) => f.ck));
+    const folderTotal = rows.reduce((a, [k]) => a + inFolder(k), 0);
     $("tfSummary").textContent = rows.length
-      ? rows.filter(([k]) => withFiles.has(k)).length + " of " + rows.length + " clients have files · " + files.length + " file" + (files.length === 1 ? "" : "s") + " in total"
+      ? rows.filter(([k]) => withFiles.has(k) || inFolder(k)).length + " of " + rows.length + " clients have files · " +
+        (deskOk ? folderTotal + " in client folders" + (files.length ? " + " + files.length + " saved in the extension" : "") : files.length + " file" + (files.length === 1 ? "" : "s") + " in total")
       : "";
+    if (deskOk) setTimeout(() => loadAllFolders(rows), 0);
     if (!rows.length) {
       list.innerHTML = '<div class="hint" style="padding:14px;">' + ($("tfSearch").value ? "No client matches that search." : "No clients found yet. Open the dashboard once so your tasks load, or tick “All workspace clients”.") + "</div>";
       return;
@@ -337,13 +399,18 @@
       const reps = all.filter((n) => n.report).sort((a, b) => String(b.report.period || "").localeCompare(String(a.report.period || "")) || b.at - a.at);
       const isOpen = open.has(k);
       const isPin = pinned.indexOf(k) >= 0;
-      const count = (fs.length ? fs.length + " file" + (fs.length === 1 ? "" : "s") : "no files") + (ns.length ? " · " + ns.length + " note" + (ns.length === 1 ? "" : "s") : "") + (reps.length ? " · " + reps.length + " report" + (reps.length === 1 ? "" : "s") : "");
+      const nf = inFolder(k);
+      const pl = (n, w) => n + " " + w + (n === 1 ? "" : "s");
+      const count = (nf ? pl(nf, "file") + " in folder" + (fs.length ? " + " + fs.length + " saved" : "") : fs.length ? pl(fs.length, "file") : "no files") + (ns.length ? " · " + ns.length + " note" + (ns.length === 1 ? "" : "s") : "") + (reps.length ? " · " + reps.length + " report" + (reps.length === 1 ? "" : "s") : "");
       let body = "";
+      if (isOpen && deskOk && !folderList[k]) setTimeout(() => loadFolder(k, name), 0);
       if (isOpen) {
         body = '<div class="tf-body">' +
-          '<div class="tf-sec"><div class="tf-sech">📎 Files <span class="hint">Drop files here or use + Add files. Kept on this computer; their text is backed up to Drive (hidden app data).</span>' +
+          '<div class="tf-sec"><div class="tf-sech">' + (deskOk ? '📎 Saved in the extension <span class="hint">Files added before client folders (or while the ClickUp Tracker app wasn\'t running). New files you add go into the folder below.</span>' : '📎 Files <span class="hint">Drop files here or use + Add files. Kept on this computer; their text is backed up to Drive (hidden app data).</span>') +
+          (deskOk ? '<button type="button" class="tf-btn tf-odir" title="Open ' + esc(name) + '\'s folder on this computer (made if it isn\'t there yet)">📂 Open folder</button><button type="button" class="tf-btn tf-ldir" title="Point ' + esc(name) + ' at a different folder, if its folder has another name">Use a different folder…</button>' : "") +
           (fs.length ? '<button type="button" class="tf-btn tf-drive" title="Copy these files to My Drive &gt; Personal ClickUp Manager &gt; Clients &gt; ' + esc(name) + ' (files already copied are skipped)">☁ Copy to Drive</button>' : "") + "</div>" +
-          (fs.length ? fs.map(fileRow).join("") : '<div class="hint" style="padding:4px 2px;">No files yet.</div>') + "</div>" +
+          (fs.length ? fs.map(fileRow).join("") : '<div class="hint" style="padding:4px 2px;">' + (deskOk ? "None - " + esc(name) + "'s files are in its folder below." : "No files yet.") + "</div>") + "</div>" +
+          (deskOk ? '<div class="tf-sec"><div class="tf-sech">📂 In folder <span class="hint">Files already in ' + esc(name) + '\'s folder on this computer, newest first. Explain, Ask with, Copy for AI and Plan with AI read the documents here (HTML, Word, Excel, PowerPoint, PDF, Markdown, text, CSV) - no need to add them again.</span><button type="button" class="tf-btn tf-frel" title="Read the folder again">↻</button></div>' + folderHtml(k, name) + "</div>" : "") +
           '<div class="tf-sec tf-reps"><div class="tf-sech">📊 Reports <span class="hint">Weekly, monthly or any report for ' + esc(name) + ' - text, screenshots and files, kept apart from the notes.</span>' +
           (repForm[k] ? "" : '<button type="button" class="tf-btn tf-rnew">+ New report</button>') + "</div>" +
           (repForm[k] ? repFormHtml(k, name) : "") +
@@ -358,7 +425,7 @@
           '<span class="sp"></span><button type="button" class="tf-btn pri tf-nsave">Save note</button></div></div>' +
           "</div></div>";
       }
-      return '<div class="tf-client' + (isOpen ? " open" : "") + (isPin ? " pinned" : "") + (fs.length || all.length ? "" : " empty") + '" data-ck="' + esc(k) + '" data-name="' + esc(name) + '">' +
+      return '<div class="tf-client' + (isOpen ? " open" : "") + (isPin ? " pinned" : "") + (fs.length || all.length || inFolder(k) ? "" : " empty") + '" data-ck="' + esc(k) + '" data-name="' + esc(name) + '">' +
         '<div class="tf-head"><button type="button" class="tf-tog" aria-expanded="' + isOpen + '">' + (isOpen ? "▾" : "▸") + "</button>" +
         '<span class="tf-name">' + esc(name) + "</span>" +
         '<span class="tf-count">' + count + "</span>" +
@@ -469,6 +536,23 @@
   async function addTo(ck, name, list) {
     if (!list || !list.length) return;
     open.add(ck);
+    if (deskOk && F.desk) {
+      // Into the client's own folder (nothing kept twice); the AI reads it there.
+      say("Saving " + list.length + " file" + (list.length === 1 ? "" : "s") + " into " + name + "'s folder…");
+      const done = [], bad = [];
+      let dir = "";
+      for (const file of list) {
+        const r = await F.desk({ op: "clientFile", client: name, name: F.safeName(file.name || "file"), b64: await F.b64(file) }, 60000).catch(() => null);
+        if (r && r.ok) { done.push(file.name); dir = r.dir; } else bad.push(file.name);
+      }
+      if (done.length) {
+        delete folderList[ck];
+        say("Saved " + done.length + " file" + (done.length === 1 ? "" : "s") + " into " + dir + "." + (bad.length ? " Couldn't save: " + bad.join(", ") + "." : ""), bad.length ? "var(--amber, #d97706)" : "");
+        await load();
+        return;
+      }
+      say("Couldn't save into the folder, so " + (list.length === 1 ? "it's" : "they're") + " kept in the extension instead.", "var(--amber, #d97706)");
+    }
     say("Reading " + list.length + " file" + (list.length === 1 ? "" : "s") + " for " + name + "…");
     try {
       const added = await F.add(name, list);
@@ -719,6 +803,26 @@
       return;
     }
     if (e.target.closest(".tf-nsave")) { await saveNote(box, ck, name); return; }
+    const ff = e.target.closest(".tf-ffile");
+    if (ff && e.target.closest(".tf-fopen, .tf-fshow")) {
+      const show = !!e.target.closest(".tf-fshow");
+      const r = await F.desk({ op: show ? "showFile" : "openFile", client: name, rel: ff.dataset.rel });
+      if (!r || !r.ok) say("Couldn't " + (show ? "show" : "open") + " it: " + ((r && r.error) || "the ClickUp Tracker app didn't answer"), "var(--red)");
+      return;
+    }
+    if (e.target.closest(".tf-frel")) { delete folderList[ck]; render(); return; }
+    if (e.target.closest(".tf-odir")) {
+      const r = await F.desk({ op: "open", client: name });
+      if (!r || !r.ok) say("Couldn't open the folder: " + ((r && r.error) || "the ClickUp Tracker app didn't answer"), "var(--red)");
+      else say("Opened " + r.dir + ".");
+      return;
+    }
+    if (e.target.closest(".tf-ldir")) {
+      say("Pick " + name + "'s folder in the window that opened…");
+      const r = await F.desk({ op: "pickClient", client: name }, 600000);
+      say(r && r.picked ? name + " now uses " + r.dir + "." : "Nothing changed.");
+      return;
+    }
     if (e.target.closest(".tf-drive")) {
       const b = e.target.closest(".tf-drive");
       b.disabled = true; b.textContent = "Copying…";
@@ -739,7 +843,8 @@
         else if (e.target.closest(".tf-open")) { const orig = F.openFile(f); if (!orig) say("Only the text of “" + f.name + "” was kept (it was added before originals were kept) - that's what opened. Add the file again to keep the original."); }
         else if (e.target.closest(".tf-show")) {
           const r = await F.showInFolder(f);
-          say(r.reused ? "Opened the copy in Downloads › Personal ClickUp Manager › Clients › " + f.client + "." : "Saved a copy to Downloads › Personal ClickUp Manager › Clients › " + f.client + (r.original ? "" : " (as text - the original wasn't kept)") + " - next time it just opens that copy.");
+          if (r.dir) say("Saved in " + f.client + "'s folder (" + r.dir + ") and opened it.");
+          else say(r.reused ? "Opened the copy in Downloads › Personal ClickUp Manager › Clients › " + f.client + "." : "Saved a copy to Downloads › Personal ClickUp Manager › Clients › " + f.client + (r.original ? "" : " (as text - the original wasn't kept)") + " - next time it just opens that copy.");
         }
         else if (e.target.closest(".tf-replace")) { replaceFor = f; replacePicker.click(); }
         else if (e.target.closest(".tf-rm")) { if (confirm("Remove “" + f.name + "” from " + name + "?")) { dropThumbs([f.id]); await F.remove(f.id); await load(); } }

@@ -130,6 +130,53 @@
     setTimeout(() => URL.revokeObjectURL(url), 120000);
     return b.original;
   }
+  // ---- client folders on this computer (through the ClickUp Tracker app) ----
+  // A browser extension can only save into Downloads, so the taskbar app writes
+  // into the user's client folders (Clients › Client folders picks where). null
+  // when the app isn't running or is too old.
+  async function desk(body, ms = 20000) {
+    // The background checks every minute whether the app is running: when it's
+    // known to be closed, don't knock (no "connection refused" each time).
+    try { const g = await chrome.storage.local.get("deskApp"); const da = g && g.deskApp; if (da && da.running === false && Date.now() - (Number(da.checkedAt) || 0) < 3 * 60000 && body && body.op !== "status") return null; } catch (e) {}
+    const ctl = new AbortController();
+    const t = setTimeout(() => ctl.abort(), ms);
+    try {
+      const res = await fetch("http://127.0.0.1:47615/pcm/files", { method: "POST", headers: { "Content-Type": "text/plain" }, body: JSON.stringify(body), signal: ctl.signal, cache: "no-store" });
+      if (!res.ok) return null;
+      const j = await res.json();
+      return j && typeof j === "object" ? j : null;
+    } catch (e) { return null; } finally { clearTimeout(t); }
+  }
+  // Why the app didn't take a folder request: not running, or running but older
+  // than 0.3.3 (the first version with client folders). One short probe.
+  async function deskWhy() {
+    const ctl = new AbortController();
+    const t = setTimeout(() => ctl.abort(), 2500);
+    try {
+      const res = await fetch("http://127.0.0.1:47615/pcm", { method: "POST", headers: { "Content-Type": "text/plain" }, body: "{}", signal: ctl.signal, cache: "no-store" });
+      const j = res.ok ? await res.json() : null;
+      if (j && j.app === "clickup-tracker" && !j.folders) return "Your ClickUp Tracker app (v" + (j.version || "?") + ") is running but is too old for client folders - update it to v0.3.3 or later (its tray menu shows when an update is ready).";
+      if (j && j.app === "clickup-tracker") return "The ClickUp Tracker app didn't save it (try again).";
+    } catch (e) {} finally { clearTimeout(t); }
+    return "The ClickUp Tracker app isn't running, so nothing was saved to a folder.";
+  }
+  // The files already in a client's folder (newest first), and one of them as a
+  // File - read from the folder, never stored again here.
+  async function folderFiles(client) {
+    const r = await desk({ op: "list", client }, 8000);
+    return r && r.ok ? r : null;
+  }
+  const MIME = { pdf: "application/pdf", png: "image/png", jpg: "image/jpeg", jpeg: "image/jpeg", gif: "image/gif", webp: "image/webp", html: "text/html", htm: "text/html", txt: "text/plain", md: "text/markdown", csv: "text/csv", json: "application/json" };
+  async function folderFile(client, rel) {
+    const r = await desk({ op: "read", client, rel }, 60000);
+    if (!r || !r.ok) throw new Error((r && r.error) || "The ClickUp Tracker app didn't answer.");
+    const bin = atob(r.b64 || "");
+    const u = new Uint8Array(bin.length);
+    for (let i = 0; i < bin.length; i++) u[i] = bin.charCodeAt(i);
+    const ext = (String(r.name).match(/\.([a-z0-9]+)$/i) || [])[1] || "";
+    return new File([u], r.name, { type: MIME[ext.toLowerCase()] || "", lastModified: r.mtime || Date.now() });
+  }
+  const b64 = (blob) => new Promise((ok, bad) => { const r = new FileReader(); r.onload = () => ok(String(r.result).replace(/^data:[^,]*,/, "")); r.onerror = () => bad(r.error); r.readAsDataURL(blob); });
   // Saves a copy to Downloads > Personal ClickUp Manager > Clients > <client>
   // and opens File Explorer (Finder) with it selected.
   // The files live inside Chrome (IndexedDB), not in a folder, so the first time
@@ -138,6 +185,9 @@
   async function showInFolder(rec) {
     const b = fileBlob(rec);
     if (!b) throw new Error("Nothing is kept for this file.");
+    // The taskbar app running: straight into the client's own folder.
+    const viaApp = await desk({ op: "clientFile", client: rec.client, name: safeName(b.name), b64: await b64(b.blob), show: true }, 30000);
+    if (viaApp && viaApp.ok) return { original: b.original, reused: false, dir: viaApp.dir };
     let shown = {};
     try { const g = await chrome.storage.local.get("tfShown"); shown = g.tfShown && typeof g.tfShown === "object" ? g.tfShown : {}; } catch (e) {}
     const prev = shown[rec.id];
@@ -197,5 +247,5 @@
     return openFile({ blob: rec.blob, name: rec.name || meta.name });
   }
 
-  window.PcmFiles = { key, all, forClient, resolveClient, add, remove, counts, auditHtml, allNotes, notesFor, saveNotes, openFile, showInFolder, attPut, attCleanup, attBlob, openAttachment };
+  window.PcmFiles = { desk, deskWhy, folderFiles, folderFile, b64, safeName, key, all, forClient, resolveClient, add, remove, counts, auditHtml, allNotes, notesFor, saveNotes, openFile, showInFolder, attPut, attCleanup, attBlob, openAttachment };
 })();

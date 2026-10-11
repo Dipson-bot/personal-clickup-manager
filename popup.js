@@ -1703,6 +1703,7 @@ function renderClickupTasksByClient(tasks, deadlineTasks, trackedTasks, scope, s
     subSpan.className = "cu-chsub";
     subSpan.textContent = "est " + fmtDur(est) + (trk > 0 ? " · tracked " + fmtDur(trk) : "");
     head.appendChild(subSpan);
+    if (window.PcmTaskPanel && window.PcmTaskPanel.clientTools) head.appendChild(window.PcmTaskPanel.clientTools(c, t1.concat(t2, t3)));
     // Each client in its own card, so the groups are easy to tell apart.
     const card = document.createElement("div");
     card.className = "cu-clientcard";
@@ -2124,8 +2125,8 @@ function renderWeekDetail(w, agg) {
 // narrow the visible task LIST only; they never change the headline totals or
 // the badge.
 // "Due today" is ticked by default (a saved choice always wins).
-let cuFilter = { dueToday: true, dueTomorrow: false, dueWeek: false, dueNextWeek: false, dueCustom: false, missingDue: false, customFrom: "", customTo: "", missingEst: false, hasTracked: false, deadlineCrossed: false, waitingOthers: false, manualOrder: false, statuses: [], priorities: [], clients: [] };
-const CU_FILTER_KEYS = ["dueToday", "dueTomorrow", "dueWeek", "dueNextWeek", "dueCustom", "missingEst", "missingDue", "hasTracked", "deadlineCrossed", "waitingOthers", "groupSubtasks", "manualOrder"];
+let cuFilter = { dueWeek: false, dueNextWeek: false, duePrevWeek: false, dueThisMonth: false, dueNextMonth: false, duePrevMonth: false, dueCustom: false, dateBasis: "", missingDue: false, customFrom: "", customTo: "", missingEst: false, hasTracked: false, deadlineCrossed: false, waitingOthers: false, onlyMe: false, sharedTasks: false, manualOrder: false, statuses: [], priorities: [], clients: [] };
+const CU_FILTER_KEYS = ["dueWeek", "dueNextWeek", "duePrevWeek", "dueThisMonth", "dueNextMonth", "duePrevMonth", "dueCustom", "missingEst", "missingDue", "hasTracked", "deadlineCrossed", "waitingOthers", "onlyMe", "sharedTasks", "groupSubtasks", "manualOrder"];
 const CU_PRIORITY_ORDER = ["urgent", "high", "normal", "low", "none"];
 
 function cuTodayEndMs() { const d = new Date(); d.setHours(23, 59, 59, 999); return d.getTime(); }
@@ -2177,14 +2178,15 @@ function cuViewRange(st, f) {
   }
   if (f.dueNextWeek) return wk(st.nextWeek);
   if (f.dueWeek) return wk(st.thisWeek);
-  if (f.dueTomorrow) return day(Date.now() + 86400000);
-  if (f.dueToday) return day(Date.now());
-  return null;
+  const pr = cuCustomRange(f);
+  if (pr) return { fromTs: pr.fromTs, toTs: pr.toTs };
+  return day(Date.now());
 }
 // The target for the dates the list shows: the daily target times the working
 // days (Mon-Fri) in the filter's range - "Due this week" = 5 x 7h = 35h. One day
 // (today, tomorrow) or no date range keeps the daily target.
 function cuScopeTargetMs(dailyMs, st, f) {
+  if (cuIsMonth(f)) return 0; // a month: the total for the tasks listed, no target
   const r = cuViewRange(st, f);
   if (!dailyMs || !r) return dailyMs;
   let days = 0;
@@ -2314,7 +2316,7 @@ function resolveCuFilterView(st, f) {
   if (planV) return planV;
   // Deadline crossed looks at ALL dates, so it takes over the date scope.
   if (f.deadlineCrossed) return cuOverdueView();
-  if (f.dueCustom) { const cv = cuCustomView(f, st); if (cv) return cv; }
+  if (cuCustomRange(f)) { const cv = cuCustomView(f, st); if (cv) return cv; }
   const wk = st.weekly || null;
   if (f.dueNextWeek && st.nextWeek) {
     const nw = st.nextWeek;
@@ -2326,18 +2328,27 @@ function resolveCuFilterView(st, f) {
   }
   // Tomorrow is its own one-day query (see cuTomorrowView) so multi-day tasks
   // contribute tomorrow's share, the same way the Today card works.
-  if (f.dueTomorrow) return cuTomorrowView(st);
-  if (f.dueToday) {
-    return { estimateMs: st.estimateMs, spentMs: st.spentMs, tasks: Array.isArray(st.tasks) ? st.tasks : [], deadlineTasks: Array.isArray(st.deadlineTasks) ? st.deadlineTasks : [], trackedTasks: Array.isArray(st.trackedTasks) ? st.trackedTasks : [], scope: "today" };
-  }
-  const tf = st.todayFilter || st;
-  return { estimateMs: tf.estimateMs, spentMs: tf.spentMs, tasks: Array.isArray(tf.tasks) ? tf.tasks : [], deadlineTasks: Array.isArray(tf.deadlineTasks) ? tf.deadlineTasks : [], trackedTasks: Array.isArray(tf.trackedTasks) ? tf.trackedTasks : [], scope: "extended" };
+  // Nothing ticked under Due = today (the same tasks and numbers as the Today card).
+  return { estimateMs: st.estimateMs, spentMs: st.spentMs, tasks: Array.isArray(st.tasks) ? st.tasks : [], deadlineTasks: Array.isArray(st.deadlineTasks) ? st.deadlineTasks : [], trackedTasks: Array.isArray(st.trackedTasks) ? st.trackedTasks : [], scope: "today" };
 }
 
 // List-only refine predicate. "Deadline crossed" = not done AND due date on a
 // day BEFORE today (day-floor compare, mirrors options.js) so tasks due today
 // never count. Status/Priority are OR within a group, AND across groups.
 // `t.priority` is a lower-case name ("" → treated as "none").
+// Filter › Assigned to: "Only me" = I'm the task's one assignee; "Shared with
+// others" = someone else is on it too (or only someone else). Both or neither
+// ticked = everything. A row without its assignees can't be told: kept.
+function cuAssignPass(f, t) {
+  if (!f.onlyMe === !f.sharedTasks) return true;
+  const list = t && Array.isArray(t.assignees) ? t.assignees : null;
+  if (!list) return true;
+  const me = String(state && state.clickup && state.clickup.user && state.clickup.user.id || "");
+  const ids = list.map((a) => String(a && typeof a === "object" ? a.id : a));
+  const others = me ? ids.filter((x) => x !== me).length : Math.max(0, ids.length - 1);
+  const solo = (me ? ids.includes(me) : ids.length > 0) && others === 0;
+  return f.onlyMe ? solo : !solo;
+}
 function cuRefinePredicate(f) {
   const todayStart = new Date().setHours(0, 0, 0, 0);
   const statuses = Array.isArray(f.statuses) ? f.statuses : [];
@@ -2346,6 +2357,7 @@ function cuRefinePredicate(f) {
     if (f.missingEst && Number(t.estimateMs)) return false;
     if (f.missingDue && Number(t.dueDateMs)) return false;
     if (f.waitingOthers && !cuWaitFor(t)) return false;
+    if (!cuAssignPass(f, t)) return false;
     if (f.hasTracked && !(Number(t.spentMs) > 0)) return false;
     if (f.deadlineCrossed) {
       if (t.done) return false;
@@ -2393,18 +2405,46 @@ function cuParseDay(s) {
   const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(s || ""));
   return m ? new Date(+m[1], +m[2] - 1, +m[3]).getTime() : 0;
 }
+// Due › Previous week / This month / Next month / Previous month: fixed ranges,
+// fetched only when ticked (like Custom). Weeks run Sunday to Saturday, as This
+// week and Next week do. "Dates by" (due / start / both) applies to every range.
+const CU_PRESET_KEYS = ["duePrevWeek", "dueThisMonth", "dueNextMonth", "duePrevMonth"];
+function cuPresetRange(f) {
+  const now = new Date(), y = now.getFullYear(), m = now.getMonth(), d = now.getDate();
+  const span = (a, b, label) => ({ fromTs: a.getTime(), toTs: b.getTime(), label });
+  const sun = (off) => new Date(y, m, d - now.getDay() + off);
+  if (f.duePrevWeek) return span(sun(-7), new Date(y, m, d - now.getDay() - 1, 23, 59, 59, 999), "previous week");
+  const k = f.dueThisMonth ? 0 : f.dueNextMonth ? 1 : f.duePrevMonth ? -1 : null;
+  if (k === null) {
+    // This week / Next week by start date (or both): the same Sunday-Saturday.
+    if (f.dateBasis !== "start" && f.dateBasis !== "both") return null;
+    if (f.dueNextWeek) return span(sun(7), new Date(y, m, d - now.getDay() + 13, 23, 59, 59, 999), "next week");
+    if (f.dueWeek) return span(sun(0), new Date(y, m, d - now.getDay() + 6, 23, 59, 59, 999), "this week");
+    return null;
+  }
+  const a = new Date(y, m + k, 1), b = new Date(y, m + k + 1, 0, 23, 59, 59, 999);
+  return span(a, b, (k === 0 ? "this month" : k === 1 ? "next month" : "previous month") + " (" + a.toLocaleDateString(undefined, { month: "long" }) + ")");
+}
+const cuBasis = (f) => (f && (f.dateBasis === "start" || f.dateBasis === "both") ? f.dateBasis : "due");
+const cuIsMonth = (f) => !!(f && (f.dueThisMonth || f.dueNextMonth || f.duePrevMonth));
 function cuCustomRange(f) {
-  let a = cuParseDay(f.customFrom);
-  if (!a) return null;
-  let b = cuParseDay(f.customTo) || a;
-  if (b < a) { const t = a; a = b; b = t; }
-  const end = new Date(b); end.setHours(23, 59, 59, 999);
-  return { fromTs: a, toTs: end.getTime() };
+  const basis = cuBasis(f);
+  if (f.dueCustom) {
+    let a = cuParseDay(f.customFrom);
+    if (!a) return null;
+    let b = cuParseDay(f.customTo) || a;
+    if (b < a) { const t = a; a = b; b = t; }
+    const end = new Date(b); end.setHours(23, 59, 59, 999);
+    return { fromTs: a, toTs: end.getTime(), basis };
+  }
+  const p = cuPresetRange(f);
+  return p ? { ...p, basis } : null;
 }
 function cuCustomLabel(r) {
   const fmt = (t) => new Date(t).toLocaleDateString(undefined, { month: "short", day: "numeric" });
   const same = new Date(r.fromTs).toDateString() === new Date(r.toTs).toDateString();
-  return "due " + (same ? fmt(r.fromTs) : fmt(r.fromTs) + " – " + fmt(r.toTs));
+  const word = r.basis === "start" ? "starting" : r.basis === "both" ? "starting and due" : "due";
+  return word + " " + (r.label || (same ? fmt(r.fromTs) : fmt(r.fromTs) + " – " + fmt(r.toTs)));
 }
 let cuCustomCache = { key: "", status: "", data: null, at: 0 }; // status: loading | ready | error
 function cuOverdueInvalidate() { if (cuOverdueCache.status !== "loading") cuOverdueCache.at = 0; }
@@ -2484,9 +2524,16 @@ function cuCustomView(f, state) {
   // Built once by the background for the saved filter (every page + the badge
   // read the same bundle, so they fill in together).
   const sb = state && state.custom;
-  if (sb && sb.fromTs === r.fromTs && sb.toTs === r.toTs) return { ...sb, scope: "custom", label: cuCustomLabel(r) };
+  if (sb && sb.fromTs === r.fromTs && sb.toTs === r.toTs && (sb.basis || "due") === r.basis) {
+    // Shown from what was saved: say how old it is (it's refreshed behind it).
+    const mins = sb.at ? Math.round((Date.now() - sb.at) / 60000) : 0;
+    return { ...sb, scope: "custom", label: cuCustomLabel(r) + (mins >= 3 ? " \u00b7 updated " + (mins < 60 ? mins + "m" : Math.round(mins / 60) + "h") + " ago" : "") };
+  }
   const key = r.fromTs + "-" + r.toTs;
   const label = cuCustomLabel(r);
+  // By start date (or both): only the background builds it (it needs the open
+  // tasks list) - wait for it.
+  if (r.basis !== "due") return { estimateMs: 0, spentMs: 0, tasks: [], deadlineTasks: [], trackedTasks: [], scope: "custom", label: label + " (loading…)", loading: true };
   const c = cuCustomCache;
   const stale = c.key === key && c.status === "ready" && Date.now() - c.at > 5 * 60000;
   if (c.key !== key || stale) cuFetchCustom(r, key); // refresh in the background
@@ -2830,7 +2877,7 @@ function renderClickup() {
   // Refine boxes narrow the visible list only (headline/bars/badge stay on the
   // date scope). deadlineCrossed = not done AND due date on a day before today;
   // rows without a due date (some week-scope rows) simply never match.
-  const refineOn = cuFilter.missingEst || cuFilter.missingDue || cuFilter.waitingOthers || cuFilter.deadlineCrossed || cuFilter.hasTracked
+  const refineOn = cuFilter.missingEst || cuFilter.missingDue || cuFilter.waitingOthers || cuFilter.deadlineCrossed || cuFilter.hasTracked || cuFilter.onlyMe || cuFilter.sharedTasks
     || (cuFilter.statuses && cuFilter.statuses.length) || (cuFilter.priorities && cuFilter.priorities.length);
   if (refineOn && view.scope !== "plan") { // an applied plan is an explicit list: shown whole
     const keep = cuRefinePredicate(cuFilter);
@@ -2841,6 +2888,7 @@ function renderClickup() {
       if (cuFilter.missingEst && Number(d.dayEstimateMs)) return false;
       if (cuFilter.missingDue && Number(d.dueDateMs)) return false;
       if (cuFilter.waitingOthers && !cuWaitFor(d)) return false;
+      if (!cuAssignPass(cuFilter, d)) return false;
       if (cuFilter.hasTracked && !(Number(d.spentMs) > 0)) return false;
       if (cuFilter.deadlineCrossed) {
         if (d.done) return false;
@@ -2881,6 +2929,8 @@ function renderClickup() {
     if (cuFilter.missingEst) tags.push("missing estimate");
     if (cuFilter.missingDue) tags.push("missing due date");
     if (cuFilter.waitingOthers) tags.push("waiting on others");
+    if (cuFilter.onlyMe && !cuFilter.sharedTasks) tags.push("only me");
+    if (cuFilter.sharedTasks && !cuFilter.onlyMe) tags.push("shared with others");
     if (cuFilter.hasTracked) tags.push("tracked");
     if (cuFilter.deadlineCrossed) tags.push("deadline crossed");
     if (cuFilter.statuses && cuFilter.statuses.length) tags.push("status: " + cuFilter.statuses.join("/"));
@@ -3617,7 +3667,7 @@ function cuArrEq(a, b) { a = Array.isArray(a) ? a : []; b = Array.isArray(b) ? b
 // Single mode is PER GROUP (Due / Client / Status / Priority / Refine): ticking a
 // box unticks the others in its own group, so e.g. "Due today" + one client still
 // combine. Shared with the other page through the "cuFilterMode" storage key.
-const CU_DATE_KEYS = ["dueToday", "dueTomorrow", "dueWeek", "dueNextWeek", "dueCustom"];
+const CU_DATE_KEYS = ["dueWeek", "dueNextWeek", "duePrevWeek", "dueThisMonth", "dueNextMonth", "duePrevMonth", "dueCustom"];
 const CU_REFINE_KEYS = ["missingEst", "missingDue", "hasTracked", "deadlineCrossed", "waitingOthers"];
 let cuFilterSingle = false;
 // Before a box is ticked in single mode, clear the rest of its group.
@@ -3653,6 +3703,7 @@ function cuClearAllFilters() {
   cuFilter.clients = [];
   cuFilter.customFrom = "";
   cuFilter.customTo = "";
+  cuFilter.dateBasis = "";
   chrome.storage.local.set({ cuFilter }).catch(() => {});
   renderCuFilterMenu();
   cuFilterBtnLabel();
@@ -3660,14 +3711,14 @@ function cuClearAllFilters() {
 }
 // Your own starting point: "Save as my default" remembers the ticked filters
 // and the selection mode; a fresh install (or "Use my default") applies them.
-const CU_FILTER_EXTRAS = ["statuses", "priorities", "clients", "customFrom", "customTo"];
+const CU_FILTER_EXTRAS = ["statuses", "priorities", "clients", "customFrom", "customTo", "dateBasis"];
 // Calendar (calendar.js): clicking a day lists that day's tasks (saved like any
 // filter, so the dashboard and badge follow).
 window.pcmPickDay = (ts) => {
   const d = new Date(ts);
   const k = d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0") + "-" + String(d.getDate()).padStart(2, "0");
   const s = cuSnapshotFilter();
-  for (const f of ["dueToday", "dueTomorrow", "dueWeek", "dueNextWeek", "deadlineCrossed"]) s[f] = false;
+  for (const f of [...CU_DATE_KEYS, "deadlineCrossed"]) s[f] = false;
   s.dueCustom = true; s.customFrom = k; s.customTo = k;
   cuApplyFilterSnapshot(s);
 };
@@ -3777,6 +3828,7 @@ function renderCuFilterMenu() {
     if (fromEl && document.activeElement !== fromEl) fromEl.value = cuFilter.customFrom || "";
     if (toEl && document.activeElement !== toEl) toEl.value = cuFilter.customTo || "";
   });
+  menu.querySelectorAll("[data-cf-basis]").forEach((sel) => { if (document.activeElement !== sel) sel.value = cuFilter.dateBasis || ""; });
   const facets = cuAvailableFacets(st);
   const statuses = Array.isArray(cuFilter.statuses) ? cuFilter.statuses : [];
   const priorities = Array.isArray(cuFilter.priorities) ? cuFilter.priorities : [];
@@ -3815,6 +3867,7 @@ function openCuFilterMenu(open) {
       cuFilter.clients = Array.isArray(got.cuFilter.clients) ? got.cuFilter.clients.slice() : [];
       cuFilter.customFrom = typeof got.cuFilter.customFrom === "string" ? got.cuFilter.customFrom : "";
       cuFilter.customTo = typeof got.cuFilter.customTo === "string" ? got.cuFilter.customTo : "";
+      cuFilter.dateBasis = typeof got.cuFilter.dateBasis === "string" ? got.cuFilter.dateBasis : "";
     } else if (got.cuDueTodayOnly === true) {
       cuFilter.dueToday = true; // migrate the legacy single checkbox
       chrome.storage.local.set({ cuFilter }).catch(() => {});
@@ -3869,6 +3922,12 @@ function openCuFilterMenu(open) {
   // Delegated so the dynamically-rebuilt Status/Priority boxes are handled too.
   menu.addEventListener("change", (e) => {
     const el = e.target;
+    if (el && el.hasAttribute && el.hasAttribute("data-cf-basis")) {
+      cuFilter.dateBasis = el.value || "";
+      chrome.storage.local.set({ cuFilter }).catch(() => {});
+      renderCuFilterMenu(); renderClickup();
+      return;
+    }
     if (!el || el.tagName !== "INPUT") return;
     if (el.hasAttribute("data-cf-from") || el.hasAttribute("data-cf-to")) {
       cuFilter[el.hasAttribute("data-cf-from") ? "customFrom" : "customTo"] = el.value || "";
@@ -3876,6 +3935,7 @@ function openCuFilterMenu(open) {
       if (cuFilter.customFrom && !cuFilter.dueCustom) {
         const cb = menu.querySelector('input[data-cf="dueCustom"]');
         if (cb) { cb.checked = true; cuSingleClearGroup(cb); }
+        CU_DATE_KEYS.forEach((x) => { cuFilter[x] = false; });
         cuFilter.dueCustom = true;
       }
       chrome.storage.local.set({ cuFilter }).catch(() => {});
@@ -3885,6 +3945,10 @@ function openCuFilterMenu(open) {
       return;
     }
     cuSingleClearGroup(el); // single mode: untick the rest of this group first
+    // Only me / Shared with others: one or the other (neither = all).
+    if (el.checked && /^(onlyMe|sharedTasks)$/.test(el.getAttribute("data-cf") || "")) cuFilter[el.getAttribute("data-cf") === "onlyMe" ? "sharedTasks" : "onlyMe"] = false;
+    // One Due choice at a time (nothing ticked = today).
+    if (el.checked && CU_DATE_KEYS.includes(el.getAttribute("data-cf") || "")) CU_DATE_KEYS.forEach((x) => { if (x !== el.getAttribute("data-cf")) cuFilter[x] = false; });
     if (el.hasAttribute("data-cf")) cuFilter[el.getAttribute("data-cf")] = el.checked;
     else if (el.hasAttribute("data-cf-status")) cuToggleArrayVal(cuFilter, "statuses", el.getAttribute("data-cf-status"), el.checked);
     else if (el.hasAttribute("data-cf-priority")) cuToggleArrayVal(cuFilter, "priorities", el.getAttribute("data-cf-priority"), el.checked);
@@ -3942,7 +4006,7 @@ chrome.storage.onChanged.addListener((changes, area) => {
     if (!cuArrEq(cuFilter.priorities, nvP)) { cuFilter.priorities = nvP.slice(); diff = true; }
     const nvC = Array.isArray(nv.clients) ? nv.clients : [];
     if (!cuArrEq(cuFilter.clients, nvC)) { cuFilter.clients = nvC.slice(); diff = true; }
-    for (const k of ["customFrom", "customTo"]) { const v = typeof nv[k] === "string" ? nv[k] : ""; if ((cuFilter[k] || "") !== v) { cuFilter[k] = v; diff = true; } }
+    for (const k of ["customFrom", "customTo", "dateBasis"]) { const v = typeof nv[k] === "string" ? nv[k] : ""; if ((cuFilter[k] || "") !== v) { cuFilter[k] = v; diff = true; } }
     if (diff) { renderCuFilterMenu(); cuFilterBtnLabel(); renderClickup(); }
   }
   // Custom drag order changed here or on another page -> adopt it and repaint,

@@ -410,6 +410,8 @@
 
   .update-banner { display: block; margin: 0 0 8px; padding: 6px 10px; border-radius: 8px; font-size: 11px; font-weight: 600; text-decoration: none; background: rgba(217,119,6,.13); color: var(--amber); border: 1px solid rgba(217,119,6,.35); }
   .update-banner:hover { text-decoration: underline; }
+  .cu-basis { display: flex !important; align-items: center; gap: 6px; font-size: 12px; }
+  .cu-basis select { font: inherit; font-size: 12px; padding: 2px 4px; border-radius: 6px; border: 1px solid var(--border); background: var(--card); color: var(--text); }
   .cu-filter-dates { display: flex; flex-wrap: wrap; align-items: center; gap: 4px; padding: 0 6px 6px 26px; font-size: 11px; color: var(--muted); }
   .cu-filter-dates[hidden] { display: none; }
   .cu-filter-dates input { width: 118px; font: inherit; font-size: 11px; padding: 3px 4px; border: 1px solid var(--border); border-radius: 6px; background: var(--card); color: var(--text); color-scheme: light dark; }
@@ -569,11 +571,14 @@
               <label class="cu-switch-row" title="Drag tasks into any order using the handle on the left. Your arrangement is remembered for each date view on its own (today, tomorrow, next week) and layers on top of the other filters."><span>Custom order <small>drag to arrange</small></span><input type="checkbox" class="cu-switch" data-cf="manualOrder" /></label>
             </div>
 <div class="cu-filter-group">
-              <div class="cu-filter-h">Due</div>
-              <label title="Only tasks whose DUE DATE is today (same basis as the daily notification)."><input type="checkbox" data-cf="dueToday" /> <span>Due today</span></label>
-              <label title="Tasks due tomorrow (next calendar day)."><input type="checkbox" data-cf="dueTomorrow" /> <span>Due tomorrow</span></label>
-              <label title="Tasks due any day this week (this Sunday through Saturday)."><input type="checkbox" data-cf="dueWeek" /> <span>Due this week</span></label>
-              <label title="Tasks due any day next week (next Sunday through Saturday)."><input type="checkbox" data-cf="dueNextWeek" /> <span>Due next week</span></label>
+              <div class="cu-filter-h">Due <small>(nothing ticked = today)</small></div>
+              <label class="cu-basis" title="Which date puts a task in the range: its due date, its start date, or both (start and due both inside the range)."><span>Dates by</span> <select data-cf-basis aria-label="Dates by"><option value="">due date</option><option value="start">start date</option><option value="both">start and due date</option></select></label>
+              <label title="Tasks due any day this week (Sunday through Saturday)."><input type="checkbox" data-cf="dueWeek" /> <span>This week</span></label>
+              <label title="Tasks due any day next week (next Sunday through Saturday)."><input type="checkbox" data-cf="dueNextWeek" /> <span>Next week</span></label>
+              <label title="Tasks due any day last week (Sunday through Saturday) - including the ones already completed."><input type="checkbox" data-cf="duePrevWeek" /> <span>Previous week</span></label>
+              <label title="Tasks due any day this month."><input type="checkbox" data-cf="dueThisMonth" /> <span>This month</span></label>
+              <label title="Tasks due any day next month."><input type="checkbox" data-cf="dueNextMonth" /> <span>Next month</span></label>
+              <label title="Tasks due any day last month - including the ones already completed."><input type="checkbox" data-cf="duePrevMonth" /> <span>Previous month</span></label>
               <label title="Pick one day (From only) or a date range (From and To)."><input type="checkbox" data-cf="dueCustom" /> <span>Custom date / range</span></label>
               <div class="cu-filter-dates" data-cf-dates hidden>
                 <input type="date" data-cf-from aria-label="From date" title="From (or the single day)" />
@@ -592,6 +597,12 @@
             <div class="cu-filter-group" id="cuFilterPriorityGroup" hidden>
               <div class="cu-filter-h">Priority</div>
               <div id="cuFilterPriorityList"></div>
+            </div>
+            <div class="cu-filter-sep"></div>
+            <div class="cu-filter-group">
+              <div class="cu-filter-h">Assigned to</div>
+              <label title="Only tasks where you are the one assignee - nobody else is on them."><input type="checkbox" data-cf="onlyMe" /> <span>Only me</span></label>
+              <label title="Only tasks that someone else is assigned to as well."><input type="checkbox" data-cf="sharedTasks" /> <span>Shared with others</span></label>
             </div>
             <div class="cu-filter-sep"></div>
             <div class="cu-filter-group">

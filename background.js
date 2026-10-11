@@ -25,7 +25,7 @@ import {
   driveQuota,
 } from "./lib-drive.js";
 import { runAllAccounts, runAccountLogin, readAgentRouterLogin, URLS, GITHUB_KEEP_COOKIES } from "./lib-automation.js";
-import { getTaskCommentsLite, getTaskTimeEntries, deleteTimeEntry, getUserGroups, getUser, verifyToken, getTeams, fetchTodayEstimate, fetchWeeklySummary, fetchDateRangeEstimate, createTaskCache, fetchTeamMembers, fetchWorkspaceTags, cuTagNames, fmtDuration, findExtraTaskByName, parseTaskIdFromUrl, getCurrentTimeEntry, getRunningTaskProgress, startTimer, stopTimer, getTaskById, setTaskStatus, setTaskDates, taskUrlFor, clientLabelFromContainer, resolveSpaceNamesFor, taskContainer, cuPriorityName, isTaskDone, getSubtasksOfParent, getTaskTree, getTaskDetail, updateTimeEntry, setTaskDueDate, clearTaskTreeCache, listWorkspaceClients, cuRowAssignees, fetchDoneBetween, fetchDoneLite, fetchTrackedHistory, getTaskPanel, addTaskComment, postTaskComment, setTaskDescription, getTaskCommentLinks, createTask, removeTaskAssignee, postAssignedComment, addTimeEntry, weeklyWithToday, listClientFieldOptions, listReachableClients } from "./lib-clickup.js";
+import { getTaskCommentsLite, getTaskTimeEntries, deleteTimeEntry, getUserGroups, getUser, verifyToken, getTeams, fetchTodayEstimate, fetchWeeklySummary, fetchDateRangeEstimate, createTaskCache, fetchTeamMembers, fetchWorkspaceTags, cuTagNames, fmtDuration, findExtraTaskByName, parseTaskIdFromUrl, getCurrentTimeEntry, getRunningTaskProgress, startTimer, stopTimer, getTaskById, setTaskStatus, setTaskDates, taskUrlFor, clientLabelFromContainer, resolveSpaceNamesFor, taskContainer, cuPriorityName, isTaskDone, getSubtasksOfParent, getTaskTree, getTaskDetail, updateTimeEntry, setTaskDueDate, clearTaskTreeCache, listWorkspaceClients, cuRowAssignees, fetchDoneBetween, fetchDoneLite, fetchTrackedHistory, getTaskPanel, addTaskComment, postTaskComment, setTaskDescription, getTaskCommentLinks, createTask, removeTaskAssignee, postAssignedComment, addTimeEntry, weeklyWithToday, listClientFieldOptions, listReachableClients, bgToken, cuRawFetch } from "./lib-clickup.js";
 import { resolveRelayKey, pickProbeModel, probeRelay } from "./lib-availability.js";
 import { tidyCollect, tidyLines, tidyResolved, tidyDayOk, tidyUrgent, tidyDateShort } from "./lib-tidy.js";
 
@@ -519,7 +519,11 @@ function fireDueReminders() {
       if (!r || r.done || r.active === false || r.paused || !(Number(r.at) > 0) || Number(r.at) > now + 15000) continue;
       const missed = now - Number(r.at) > 5 * 60000;
       const offToday = (REM_SKIP[r.id] || []).some((k) => (k === "holiday" ? isCompanyHoliday : isCompanyWfh)(Number(r.at)));
-      if (shown < 5 && !offToday) { await showReminder(r, missed); shown++; }
+      if (shown < 5 && !offToday) {
+        if (r.forMe !== false) await showReminder(r, missed);
+        if (Array.isArray(r.to) && r.to.length) await remSendToPeople(r).catch(() => {});
+        shown++;
+      }
       r.firedAt = now;
       if (r.repeat === "daily" || r.repeat === "weekdays" || r.repeat === "weekly") r.at = remNext(Number(r.at), r.repeat, now);
       else r.active = false; // one-time: moves to "Past" in the list
@@ -528,6 +532,38 @@ function fireDueReminders() {
     if (changed) await chrome.storage.local.set({ reminders: list });
   }).catch(() => {});
   return remBusy;
+}
+// A reminder for other people (⏰ Remind me › For): to their extension through
+// the Team hub; someone without the extension gets a ClickUp comment assigned to
+// them when it's about a task. What happened is kept on the reminder (r.sent).
+async function remNudge(cfg, userId, r) {
+  const text = String(r.text || "").trim().slice(0, 300);
+  if (await hubUrl()) {
+    await hubHello(true).catch(() => {});
+    const payload = { toUser: userId, taskId: r.taskId || "", taskName: String(r.taskName || r.text || "").slice(0, 200), taskUrl: r.taskId ? taskUrlFor(r.taskId) : "", text };
+    let h = await hubCall("nudge", payload).catch(() => null);
+    if (h && String(h.error || "").toLowerCase() === "admin only" && (await hubAdminKey())) h = await hubCall("nudge", payload, true).catch(() => null);
+    if (h && h.ok) return "extension";
+    if (!(h && h.reason === "no-extension") && !r.taskId) throw new Error(String((h && h.error) || "The Team hub didn't answer."));
+  }
+  if (!r.taskId) throw new Error("They don't use the extension, and the reminder isn't on a task (so there's nowhere in ClickUp to tell them).");
+  await postAssignedComment(cfg.token, r.taskId, "\u23F0 Reminder from " + (cfg.username || "a teammate") + (text ? ": " + text : " - please take a look at this task."), userId);
+  return "clickup";
+}
+async function remSendToPeople(r) {
+  const cfg = await getClickupConfig();
+  if (!cfg || !cfg.token) return;
+  const sent = [], failed = [];
+  for (const p of r.to) {
+    if (!/^\d+$/.test(String(p.id)) || String(p.id) === String(cfg.userId)) continue;
+    try { sent.push(p.name + ((await remNudge(cfg, String(p.id), r)) === "clickup" ? " (ClickUp comment)" : "")); }
+    catch (e) { failed.push(p.name + ": " + String((e && e.message) || e)); }
+  }
+  r.sent = { at: Date.now(), sent, failed };
+  if (r.forMe === false && (sent.length || failed.length)) {
+    notify("rem-sent-" + r.id + "-" + Date.now(), failed.length ? "Reminder not sent to everyone" : "Reminder sent \u2713",
+      (sent.length ? "To " + sent.join(", ") + ". " : "") + (failed.length ? "Couldn't reach " + failed.join("; ") : "")).catch(() => {});
+  }
 }
 async function remAct(notifId, btn) {
   const rid = notifId.slice(REM_PREFIX.length, notifId.lastIndexOf("-"));
@@ -1106,7 +1142,7 @@ async function getOverdueTasks(cfg, force, assignee) {
   const raw = [];
   for (let page = 0; page < 6; page++) {
     const url = cuOverdueUrl(cfg.teamId, { page, assignee: whoKey, before: todayStart });
-    const res = await fetch(url, { headers: { Authorization: token } });
+    const res = await cuRawFetch(token, url, { headers: { Authorization: token } });
     if (res.status === 429) { if (page === 0) throw new Error("ClickUp rate limit - try again in a minute"); break; }
     if (!res.ok) { if (page === 0) throw new Error("ClickUp HTTP " + res.status); break; }
     const j = await res.json().catch(() => null);
@@ -1222,7 +1258,7 @@ async function getDevPipeline(force) {
     for (let page = 0; page < 3; page++) {
       const url = "https://api.clickup.com/api/v2/team/" + encodeURIComponent(cfg.teamId) + "/task?page=" + page +
         "&subtasks=true&include_closed=false&tags[]=" + encodeURIComponent(DEV_TAG) + "&due_date_lt=" + end.getTime();
-      const res = await fetch(url, { headers: { Authorization: cfg.token } });
+      const res = await cuRawFetch(cfg.token, url, { headers: { Authorization: cfg.token } });
       if (!res.ok) { if (page === 0) throw new Error(res.status === 429 ? "ClickUp rate limit" : "ClickUp HTTP " + res.status); break; }
       const j = await res.json().catch(() => null);
       const batch = j && Array.isArray(j.tasks) ? j.tasks : [];
@@ -1274,7 +1310,7 @@ async function smartTaskSearch(q) {
     else { if (fromTs) params.push("due_date_gt=" + (fromTs - 1)); if (toTs) params.push("due_date_lt=" + (toTs + 1)); }
     const raw = [];
     for (let page = 0; page < 5; page++) {
-      const res = await fetch("https://api.clickup.com/api/v2/team/" + encodeURIComponent(cfg.teamId) + "/task?page=" + page + "&" + params.join("&"), { headers: { Authorization: token } });
+      const res = await cuRawFetch(token, "https://api.clickup.com/api/v2/team/" + encodeURIComponent(cfg.teamId) + "/task?page=" + page + "&" + params.join("&"), { headers: { Authorization: token } });
       if (res.status === 429) { if (page === 0) return { ok: false, error: "ClickUp rate limit - try again in a minute." }; break; }
       if (!res.ok) { if (page === 0) return { ok: false, error: "ClickUp HTTP " + res.status }; break; }
       const j = await res.json().catch(() => null);
@@ -1316,7 +1352,7 @@ async function getOpenTasks(cfg, force, tag, assignee) {
   const raw = [];
   for (let page = 0; page < 6; page++) {
     const url = cuOpenTasksUrl(cfg.teamId, { page, assignee: whoKey, tag: tagKey });
-    const res = await fetch(url, { headers: { Authorization: token } });
+    const res = await cuRawFetch(token, url, { headers: { Authorization: token } });
     if (res.status === 429) { if (page === 0) throw new Error("ClickUp rate limit - try again in a minute"); break; }
     if (!res.ok) { if (page === 0) throw new Error("ClickUp HTTP " + res.status); break; }
     const j = await res.json().catch(() => null);
@@ -2597,7 +2633,7 @@ async function deskLink(force) {
     const cfg = await getClickupConfig().catch(() => null);
     if (cfg && cfg.token) { try { r = (await deskPost({ show, style, anim, warnEmpty, ext: chrome.runtime.id, token: cfg.token, teamId: cfg.teamId || "" })) || r; } catch (e) {} }
   }
-  const out = { ...da, running: true, seenAt: Date.now(), checkedAt: Date.now(), version: String(r.version || ""), signedIn: !!r.signedIn, user: String(r.user || ""), shown: r.shown !== false };
+  const out = { ...da, running: true, seenAt: Date.now(), checkedAt: Date.now(), version: String(r.version || ""), signedIn: !!r.signedIn, user: String(r.user || ""), shown: r.shown !== false, folders: !!r.folders };
   await chrome.storage.local.set({ deskApp: out });
   // The first time the app turns up and nothing was chosen yet: the timer moves to
   // the taskbar and the floating window stops opening by itself (Settings can
@@ -3063,15 +3099,97 @@ async function buildRangeBundle(cfg, settings, fromTs, toTs) {
   };
 }
 // The saved filter's custom range (the Filter menu's own dates or a chart day).
+// Due › Previous week / This month / Next month / Previous month (and This /
+// Next week by start date): the same ranges the pages use.
+function cuFilterPresetRange(f) {
+  const now = new Date(), y = now.getFullYear(), m = now.getMonth(), d = now.getDate();
+  const span = (a, b) => ({ fromTs: a.getTime(), toTs: b.getTime() });
+  const sun = (off) => new Date(y, m, d - now.getDay() + off);
+  if (f.duePrevWeek) return span(sun(-7), new Date(y, m, d - now.getDay() - 1, 23, 59, 59, 999));
+  const k = f.dueThisMonth ? 0 : f.dueNextMonth ? 1 : f.duePrevMonth ? -1 : null;
+  if (k === null) {
+    if (f.dateBasis !== "start" && f.dateBasis !== "both") return null;
+    if (f.dueNextWeek) return span(sun(7), new Date(y, m, d - now.getDay() + 13, 23, 59, 59, 999));
+    if (f.dueWeek) return span(sun(0), new Date(y, m, d - now.getDay() + 6, 23, 59, 59, 999));
+    return null;
+  }
+  return span(new Date(y, m + k, 1), new Date(y, m + k + 1, 0, 23, 59, 59, 999));
+}
 function cuFilterCustomRange(f) {
-  if (!f || !f.dueCustom) return null;
+  if (!f) return null;
+  const basis = f.dateBasis === "start" || f.dateBasis === "both" ? f.dateBasis : "due";
+  if (!f.dueCustom) { const p = cuFilterPresetRange(f); return p ? { ...p, basis } : null; }
   const p = (s) => { const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(s || "")); return m ? new Date(+m[1], +m[2] - 1, +m[3]).getTime() : 0; };
   let a = p(f.customFrom);
   if (!a) return null;
   let b = p(f.customTo) || a;
   if (b < a) { const x = a; a = b; b = x; }
   const end = new Date(b); end.setHours(23, 59, 59, 999);
-  return { fromTs: a, toTs: end.getTime() };
+  return { fromTs: a, toTs: end.getTime(), basis };
+}
+// A range bundle by due date (ClickUp searches by due date), or by start date /
+// both. ClickUp can't search by start date, so "start" takes the open-tasks list
+// (already kept for Insights / Bulk edit) plus the range's own rows; "both" is
+// the due-date rows whose start date is in the range too.
+async function buildBasisBundle(cfg, settings, r) {
+  const due = await buildRangeBundle(cfg, settings, r.fromTs, r.toTs);
+  if (!r.basis || r.basis === "due") return { ...due, basis: "due" };
+  const inR = (x) => { x = Number(x) || 0; return x >= r.fromTs && x <= r.toTs; };
+  let rows = (due.tasks || []).concat(due.trackedTasks || []).filter((t) => t && inR(t.startDateMs));
+  const have = new Set(rows.map((t) => String(t.id)));
+  rows = rows.filter((t) => r.basis === "start" || inR(t.dueDateMs));
+  if (r.basis === "start") {
+    const open = await getOpenTasks(cfg, false).catch(() => null);
+    const extra = ((open && open.data && open.data.tasks) || []).filter((t) => inR(t.startDateMs) && !have.has(String(t.id))).map((t) => ({ ...t, type: "due" }));
+    if (extra.length) {
+      const holder = { tasks: extra };
+      await annotateClients(cfg.token, holder, settings.cuClientLevel || "auto").catch(() => {});
+      rows = rows.concat(holder.tasks);
+    }
+  }
+  const sum = (k) => rows.reduce((n, t) => n + (Number(t && t[k]) || 0), 0);
+  return { fromTs: r.fromTs, toTs: r.toTs, basis: r.basis, at: Date.now(), tasks: rows, deadlineTasks: [], trackedTasks: [],
+    estimateMs: sum("estimateMs"), spentMs: sum("spentMs"), taskCount: rows.length, noEstimateCount: rows.filter((t) => !Number(t.estimateMs)).length };
+}
+// Recently used ranges (a month, Previous week, a custom range, by start date…)
+// are kept ready: the last few are rebuilt quietly in the slow lane after a timed
+// refresh, so switching back to one shows at once (and refreshes behind it when
+// it's older than a few minutes). rangeCache: "from-to-basis" -> bundle.
+const rangeCache = new Map();
+const RANGE_FRESH_MS = 5 * 60000, RANGE_KEEP_MS = 30 * 60000, RECENT_MAX = 3;
+const rangeKey = (r) => r.fromTs + "-" + r.toTs + "-" + (r.basis || "due");
+function rangeCachePut(b) { if (b && b.fromTs && b.toTs) { rangeCache.set(rangeKey(b), b); if (rangeCache.size > 8) rangeCache.delete(rangeCache.keys().next().value); } }
+// The filter pieces that make a range (re-worked out each time, so "This month" moves on with the calendar).
+const rangeSpec = (f) => { const o = {}; for (const k of ["dueWeek", "dueNextWeek", "duePrevWeek", "dueThisMonth", "dueNextMonth", "duePrevMonth", "dueCustom", "customFrom", "customTo", "dateBasis"]) if (f && f[k]) o[k] = f[k]; return o; };
+async function rememberRecentRange(f) {
+  if (!cuFilterCustomRange(f)) return;
+  const spec = rangeSpec(f), key = JSON.stringify(spec);
+  const { cuRecentRanges } = await chrome.storage.local.get("cuRecentRanges");
+  const list = (Array.isArray(cuRecentRanges) ? cuRecentRanges : []).filter((x) => JSON.stringify(x) !== key);
+  list.unshift(spec);
+  await chrome.storage.local.set({ cuRecentRanges: list.slice(0, RECENT_MAX) });
+}
+let prefetching = false;
+async function prefetchRecentRanges() {
+  if (prefetching) return;
+  prefetching = true;
+  const stop = startKeepAlive();
+  try {
+    const { cuRecentRanges, cuFilter, rateLimitedUntil } = await chrome.storage.local.get(["cuRecentRanges", "cuFilter", "rateLimitedUntil"]);
+    if (Number(rateLimitedUntil) > Date.now()) return;
+    const cfg0 = await getClickupConfig();
+    if (!cfg0 || !cfg0.token || !cfg0.teamId || cfg0.userId == null) return;
+    const cfg = { ...cfg0, token: bgToken(cfg0.token) };
+    const settings = await getSettings();
+    const cur = cuFilterCustomRange(cuFilter);
+    for (const spec of Array.isArray(cuRecentRanges) ? cuRecentRanges : []) {
+      const r = cuFilterCustomRange(spec);
+      if (!r || (cur && rangeKey(cur) === rangeKey(r))) continue; // the current one is built by the refresh itself
+      const have = rangeCache.get(rangeKey(r));
+      if (have && Date.now() - (have.at || 0) < RANGE_KEEP_MS) continue;
+      try { rangeCachePut({ ...(await buildBasisBundle(cfg, settings, r)), basis: r.basis }); } catch (e) { if (e && e.status === 429) break; }
+    }
+  } catch (e) {} finally { stop(); prefetching = false; }
 }
 // Build the custom-range bundle now (the filter just changed) and put it in state.
 let customBuild = null;
@@ -3085,11 +3203,22 @@ async function refreshCustomBundle() {
       if (!r) return;
       const cfg = await getClickupConfig();
       if (!cfg || !cfg.token || !cfg.teamId || cfg.userId == null) return;
+      rememberRecentRange(cuFilter).catch(() => {});
       const prev = (await getClickupState()) || {};
-      if (prev.custom && prev.custom.fromTs === r.fromTs && prev.custom.toTs === r.toTs && Date.now() - (prev.custom.at || 0) < 5 * 60000) return;
-      const custom = await buildRangeBundle(cfg, await getSettings(), r.fromTs, r.toTs);
+      if (prev.custom && prev.custom.fromTs === r.fromTs && prev.custom.toTs === r.toTs && (prev.custom.basis || "due") === r.basis && Date.now() - (prev.custom.at || 0) < RANGE_FRESH_MS) return;
+      // Kept ready ahead of time: shown at once; rebuilt behind it when it's a few minutes old.
+      const ready = rangeCache.get(rangeKey(r));
+      if (ready && Date.now() - (ready.at || 0) < RANGE_KEEP_MS) {
+        const cur0 = (await getClickupState()) || {};
+        await setClickupState({ ...cur0, custom: ready });
+        await updateBadge().catch(() => {});
+        if (Date.now() - (ready.at || 0) < RANGE_FRESH_MS) return;
+      }
+      const custom = await buildBasisBundle(cfg, await getSettings(), r);
+      rangeCachePut(custom);
       const cur = (await getClickupState()) || {};
-      await setClickupState({ ...cur, custom });
+      const still = cuFilterCustomRange((await chrome.storage.local.get("cuFilter")).cuFilter);
+      if (still && rangeKey(still) === rangeKey(r)) await setClickupState({ ...cur, custom }); // not if another range was picked meanwhile
       await updateBadge().catch(() => {});
     } catch (e) {} finally { stop(); customBuild = null; }
   })();
@@ -3379,7 +3508,7 @@ async function discoverClientSitesBg() {
   const level = settings.cuClientLevel || "auto";
   await loadSpaceNames().catch(() => {});
   const cuGet = async (path) => {
-    const res = await fetch("https://api.clickup.com/api/v2" + path, { headers: { Authorization: cfg.token } });
+    const res = await cuRawFetch(cfg.token, "https://api.clickup.com/api/v2" + path, { headers: { Authorization: cfg.token } });
     if (res.status === 429) { const e = new Error("rate-limited"); e.status = 429; throw e; }
     if (!res.ok) { const e = new Error("http-" + res.status); e.status = res.status; throw e; }
     return res.json();
@@ -3702,6 +3831,7 @@ async function refreshClickup(opts = {}) {
     try {
       const r = await refreshClickupImpl(opts);
       refreshWaitingInfo().catch(() => {}); // "Waiting on …" chips (cached, throttled)
+      if (opts && opts.viaAlarm && r && r.ok !== false) prefetchRecentRanges().catch(() => {});
       return r;
     } finally {
       if (clickupRefreshInFlight === run) clickupRefreshInFlight = null;
@@ -3767,7 +3897,9 @@ function keepLastGoodConfigured(data, prev) {
 async function refreshClickupImpl({ includeTasks = false, viaAlarm = false, forceWeekly = false, forceWeeks = false, onToday = null } = {}) {
   const gen = settingsGen; // a setting changed after this = our result is stale (see rebuildListsFor)
   const t0 = Date.now();
-  const cfg = await getClickupConfig();
+  // The timed refresh nobody is waiting for goes in the slow lane (see bgToken).
+  const cfg0 = await getClickupConfig();
+  const cfg = cfg0 && cfg0.token && viaAlarm ? { ...cfg0, token: bgToken(cfg0.token) } : cfg0;
   if (!cfg || !cfg.token) return { ok: false, reason: "not-configured" };
   if (!cfg.teamId || cfg.userId == null) return { ok: false, reason: "incomplete-setup" };
   const settings = await getSettings();
@@ -3957,12 +4089,18 @@ async function refreshClickupImpl({ includeTasks = false, viaAlarm = false, forc
       };
       const tomStart = new Date(); tomStart.setDate(tomStart.getDate() + 1); tomStart.setHours(0, 0, 0, 0);
       const tomEnd = new Date(tomStart); tomEnd.setHours(23, 59, 59, 999);
-      tomorrow = await buildDay((prevSt && prevSt.tomorrow) || null, tomStart.getTime(), tomEnd.getTime());
+      // Due tomorrow left the Filter menu (tomorrow is in This week / Next week), so
+      // its own range isn't fetched any more.
+      tomorrow = null; void tomStart; void tomEnd;
       // The saved filter's custom range / chart day, shared by every page + the badge.
       try {
         const { cuFilter: savedFilter } = await chrome.storage.local.get("cuFilter");
         const cr = cuFilterCustomRange(savedFilter);
-        custom = cr ? await buildDay((prevSt && prevSt.custom) || null, cr.fromTs, cr.toTs) : null;
+        const pc = (prevSt && prevSt.custom) || null;
+        custom = !cr ? null
+          : cr.basis === "due" ? { ...(await buildDay(pc && (pc.basis || "due") === "due" ? pc : null, cr.fromTs, cr.toTs)), basis: "due" }
+          : pc && pc.fromTs === cr.fromTs && pc.toTs === cr.toTs && pc.basis === cr.basis && Date.now() - (pc.at || 0) < 30 * 60000 ? pc
+          : await buildBasisBundle(cfg, settings, cr);
       } catch (e) { custom = (prevSt && prevSt.custom) || null; }
       // "Due Mon-Fri" = the current week's workday slice. Subset of thisWeek
       // (Sun→Sat): filter its rows by dueDateMs in [Mon 00:00, Fri 23:59] purely
@@ -5117,7 +5255,7 @@ function cuScopeEstimateMs(st, f) {
   if (f.dueNextWeek && st.nextWeek) return Number(st.nextWeek.estimateMs) || 0;
   if (f.dueWeek && st.thisWeek) return Number(st.thisWeek.estimateMs) || 0;
   if (f.dueWorkweek && st.thisWeek) return Number(st.thisWeek.estimateMs) || 0; // legacy "Due Mon-Fri" -> this week
-  if (f.dueTomorrow) {
+  if (false) { // Due tomorrow left the Filter menu
     // The one-day bundle the popup shows, so the badge can never disagree with
     // the page. Scraping tomorrow's rows out of the week bundles (the old way)
     // missed the recurring Extra Task: it carries a per-day share, not a due
@@ -5128,16 +5266,15 @@ function cuScopeEstimateMs(st, f) {
     if (b && Number(b.fromTs) === from) return Number(b.estimateMs) || 0;
     return 0; // no bundle yet - better blank than a number the page contradicts
   }
-  if (f.dueToday) return Number(st.estimateMs) || 0;
-  // Custom range / chart day: the shared bundle (the same number the pages show);
-  // until it's built, today's due estimate rather than the "active today" total.
-  if (f.dueCustom) {
-    const r = cuFilterCustomRange(f);
-    if (r && st.custom && st.custom.fromTs === r.fromTs && st.custom.toTs === r.toTs) return Number(st.custom.estimateMs) || 0;
+  // Custom range, the month / previous-week presets, weeks by start date: the
+  // shared bundle (the same number the pages show); until it's built, today's.
+  const r = cuFilterCustomRange(f);
+  if (r) {
+    if (st.custom && st.custom.fromTs === r.fromTs && st.custom.toTs === r.toTs && (st.custom.basis || "due") === r.basis) return Number(st.custom.estimateMs) || 0;
     return Number(st.estimateMs) || 0;
   }
-  const tf = st.todayFilter || st;
-  return Number(tf.estimateMs) || 0;
+  // Nothing ticked under Due = today.
+  return Number(st.estimateMs) || 0;
 }
 
 async function updateBadge() {
@@ -5179,7 +5316,7 @@ async function updateBadge() {
       // Mirror the popup/options headline exactly: the estimate follows the
       // WIDEST checked date scope in the shared cuFilter (refine boxes don't
       // affect the badge). See cuScopeEstimateMs above.
-      let cuFilter = { dueToday: true }; // same default as the popup/options filter
+      let cuFilter = {}; // nothing ticked = today, as on the pages
       try {
         const g = await chrome.storage.local.get("cuFilter");
         if (g && g.cuFilter && typeof g.cuFilter === "object") cuFilter = g.cuFilter;
@@ -7132,7 +7269,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
             for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
             const fd = new FormData();
             fd.append("attachment", new Blob([bytes], { type: f.type || "application/octet-stream" }), String(f.name || "file").slice(0, 120));
-            const res = await fetch("https://api.clickup.com/api/v2/task/" + encodeURIComponent(taskId) + "/attachment", {
+            const res = await cuRawFetch(cfg.token, "https://api.clickup.com/api/v2/task/" + encodeURIComponent(taskId) + "/attachment", {
               method: "POST", headers: { Authorization: cfg.token }, body: fd,
             });
             if (!res.ok) throw new Error("upload of " + (f.name || "a file") + " failed (HTTP " + res.status + ")");
@@ -7731,6 +7868,12 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
           await chrome.storage.local.set({ hubActive: true, hubSeen: hubSeen || {} });
         }
         sendResponse(r);
+        break;
+      }
+      case "REMINDERS_CHECK": {
+        // A reminder saved for "Now" (or already due) goes out at once.
+        await fireDueReminders();
+        sendResponse({ ok: true });
         break;
       }
       case "HUB_INFO": {
@@ -8401,8 +8544,15 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
             if (typeof msg.description === "string") body.description = msg.description.slice(0, 500);
             await updateTimeEntry(cfg.token, cfg.teamId, String(msg.entryId), body);
           }
+          // "Why?" filled in: the change and the reason as a comment on the task,
+          // so whoever reads the timesheet can see why it was changed.
+          let commented = false;
+          const why = String(msg.reason || "").trim().slice(0, 1000);
+          if (why && msg.op && msg.change) {
+            try { await postTaskComment(cfg.token, taskId, "\u23F1 " + String(msg.change).slice(0, 400) + "\nReason: " + why); commented = true; } catch (e) {}
+          }
           const entries = await getTaskTimeEntries(cfg.token, cfg.teamId, taskId);
-          sendResponse({ ok: true, entries });
+          sendResponse({ ok: true, entries, commented });
           // The task's time, today's and the week's totals follow.
           if (msg.op) { clearFilterCache(); refreshClickup({ includeTasks: true }).catch(() => {}); }
         } catch (e) {
@@ -8499,7 +8649,9 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         try {
           const due = msg.dueMs == null || msg.dueMs === "" ? null : Number(msg.dueMs);
           const task = due ? await getTaskById(cfg.token, taskId).catch(() => null) : null;
-          await setTaskDueDate(cfg.token, taskId, due, task ? task.dueDateHasTime : null);
+          // This week by day (drag to another day): the start date can come along.
+          if (due && Number(msg.startMs) > 0) await setTaskDates(cfg.token, taskId, Number(msg.startMs), due);
+          else await setTaskDueDate(cfg.token, taskId, due, task ? task.dueDateHasTime : null);
           clearFilterCache();
           refreshClickup({ includeTasks: true, forceWeeks: true }).catch(() => {});
           sendResponse({ ok: true, dueDateMs: due });
@@ -9144,7 +9296,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         const PRIO = { urgent: 1, high: 2, normal: 3, low: 4, none: null };
         const put = async (body) => {
           for (let attempt = 0; attempt < 3; attempt++) {
-            const res = await fetch("https://api.clickup.com/api/v2/task/" + encodeURIComponent(taskId), {
+            const res = await cuRawFetch(token, "https://api.clickup.com/api/v2/task/" + encodeURIComponent(taskId), {
               method: "PUT", headers: { Authorization: token, "Content-Type": "application/json" }, body: JSON.stringify(body),
             });
             if (res.status === 429) {

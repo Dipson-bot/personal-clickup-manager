@@ -163,6 +163,14 @@
     .rm-item.paused .rm-t div:first-child { opacity: .55; }
     .rm-item .rm-sub .rm-paused { color: var(--amber, #d97706); font-weight: 600; }
     .rm-item .rm-files { margin-top: 5px; }
+    .rm-for { display: flex; flex-wrap: wrap; align-items: center; gap: 5px; font-size: 12px; }
+    .rm-for > b { font-weight: 600; color: var(--muted); }
+    .rm-for label { display: inline-flex; align-items: center; gap: 4px; }
+    .rm-person { display: inline-flex; align-items: center; gap: 3px; padding: 2px 4px 2px 8px; border-radius: 999px; border: 1px solid var(--border); background: var(--bg2); font-size: 11.5px; cursor: pointer; }
+    .rm-person.on { background: var(--indigo, #6366f1); border-color: var(--indigo, #6366f1); color: #fff; }
+    .rm-person button { border: 0; background: none; color: inherit; cursor: pointer; padding: 0 3px; }
+    .rm-for input[type="text"] { flex: 1; min-width: 120px; font: inherit; font-size: 12px; }
+    .rm-to { color: var(--indigo, #6366f1); }
   `;
   document.head.appendChild(css);
 
@@ -205,12 +213,58 @@
     paintTask();
     f.appendChild(taskBox);
 
+    // For: me and / or other people. The task's other assignees are offered;
+    // "+ person" finds anyone in the ClickUp workspace. Theirs reaches their
+    // extension (Team hub) when it goes off, or - for someone without the
+    // extension, on a task - a ClickUp comment assigned to them.
+    const forBox = el("div", "rm-for");
+    const meCb = el("input"); meCb.type = "checkbox"; meCb.checked = !(opts && opts.forMe === false);
+    const meLab = el("label"); meLab.append(meCb, "Me");
+    const people = []; // { id, name, on }
+    const addPerson = (id, name, on) => { id = String(id || ""); if (!/^\d+$/.test(id)) return; const have = people.find((p) => p.id === id); if (have) { if (on) have.on = true; return; } people.push({ id, name: String(name || "User " + id), on: !!on }); };
+    for (const p of (opts && Array.isArray(opts.people) ? opts.people : [])) addPerson(p.id, p.username || p.name, false);
+    for (const p of (opts && Array.isArray(opts.to) ? opts.to : [])) addPerson(p.id, p.name, true);
+    const chipsBox = el("span");
+    const findIn = el("input"); findIn.type = "text"; findIn.placeholder = "+ person (anyone in the workspace)";
+    const pdl = el("datalist"); pdl.id = "rmPeople" + uid(); findIn.setAttribute("list", pdl.id);
+    let roster = [];
+    const fillRoster = () => { pdl.innerHTML = ""; for (const m of roster.slice(0, 500)) { const o = el("option"); o.value = m.name; pdl.appendChild(o); } };
+    // The workspace people (for + person) and who I am (I'm the "Me" box, not a chip).
+    try {
+      chrome.runtime.sendMessage({ type: "CLICKUP_DEPT_DATA" }, (r) => {
+        void chrome.runtime.lastError;
+        const me = String((r && r.userId) || "");
+        roster = ((r && r.members) || []).filter((m) => m && String(m.id) !== me).map((m) => ({ id: String(m.id), name: String(m.name || m.username || "") }));
+        fillRoster();
+        if (me) { for (let i = people.length - 1; i >= 0; i--) if (people[i].id === me) people.splice(i, 1); paintFor(); }
+      });
+    } catch (e) {}
+    findIn.onchange = () => {
+      const v = findIn.value.trim().toLowerCase();
+      const hit = roster.find((m) => m.name.toLowerCase() === v);
+      if (hit) { addPerson(hit.id, hit.name, true); findIn.value = ""; paintFor(); }
+    };
+    const paintFor = () => {
+      chipsBox.textContent = "";
+      for (const p of people) {
+        const c = el("span", "rm-person" + (p.on ? " on" : ""), p.name);
+        c.title = p.on ? "Gets this reminder - click to leave them out" : "Click to remind them too";
+        c.onclick = () => { p.on = !p.on; paintFor(); };
+        chipsBox.appendChild(c);
+      }
+      text.placeholder = meCb.checked ? (people.some((p) => p.on) ? "Remind us to…" : "Remind me to…") : "Remind them to…";
+    };
+    meCb.onchange = paintFor;
+    forBox.append(el("b", "", "For"), meLab, chipsBox, findIn, pdl);
+    paintFor();
+    f.appendChild(forBox);
+
     const chips = el("div", "rm-chips");
     const dt = el("input");
     dt.type = "datetime-local";
     const def = new Date(Date.now() + 60 * 60000); def.setMinutes(Math.ceil(def.getMinutes() / 5) * 5, 0, 0);
     dt.value = toLocalInput(opts && Number(opts.at) > 0 ? Number(opts.at) : def.getTime());
-    const quick = [["In 15 min", () => Date.now() + 15 * 60000], ["In 1 hour", () => Date.now() + 60 * 60000], ["Tomorrow 9:00", () => at9(1)], ["Monday 9:00", () => at9(0, 1)]];
+    const quick = [["Now", () => Date.now()], ["In 15 min", () => Date.now() + 15 * 60000], ["In 1 hour", () => Date.now() + 60 * 60000], ["Tomorrow 9:00", () => at9(1)], ["Monday 9:00", () => at9(0, 1)]];
     for (const [label, fn] of quick) {
       const c = el("button", "rm-chip", label); c.type = "button";
       c.onclick = () => { dt.value = toLocalInput(fn()); chips.querySelectorAll(".rm-chip").forEach((x) => x.classList.toggle("on", x === c)); };
@@ -281,11 +335,13 @@
       e.preventDefault();
       const words = text.value.trim() || (task ? task.name : "") || (pending.length ? pending[0].name : "");
       if (!words) { say("Write what to remind you about.", true); text.focus(); return; }
+      const to = people.filter((p) => p.on).map((p) => ({ id: p.id, name: p.name }));
+      if (!meCb.checked && !to.length) { say("Pick who gets it: you, someone else, or both.", true); return; }
       let at = fromLocalInput(dt.value);
       if (!at) { say("Pick a date and time.", true); return; }
       // "Weekdays" never starts on a weekend: move to the next Monday, same time.
       if (rep.value === "weekdays") { const d = new Date(at); while (d.getDay() === 0 || d.getDay() === 6) d.setDate(d.getDate() + 1); at = d.getTime(); }
-      if (at < Date.now() - 30000 && rep.value === "none") { say("That time has passed - pick a later one.", true); return; }
+      if (at < Date.now() - 90000 && rep.value === "none") { say("That time has passed - pick a later one.", true); return; }
       const list = await getAll();
       const editing = opts && opts.editId ? list.find((x) => x && x.id === opts.editId) : null;
       const fresh = pending.filter((p) => !p.existing);
@@ -295,7 +351,7 @@
         catch (err) { save.disabled = false; say("Couldn't save the files (is the disk full?).", true); return; }
         save.disabled = false;
       }
-      const rec = { text: words.slice(0, MAX_TEXT), at, repeat: rep.value, sound: snd.value, taskId: task ? task.id : "", taskName: task ? task.name : "", taskUrl: task ? task.url : "", ...(opts && opts.noteId ? { noteId: String(opts.noteId) } : {}), files: pending.map((p) => ({ id: p.id, name: p.name, type: p.type, size: p.size })), active: true };
+      const rec = { text: words.slice(0, MAX_TEXT), at, repeat: rep.value, sound: snd.value, taskId: task ? task.id : "", taskName: task ? task.name : "", taskUrl: task ? task.url : "", ...(opts && opts.noteId ? { noteId: String(opts.noteId) } : {}), files: pending.map((p) => ({ id: p.id, name: p.name, type: p.type, size: p.size })), active: true, forMe: meCb.checked, to };
       if (editing) {
         // Edit: same reminder, new details (a paused one stays paused).
         const oldFiles = editing.files || [];
@@ -309,7 +365,8 @@
       }
       list.push({ id: uid(), ...rec, createdAt: Date.now() });
       try { await setAll(list); } catch (err) { say("Couldn't save it.", true); return; }
-      say("Saved \u2713 " + whenLabel(at));
+      say("Saved \u2713 " + whenLabel(at) + (to.length ? " - for " + (meCb.checked ? "you and " : "") + to.map((p) => p.name).join(", ") : ""));
+      try { chrome.runtime.sendMessage({ type: "REMINDERS_CHECK" }, () => void chrome.runtime.lastError); } catch (e) {} // "Now" goes out at once
       text.value = ""; pending.length = 0; paintFiles(); if (!(opts && opts.task)) { task = null; paintTask(); }
       if (onSaved) onSaved();
     };
@@ -403,6 +460,7 @@
         const t = el("div", "rm-t");
         t.appendChild(el("div", "", r.text || "Reminder"));
         const sub = el("div", "rm-sub");
+        if (Array.isArray(r.to) && r.to.length) sub.appendChild(el("span", "rm-to", "\u2192 " + (r.forMe === false ? "" : "you, ") + r.to.map((p) => p.name).join(", ")));
         sub.appendChild(el("span", "", (isPast ? (r.done ? "Done · " : "Shown · ") : "") + whenLabel(isPast ? (r.firedAt || r.at) : r.at)));
         if (r.repeat && r.repeat !== "none") sub.appendChild(el("span", "", "↻ " + (REPEAT[r.repeat] || r.repeat)));
         if (r.sound && r.sound !== "normal") sub.appendChild(el("span", "", "\uD83D\uDD14 " + (SOUNDS[r.sound] || r.sound)));
@@ -450,7 +508,7 @@
           e.stopPropagation();
           open({ title: "\u270E Edit reminder", editId: r.id, text: r.text, at: r.at, repeat: r.repeat, sound: r.sound,
             task: r.taskId ? { id: r.taskId, name: r.taskName, url: r.taskUrl } : null,
-            files: Array.isArray(r.files) ? r.files : [] }, edit);
+            files: Array.isArray(r.files) ? r.files : [], forMe: r.forMe !== false, to: Array.isArray(r.to) ? r.to : [] }, edit);
         };
         // Pause: stays in the list but doesn't pop up until resumed.
         const pause = el("button", "", r.paused ? "Resume" : "Pause"); pause.type = "button";

@@ -89,11 +89,24 @@ function rateLimitError(res) {
 // A short wait is simply waited out; one longer than RL_MAX_WAIT_MS fails at once
 // with the usual rate-limit error (status 429) instead of hanging the caller.
 const RL_PER_MIN = 90, RL_CONCURRENT = 4, RL_LOW = 3, RL_MAX_WAIT_MS = 20000;
+// Two lanes. Background work (the timed refresh, getting recently used views
+// ready ahead of time) carries a "bg" token: it never goes ahead of a request
+// someone is waiting for, keeps one of the 4 slots free for them, uses at most
+// RL_BG_PER_MIN of the minute, and waits longer instead of failing. Everything
+// else (what you clicked, an open page loading) is the fast lane, as before.
+const RL_BG_PER_MIN = 60, RL_BG_MAX_WAIT_MS = 90000;
+export function bgToken(t) {
+  if (t == null || (typeof t === "object" && t.bg)) return t;
+  const s = new String(String(t)); // still a token everywhere it's used as text
+  s.bg = true;
+  return s;
+}
+const isBg = (t) => !!(t && typeof t === "object" && t.bg);
 const rlState = new Map(); // token -> { sent: [startedAt], inFlight, waiters: [], pausedUntil }
 function rlOf(token) {
   const k = String(token || "");
   let st = rlState.get(k);
-  if (!st) { st = { sent: [], inFlight: 0, waiters: [], pausedUntil: 0 }; rlState.set(k, st); }
+  if (!st) { st = { sent: [], inFlight: 0, waiters: [], pausedUntil: 0, fgWaiting: 0 }; rlState.set(k, st); }
   return st;
 }
 const rlSleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -105,23 +118,29 @@ function rlPausedError(waitMs) {
 }
 async function guardedFetch(token, url, init) {
   const st = rlOf(token);
+  const bg = isBg(token);
   const t0 = Date.now();
-  for (;;) {
-    const now = Date.now();
-    let wait = 0;
-    if (st.pausedUntil > now) wait = st.pausedUntil - now;
-    else {
-      while (st.sent.length && now - st.sent[0] >= 60000) st.sent.shift();
-      if (st.sent.length >= RL_PER_MIN) wait = 60000 - (now - st.sent[0]) + 50;
+  if (!bg) st.fgWaiting++;
+  try {
+    for (;;) {
+      const now = Date.now();
+      let wait = 0;
+      if (st.pausedUntil > now) wait = st.pausedUntil - now;
+      else {
+        while (st.sent.length && now - st.sent[0] >= 60000) st.sent.shift();
+        if (st.sent.length >= RL_PER_MIN) wait = 60000 - (now - st.sent[0]) + 50;
+        else if (bg && st.sent.length >= RL_BG_PER_MIN) wait = 60000 - (now - st.sent[st.sent.length - RL_BG_PER_MIN]) + 50;
+        else if (bg && (st.fgWaiting > 0 || st.inFlight >= RL_CONCURRENT - 1)) wait = 250; // someone is waiting: after them
+      }
+      if (wait > 0) {
+        if (now + wait - t0 > (bg ? RL_BG_MAX_WAIT_MS : RL_MAX_WAIT_MS)) throw rlPausedError(wait);
+        await rlSleep(wait);
+        continue;
+      }
+      if (st.inFlight >= RL_CONCURRENT) { await new Promise((r) => st.waiters.push(r)); continue; }
+      break;
     }
-    if (wait > 0) {
-      if (now + wait - t0 > RL_MAX_WAIT_MS) throw rlPausedError(wait);
-      await rlSleep(wait);
-      continue;
-    }
-    if (st.inFlight >= RL_CONCURRENT) { await new Promise((r) => st.waiters.push(r)); continue; }
-    break;
-  }
+  } finally { if (!bg) st.fgWaiting--; }
   st.inFlight++;
   st.sent.push(Date.now());
   try {
@@ -143,6 +162,10 @@ async function guardedFetch(token, url, init) {
     if (w) w();
   }
 }
+
+// Any other ClickUp call (a page of tasks built by hand, an upload) through the
+// same guard, so it counts against the same minute and waits its turn.
+export function cuRawFetch(token, url, init) { meterRequest(String(url).replace(API, "")); return guardedFetch(token, url, init); }
 
 // Wraps one ClickUp GET. Throws a typed-ish Error with a `.status` so callers
 // can tell "bad token" (401) apart from "network died".
@@ -915,7 +938,7 @@ export async function getTaskPanel(token, taskId, force) {
   if (!force && hit && Date.now() - hit.at < PANEL_TTL_MS) return hit.data;
   const [t, cj] = await Promise.all([
     // include_subtasks: the same request also brings the subtasks, for the
-    // "Verify in OpenCode" brief (no extra call).
+    // Copy for AI brief (no extra call).
     cuFetch(token, "/task/" + encodeURIComponent(key), [["include_markdown_description", "true"], ["include_subtasks", "true"]]),
     cuFetch(token, "/task/" + encodeURIComponent(key) + "/comment").catch(() => ({ comments: [] })),
   ]);
@@ -971,6 +994,15 @@ export async function getTaskPanel(token, taskId, force) {
     blocks: deps.filter((x) => String(x.depends_on) === key && x.task_id).map((x) => String(x.task_id)),
     subtasks,
   };
+  // The parent and the tasks it waits on, by name with their state, so a brief
+  // can say "wait for X" (a few small calls, only when there are any).
+  const rel = [...(data.parentId ? [[data.parentId, "parent"]] : []), ...data.waitsOn.slice(0, 5).map((x) => [x, "waits"])];
+  data.related = rel.length ? (await Promise.all(rel.map(async ([id, kind]) => {
+    try {
+      const r = await cuFetch(token, "/task/" + encodeURIComponent(id));
+      return { id, kind, name: (r && r.name) || "", status: (r && r.status && r.status.status) || "", done: isTaskDone(r), url: (r && r.url) || taskUrlFor(id) };
+    } catch (e) { return { id, kind, name: "", status: "", done: false, url: taskUrlFor(id) }; }
+  }))) : [];
   panelCache.set(key, { at: Date.now(), data });
   return data;
 }

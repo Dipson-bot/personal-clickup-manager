@@ -463,6 +463,8 @@
   /* Task files tab */
   .tf-bar { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 14px; margin-bottom: 8px; }
   .tf-bar input[type="search"] { flex: 1; min-width: 180px; padding: 6px 10px; }
+  .tf-folders { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; margin: 0 0 8px; font-size: 13px; }
+  .tf-folders code { font-size: 12px; padding: 1px 6px; border-radius: 4px; background: var(--card); border: 1px solid var(--border); word-break: break-all; }
   .tf-bar label { display: inline-flex; align-items: center; gap: 6px; margin: 0; font-weight: 400; font-size: 13px; }
   .tf-list { border: 1px solid var(--border); border-radius: 10px; max-height: 560px; overflow: auto; }
   .tf-client { border-top: 1px solid var(--border); }
@@ -617,6 +619,8 @@
   .cu-filter-group[hidden] { display: none; }
 
 
+  .cu-basis { display: flex !important; align-items: center; gap: 6px; font-size: 12px; }
+  .cu-basis select { font: inherit; font-size: 12px; padding: 2px 4px; border-radius: 6px; border: 1px solid var(--border); background: var(--card); color: var(--text); }
   .cu-filter-dates { display: flex; flex-wrap: wrap; align-items: center; gap: 4px; padding: 0 6px 6px 26px; font-size: 11px; color: var(--muted); }
   .cu-filter-dates[hidden] { display: none; }
   .cu-filter-dates input { width: 118px; font: inherit; font-size: 11px; padding: 3px 4px; border: 1px solid var(--border); border-radius: 6px; background: var(--card); color: var(--text); color-scheme: light dark; }
@@ -727,6 +731,18 @@
   #cuTodayWrap .cu-preview { margin-top: 0; padding-top: 0; }
   #cuTodayWrap .cu-preview > .hint { line-height: 1.55; }
   .opt-toggle.sm button { padding: 4px 10px; font-size: 12px; }
+  /* A day line with its Plan with AI button: one row, text on the left (not the chart's day-column look). */
+  #optWeekList .flt-tot.wk-dhead { display: flex; flex-direction: row; align-items: center; justify-content: flex-start; text-align: left; gap: 8px; }
+  #optWeekList .wk-dhead .wk-dtxt { flex: 1; min-width: 0; }
+  #optWeekList .wk-dhead .pcm-chtools { margin-left: auto; }
+  #optWeekList .cu-task[draggable="true"] { cursor: grab; }
+  #optWeekList .cu-task.wk-dragging { opacity: .45; }
+  #optWeekList .cu-task.wk-moving { opacity: .6; }
+  .wk-band { position: fixed; z-index: 2147483000; border: 1px solid var(--indigo); background: rgba(99,102,241,.12); pointer-events: none; border-radius: 3px; }
+  #optWeekList .wk-selbar b { color: var(--indigo); }
+  #optWeekList .wk-selclear { font: inherit; font-size: 11px; padding: 1px 8px; margin-left: 4px; border-radius: 999px; border: 1px solid var(--border); background: var(--card); color: var(--text); cursor: pointer; }
+  #optWeekList .cu-task.wk-sel { background: rgba(99,102,241,.14); box-shadow: inset 3px 0 0 var(--indigo); }
+  #optWeekList .wk-drop { outline: 2px dashed var(--indigo); outline-offset: 2px; border-radius: 8px; }
   .icon-btn { border: 1px solid var(--border); background: var(--card); color: var(--muted); border-radius: 8px; width: 30px; height: 28px; cursor: pointer; font-size: 15px; line-height: 1; padding: 0; }
   .icon-btn:hover { color: var(--indigo); border-color: var(--indigo); background: var(--card); }
   .dash-tasks .cu-tasklist { max-height: 460px; }
@@ -1230,11 +1246,14 @@
               <label class="cu-switch-row" title="Drag tasks into any order using the handle on the left. Your arrangement is remembered for each date view on its own (today, tomorrow, next week) and layers on top of the other filters."><span>Custom order <small>drag to arrange</small></span><input type="checkbox" class="cu-switch" data-cf="manualOrder" /></label>
             </div>
             <div class="cu-filter-group">
-              <div class="cu-filter-h">Due</div>
-              <label title="Only tasks whose DUE DATE is today (same basis as the daily notification)."><input type="checkbox" data-cf="dueToday" /> <span>Due today</span></label>
-              <label title="Tasks due tomorrow."><input type="checkbox" data-cf="dueTomorrow" /> <span>Due tomorrow</span></label>
-              <label title="Tasks due any day this week (this Sunday through Saturday)."><input type="checkbox" data-cf="dueWeek" /> <span>Due this week</span></label>
-              <label title="Tasks due any day next week (next Sunday through Saturday)."><input type="checkbox" data-cf="dueNextWeek" /> <span>Due next week</span></label>
+              <div class="cu-filter-h">Due <small>(nothing ticked = today)</small></div>
+              <label class="cu-basis" title="Which date puts a task in the range: its due date, its start date, or both (start and due both inside the range)."><span>Dates by</span> <select data-cf-basis aria-label="Dates by"><option value="">due date</option><option value="start">start date</option><option value="both">start and due date</option></select></label>
+              <label title="Tasks due any day this week (Sunday through Saturday)."><input type="checkbox" data-cf="dueWeek" /> <span>This week</span></label>
+              <label title="Tasks due any day next week (next Sunday through Saturday)."><input type="checkbox" data-cf="dueNextWeek" /> <span>Next week</span></label>
+              <label title="Tasks due any day last week (Sunday through Saturday) - including the ones already completed."><input type="checkbox" data-cf="duePrevWeek" /> <span>Previous week</span></label>
+              <label title="Tasks due any day this month."><input type="checkbox" data-cf="dueThisMonth" /> <span>This month</span></label>
+              <label title="Tasks due any day next month."><input type="checkbox" data-cf="dueNextMonth" /> <span>Next month</span></label>
+              <label title="Tasks due any day last month - including the ones already completed."><input type="checkbox" data-cf="duePrevMonth" /> <span>Previous month</span></label>
               <label title="Pick one day (From only) or a date range (From and To)."><input type="checkbox" data-cf="dueCustom" /> <span>Custom date / range</span></label>
               <div class="cu-filter-dates" data-cf-dates hidden>
                 <input type="date" data-cf-from aria-label="From date" title="From (or the single day)" />
@@ -1253,6 +1272,12 @@
             <div class="cu-filter-group" id="optCuFilterPriorityGroup" hidden>
               <div class="cu-filter-h">Priority</div>
               <div id="optCuFilterPriorityList"></div>
+            </div>
+            <div class="cu-filter-sep"></div>
+            <div class="cu-filter-group">
+              <div class="cu-filter-h">Assigned to</div>
+              <label title="Only tasks where you are the one assignee - nobody else is on them."><input type="checkbox" data-cf="onlyMe" /> <span>Only me</span></label>
+              <label title="Only tasks that someone else is assigned to as well."><input type="checkbox" data-cf="sharedTasks" /> <span>Shared with others</span></label>
             </div>
             <div class="cu-filter-sep"></div>
             <div class="cu-filter-group">
@@ -1284,6 +1309,7 @@
 
     <div class="card cu-needs-config" id="dashWeekDaysCard" style="display:none;">
       <div class="dash-h"><h3>This week by day</h3><span class="hint">click a day to expand it</span><span class="spacer"></span>
+        <span class="opt-toggle sm" id="optWeekAssign" role="group" aria-label="Whose tasks"><button type="button" data-wa="all" title="Every task of yours">All</button><button type="button" data-wa="me" title="Only tasks you alone are assigned to">Only me</button><button type="button" data-wa="shared" title="Only tasks a teammate is assigned to as well">Shared</button></span>
         <button type="button" class="cu-collapse-btn" data-optcollapse="weekly" data-optcolltarget="optWeekColl" title="Show / hide the per-day breakdown">▸ Show</button>
       </div>
       <div class="opt-coll" id="optWeekColl">
@@ -1729,6 +1755,7 @@
       <label><input type="checkbox" id="tfAll" /> All workspace clients</label>
       <label title="The files' text is kept in your Google Drive's hidden app data, so a new computer or a reinstall gets them back. Screenshots stay on this computer."><input type="checkbox" id="tfDrive" /> Back up to Google Drive</label>
     </div>
+    <div class="tf-folders" id="tfFolders" hidden></div>
     <div class="hint" id="tfSummary" style="margin:0 0 6px;"></div>
     <div class="hint" id="tfMsg" hidden style="margin:0 0 8px;"></div>
     <div class="tf-list" id="tfList"><div class="hint" style="padding:14px;">Loading…</div></div>

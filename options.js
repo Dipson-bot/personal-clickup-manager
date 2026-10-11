@@ -2571,7 +2571,7 @@ function cuShowChartDay(ts, src) {
   cuChartSrc = src || "chart";
   if (!cuChartPrev) cuChartPrev = cuSnapshotFilter();
   const snap = cuSnapshotFilter();
-  for (const k of ["dueToday", "dueTomorrow", "dueWeek", "dueNextWeek", "deadlineCrossed"]) snap[k] = false;
+  for (const k of [...CU_DATE_KEYS, "deadlineCrossed"]) snap[k] = false;
   snap.dueCustom = true; snap.customFrom = ymd; snap.customTo = ymd;
   cuChartDay = ymd;
   document.querySelectorAll("#optWeekChart .wk-day").forEach((c) => c.classList.remove("sel"));
@@ -2708,6 +2708,172 @@ function renderWeekChartOpt(w, targetMs) {
 // aggregates (Mon→today + Mon→Friday) - the toggle is instant, no network.
 // ts -> open? for the per-day groups (unset = default: only today open).
 const optWeekDayOpen = new Map();
+// This week by day: drag a task to another day to move its due date there.
+// Only a plain task due that day moves - not the Extra Task, a configured task,
+// a finished one, or a multi-day task's share (that would move every day of it).
+let optWeekMsg = null;
+function cuWeekMovable(t, dayTs) {
+  if (!t || t.local || t.done || t.type === "cfg" || t.extended || t.isExtra || /^extra tasks?\b/i.test(String(t.name || ""))) return false;
+  const due = Number(t.dueDateMs) || 0;
+  return !!due && new Date(due).setHours(0, 0, 0, 0) === new Date(dayTs).setHours(0, 0, 0, 0) && !!(t.id || t.taskId);
+}
+// Ctrl / Shift + click picks several (from any day); dragging a picked one
+// moves all of them to the day it's dropped on, each keeping its time of day.
+const optWeekSel = new Set();
+const cuWeekId = (t) => String((t && (t.id || t.taskId)) || "");
+// The "N picked · ✕ Clear" bit of the card's hint line.
+function cuWeekSelBar(box) {
+  const n = box.querySelectorAll("[data-wk-move].wk-sel").length;
+  let bar = box.querySelector(".wk-selbar");
+  if (!n) { if (bar) bar.remove(); return; }
+  if (!bar) {
+    bar = document.createElement("span");
+    bar.className = "wk-selbar";
+    const hint = box.querySelector(".wk-hint");
+    if (hint) hint.appendChild(bar); else box.prepend(bar);
+  }
+  bar.innerHTML = " <b>" + n + " picked</b> - drag one of them to move all ";
+  const x = document.createElement("button");
+  x.type = "button"; x.className = "wk-selclear"; x.textContent = "\u2715 Clear"; x.title = "Unpick them (Esc)";
+  x.onclick = (e) => { e.stopPropagation(); cuWeekClearSel(box); };
+  bar.appendChild(x);
+}
+// A task row's box on screen: the rows lay their cells out in the list's grid
+// (the row itself has no box), so it's the cells' outline. null when hidden.
+function cuRowBox(r) {
+  let l = Infinity, t = Infinity, rt = -Infinity, b = -Infinity;
+  for (const el of [r, ...r.children]) { const x = el.getBoundingClientRect(); if (!x.width && !x.height) continue; l = Math.min(l, x.left); t = Math.min(t, x.top); rt = Math.max(rt, x.right); b = Math.max(b, x.bottom); }
+  return rt > l && b > t ? { left: l, top: t, right: rt, bottom: b } : null;
+}
+function cuWeekClearSel(box) {
+  optWeekSel.clear();
+  box.querySelectorAll(".wk-sel").forEach((x) => x.classList.remove("wk-sel"));
+  cuWeekSelBar(box);
+}
+function cuWireWeekDrag(box, cu) {
+  // Picked rows survive a redraw.
+  box.querySelectorAll("[data-wk-move]").forEach((r) => r.classList.toggle("wk-sel", optWeekSel.has(cuWeekId(r._cuTask))));
+  cuWeekSelBar(box);
+  if (box._wkDrag) return;
+  box._wkDrag = true;
+  // Esc unpicks; so does a plain click on an empty part of the card.
+  document.addEventListener("keydown", (e) => { if (e.key === "Escape" && optWeekSel.size) cuWeekClearSel(box); });
+  box.addEventListener("click", (e) => {
+    if (e.ctrlKey || e.metaKey || e.shiftKey || !optWeekSel.size) return;
+    if (!(e.target.closest && e.target.closest(".cu-task, button, a, input, select, .flt-tot"))) cuWeekClearSel(box);
+  });
+  // Box-select, like File Explorer: Ctrl + drag across rows, or drag from an
+  // empty spot in the list. Every task the box touches is picked (Ctrl adds).
+  let band = null;
+  box.addEventListener("mousedown", (e) => {
+    if (e.button !== 0 || !e.target.closest) return;
+    if (e.target.closest("button, input, select, textarea, .pcm-chtools")) return;
+    if (!(e.ctrlKey || e.metaKey) && e.target.closest("a")) return; // Ctrl + drag may start on a task's name
+    const onRow = e.target.closest(".cu-task");
+    const inList = e.target.closest(".cu-tasklist[data-wk-day]");
+    if (!(e.ctrlKey || e.metaKey) && (onRow || !inList)) return; // a plain press on a row is a drag
+    if (onRow) { onRow.draggable = false; setTimeout(() => { if (onRow.dataset.wkMove) onRow.draggable = true; }, 0); }
+    e.preventDefault();
+    const div = document.createElement("div");
+    div.className = "wk-band";
+    document.body.appendChild(div);
+    band = { x: e.clientX, y: e.clientY, div, add: e.ctrlKey || e.metaKey, base: new Set(optWeekSel), moved: false, row: onRow };
+    if (onRow) onRow.draggable = false;
+  });
+  document.addEventListener("mousemove", (e) => {
+    if (!band) return;
+    const x1 = Math.min(band.x, e.clientX), y1 = Math.min(band.y, e.clientY), x2 = Math.max(band.x, e.clientX), y2 = Math.max(band.y, e.clientY);
+    if (!band.moved && x2 - x1 < 4 && y2 - y1 < 4) return;
+    band.moved = true;
+    Object.assign(band.div.style, { left: x1 + "px", top: y1 + "px", width: (x2 - x1) + "px", height: (y2 - y1) + "px" });
+    box.querySelectorAll("[data-wk-move]").forEach((r) => {
+      const b = cuRowBox(r);
+      const hit = !!b && b.right > x1 && b.left < x2 && b.bottom > y1 && b.top < y2;
+      const id = cuWeekId(r._cuTask);
+      const on = hit || (band.add && band.base.has(id));
+      if (on) optWeekSel.add(id); else optWeekSel.delete(id);
+      r.classList.toggle("wk-sel", on);
+    });
+    cuWeekSelBar(box);
+  });
+  document.addEventListener("mouseup", () => {
+    if (!band) return;
+    const b = band; band = null;
+    b.div.remove();
+    if (b.row && b.row.dataset.wkMove) b.row.draggable = true;
+    // A Ctrl + click without moving is the single toggle below.
+    if (b.moved) { box._wkSkipClick = true; setTimeout(() => { box._wkSkipClick = false; }, 0); }
+  });
+  let drag = null;
+  const target = (e) => e.target && e.target.closest ? e.target.closest("[data-wk-day]") : null;
+  const clear = () => box.querySelectorAll(".wk-drop").forEach((x) => x.classList.remove("wk-drop"));
+  box.addEventListener("click", (e) => {
+    if (box._wkSkipClick) { e.preventDefault(); e.stopPropagation(); return; }
+    if (!(e.ctrlKey || e.metaKey || e.shiftKey)) return;
+    const row = e.target && e.target.closest ? e.target.closest("[data-wk-move]") : null;
+    if (!row || !row._cuTask || e.target.closest("button, input, select, textarea")) return;
+    e.preventDefault(); e.stopPropagation(); // not the link's new tab
+    const id = cuWeekId(row._cuTask);
+    if (optWeekSel.has(id)) optWeekSel.delete(id); else optWeekSel.add(id);
+    row.classList.toggle("wk-sel", optWeekSel.has(id));
+    cuWeekSelBar(box);
+  }, true);
+  box.addEventListener("dragstart", (e) => {
+    const row = e.target && e.target.closest ? e.target.closest("[data-wk-move]") : null;
+    if (!row || !row._cuTask) return;
+    const picked = optWeekSel.has(cuWeekId(row._cuTask)) ? [...box.querySelectorAll("[data-wk-move].wk-sel")] : [row];
+    if (!picked.includes(row)) { optWeekSel.clear(); box.querySelectorAll(".wk-sel").forEach((x) => x.classList.remove("wk-sel")); }
+    drag = { rows: picked.filter((r) => r._cuTask), from: Number(row.dataset.wkFrom) };
+    e.dataTransfer.effectAllowed = "move";
+    try { e.dataTransfer.setData("text/plain", drag.rows.map((r) => cuWeekId(r._cuTask)).join(",")); } catch (x) {}
+    drag.rows.forEach((r) => r.classList.add("wk-dragging"));
+  });
+  box.addEventListener("dragend", () => { if (drag) drag.rows.forEach((r) => r.classList.remove("wk-dragging")); drag = null; clear(); });
+  box.addEventListener("dragover", (e) => {
+    const tg = drag && target(e);
+    if (!tg || (drag.rows.length === 1 && Number(tg.dataset.wkDay) === drag.from)) return;
+    e.preventDefault();
+    e.dataTransfer.dropEffect = "move";
+    clear();
+    box.querySelectorAll('[data-wk-day="' + tg.dataset.wkDay + '"]').forEach((x) => x.classList.add("wk-drop"));
+  });
+  box.addEventListener("drop", async (e) => {
+    const tg = drag && target(e);
+    if (!tg) return;
+    e.preventDefault();
+    const day = Number(tg.dataset.wkDay);
+    const rows = drag.rows.filter((r) => Number(r.dataset.wkFrom) !== day);
+    clear();
+    if (!rows.length) return;
+    const dayName = new Date(day).toLocaleDateString(undefined, { weekday: "short", month: "short", day: "numeric" });
+    // Show them on the new day at once; the week rebuilds from ClickUp right after.
+    const list = box.querySelector('.cu-tasklist[data-wk-day="' + day + '"]');
+    for (const r of rows) { if (list) list.insertBefore(r, list.querySelector(".wk-dayfoot") || null); r.classList.add("wk-moving"); r.draggable = false; }
+    const ok = [], bad = [];
+    let startToo = false;
+    for (const r of rows) { // one at a time: gentle on ClickUp
+      const t = r._cuTask;
+      // Same time of day on the new date; a start date that would come after it moves to that day too.
+      const old = new Date(Number(t.dueDateMs));
+      const nd = new Date(day); nd.setHours(old.getHours(), old.getMinutes(), 0, 0);
+      let startMs = null;
+      if (Number(t.startDateMs) > nd.getTime()) { const os = new Date(Number(t.startDateMs)); const ns = new Date(day); ns.setHours(os.getHours(), os.getMinutes(), 0, 0); startMs = Math.min(ns.getTime(), nd.getTime()); startToo = true; }
+      const res = await send({ type: "CLICKUP_SET_DUE", taskId: cuWeekId(t), dueMs: nd.getTime(), startMs }).catch(() => null);
+      r.classList.remove("wk-moving");
+      if (res && res.ok) ok.push(t.name || "task"); else bad.push((t.name || "task") + " (" + ((res && (res.error || res.reason)) || "no reply") + ")");
+      optWeekSel.delete(cuWeekId(t));
+    }
+    const what = ok.length === 1 ? "\u201c" + ok[0] + "\u201d" : ok.length + " tasks";
+    optWeekMsg = { at: Date.now(), err: !ok.length,
+      text: (ok.length ? "Moved " + what + " to " + dayName + " \u2713 (due date changed in ClickUp" + (startToo ? ", start date too where needed" : "") + ") - the week updates in a moment." : "") +
+        (bad.length ? (ok.length ? " " : "") + "Couldn't move: " + bad.join(", ") + "." : "") };
+    renderOptionsWeekly(optClickup || cu);
+  });
+}
+// This week by day: its own All / Only me / Shared switch (remembered), apart
+// from the Tasks card's filter.
+let optWeekAssign = "all";
+try { chrome.storage.local.get("optWeekAssign").then((g) => { if (g && /^(all|me|shared)$/.test(g.optWeekAssign)) { optWeekAssign = g.optWeekAssign; if (optClickup) renderOptionsWeekly(optClickup); } }).catch(() => {}); } catch (e) {}
 function renderOptionsWeekly(cu) {
   if (cuEstEditingOpt) { cuRenderPendingOpt = true; return; }
   cu = cu || {};
@@ -2806,6 +2972,10 @@ function renderOptionsWeekly(cu) {
 
   // Per-weekday task list under the weekly numbers (options-only; the popup
   // keeps just the total + tracked). Reuses the cached perDay breakdown.
+  document.querySelectorAll("#optWeekAssign [data-wa]").forEach((b) => {
+    b.className = b.dataset.wa === optWeekAssign ? "on" : "";
+    b.onclick = () => { optWeekAssign = b.dataset.wa; chrome.storage.local.set({ optWeekAssign }).catch(() => {}); renderOptionsWeekly(cu); };
+  });
   const listBox = $("optWeekList");
   const days = Array.isArray(w.perDay) ? w.perDay : [];
   const showDays = days.filter((d) => d.ts <= agg.toTs && (cuIsWorkday(d.ts) || Number(d.estimateMs) > 0 || Number(d.spentMs) > 0));
@@ -2815,19 +2985,48 @@ function renderOptionsWeekly(cu) {
       listBox.style.display = "none";
     } else {
       listBox.style.display = "block";
+      cuWireWeekDrag(listBox, cu);
+      if (optWeekMsg && Date.now() - optWeekMsg.at < 20000) { const m = document.createElement("div"); m.className = "hint wk-msg"; m.style.cssText = "margin:0 0 8px;color:" + (optWeekMsg.err ? "var(--red)" : "var(--green, #16a34a)"); m.textContent = optWeekMsg.text; listBox.appendChild(m); }
+      if (!listBox.querySelector(".wk-hint")) { const hi = document.createElement("div"); hi.className = "hint wk-hint"; hi.style.cssText = "margin:0 0 6px;font-size:11.5px"; hi.textContent = "Drag a task onto another day to move its due date there · pick several with Ctrl+click or Ctrl+drag a box over them (Esc clears), then drag one of them."; listBox.appendChild(hi); }
+      // Whose tasks (the card's own switch) and the card's total line on top.
+      const waF = { onlyMe: optWeekAssign === "me", sharedTasks: optWeekAssign === "shared" };
+      const byAssign = optWeekAssign !== "all";
+      const waLabel = optWeekAssign === "me" ? "only me" : "shared";
+      let wkEst = 0, wkTrk = 0;
+      const wkIds = new Set();
+      const wkTot = document.createElement("div");
+      wkTot.className = "flt-tot wk-total";
+      wkTot.style.margin = "0 0 10px";
+      listBox.appendChild(wkTot);
       for (let di = 0; di < showDays.length; di++) {
         const d = showDays[di];
         const head = document.createElement("div");
         head.className = "flt-tot";
         if (di > 0) head.style.marginTop = "14px"; // small gap to separate days
         const dateTxt = new Date(d.ts).toLocaleDateString(undefined, { month: "short", day: "numeric" });
-        head.innerHTML = "<b>" + weekdayNameOpt(new Date(d.ts).getDay()) + " · " + dateTxt + "</b>" +
-          " - est <b>" + fmtDurOpt(d.estimateMs) + "</b> · tracked <b>" + fmtDurOpt(d.spentMs) + "</b>";
+        // The card's All / Only me / Shared switch narrows each day, and the
+        // day's est / tracked are then those of the tasks shown.
+        const rows = dedupeExtraRows(Array.isArray(d.tasks) ? d.tasks : []).filter((t) => cuAssignPass(waF, t));
+        const trackedRows = (Array.isArray(d.trackedTasks) ? d.trackedTasks : []).filter((t) => cuAssignPass(waF, t));
+        const dEst = byAssign ? rows.reduce((a, t) => a + (Number(t.estimateMs) || 0), 0) : Number(d.estimateMs) || 0;
+        const dTrk = byAssign ? rows.concat(trackedRows).reduce((a, t) => a + (Number(t.spentMs) || 0), 0) : Number(d.spentMs) || 0;
+        wkEst += dEst; wkTrk += dTrk; rows.forEach((t) => wkIds.add(String(t.id || t.name)));
+        // One line: the text, then the day's Plan with AI on the right.
+        head.innerHTML = '<span class="wk-dtxt">' + "<b>" + weekdayNameOpt(new Date(d.ts).getDay()) + " · " + dateTxt + "</b>" +
+          " - est <b>" + fmtDurOpt(dEst) + "</b> · tracked <b>" + fmtDurOpt(dTrk) + "</b>" +
+          (byAssign ? ' <span class="hint">· ' + waLabel + "</span>" : "") + "</span>";
+        // 🧭 Plan with AI for this day's tasks (across clients).
+        if (rows.length && window.PcmTaskPanel && window.PcmTaskPanel.clientTools) {
+          const tools = window.PcmTaskPanel.clientTools(weekdayNameOpt(new Date(d.ts).getDay()) + " " + dateTxt, rows.filter((t) => !t.local), { day: true });
+          tools.style.marginLeft = "auto";
+          head.classList.add("wk-dhead");
+          head.appendChild(tools);
+        }
+        head.dataset.wkDay = String(d.ts);
         listBox.appendChild(head);
         const tlist = document.createElement("div");
         tlist.className = "cu-tasklist";
-        const rows = dedupeExtraRows(Array.isArray(d.tasks) ? d.tasks : []);
-        const trackedRows = Array.isArray(d.trackedTasks) ? d.trackedTasks : [];
+        tlist.dataset.wkDay = String(d.ts);
         if (!rows.length && !trackedRows.length) {
           const e = document.createElement("div");
           e.className = "empty";
@@ -2837,6 +3036,8 @@ function renderOptionsWeekly(cu) {
           for (const t of sortByPriority(rows)) {
             const row = document.createElement("div");
             row.className = "cu-task";
+            // Drag it onto another day: its due date moves there (same time of day).
+            if (cuWeekMovable(t, d.ts)) { row.draggable = true; row.dataset.wkMove = "1"; row.dataset.wkFrom = String(d.ts); }
             const nm = makeLinkOpt(t.url, t.name || "(untitled task)");
             appendDoneTickOpt(nm, t);
             appendNameCellOpt(row, nm, t);
@@ -2889,6 +3090,14 @@ function renderOptionsWeekly(cu) {
             }
           }
         }
+        // The day's total under its tasks.
+        if (rows.length || trackedRows.length) {
+          const foot = document.createElement("div");
+          foot.className = "hint wk-dayfoot";
+          foot.style.cssText = "text-align:right;padding:4px 8px 2px;font-size:11.5px";
+          foot.innerHTML = "Total · " + rows.length + (rows.length === 1 ? " task" : " tasks") + " · est <b>" + fmtDurOpt(dEst) + "</b> · tracked <b>" + fmtDurOpt(dTrk) + "</b>";
+          tlist.appendChild(foot);
+        }
         listBox.appendChild(tlist);
         makeListResizable(tlist, "weekday");
         {
@@ -2907,6 +3116,10 @@ function renderOptionsWeekly(cu) {
           };
         }
       }
+      wkTot.innerHTML = "<b>" + (cu.weeklyTo === "friday" ? "This week" : "This week so far") + "</b> - est <b>" + fmtDurOpt(wkEst) + "</b> · tracked <b>" + fmtDurOpt(wkTrk) + "</b> · " + wkIds.size + (wkIds.size === 1 ? " task" : " tasks") + (byAssign ? ' <span class="hint">· ' + waLabel + "</span>" : "");
+      // Picked rows survive the redraw; the "N picked" line follows.
+      listBox.querySelectorAll("[data-wk-move]").forEach((r) => r.classList.toggle("wk-sel", optWeekSel.has(cuWeekId(r._cuTask))));
+      cuWeekSelBar(listBox);
     }
   }
 }
@@ -3845,8 +4058,8 @@ function initDeptCreator() {
 // Priority sections narrow the visible task LIST only; they never change the
 // headline totals or the toolbar badge.
 // "Due today" is ticked by default (a saved choice always wins).
-let cuFilter = { dueToday: true, dueTomorrow: false, dueWeek: false, dueNextWeek: false, dueCustom: false, missingDue: false, customFrom: "", customTo: "", missingEst: false, hasTracked: false, deadlineCrossed: false, waitingOthers: false, manualOrder: false, statuses: [], priorities: [], clients: [] };
-const CU_FILTER_KEYS = ["dueToday", "dueTomorrow", "dueWeek", "dueNextWeek", "dueCustom", "missingEst", "missingDue", "hasTracked", "deadlineCrossed", "waitingOthers", "groupSubtasks", "manualOrder"];
+let cuFilter = { dueWeek: false, dueNextWeek: false, duePrevWeek: false, dueThisMonth: false, dueNextMonth: false, duePrevMonth: false, dueCustom: false, dateBasis: "", missingDue: false, customFrom: "", customTo: "", missingEst: false, hasTracked: false, deadlineCrossed: false, waitingOthers: false, onlyMe: false, sharedTasks: false, manualOrder: false, statuses: [], priorities: [], clients: [] };
+const CU_FILTER_KEYS = ["dueWeek", "dueNextWeek", "duePrevWeek", "dueThisMonth", "dueNextMonth", "duePrevMonth", "dueCustom", "missingEst", "missingDue", "hasTracked", "deadlineCrossed", "waitingOthers", "onlyMe", "sharedTasks", "groupSubtasks", "manualOrder"];
 const CU_PRIORITY_ORDER = ["urgent", "high", "normal", "low", "none"];
 // The section under the task list: time you tracked in the period on tasks
 // that aren't in the list (due another day, no due date, or someone else's).
@@ -3912,14 +4125,15 @@ function cuViewRange(st, f) {
   }
   if (f.dueNextWeek) return wk(st.nextWeek);
   if (f.dueWeek) return wk(st.thisWeek);
-  if (f.dueTomorrow) return day(Date.now() + 86400000);
-  if (f.dueToday) return day(Date.now());
-  return null;
+  const pr = cuCustomRange(f);
+  if (pr) return { fromTs: pr.fromTs, toTs: pr.toTs };
+  return day(Date.now());
 }
 // The target for the dates the list shows: the daily target times the working
 // days (Mon-Fri) in the filter's range - "Due this week" = 5 x 7h = 35h. One day
 // (today, tomorrow) or no date range keeps the daily target.
 function cuScopeTargetMs(dailyMs, st, f) {
+  if (cuIsMonth(f)) return 0; // a month: the total for the tasks listed, no target
   const r = cuViewRange(st, f);
   if (!dailyMs || !r) return dailyMs;
   let days = 0;
@@ -4055,7 +4269,7 @@ function resolveCuFilterView(st, f) {
   if (planV) return planV;
   // Deadline crossed looks at ALL dates, so it takes over the date scope.
   if (f.deadlineCrossed) return cuOverdueView();
-  if (f.dueCustom) { const cv = cuCustomView(f, st); if (cv) return cv; }
+  if (cuCustomRange(f)) { const cv = cuCustomView(f, st); if (cv) return cv; }
   const wk = st.weekly || null;
   if (f.dueNextWeek && st.nextWeek) {
     const nw = st.nextWeek;
@@ -4067,18 +4281,27 @@ function resolveCuFilterView(st, f) {
   }
   // Tomorrow is its own one-day query (see cuTomorrowView) so multi-day tasks
   // contribute tomorrow's share, the same way the Today card works.
-  if (f.dueTomorrow) return cuTomorrowView(st);
-  if (f.dueToday) {
-    return { estimateMs: st.estimateMs, spentMs: st.spentMs, tasks: Array.isArray(st.tasks) ? st.tasks : [], deadlineTasks: Array.isArray(st.deadlineTasks) ? st.deadlineTasks : [], trackedTasks: Array.isArray(st.trackedTasks) ? st.trackedTasks : [], scope: "today" };
-  }
-  const tf = st.todayFilter || st;
-  return { estimateMs: tf.estimateMs, spentMs: tf.spentMs, tasks: Array.isArray(tf.tasks) ? tf.tasks : [], deadlineTasks: Array.isArray(tf.deadlineTasks) ? tf.deadlineTasks : [], trackedTasks: Array.isArray(tf.trackedTasks) ? tf.trackedTasks : [], scope: "extended" };
+  // Nothing ticked under Due = today (the same tasks and numbers as the Today card).
+  return { estimateMs: st.estimateMs, spentMs: st.spentMs, tasks: Array.isArray(st.tasks) ? st.tasks : [], deadlineTasks: Array.isArray(st.deadlineTasks) ? st.deadlineTasks : [], trackedTasks: Array.isArray(st.trackedTasks) ? st.trackedTasks : [], scope: "today" };
 }
 
 // List-only refine predicate. "Deadline crossed" = not done AND due date on a
 // day BEFORE today (day-floor compare, matching the Filter-tasks card's
 // isOverdue) so tasks due today never count. Status/Priority are OR within a
 // group, AND across groups. `t.priority` is a lower-case name (""→"none").
+// Filter › Assigned to: "Only me" = I'm the task's one assignee; "Shared with
+// others" = someone else is on it too (or only someone else). Both or neither
+// ticked = everything. A row without its assignees can't be told: kept.
+function cuAssignPass(f, t) {
+  if (!f.onlyMe === !f.sharedTasks) return true;
+  const list = t && Array.isArray(t.assignees) ? t.assignees : null;
+  if (!list) return true;
+  const me = String(optClickup && optClickup.user && optClickup.user.id || "");
+  const ids = list.map((a) => String(a && typeof a === "object" ? a.id : a));
+  const others = me ? ids.filter((x) => x !== me).length : Math.max(0, ids.length - 1);
+  const solo = (me ? ids.includes(me) : ids.length > 0) && others === 0;
+  return f.onlyMe ? solo : !solo;
+}
 function cuRefinePredicate(f) {
   const todayStart = new Date().setHours(0, 0, 0, 0);
   const statuses = Array.isArray(f.statuses) ? f.statuses : [];
@@ -4087,6 +4310,7 @@ function cuRefinePredicate(f) {
     if (f.missingEst && Number(t.estimateMs)) return false;
     if (f.missingDue && Number(t.dueDateMs)) return false;
     if (f.waitingOthers && !cuWaitFor(t)) return false;
+    if (!cuAssignPass(f, t)) return false;
     if (f.hasTracked && !(Number(t.spentMs) > 0)) return false;
     if (f.deadlineCrossed) {
       if (t.done) return false;
@@ -4134,18 +4358,46 @@ function cuParseDay(s) {
   const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(s || ""));
   return m ? new Date(+m[1], +m[2] - 1, +m[3]).getTime() : 0;
 }
+// Due › Previous week / This month / Next month / Previous month: fixed ranges,
+// fetched only when ticked (like Custom). Weeks run Sunday to Saturday, as This
+// week and Next week do. "Dates by" (due / start / both) applies to every range.
+const CU_PRESET_KEYS = ["duePrevWeek", "dueThisMonth", "dueNextMonth", "duePrevMonth"];
+function cuPresetRange(f) {
+  const now = new Date(), y = now.getFullYear(), m = now.getMonth(), d = now.getDate();
+  const span = (a, b, label) => ({ fromTs: a.getTime(), toTs: b.getTime(), label });
+  const sun = (off) => new Date(y, m, d - now.getDay() + off);
+  if (f.duePrevWeek) return span(sun(-7), new Date(y, m, d - now.getDay() - 1, 23, 59, 59, 999), "previous week");
+  const k = f.dueThisMonth ? 0 : f.dueNextMonth ? 1 : f.duePrevMonth ? -1 : null;
+  if (k === null) {
+    // This week / Next week by start date (or both): the same Sunday-Saturday.
+    if (f.dateBasis !== "start" && f.dateBasis !== "both") return null;
+    if (f.dueNextWeek) return span(sun(7), new Date(y, m, d - now.getDay() + 13, 23, 59, 59, 999), "next week");
+    if (f.dueWeek) return span(sun(0), new Date(y, m, d - now.getDay() + 6, 23, 59, 59, 999), "this week");
+    return null;
+  }
+  const a = new Date(y, m + k, 1), b = new Date(y, m + k + 1, 0, 23, 59, 59, 999);
+  return span(a, b, (k === 0 ? "this month" : k === 1 ? "next month" : "previous month") + " (" + a.toLocaleDateString(undefined, { month: "long" }) + ")");
+}
+const cuBasis = (f) => (f && (f.dateBasis === "start" || f.dateBasis === "both") ? f.dateBasis : "due");
+const cuIsMonth = (f) => !!(f && (f.dueThisMonth || f.dueNextMonth || f.duePrevMonth));
 function cuCustomRange(f) {
-  let a = cuParseDay(f.customFrom);
-  if (!a) return null;
-  let b = cuParseDay(f.customTo) || a;
-  if (b < a) { const t = a; a = b; b = t; }
-  const end = new Date(b); end.setHours(23, 59, 59, 999);
-  return { fromTs: a, toTs: end.getTime() };
+  const basis = cuBasis(f);
+  if (f.dueCustom) {
+    let a = cuParseDay(f.customFrom);
+    if (!a) return null;
+    let b = cuParseDay(f.customTo) || a;
+    if (b < a) { const t = a; a = b; b = t; }
+    const end = new Date(b); end.setHours(23, 59, 59, 999);
+    return { fromTs: a, toTs: end.getTime(), basis };
+  }
+  const p = cuPresetRange(f);
+  return p ? { ...p, basis } : null;
 }
 function cuCustomLabel(r) {
   const fmt = (t) => new Date(t).toLocaleDateString(undefined, { month: "short", day: "numeric" });
   const same = new Date(r.fromTs).toDateString() === new Date(r.toTs).toDateString();
-  return "due " + (same ? fmt(r.fromTs) : fmt(r.fromTs) + " – " + fmt(r.toTs));
+  const word = r.basis === "start" ? "starting" : r.basis === "both" ? "starting and due" : "due";
+  return word + " " + (r.label || (same ? fmt(r.fromTs) : fmt(r.fromTs) + " – " + fmt(r.toTs)));
 }
 let cuCustomCache = { key: "", status: "", data: null, at: 0 }; // status: loading | ready | error
 function cuOverdueInvalidate() { if (cuOverdueCache.status !== "loading") cuOverdueCache.at = 0; }
@@ -4225,9 +4477,16 @@ function cuCustomView(f, state) {
   // Built once by the background for the saved filter (every page + the badge
   // read the same bundle, so they fill in together).
   const sb = state && state.custom;
-  if (sb && sb.fromTs === r.fromTs && sb.toTs === r.toTs) return { ...sb, scope: "custom", label: cuCustomLabel(r) };
+  if (sb && sb.fromTs === r.fromTs && sb.toTs === r.toTs && (sb.basis || "due") === r.basis) {
+    // Shown from what was saved: say how old it is (it's refreshed behind it).
+    const mins = sb.at ? Math.round((Date.now() - sb.at) / 60000) : 0;
+    return { ...sb, scope: "custom", label: cuCustomLabel(r) + (mins >= 3 ? " \u00b7 updated " + (mins < 60 ? mins + "m" : Math.round(mins / 60) + "h") + " ago" : "") };
+  }
   const key = r.fromTs + "-" + r.toTs;
   const label = cuCustomLabel(r);
+  // By start date (or both): only the background builds it (it needs the open
+  // tasks list) - wait for it.
+  if (r.basis !== "due") return { estimateMs: 0, spentMs: 0, tasks: [], deadlineTasks: [], trackedTasks: [], scope: "custom", label: label + " (loading…)", loading: true };
   const c = cuCustomCache;
   const stale = c.key === key && c.status === "ready" && Date.now() - c.at > 5 * 60000;
   if (c.key !== key || stale) cuFetchCustom(r, key); // refresh in the background
@@ -4841,7 +5100,7 @@ function renderClickupPreviewBody(st) {
   let viewDeadline = Array.isArray(view.deadlineTasks) ? view.deadlineTasks : [];
   let viewTasks = Array.isArray(view.tasks) ? view.tasks : [];
   let viewTracked = Array.isArray(view.trackedTasks) ? view.trackedTasks : [];
-  const refineOn = cuFilter.missingEst || cuFilter.missingDue || cuFilter.waitingOthers || cuFilter.deadlineCrossed || cuFilter.hasTracked
+  const refineOn = cuFilter.missingEst || cuFilter.missingDue || cuFilter.waitingOthers || cuFilter.deadlineCrossed || cuFilter.hasTracked || cuFilter.onlyMe || cuFilter.sharedTasks
     || (cuFilter.statuses && cuFilter.statuses.length) || (cuFilter.priorities && cuFilter.priorities.length);
   if (refineOn && view.scope !== "plan") { // an applied plan is an explicit list: shown whole
     const keep = cuRefinePredicate(cuFilter);
@@ -4854,6 +5113,7 @@ function renderClickupPreviewBody(st) {
       if (cuFilter.missingEst && Number(d.dayEstimateMs)) return false;
       if (cuFilter.missingDue && Number(d.dueDateMs)) return false;
       if (cuFilter.waitingOthers && !cuWaitFor(d)) return false;
+      if (!cuAssignPass(cuFilter, d)) return false;
       if (cuFilter.hasTracked && !(Number(d.spentMs) > 0)) return false;
       if (cuFilter.deadlineCrossed) {
         if (d.done) return false;
@@ -5027,6 +5287,8 @@ function renderClickupPreviewBody(st) {
     if (cuFilter.missingEst) tags.push("missing estimate");
     if (cuFilter.missingDue) tags.push("missing due date");
     if (cuFilter.waitingOthers) tags.push("waiting on others");
+    if (cuFilter.onlyMe && !cuFilter.sharedTasks) tags.push("only me");
+    if (cuFilter.sharedTasks && !cuFilter.onlyMe) tags.push("shared with others");
     if (cuFilter.hasTracked) tags.push("tracked");
     if (cuFilter.deadlineCrossed) tags.push("deadline crossed");
     if (cuFilter.statuses && cuFilter.statuses.length) tags.push("status: " + cuFilter.statuses.join("/"));
@@ -5284,6 +5546,7 @@ function renderClickupPreviewBody(st) {
       subSpan.className = "cu-chsub";
       subSpan.textContent = "est " + fmtDurOpt(est) + (trk > 0 ? " \u00b7 tracked " + fmtDurOpt(trk) : "");
       head.appendChild(subSpan);
+      if (window.PcmTaskPanel && window.PcmTaskPanel.clientTools) head.appendChild(window.PcmTaskPanel.clientTools(c, t1.concat(d1, k1)));
       // Each client in its own card, so the groups are easy to tell apart.
       const card = document.createElement("div");
       card.className = "cu-clientcard";
@@ -5944,7 +6207,7 @@ function cuBuildFacetList(box, attr, values, checked, labelFn) {
 // Single mode is PER GROUP (Due / Client / Status / Priority / Refine): ticking a
 // box unticks the others in its own group, so e.g. "Due today" + one client still
 // combine. Shared with the other page through the "cuFilterMode" storage key.
-const CU_DATE_KEYS = ["dueToday", "dueTomorrow", "dueWeek", "dueNextWeek", "dueCustom"];
+const CU_DATE_KEYS = ["dueWeek", "dueNextWeek", "duePrevWeek", "dueThisMonth", "dueNextMonth", "duePrevMonth", "dueCustom"];
 const CU_REFINE_KEYS = ["missingEst", "missingDue", "hasTracked", "deadlineCrossed", "waitingOthers"];
 let cuFilterSingle = false;
 // Before a box is ticked in single mode, clear the rest of its group.
@@ -5980,6 +6243,7 @@ function cuClearAllFilters() {
   cuFilter.clients = [];
   cuFilter.customFrom = "";
   cuFilter.customTo = "";
+  cuFilter.dateBasis = "";
   chrome.storage.local.set({ cuFilter }).catch(() => {});
   optRenderCuFilterMenu();
   optCuFilterBtnLabel();
@@ -5987,7 +6251,7 @@ function cuClearAllFilters() {
 }
 // Your own starting point: "Save as my default" remembers the ticked filters
 // and the selection mode; a fresh install (or "Use my default") applies them.
-const CU_FILTER_EXTRAS = ["statuses", "priorities", "clients", "customFrom", "customTo"];
+const CU_FILTER_EXTRAS = ["statuses", "priorities", "clients", "customFrom", "customTo", "dateBasis"];
 function cuSnapshotFilter() {
   const out = { mode: cuFilterSingle ? "single" : "multi" };
   for (const k of CU_FILTER_KEYS) out[k] = !!cuFilter[k];
@@ -6043,6 +6307,7 @@ function optRenderCuFilterMenu() {
     if (fromEl && document.activeElement !== fromEl) fromEl.value = cuFilter.customFrom || "";
     if (toEl && document.activeElement !== toEl) toEl.value = cuFilter.customTo || "";
   });
+  menu.querySelectorAll("[data-cf-basis]").forEach((sel) => { if (document.activeElement !== sel) sel.value = cuFilter.dateBasis || ""; });
   const facets = cuAvailableFacets(st);
   const statuses = Array.isArray(cuFilter.statuses) ? cuFilter.statuses : [];
   const priorities = Array.isArray(cuFilter.priorities) ? cuFilter.priorities : [];
@@ -6910,6 +7175,7 @@ function insOpenDrill(drill, client) {
       cuFilter.clients = Array.isArray(got.cuFilter.clients) ? got.cuFilter.clients.slice() : [];
       cuFilter.customFrom = typeof got.cuFilter.customFrom === "string" ? got.cuFilter.customFrom : "";
       cuFilter.customTo = typeof got.cuFilter.customTo === "string" ? got.cuFilter.customTo : "";
+      cuFilter.dateBasis = typeof got.cuFilter.dateBasis === "string" ? got.cuFilter.dateBasis : "";
     } else if (got.cuDueTodayOnly === true) {
       cuFilter.dueToday = true; // migrate the legacy single checkbox
       chrome.storage.local.set({ cuFilter }).catch(() => {});
@@ -6962,6 +7228,12 @@ function insOpenDrill(drill, client) {
   // Delegated so the dynamically-rebuilt Status/Priority boxes are handled too.
   menu.addEventListener("change", (e) => {
     const el = e.target;
+    if (el && el.hasAttribute && el.hasAttribute("data-cf-basis")) {
+      cuFilter.dateBasis = el.value || "";
+      chrome.storage.local.set({ cuFilter }).catch(() => {});
+      optRenderCuFilterMenu(); optCuFilterBtnLabel(); optRepaintCuPreview();
+      return;
+    }
     if (!el || el.tagName !== "INPUT") return;
     if (el.hasAttribute("data-cf-from") || el.hasAttribute("data-cf-to")) {
       cuFilter[el.hasAttribute("data-cf-from") ? "customFrom" : "customTo"] = el.value || "";
@@ -6969,6 +7241,7 @@ function insOpenDrill(drill, client) {
       if (cuFilter.customFrom && !cuFilter.dueCustom) {
         const cb = menu.querySelector('input[data-cf="dueCustom"]');
         if (cb) { cb.checked = true; cuSingleClearGroup(cb); }
+        CU_DATE_KEYS.forEach((x) => { cuFilter[x] = false; });
         cuFilter.dueCustom = true;
       }
       chrome.storage.local.set({ cuFilter }).catch(() => {});
@@ -6978,6 +7251,10 @@ function insOpenDrill(drill, client) {
       return;
     }
     cuSingleClearGroup(el); // single mode: untick the rest of this group first
+    // Only me / Shared with others: one or the other (neither = all).
+    if (el.checked && /^(onlyMe|sharedTasks)$/.test(el.getAttribute("data-cf") || "")) cuFilter[el.getAttribute("data-cf") === "onlyMe" ? "sharedTasks" : "onlyMe"] = false;
+    // One Due choice at a time (nothing ticked = today).
+    if (el.checked && CU_DATE_KEYS.includes(el.getAttribute("data-cf") || "")) CU_DATE_KEYS.forEach((x) => { if (x !== el.getAttribute("data-cf")) cuFilter[x] = false; });
     if (el.hasAttribute("data-cf")) cuFilter[el.getAttribute("data-cf")] = el.checked;
     else if (el.hasAttribute("data-cf-status")) cuToggleArrayVal(cuFilter, "statuses", el.getAttribute("data-cf-status"), el.checked);
     else if (el.hasAttribute("data-cf-priority")) cuToggleArrayVal(cuFilter, "priorities", el.getAttribute("data-cf-priority"), el.checked);
@@ -7090,7 +7367,7 @@ chrome.storage.onChanged.addListener((changes, area) => {
     if (!cuArrEq(cuFilter.statuses, nvS)) { cuFilter.statuses = nvS.slice(); diff = true; }
     if (!cuArrEq(cuFilter.priorities, nvP)) { cuFilter.priorities = nvP.slice(); diff = true; }
     if (!cuArrEq(cuFilter.clients, nvC)) { cuFilter.clients = nvC.slice(); diff = true; }
-    for (const k of ["customFrom", "customTo"]) { const v = typeof nv[k] === "string" ? nv[k] : ""; if ((cuFilter[k] || "") !== v) { cuFilter[k] = v; diff = true; } }
+    for (const k of ["customFrom", "customTo", "dateBasis"]) { const v = typeof nv[k] === "string" ? nv[k] : ""; if ((cuFilter[k] || "") !== v) { cuFilter[k] = v; diff = true; } }
     if (diff) { optRenderCuFilterMenu(); optCuFilterBtnLabel(); optRepaintCuPreview(); }
   }
   // A drag in the popup / side panel (or a Drive restore) changed the custom
@@ -8777,7 +9054,7 @@ if ($("admCalCard")) {
 // Where the timer shows (Floating window / Taskbar / Both / Neither) is picked once
 // and kept; the Dashboard card invites people to try the taskbar until they pick.
 const DESK_REL = "https://github.com/Dipson-bot/personal-clickup-manager/releases";
-const DESK_TAG = "desktop-v0.3.2";
+const DESK_TAG = "desktop-v0.3.6";
 let deskOs = "";
 async function deskPlatform() {
   if (deskOs) return deskOs;
