@@ -474,23 +474,35 @@ ipcMain.handle("setup", async (e, token) => {
 });
 ipcMain.handle("expand", (e, on) => { if (on) peek(false); setExpanded(!!on); return expanded; });
 // The hover card over the strip: the window grows up (or down, at the top of the
-// screen) by PEEK_H while the pointer is on it, then goes back exactly.
-const PEEK_H = 92;
+// screen) by the card's own height while the pointer is on it, then goes back
+// exactly. The window draws the new layout first ("plan"), so growing or
+// shrinking never shows the strip in the wrong place for a frame.
+const PEEK_H = 92; // when the window doesn't say how tall its card is
+const peekH = (need) => Math.max(56, Math.min(260, Math.round(Number(need) || PEEK_H)));
 // peekOn = the window is grown right now; peekBase = the strip's own place,
 // kept a moment after shrinking so a "moved" from the resize isn't remembered.
 // (Before, pointing back within that moment found peekBase still set, answered
 // "open" without growing the window, and the card was drawn squashed.)
 let peekBase = null, peekDir = "up", peekOn = false, peekClear = 0;
-function peek(on) {
+function peek(on, need) {
   if (!win || win.isDestroyed()) return null;
+  if (on === "plan") {
+    // Which way it will open, without growing yet.
+    if (expanded) return null;
+    const b = peekOn && peekBase ? peekBase : win.getBounds(), disp = screen.getDisplayMatching(b);
+    return { dir: b.y - peekH(need) >= disp.bounds.y ? "up" : "down", stripH: b.height };
+  }
   if (on) {
     if (expanded) return null;
-    if (peekOn && peekBase) return { dir: peekDir, stripH: peekBase.height };
+    const H = peekH(need);
     clearTimeout(peekClear);
-    const b = peekBase || win.getBounds(), disp = screen.getDisplayMatching(b);
-    peekDir = b.y - PEEK_H >= disp.bounds.y ? "up" : "down";
+    const b = peekOn && peekBase ? peekBase : (peekBase || win.getBounds()), disp = screen.getDisplayMatching(b);
+    if (!peekOn) peekDir = b.y - H >= disp.bounds.y ? "up" : "down";
     peekBase = b; peekOn = true;
-    win.setBounds({ x: b.x, y: peekDir === "up" ? b.y - PEEK_H : b.y, width: b.width, height: b.height + PEEK_H });
+    // Also when it's already open and its content got taller or shorter.
+    const want = { x: b.x, y: peekDir === "up" ? b.y - H : b.y, width: b.width, height: b.height + H };
+    const cur = win.getBounds();
+    if (cur.x !== want.x || cur.y !== want.y || cur.width !== want.width || cur.height !== want.height) win.setBounds(want);
     return { dir: peekDir, stripH: b.height };
   }
   if (!peekOn || !peekBase) return null;
@@ -500,12 +512,22 @@ function peek(on) {
   peekClear = setTimeout(() => { if (!peekOn) peekBase = null; }, 250);
   return null;
 }
-ipcMain.handle("peek", (e, on) => peek(!!on));
+ipcMain.handle("peek", (e, on, need) => peek(on === "plan" ? "plan" : !!on, need));
 ipcMain.handle("hover", (e, on) => { if (win && !expanded) win.setOpacity(on ? 1 : Number(settings.opacity) || 1); });
 // Windows doesn't send mouse events over a drag area, so watch the cursor here.
 let pointerIn = false;
+// The strip belongs on the taskbar: after sleep, an Explorer restart, a DPI or
+// display change Windows can leave it elsewhere - put it back (checked once a
+// second, never while it's grown, being dragged or in the bigger view).
+let dockTick = 0;
+function keepDocked() {
+  if (!win || win.isDestroyed() || !win.isVisible() || expanded || peekOn || peekBase || !docked()) return;
+  const d = dockBounds(), b = win.getBounds();
+  if (b.x !== d.x || b.y !== d.y || b.width !== d.width || b.height !== d.height) win.setBounds(d);
+}
 function watchPointer() {
   if (!win || win.isDestroyed() || !win.isVisible()) return;
+  if (++dockTick % 5 === 0 && !pointerIn) keepDocked();
   const p = screen.getCursorScreenPoint(), b = win.getBounds();
   const inside = p.x >= b.x && p.x < b.x + b.width && p.y >= b.y && p.y < b.y + b.height;
   if (inside === pointerIn) return;

@@ -183,16 +183,18 @@
     if (c) draft.text = c.value;
     if (n) draft.note = n.value;
     key = k;
-    card.className = v === "big" ? "big" : v === "setup" ? "setup" : v === "strip" ? "stripwrap" + (peek.on ? " peek " + peek.dir : "") : "";
+    card.className = v === "big" ? "big" : v === "setup" ? "setup" : v === "strip" ? "stripwrap " + (peek.dir === "down" ? "down" : "up") + (peek.on ? " peek" : "") : "";
     card.innerHTML = v === "setup" ? setupHtml() : v === "big" ? bigHtml() : v === "strip" ? stripHtml() : v.startsWith("idle") ? idleHtml(v === "idle-full") : runHtml(v === "full");
     wire(v);
     patch();
+    if (v === "strip") refitPeek();
   }
   // On the taskbar: one line - face, bar, time - and ▾ for the actions (a menu,
   // because the strip is only as tall as the taskbar).
   // The strip, and - while the pointer is on it - the hover card above (or below) it.
   function stripHtml() {
-    const row = '<div class="srow"' + (peek.on ? ' style="height:' + peek.h + 'px"' : "") + ">" + stripRowHtml() + "</div>";
+    // The strip keeps its own height whatever size the window is right now.
+    const row = '<div class="srow"' + (peek.h ? ' style="height:' + peek.h + 'px"' : "") + ">" + stripRowHtml() + "</div>";
     if (!peek.on) return row;
     const pk = '<div class="pk">' + peekHtml() + "</div>";
     return peek.dir === "up" ? pk + row : row + pk;
@@ -417,26 +419,58 @@
     clearTimeout(peekT);
     peekT = setTimeout(applyPeek, on ? 120 : 380);
   }
+  // The strip's height is learned again when the window changes size on its own
+  // (strip size setting, taskbar height, DPI) - never in the middle of the card.
+  window.addEventListener("resize", () => { if (!peek.on && !peekBusy) peek.h = 0; });
+  // How tall the hover card's content is, measured off-screen at the strip's width.
+  function peekNeed() {
+    const m = document.createElement("div");
+    m.className = "pk";
+    m.style.cssText = "position:absolute;visibility:hidden;left:0;top:0;height:auto;width:" + (card.clientWidth || window.innerWidth) + "px";
+    m.innerHTML = peekHtml();
+    document.body.appendChild(m);
+    const h = m.offsetHeight;
+    m.remove();
+    return h + 4; // + the gap above the strip
+  }
+  // Opening: draw the card first (the strip pinned to the taskbar side, the card
+  // still outside the small window), then grow - so nothing jumps. Closing: draw
+  // the strip alone at the same side, then shrink.
   async function applyPeek() {
     if (peekBusy) return;
     peekBusy = true;
     try {
       for (let i = 0; i < 4 && !big && !!st && peek.on !== peekWant; i++) {
         if (peekWant) {
-          const r = await T.peek(true);
-          if (!r) break;
-          peek = { on: true, dir: r.dir, h: r.stripH, busy: false };
+          const need = peekNeed();
+          const plan = await T.peek("plan", need);
+          if (!plan) break;
+          peek = { on: true, dir: plan.dir, h: plan.stripH, need, busy: false };
+          render(true);
+          await new Promise((r) => requestAnimationFrame(() => r()));
+          const r = await T.peek(true, need);
+          if (!r) { peek = { on: false, dir: plan.dir, h: plan.stripH, busy: false }; render(true); break; }
         } else {
+          peek = { on: false, dir: peek.dir, h: peek.h, busy: false };
+          render(true);
+          await new Promise((r) => requestAnimationFrame(() => r()));
           await T.peek(false);
-          peek = { on: false, dir: "up", h: 0, busy: false };
         }
-        render(true);
       }
     } finally { peekBusy = false; }
   }
+  // The card's content changed while it's open (a timer started, the next tasks
+  // changed): its height follows.
+  function refitPeek() {
+    if (!peek.on || peekBusy || big) return;
+    const need = peekNeed();
+    if (Math.abs(need - (peek.need || 0)) < 3) return;
+    peek.need = need;
+    T.peek(true, need);
+  }
   async function setBig(on) {
     if (on) { peekWant = false; clearTimeout(peekT); }
-    if (on && peek.on) { peek = { on: false, dir: "up", h: 0, busy: false }; await T.peek(false); }
+    if (on && peek.on) { peek = { on: false, dir: peek.dir, h: peek.h, busy: false }; await T.peek(false); }
     if (on && !(st && st.running)) return;
     big = on;
     await T.expand(on);
