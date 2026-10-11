@@ -18,6 +18,32 @@ const safeName = (s, max = 120) => {
   return n || "file";
 };
 
+// Words of a name, without emoji, symbols or accents.
+const words = (s) => String(s || "").normalize("NFKD").toLowerCase().replace(/[^a-z0-9]+/g, " ").trim().split(" ").filter(Boolean);
+const plainName = (s) => String(s || "").replace(/[^\p{L}\p{N} &'().,_-]+/gu, " ").replace(/\s+/g, " ").trim() || String(s || "");
+// Words a ClickUp List often adds after the client's own name ("BRC Service SEO",
+// "Acme Plumbing SEO"): dropped from the end when looking for the client's folder.
+const TAIL = new Set(["seo", "service", "services", "website", "web", "site", "marketing", "digital", "client", "project", "account", "team"]);
+function core(s) { const w = words(s); while (w.length > 1 && TAIL.has(w[w.length - 1])) w.pop(); return w; }
+// Which existing folder is this client's: the same name (any case, spacing,
+// emoji); the same name without those added words ("BRC" for "♨ BRC Service SEO");
+// one folder whose words start the client's name or the other way round
+// ("north star" for "North Star Roofing"); one folder that starts with the
+// same 6+ letters ("zenhvac" for "Zen HVAC Pros"). Never a guess between two.
+function matchFolder(names, client) {
+  const k = key(client), ck = core(client).join("");
+  const one = (list) => (list.length === 1 ? list[0] : null);
+  const exact = names.find((n) => key(n) === k);
+  if (exact) return exact;
+  const byCore = names.filter((n) => { const h = key(n); return h === ck || core(n).join("") === ck; });
+  if (byCore.length) return one(byCore);
+  const cw = words(client);
+  const lead = (a, b) => a.length && a.length <= b.length && a.every((w, i) => w === b[i]);
+  const byWords = names.filter((n) => { const fw = words(n); return fw.join("").length >= 3 && (lead(fw, cw) || lead(cw, fw)); });
+  if (byWords.length) return one(byWords);
+  return one(names.filter((n) => { const h = key(n); return Math.min(h.length, k.length) >= 6 && (h.startsWith(k) || k.startsWith(h) || h.startsWith(ck) || ck.startsWith(h)); }));
+}
+
 // The folder for a client: its own pick, else a matching folder under root, else
 // a new one named after the client. create=false only finds it.
 function clientDir(root, client, links, create = true) {
@@ -29,11 +55,10 @@ function clientDir(root, client, links, create = true) {
   if (create) fs.mkdirSync(root, { recursive: true });
   let names = [];
   try { names = fs.readdirSync(root, { withFileTypes: true }).filter((d) => d.isDirectory()).map((d) => d.name); } catch (e) {}
-  const exact = names.find((n) => key(n) === k);
-  if (exact) return path.join(root, exact);
-  const near = names.filter((n) => { const h = key(n); return Math.min(h.length, k.length) >= 6 && (h.startsWith(k) || k.startsWith(h)); });
-  if (near.length === 1) return path.join(root, near[0]);
-  const dir = path.join(root, safeName(client, 80));
+  const found = matchFolder(names, client);
+  if (found) return path.join(root, found);
+  // A new folder: the client's name without emoji or symbols.
+  const dir = path.join(root, safeName(plainName(client), 80));
   if (create) fs.mkdirSync(dir, { recursive: true });
   return dir;
 }
@@ -53,6 +78,8 @@ const MAX_FILE = 30 * 1048576;
 // files: [{ name, text } | { name, b64 }]; attach: [{ name, url }] fetched here.
 // Files already there with the same size are left alone.
 async function writeTask(root, links, m, fetchImpl, token) {
+  // made: no folder of this client was found, so a new one was made.
+  const made = !fs.existsSync(clientDir(root, m.client, links, false));
   const dir = clientDir(root, m.client, links, true);
   const tdir = path.join(dir, "tasks", safeName(m.folder || "task", 80));
   fs.mkdirSync(tdir, { recursive: true });
@@ -78,7 +105,7 @@ async function writeTask(root, links, m, fetchImpl, token) {
       fs.writeFileSync(inside(tdir, a.name), buf); saved.push(a.name);
     } catch (e) { failed.push(a && a.name); }
   }
-  return { dir, taskDir: tdir, saved, failed };
+  return { dir, taskDir: tdir, saved, failed, made };
 }
 
 // One client file (from the extension's Clients page) into the client's folder.
@@ -132,4 +159,4 @@ function readClientFile(root, links, client, rel) {
   return { name: path.basename(p), size: st.size, mtime: st.mtimeMs, b64: fs.readFileSync(p).toString("base64") };
 }
 
-module.exports = { key, safeName, clientDir, writeTask, writeClientFile, inside, listClientFiles, clientFilePath, readClientFile };
+module.exports = { key, safeName, matchFolder, clientDir, writeTask, writeClientFile, inside, listClientFiles, clientFilePath, readClientFile };
