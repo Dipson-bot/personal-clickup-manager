@@ -353,7 +353,7 @@ function startLink() {
       try { m = JSON.parse(body); } catch (e) {}
       try { await fromExtension(m); } catch (e) {}
       res.writeHead(200, { "Content-Type": "application/json" });
-      res.end(JSON.stringify({ app: "clickup-tracker", version: app.getVersion(), signedIn: !!cu, user: (cu && cu.username) || "", shown: !!(win && !win.isDestroyed() && win.isVisible()), platform: process.platform, folders: true }));
+      res.end(JSON.stringify({ app: "clickup-tracker", version: app.getVersion(), signedIn: !!cu, user: (cu && cu.username) || "", shown: !!(win && !win.isDestroyed() && win.isVisible()), platform: process.platform, folders: true, folderFiles: true }));
     });
   });
   srv.on("error", () => {}); // port in use (another copy): no link, the app still works
@@ -403,6 +403,10 @@ async function filesOp(m) {
     if (m.show) shell.showItemInFolder(r.file);
     return { ok: true, ...r };
   }
+  if (op === "list") return { ok: true, ...clientdirs.listClientFiles(clientsRoot(), links, m.client) };
+  if (op === "read") return { ok: true, ...clientdirs.readClientFile(clientsRoot(), links, m.client, m.rel) };
+  if (op === "openFile") { const err = await shell.openPath(clientdirs.clientFilePath(clientsRoot(), links, m.client, m.rel)); return { ok: !err, error: err || undefined }; }
+  if (op === "showFile") { shell.showItemInFolder(clientdirs.clientFilePath(clientsRoot(), links, m.client, m.rel)); return { ok: true }; }
   if (op === "open") {
     const dir = clientdirs.clientDir(clientsRoot(), m.client, links, true);
     let p = dir;

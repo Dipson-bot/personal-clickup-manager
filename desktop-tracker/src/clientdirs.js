@@ -91,4 +91,45 @@ function writeClientFile(root, links, m) {
   return { dir, file: p };
 }
 
-module.exports = { key, safeName, clientDir, writeTask, writeClientFile, inside };
+// What's already in a client's folder, so the extension shows it and its AI
+// reads it instead of keeping a second copy. Skips the task briefs, code
+// folders and hidden files; a few levels deep at most.
+const SKIP_DIRS = /^(tasks|node_modules|vendor|dist|build|\..*)$/i;
+function listClientFiles(root, links, client, max = 300) {
+  const dir = clientDir(root, client, links, false);
+  if (!fs.existsSync(dir)) return { dir, exists: false, files: [] };
+  const files = [];
+  const walk = (d, rel, depth) => {
+    let ents = [];
+    try { ents = fs.readdirSync(d, { withFileTypes: true }); } catch (e) { return; }
+    for (const e of ents) {
+      if (files.length >= max) return;
+      if (e.name.startsWith(".") || e.name.startsWith("~$")) continue;
+      const r = rel ? rel + "/" + e.name : e.name;
+      if (e.isDirectory()) { if (depth < 3 && !SKIP_DIRS.test(e.name)) walk(path.join(d, e.name), r, depth + 1); continue; }
+      if (!e.isFile()) continue;
+      try { const st = fs.statSync(path.join(d, e.name)); files.push({ rel: r, name: e.name, size: st.size, mtime: st.mtimeMs }); } catch (x) {}
+    }
+  };
+  walk(dir, "", 0);
+  files.sort((a, b) => b.mtime - a.mtime);
+  return { dir, exists: true, files };
+}
+// A file inside the client's folder by its relative path ("audits/x.docx");
+// never anything outside it.
+function clientFilePath(root, links, client, rel) {
+  const dir = clientDir(root, client, links, false);
+  const p = path.resolve(dir, String(rel || "").replace(/\\/g, "/"));
+  const r = path.relative(dir, p);
+  if (!rel || r.startsWith("..") || path.isAbsolute(r)) throw new Error("Not in the client's folder.");
+  if (!fs.existsSync(p) || !fs.statSync(p).isFile()) throw new Error("That file isn't there any more.");
+  return p;
+}
+function readClientFile(root, links, client, rel) {
+  const p = clientFilePath(root, links, client, rel);
+  const st = fs.statSync(p);
+  if (st.size > MAX_FILE) throw new Error("File over 30 MB.");
+  return { name: path.basename(p), size: st.size, mtime: st.mtimeMs, b64: fs.readFileSync(p).toString("base64") };
+}
+
+module.exports = { key, safeName, clientDir, writeTask, writeClientFile, inside, listClientFiles, clientFilePath, readClientFile };
