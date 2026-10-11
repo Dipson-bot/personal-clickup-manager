@@ -9,6 +9,7 @@ const path = require("path");
 const http = require("http");
 const fs = require("fs");
 const { ClickUp } = require("./clickup");
+const clientdirs = require("./clientdirs");
 
 if (!app.requestSingleInstanceLock()) { app.quit(); }
 
@@ -332,6 +333,18 @@ function startLink() {
     res.setHeader("Cache-Control", "no-store");
     if (fromExt) res.setHeader("Access-Control-Allow-Origin", origin);
     if (req.method === "OPTIONS" && fromExt) { res.writeHead(204, { "Access-Control-Allow-Methods": "POST", "Access-Control-Allow-Headers": "Content-Type" }); res.end(); return; }
+    // /pcm/files: client folders (briefs, task files) - bigger bodies, own answers.
+    if (req.method === "POST" && req.url === "/pcm/files" && fromExt) {
+      const chunks = []; let size = 0;
+      req.on("data", (c) => { size += c.length; if (size > 80 * 1048576) req.destroy(); else chunks.push(c); });
+      req.on("end", async () => {
+        let out;
+        try { out = await filesOp(JSON.parse(Buffer.concat(chunks).toString("utf8"))); } catch (e) { out = { ok: false, error: String((e && e.message) || e) }; }
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.end(JSON.stringify(out));
+      });
+      return;
+    }
     if (req.method !== "POST" || req.url !== "/pcm" || !fromExt) { res.writeHead(404); res.end(); return; }
     let body = "";
     req.on("data", (c) => { body += c; if (body.length > 20000) req.destroy(); });
@@ -340,12 +353,66 @@ function startLink() {
       try { m = JSON.parse(body); } catch (e) {}
       try { await fromExtension(m); } catch (e) {}
       res.writeHead(200, { "Content-Type": "application/json" });
-      res.end(JSON.stringify({ app: "clickup-tracker", version: app.getVersion(), signedIn: !!cu, user: (cu && cu.username) || "", shown: !!(win && !win.isDestroyed() && win.isVisible()), platform: process.platform }));
+      res.end(JSON.stringify({ app: "clickup-tracker", version: app.getVersion(), signedIn: !!cu, user: (cu && cu.username) || "", shown: !!(win && !win.isDestroyed() && win.isVisible()), platform: process.platform, folders: true }));
     });
   });
   srv.on("error", () => {}); // port in use (another copy): no link, the app still works
   srv.listen(LINK_PORT, "127.0.0.1");
 }
+// ---------- client folders (the extension's Send to Claude Code / Show in folder) ----------
+// Written here because a browser extension can only save into Downloads. The
+// work happens in the background; only "Choose…" shows a folder picker.
+const defaultClientsRoot = () => path.join(app.getPath("documents"), "Personal ClickUp Manager", "Clients");
+const clientsRoot = () => settings.clientsRoot || defaultClientsRoot();
+const clientLinks = () => (settings.clientLinks && typeof settings.clientLinks === "object" ? settings.clientLinks : {});
+async function pickFolder(title, at) {
+  // An invisible always-on-top owner so the picker opens in front of the browser.
+  const owner = new BrowserWindow({ show: false, alwaysOnTop: true, skipTaskbar: true, width: 1, height: 1 });
+  try {
+    const r = await dialog.showOpenDialog(owner, { title, defaultPath: at, properties: ["openDirectory", "createDirectory"] });
+    return r.canceled || !r.filePaths[0] ? "" : r.filePaths[0];
+  } finally { owner.destroy(); }
+}
+async function filesOp(m) {
+  const op = String(m.op || "");
+  const links = clientLinks();
+  if (op === "status") {
+    const k = clientdirs.key(m.client);
+    return { ok: true, root: clientsRoot(), isDefault: !settings.clientsRoot, linked: Object.keys(links).length, clientDir: m.client ? (links[k] || "") : "" };
+  }
+  if (op === "pickRoot") {
+    const p = await pickFolder("Folder that holds your client folders", clientsRoot());
+    if (p) { settings.clientsRoot = p; saveSettings(); }
+    return { ok: true, root: clientsRoot(), picked: !!p };
+  }
+  if (op === "resetRoot") { delete settings.clientsRoot; saveSettings(); return { ok: true, root: clientsRoot() }; }
+  if (op === "pickClient") {
+    let at = clientsRoot();
+    try { at = clientdirs.clientDir(clientsRoot(), m.client, links, false); } catch (e) {}
+    const p = await pickFolder("Folder for " + String(m.client || "this client"), at);
+    if (p) { settings.clientLinks = { ...links, [clientdirs.key(m.client)]: p }; saveSettings(); }
+    return { ok: true, dir: p || "", picked: !!p };
+  }
+  if (op === "unlinkClient") { const l = { ...links }; delete l[clientdirs.key(m.client)]; settings.clientLinks = l; saveSettings(); return { ok: true }; }
+  if (op === "task") {
+    const r = await clientdirs.writeTask(clientsRoot(), links, m, (u, o) => fetch(u, o), getToken());
+    return { ok: true, ...r };
+  }
+  if (op === "clientFile") {
+    const r = clientdirs.writeClientFile(clientsRoot(), links, m);
+    if (m.show) shell.showItemInFolder(r.file);
+    return { ok: true, ...r };
+  }
+  if (op === "open") {
+    const dir = clientdirs.clientDir(clientsRoot(), m.client, links, true);
+    let p = dir;
+    if (m.task) { const t = path.join(dir, "tasks", clientdirs.safeName(m.task, 80)); if (fs.existsSync(t)) p = t; }
+    const err = await shell.openPath(p);
+    return { ok: !err, dir: p, error: err || undefined };
+  }
+  return { ok: false, error: "Unknown request - update the ClickUp Tracker app." };
+}
+
 let linking = false;
 async function fromExtension(m) {
   // The strip style picked in the extension (General › Floating tracker › Strip style).
