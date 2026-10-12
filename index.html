@@ -1,0 +1,44 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Personal ClickUp Manager</title>
+<style>
+  :root { --bg: #f7f6f2; --card: #ffffff; --text: #1f2328; --muted: #5b6270; --accent: #4a3fd1; --border: #e3e1da; }
+  @media (prefers-color-scheme: dark) { :root { --bg: #16171b; --card: #1f2126; --text: #e8e6e1; --muted: #a3a7b0; --accent: #a9a3ff; --border: #33363d; } }
+  body { margin: 0; background: var(--bg); color: var(--text); font: 16px/1.6 system-ui, -apple-system, "Segoe UI", sans-serif; }
+  main { max-width: 720px; margin: 0 auto; padding: 48px 16px; }
+  h1 { font-size: 28px; margin: 0 0 8px; }
+  p.lead { color: var(--muted); margin: 0 0 28px; }
+  section { background: var(--card); border: 1px solid var(--border); border-radius: 12px; padding: 20px 22px; margin: 0 0 16px; }
+  h2 { font-size: 17px; margin: 0 0 8px; }
+  ul { margin: 0; padding-left: 20px; }
+  a { color: var(--accent); }
+  footer { color: var(--muted); font-size: 14px; margin-top: 28px; }
+</style>
+</head>
+<body>
+<main>
+  <h1>Personal ClickUp Manager</h1>
+  <p class="lead">A Chrome extension that keeps your ClickUp day in one place: estimates, time tracking, planning, reminders and exports.</p>
+  <section>
+    <h2>What it does</h2>
+    <ul>
+      <li>Shows the ClickUp tasks you are working on, with their estimates and the time you tracked.</li>
+      <li>Starts and stops ClickUp timers, and reminds you before a task runs over its estimate.</li>
+      <li>Helps you plan the week, find tasks and arrange them.</li>
+      <li>Exports task lists and reports to a file, or to Google Sheets or Google Docs in your own Google Drive.</li>
+    </ul>
+  </section>
+  <section>
+    <h2>Google sign-in</h2>
+    <p>When you export to Google Sheets or Google Docs, the extension asks once for permission to create files in your Google Drive. It can only see and change the files it created itself - not the rest of your Drive.</p>
+  </section>
+  <footer>
+    <a href="privacy.html">Privacy policy</a> ·
+    <a href="https://github.com/Dipson-bot/personal-clickup-manager">Source code on GitHub</a>
+  </footer>
+</main>
+</body>
+</html>

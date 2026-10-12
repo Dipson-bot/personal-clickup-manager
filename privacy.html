@@ -1,0 +1,72 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Privacy Policy</title>
+<style>
+  :root { --bg: #f7f6f2; --card: #ffffff; --text: #1f2328; --muted: #5b6270; --accent: #4a3fd1; --border: #e3e1da; }
+  @media (prefers-color-scheme: dark) { :root { --bg: #16171b; --card: #1f2126; --text: #e8e6e1; --muted: #a3a7b0; --accent: #a9a3ff; --border: #33363d; } }
+  body { margin: 0; background: var(--bg); color: var(--text); font: 16px/1.6 system-ui, -apple-system, "Segoe UI", sans-serif; }
+  main { max-width: 720px; margin: 0 auto; padding: 48px 16px; }
+  h1 { font-size: 28px; margin: 0 0 4px; }
+  p.lead { color: var(--muted); margin: 0 0 28px; }
+  section { background: var(--card); border: 1px solid var(--border); border-radius: 12px; padding: 20px 22px; margin: 0 0 16px; }
+  h2 { font-size: 17px; margin: 0 0 8px; }
+  ul { margin: 0; padding-left: 20px; }
+  a { color: var(--accent); }
+  footer { color: var(--muted); font-size: 14px; margin-top: 28px; }
+</style>
+</head>
+<body>
+<main>
+  <h1>Privacy Policy</h1>
+  <p class="lead">Personal ClickUp Manager (Chrome extension) · Last updated 12 October 2026</p>
+
+  <section>
+    <h2>The short version</h2>
+    <p>The extension works for you, inside your own browser. It does not have a server of its own, does not collect analytics, does not show ads and does not sell or share your data.</p>
+  </section>
+
+  <section>
+    <h2>What it stores, and where</h2>
+    <ul>
+      <li><b>In your browser:</b> your settings, your ClickUp connection (kept encrypted) and the task information it shows you.</li>
+      <li><b>In your own Google Drive, only if you turn on Drive sync:</b> a backup of your settings in the extension's private app folder, which only this extension can read.</li>
+      <li><b>In your own Google Drive, only when you export:</b> the Google Sheets or Google Docs files you ask it to create.</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>Google permissions</h2>
+    <p>For exports the extension asks for permission to create files in your Google Drive (<code>drive.file</code>). With it, the extension can only see and change the files it created itself - never your other Drive files. It uses the Google Sheets API on those files, for example to make the links in an exported sheet clickable. The files stay in your Drive, and you can delete them at any time.</p>
+    <p>The use of information received from Google APIs follows the <a href="https://developers.google.com/terms/api-services-user-data-policy">Google API Services User Data Policy</a>, including the Limited Use requirements.</p>
+  </section>
+
+  <section>
+    <h2>Who it talks to</h2>
+    <ul>
+      <li><b>ClickUp</b>, to read and update your tasks and timers.</li>
+      <li><b>Google</b>, for Drive sync and exports, only if you use them.</li>
+      <li><b>GitHub</b>, to check for and download updates of the extension.</li>
+      <li>Other services only when you use the feature that needs them, for example an online AI service if you choose it for a report and agree first, or websites you ask it to monitor.</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>Your choices</h2>
+    <ul>
+      <li>Sign out of Google in the extension at any time, or remove its access in your <a href="https://myaccount.google.com/permissions">Google Account permissions</a>.</li>
+      <li>Removing the extension from Chrome deletes what it stored in your browser.</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>Questions</h2>
+    <p>Open an issue on <a href="https://github.com/Dipson-bot/personal-clickup-manager/issues">GitHub</a>.</p>
+  </section>
+
+  <footer><a href="index.html">Home</a></footer>
+</main>
+</body>
+</html>
