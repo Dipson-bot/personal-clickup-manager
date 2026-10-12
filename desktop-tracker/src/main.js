@@ -205,7 +205,7 @@ const fmtD = (ms) => { const m = Math.round(Math.max(0, ms) / 60000); const h = 
 function timeText() {
   const run = state && state.running, t = state && state.task;
   if (!run) return "";
-  const tracked = (t ? t.closedMs : 0) + Math.max(0, Date.now() - run.startMs), est = t ? t.estimateMs : 0;
+  const tracked = (t ? (t.totalClosedMs != null ? t.totalClosedMs : t.closedMs) + (Number(t.othersMs) || 0) : 0) + Math.max(0, Date.now() - run.startMs), est = t ? t.estimateMs : 0;
   if (!est) return fmtD(tracked);
   return tracked - est >= 60000 ? "+" + fmtD(tracked - est) + " over" : fmtD(tracked) + " / " + fmtD(est);
 }
@@ -332,7 +332,12 @@ async function refresh() {
         task: run ? {
           id: run.taskId, estimateMs: (task && task.estimateMs) || 0, client: (task && task.client) || "", url: task && task.url,
           // closedMs = today's time on it before this timer; totalClosedMs = every day's.
-          closedMs: today.byTask.get(run.taskId) || 0, totalClosedMs: totalMs, dueDateMs: task && task.dueDateMs, startDateMs: task && task.startDateMs, status: task && task.status,
+          closedMs: today.byTask.get(run.taskId) || 0, totalClosedMs: totalMs,
+          // Time someone else tracked on it (e.g. before it was handed to you): the
+          // task's total for everyone minus your own entries. It counts against the
+          // estimate; your Today total stays your own time.
+          othersMs: task && totalMs != null && task.spentAllMs - totalMs >= 60000 ? task.spentAllMs - totalMs : 0,
+          dueDateMs: task && task.dueDateMs, startDateMs: task && task.startDateMs, status: task && task.status,
           isExtra: !!(extra.id && extra.id === run.taskId) || /\bextra(?:\(s\)|s)?\s+task(?:\(s\)|s)?\b/i.test(run.taskName || ""),
         } : null,
         today: { closedMs: today.total, targetMs: (Number(settings.targetHours) || 7) * 3600000 },

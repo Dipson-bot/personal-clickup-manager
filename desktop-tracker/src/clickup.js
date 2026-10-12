@@ -69,6 +69,7 @@ class ClickUp {
     const t = {
       id: String(j.id), name: j.name || "(task)", url: j.url || "https://app.clickup.com/t/" + j.id,
       estimateMs: Number(j.time_estimate) || 0, status: (j.status && j.status.status) || "",
+      spentAllMs: Number(j.time_spent) || 0, // everyone's time on it (the estimate is the task's)
       dueDateMs: j.due_date ? Number(j.due_date) : null, startDateMs: j.start_date ? Number(j.start_date) : null, client: (j.list && j.list.name) || "",
       assigneeCount: Array.isArray(j.assignees) ? j.assignees.length : 0,
       description: String(j.text_content || j.description || "").trim(),
