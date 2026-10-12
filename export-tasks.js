@@ -671,6 +671,8 @@
   function crRealLink(u) {
     let p;
     try { p = new URL(String(u || "").trim()); } catch (e) { return false; }
+    // "https://name@site.com" is an email address turned into a link, not a page.
+    if (p.username || p.password) return false;
     if (p.protocol === "https:") return true;
     if (p.protocol !== "http:") return false;
     const parts = p.pathname.split("/").filter(Boolean);
@@ -1018,7 +1020,9 @@
   // GMB / Google Business Profile work is done by Off-Page, so it counts as Off-Page.
   const CT_DEPTS = ["On-Page", "Off-Page", "Technical", "Development", "Content"];
   const CT_ALL = CT_DEPTS.concat(["Other"]);
-  const CT_COLS = ["Date (Range)", "Task", "Task Info", "Category", "Assignee", "Status", "Estimated Completion Time", "Checklist File", "Work File", "Task Description", "Due Date", "Priority"];
+  // The team's client workbook: these ten columns, week by week (the week's label
+  // on its first row, a blank row between weeks), one row per ClickUp task.
+  const CT_COLS = ["Date", "Task", "Task Info", "Category", "Assignee", "Status", "Work File", "Task Description", "Due Date", "Priority"];
   const CT_KNOWN = /on[\s-]?page|off[\s-]?page|\btech|\bdev|\bgmb\b|\bgbp\b|google business|\bcontent\b/i;
   function ctNormDept(s) {
     const k = String(s || "").replace(/[*_"]/g, "").trim();
@@ -1065,35 +1069,207 @@
     (commentLinks || []).forEach(add);
     return out;
   }
-  // One row per task: subtasks in the list fold into their top task (their
-  // notes and links go with it); a subtask whose parent isn't listed is a row.
+  // One row per task. A subtask's row names its task (Task) and itself (Task
+  // Info); a task whose subtasks are all listed is only their heading, so it
+  // isn't a row of its own.
   function ctTasks(rows, deptOfUser) {
     const byId = new Map(rows.map((t) => [String(t.id), t]));
-    const listedParent = (t) => t.isSubtask && t.parentId != null && byId.has(String(t.parentId));
-    const out = rows.filter((t) => !listedParent(t)).map((t) => ({ t, subs: [] }));
-    const top = new Map(out.map((o) => [String(o.t.id), o]));
-    const rootOf = (t) => { let c = t, n = 0; while (listedParent(c) && n++ < 10) c = byId.get(String(c.parentId)); return c; };
-    for (const t of rows) if (listedParent(t)) { const r = top.get(String(rootOf(t).id)); if (r) r.subs.push(t); }
-    for (const o of out) o.category = ctCategory(o.t, deptOfUser) || o.subs.map((s) => ctCategory(s, deptOfUser)).find(Boolean) || "";
+    const pid = (t) => (t && t.parentId != null && t.parentId !== "" ? String(t.parentId) : "");
+    const heads = new Set(rows.map(pid).filter((p) => p && byId.has(p)));
+    const out = rows.filter((t) => !heads.has(String(t.id))).map((t) => {
+      const p = pid(t) ? byId.get(pid(t)) || null : null;
+      return { t, subs: [], parent: p, parentName: (p && p.name) || (pid(t) ? t.parentName || "" : "") };
+    });
+    for (const o of out) o.category = ctCategory(o.t, deptOfUser) || (o.parent ? ctCategory(o.parent, deptOfUser) : "");
     return out;
   }
-  function ctRow(o, commentLinks, dateLabel) {
+  // The work week (Mon-Fri) a task belongs to, by its due date. A task due on a
+  // Monday that started before it is last week's work (due "by Monday").
+  const CT_MONTHS = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"];
+  function ctWeek(t) {
+    const due = Number(t && t.dueDateMs) || 0;
+    if (!due) return { key: Infinity, label: "No due date" };
+    const d = new Date(due); d.setHours(12, 0, 0, 0);
+    const start = Number(t.startDateMs) || 0;
+    if (d.getDay() === 1 && start && start < new Date(due).setHours(0, 0, 0, 0)) d.setDate(d.getDate() - 7);
+    const mon = new Date(d); mon.setDate(d.getDate() - ((d.getDay() + 6) % 7));
+    const fri = new Date(mon); fri.setDate(mon.getDate() + 4);
+    const label = mon.getMonth() === fri.getMonth()
+      ? CT_MONTHS[mon.getMonth()] + " " + mon.getDate() + " - " + fri.getDate()
+      : CT_MONTHS[mon.getMonth()].slice(0, 3) + " " + mon.getDate() + " - " + CT_MONTHS[fri.getMonth()].slice(0, 3) + " " + fri.getDate();
+    return { key: new Date(mon).setHours(0, 0, 0, 0), label };
+  }
+  const ctQ = (name, v) => name + ': "' + String(v || "") + '"';
+  function ctRow(o, commentLinks) {
     const t = o.t;
-    const info = ctField(t.info, "Pre Description") || cleanInfo(t.info).replace(/\nWhy: [\s\S]*$/, "");
-    const notes = [ctField(t.info, "Description")].concat(o.subs.map((s) => { const n = ctField(s.info, "Description"); return n ? crStripCode(s.name) + ": " + n : ""; })).filter(Boolean);
-    const note = notes.join("\n");
-    const links = [];
-    for (const r of [t].concat(o.subs)) for (const u of ctLinks(r, commentLinks[String(r.id)])) if (!links.includes(u)) links.push(u);
-    const checklist = [ctField(t.info, "Checklist File")].concat(((t.xp && t.xp.fields) || []).filter((f) => /checklist/i.test(f.name)).map((f) => f.value)).filter(Boolean).join("\n");
-    const work = note || links.length ? 'Description: "' + note + '"\n\nFile: "' + links.join("\n") + '"' : "";
+    const task = o.parentName ? crStripCode(o.parentName) : crStripCode(t.name);
+    const info = o.parentName ? crStripCode(t.name) : ctField(t.info, "Task Info");
+    const note = ctField(t.info, "Description");
+    // Links that belong to Pre Description / Checklist File / Pre File stay there (Task Description).
+    const planLinks = new Set(["Pre Description", "Checklist File", "Pre File"].flatMap((f) => crUrls(ctField(t.info, f))));
+    const links = ctLinks(t, commentLinks[String(t.id)]).filter((u) => !planLinks.has(u));
     const who = [...new Set(((t.xp && t.xp.assignees) || []).map((a) => a.name).filter(Boolean))].join(", ");
+    const due = Number(t.dueDateMs) ? new Date(Number(t.dueDateMs)) : null;
+    const week = ctWeek(t);
     return {
-      cells: [dateLabel, t.name || "", info, o.category, who, crStatus(t), t.estimateMs ? fmtEstimate(t.estimateMs) : "", checklist, work, note,
-        t.dueDateMs ? new Date(Number(t.dueDateMs)).toLocaleDateString([], { month: "short", day: "numeric", year: "numeric" }) : "",
+      week,
+      cells: ["", task, info, o.category, who,
+        crDone(t) ? "Complete" : String(t.status || "to do").replace(/\b\w/g, (c) => c.toUpperCase()),
+        ctQ("Description", note) + "\n\n" + ctQ("File", links.join("\n")),
+        ctQ("Pre Description", ctField(t.info, "Pre Description")) + "\n\n" + ctQ("Checklist File", ctField(t.info, "Checklist File")) + "\n\n" + ctQ("Pre File", ctField(t.info, "Pre File")),
+        due ? (due.getMonth() + 1) + "/" + due.getDate() + "/" + due.getFullYear() : "",
         String(t.priority || "").replace(/\b\w/g, (c) => c.toUpperCase())],
       noNote: !note, noLinks: !links.length,
     };
   }
+  // The sheet: header, then each week's rows (its label on the first one) with a
+  // blank row between weeks. Returns the rows and which of them start a week.
+  function ctLayout(items) {
+    const order = items.map((it, i) => ({ it, i })).sort((x, y) => (x.it.row.week.key - y.it.row.week.key) || x.i - y.i);
+    const m = [CT_COLS.slice()];
+    const firsts = new Set();
+    let wk = null;
+    for (const { it } of order) {
+      if (it.row.week.key !== wk) {
+        if (wk !== null) m.push(CT_COLS.map(() => ""));
+        wk = it.row.week.key;
+        firsts.add(m.length);
+        m.push([it.row.week.label].concat(it.row.cells.slice(1)));
+      } else m.push(it.row.cells.slice());
+    }
+    return { m, firsts };
+  }
+  // Every Sheets / Excel export is a real .xlsx with the team's look (Google
+  // Sheets keeps it when Drive converts the file): Lexend 10, wrapped text at the
+  // top of each cell, a blue header row with white bold text that stays at the
+  // top, light borders, sensible widths. A cell with a link is clickable (to its
+  // first link; the background then makes EVERY link in a cell clickable through
+  // the Sheets API when that's turned on). opts: { headerRow, widths, boldCells: Set("r,c") }.
+  function xlsxBook(m, opts) {
+    if (!window.pcmZip || !Array.isArray(m) || !m.length) return null;
+    opts = opts || {};
+    const head = Number(opts.headerRow) || 0;
+    const bold = opts.boldCells || new Set();
+    const x = (v) => String(v == null ? "" : v).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;").replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F]/g, "");
+    const col = (i) => (i >= 26 ? String.fromCharCode(64 + Math.floor(i / 26)) : "") + String.fromCharCode(65 + (i % 26));
+    const nCols = Math.max(...m.map((r) => r.length));
+    const widths = opts.widths || Array.from({ length: nCols }, (_, c) => {
+      let w = 8;
+      for (const r of m) for (const line of String(r[c] == null ? "" : r[c]).split("\n")) w = Math.max(w, line.length);
+      return Math.max(10, Math.min(60, Math.round(w * 1.1) + 2));
+    });
+    const firstUrl = (v) => { const mm = /https?:\/\/[^\s"<>]+/.exec(String(v || "")); if (!mm) return ""; const u = mm[0].replace(/[.,;:!?)\]]+$/, ""); return crRealLink(u) ? u : ""; };
+    const links = [];
+    const rows = m.map((r, ri) => '<row r="' + (ri + 1) + '"' + (ri === head ? ' ht="24" customHeight="1"' : "") + ">" + r.map((v, ci) => {
+      const st = ri === head ? 1 : ri < head ? 4 : bold.has(ri + "," + ci) ? 3 : 2;
+      const u = ri > head ? firstUrl(v) : "";
+      if (u) links.push({ ref: col(ci) + (ri + 1), u });
+      return '<c r="' + col(ci) + (ri + 1) + '" s="' + st + '" t="inlineStr"><is><t xml:space="preserve">' + x(v) + "</t></is></c>";
+    }).join("") + "</row>").join("");
+    const sheet = '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>' +
+      '<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">' +
+      '<sheetViews><sheetView workbookViewId="0"><pane ySplit="' + (head + 1) + '" topLeftCell="A' + (head + 2) + '" activePane="bottomLeft" state="frozen"/></sheetView></sheetViews>' +
+      '<sheetFormatPr defaultRowHeight="15"/><cols>' + widths.map((w, i) => '<col min="' + (i + 1) + '" max="' + (i + 1) + '" width="' + w + '" customWidth="1"/>').join("") + "</cols>" +
+      "<sheetData>" + rows + "</sheetData>" +
+      (links.length ? "<hyperlinks>" + links.map((l, i) => '<hyperlink ref="' + l.ref + '" r:id="rL' + (i + 1) + '"/>').join("") + "</hyperlinks>" : "") +
+      "</worksheet>";
+    const F = '<name val="Lexend"/>';
+    const styles = '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>' +
+      '<styleSheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">' +
+      '<fonts count="4"><font><sz val="10"/>' + F + '</font><font><b/><sz val="10"/><color rgb="FFFFFFFF"/>' + F + '</font><font><b/><sz val="10"/>' + F + '</font><font><b/><sz val="12"/>' + F + "</font></fonts>" +
+      '<fills count="3"><fill><patternFill patternType="none"/></fill><fill><patternFill patternType="gray125"/></fill><fill><patternFill patternType="solid"><fgColor rgb="FF4A86E8"/><bgColor indexed="64"/></patternFill></fill></fills>' +
+      '<borders count="2"><border><left/><right/><top/><bottom/><diagonal/></border><border><left style="thin"><color rgb="FFD9D9D9"/></left><right style="thin"><color rgb="FFD9D9D9"/></right><top style="thin"><color rgb="FFD9D9D9"/></top><bottom style="thin"><color rgb="FFD9D9D9"/></bottom><diagonal/></border></borders>' +
+      '<cellStyleXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0"/></cellStyleXfs>' +
+      '<cellXfs count="5"><xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0" applyFont="1"/>' +
+      '<xf numFmtId="0" fontId="1" fillId="2" borderId="1" xfId="0" applyFont="1" applyFill="1" applyBorder="1" applyAlignment="1"><alignment vertical="center" wrapText="1"/></xf>' +
+      '<xf numFmtId="0" fontId="0" fillId="0" borderId="1" xfId="0" applyFont="1" applyBorder="1" applyAlignment="1"><alignment vertical="top" wrapText="1"/></xf>' +
+      '<xf numFmtId="0" fontId="2" fillId="0" borderId="1" xfId="0" applyFont="1" applyBorder="1" applyAlignment="1"><alignment vertical="top" wrapText="1"/></xf>' +
+      '<xf numFmtId="0" fontId="3" fillId="0" borderId="0" xfId="0" applyFont="1" applyAlignment="1"><alignment vertical="top" wrapText="1"/></xf></cellXfs>' +
+      '<cellStyles count="1"><cellStyle name="Normal" xfId="0" builtinId="0"/></cellStyles></styleSheet>';
+    const enc = new TextEncoder();
+    const f = (path, text) => ({ path, data: enc.encode(text) });
+    const files = [
+      f("[Content_Types].xml", '<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/><Override PartName="/xl/worksheets/sheet1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/><Override PartName="/xl/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml"/></Types>'),
+      f("_rels/.rels", '<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/></Relationships>'),
+      f("xl/workbook.xml", '<?xml version="1.0" encoding="UTF-8" standalone="yes"?><workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><sheets><sheet name="Tasks" sheetId="1" r:id="rId1"/></sheets></workbook>'),
+      f("xl/_rels/workbook.xml.rels", '<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/><Relationship Id="rId2" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/></Relationships>'),
+      f("xl/worksheets/sheet1.xml", sheet),
+      f("xl/styles.xml", styles),
+    ];
+    if (links.length) files.push(f("xl/worksheets/_rels/sheet1.xml.rels", '<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">' +
+      links.map((l, i) => '<Relationship Id="rL' + (i + 1) + '" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/hyperlink" Target="' + x(l.u) + '" TargetMode="External"/>').join("") + "</Relationships>"));
+    return window.pcmZip.makeZip(files);
+  }
+  // The client workbook: its own widths, week labels in bold.
+  function ctXlsx(m, firsts) {
+    return xlsxBook(m, { widths: [16, 30, 40, 13, 22, 12, 48, 48, 12, 10], boldCells: new Set([...firsts].map((r) => r + ",0")) });
+  }
+  // Every Google Docs export gets the same look as the Sheets ones before it goes
+  // to Drive (Docs keeps inline styles when it converts the page): Lexend, bold
+  // headings, tables with a blue header row (white bold text), light borders and
+  // padded cells, and every web address a clickable link - also ones written as
+  // plain text.
+  function docLook(html) {
+    if (typeof DOMParser === "undefined" || !html) return html;
+    let doc;
+    try { doc = new DOMParser().parseFromString(String(html), "text/html"); } catch (e) { return html; }
+    const add = (el, css) => { const cur = el.getAttribute("style") || ""; el.setAttribute("style", css + (cur ? ";" + cur : "")); }; // the page's own style wins
+    const FONT = "font-family:Lexend,Arial,sans-serif";
+    add(doc.body, FONT + ";font-size:11pt;line-height:1.45;color:#000000");
+    for (const el of doc.body.querySelectorAll("p, li, span, div, b, strong, em, td, th, a")) add(el, FONT);
+    for (const h of doc.body.querySelectorAll("h1")) add(h, FONT + ";font-size:16pt;font-weight:700;margin:14pt 0 6pt");
+    for (const h of doc.body.querySelectorAll("h2")) add(h, FONT + ";font-size:13pt;font-weight:700;margin:12pt 0 4pt");
+    for (const h of doc.body.querySelectorAll("h3")) add(h, FONT + ";font-size:11.5pt;font-weight:700;margin:10pt 0 4pt");
+    for (const t of doc.body.querySelectorAll("table")) {
+      t.setAttribute("border", "1"); t.setAttribute("cellspacing", "0"); t.setAttribute("cellpadding", "6");
+      add(t, "border-collapse:collapse;width:100%");
+      const rows = [...t.rows];
+      rows.forEach((r, i) => {
+        const head = i === 0 || [...r.cells].every((c) => c.tagName === "TH");
+        for (const c of r.cells) {
+          if (head) c.setAttribute("style", FONT + ";background:#4a86e8;color:#ffffff;font-weight:700;border:1px solid #4a86e8;padding:5pt 6pt;vertical-align:middle");
+          else add(c, FONT + ";border:1px solid #d9d9d9;padding:5pt 6pt;vertical-align:top;font-size:10pt");
+        }
+      });
+    }
+    // Links: the ones written as plain text become real links; all look like links.
+    const URL_RE = /https?:\/\/[^\s<>"']+/g;
+    const walker = doc.createTreeWalker(doc.body, NodeFilter.SHOW_TEXT);
+    const texts = [];
+    while (walker.nextNode()) { const n = walker.currentNode; if (URL_RE.test(n.nodeValue) && !(n.parentElement && n.parentElement.closest("a"))) texts.push(n); URL_RE.lastIndex = 0; }
+    for (const n of texts) {
+      const frag = doc.createDocumentFragment();
+      let last = 0, m;
+      const v = n.nodeValue;
+      URL_RE.lastIndex = 0;
+      while ((m = URL_RE.exec(v))) {
+        const u = m[0].replace(/[.,;:!?)\]]+$/, "");
+        if (!crRealLink(u)) continue;
+        frag.appendChild(doc.createTextNode(v.slice(last, m.index)));
+        const a = doc.createElement("a"); a.href = u; a.textContent = u;
+        frag.appendChild(a);
+        last = m.index + u.length;
+      }
+      frag.appendChild(doc.createTextNode(v.slice(last)));
+      n.parentNode.replaceChild(frag, n);
+    }
+    for (const a of doc.body.querySelectorAll("a[href]")) add(a, FONT + ";color:#1155cc;text-decoration:underline");
+    return "<!doctype html>" + doc.documentElement.outerHTML;
+  }
+  const XLSX_MIME = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet";
+  // Excel: the formatted .xlsx (the old HTML .xls only if the zip writer isn't on this page).
+  function saveXlsx(save, note, file, m, opts, fallbackHtml, tail) {
+    const xb = xlsxBook(m, opts);
+    if (xb) { save(file + ".xlsx", XLSX_MIME, xb); note("Saved " + file + ".xlsx (opens in Excel)" + (tail || "")); }
+    else { save(file + ".xls", "application/vnd.ms-excel", fallbackHtml); note("Saved " + file + ".xls (opens in Excel)" + (tail || "")); }
+  }
+  // Sheets: the same .xlsx goes to Drive, as base64.
+  const xlsxFor = async (kind, m, opts) => { if (kind !== "sheets") return ""; const xb = xlsxBook(m, opts); return xb ? await blobB64(xb) : ""; };
+  // What the background said about the links.
+  const linkNote = (g) => (g && g.links && g.links.ok === false
+    ? "  Only the first link in each cell is clickable" + (g.links.status === 403 ? " - to make every link clickable, turn on the Google Sheets API for this extension's Google Cloud project." : " (Google didn't take the link update).")
+    : "");
+  const blobB64 = (blob) => new Promise((ok, bad) => { const r = new FileReader(); r.onload = () => ok(String(r.result).split(",")[1] || ""); r.onerror = () => bad(r.error); r.readAsDataURL(blob); });
   function ctSheetHtml(m, title) {
     const rows = m.map((r, i) => "<tr>" + r.map((c) => i
       ? '<td style="vertical-align:top">' + esc(c).replace(/\n/g, "<br>") + "</td>"
@@ -1410,8 +1586,8 @@
     // Client tasks sheet: only the chosen departments' tasks, 12 columns, preview first.
     let ctOnSaved = false;
     try { ctOnSaved = localStorage.getItem("pcm.ctSheet") === "1"; } catch (e) {}
-    const ctOn = mkOpt("Client tasks sheet (12 columns, by department)", ctOnSaved);
-    ctOn.parentElement.title = "One client's tasks, one row per task in the client sheet's columns. Untick the departments this client doesn't get reported (remembered per client). A preview shows what goes in before the file is made.";
+    const ctOn = mkOpt("Client workbook rows (week by week, by department)", ctOnSaved);
+    ctOn.parentElement.title = "One client's tasks in the client workbook's columns - Date, Task, Task Info, Category, Assignee, Status, Work File, Task Description, Due Date, Priority - week by week, one row per task (subtasks too), formatted. Untick the departments you don't want (remembered per client). A preview shows what goes in before the file is made.";
     const ctBox = document.createElement("div");
     ctBox.className = "xp-ct";
     ctOn.parentElement.after(ctBox);
@@ -1659,14 +1835,15 @@
           let cl = null;
           try { cl = await chrome.runtime.sendMessage({ type: "CLICKUP_EXPORT_COMMENT_LINKS", taskIds: rows.map((t) => String(t.id)) }); } catch (e) { cl = null; }
           const commentLinks = (cl && cl.ok && cl.links) || {};
-          const dateLabel = range ? crRangeLabel(range) : crWeekRange(rows);
+          const dateLabel = range ? crRangeLabel(range) : crWeekRange(rows); // the file's name; each row's week is its own
           const items = tasks.map((o) => {
             const id = String(o.t.id);
             const byDept = ctDeptOk(o.category, want);
             const manual = prefs.pick[id];
             const why = manual === true && !byDept ? "added by you" : manual === false && byDept ? "left out by you"
               : !byDept ? (o.category ? o.category + " isn't ticked" : "no department found") : "";
-            return { o, id, name: o.t.name || "(no name)", category: o.category, on: manual != null ? !!manual : byDept, byDept, why, row: ctRow(o, commentLinks, dateLabel) };
+            const row = ctRow(o, commentLinks);
+            return { o, id, name: (o.parentName ? crStripCode(o.parentName) + " \u203a " : "") + (o.t.name || "(no name)") + "  \u00b7  " + row.week.label, category: o.category, on: manual != null ? !!manual : byDept, byDept, why, row };
           });
           note("Preview open - tick what goes in, then Create.");
           const picked = await ctPreview(items, clientName(client) + (dateLabel ? " \u00b7 " + dateLabel : ""));
@@ -1677,22 +1854,25 @@
           ctSavePrefs(client, p2);
           const chosen = picked.filter((i) => i.on);
           if (!crReady.checked) {
-            const m = [CT_COLS].concat(chosen.map((i) => i.row.cells));
+            const { m, firsts } = ctLayout(chosen);
             const who = clientName(client) || "Client";
             const title = who + " \u00b7 Client tasks" + (dateLabel ? " \u00b7 " + dateLabel : "");
             const file = safeName(who + " client tasks " + (dateLabel || new Date().toISOString().slice(0, 10)));
             const tail = "  " + chosen.length + " task" + (chosen.length === 1 ? "" : "s") + "." + (cl && cl.ok ? "" : "  (Couldn't read the comments, so their links aren't in.)");
             if (kind === "csv") { save(file + ".csv", "text/csv;charset=utf-8", "\ufeff" + toCsv(m)); note("Saved " + file + ".csv" + tail); }
-            else if (kind === "xls") { save(file + ".xls", "application/vnd.ms-excel", ctSheetHtml(m, title)); note("Saved " + file + ".xls (opens in Excel)" + tail); }
+            else if (kind === "xls") saveXlsx(save, note, file, m, { widths: [16, 30, 40, 13, 22, 12, 48, 48, 12, 10], boldCells: new Set([...firsts].map((r) => r + ",0")) }, ctSheetHtml(m, title), tail);
             else if (kind === "md") {
               const text = ctMarkdown(m, title);
               save(file + ".md", "text/markdown;charset=utf-8", text);
               try { await navigator.clipboard.writeText(text); note("Saved " + file + ".md and copied to the clipboard" + tail); } catch (e) { note("Saved " + file + ".md" + tail); }
             } else {
               note("Creating in Google Drive\u2026");
-              const g = await chrome.runtime.sendMessage({ type: "EXPORT_TO_GOOGLE", kind, name: title, share: share.checked, html: ctSheetHtml(m, title), csv: toCsv(m) });
+              // Sheets: the formatted .xlsx (wrapping, font, widths, header) - plain CSV only if it can't be made.
+              const x = kind === "sheets" ? ctXlsx(m, firsts) : null;
+              const xlsx = x ? await blobB64(x) : "";
+              const g = await chrome.runtime.sendMessage({ type: "EXPORT_TO_GOOGLE", kind, name: title, share: share.checked, html: docLook(ctSheetHtml(m, title)), csv: toCsv(m), xlsx });
               if (!g || !g.ok) throw new Error((g && (g.error || g.reason)) || "Google export failed");
-              note("Opening\u2026" + tail);
+              note("Opening\u2026" + tail + linkNote(g));
               chrome.tabs.create({ url: g.url }).catch(() => {});
             }
             buttons.forEach((b) => (b.disabled = false));
@@ -1758,7 +1938,7 @@
             (() => { const no = res.items.filter((it) => !crAllRefs(it).length); return no.length ? "  " + no.length + " line" + (no.length === 1 ? " has" : "s have") + " no link or screenshot yet: " + no.slice(0, 4).map((it) => "\u201c" + crShortTitle(it.action) + "\u201d").join(", ") + (no.length > 4 ? "\u2026" : "") + "." : ""; })() +
             "  A draft - read it before sending.";
           if (kind === "csv") { save(file + ".csv", "text/csv;charset=utf-8", "\ufeff" + toCsv(m)); note("Saved " + file + ".csv" + tail); }
-          else if (kind === "xls") { save(file + ".xls", "application/vnd.ms-excel", crReadySheetHtml(who, res)); note("Saved " + file + ".xls (opens in Excel)" + tail); }
+          else if (kind === "xls") saveXlsx(save, note, file, m, {}, crReadySheetHtml(who, res), tail);
           else if (kind === "md") {
             const text = crReadyMarkdown(who, res);
             save(file + ".md", "text/markdown;charset=utf-8", text);
@@ -1766,9 +1946,9 @@
           } else {
             note("Creating in Google Drive\u2026");
             // Google file named like the team's docs: "Acme - Sep 28 - Oct 2".
-            const g = await chrome.runtime.sendMessage({ type: "EXPORT_TO_GOOGLE", kind, name: who + (week ? " - " + week : " - Work report"), share: share.checked, html: crReadyDocHtml(who, res), csv: toCsv(m) });
+            const g = await chrome.runtime.sendMessage({ type: "EXPORT_TO_GOOGLE", kind, name: who + (week ? " - " + week : " - Work report"), share: share.checked, html: docLook(crReadyDocHtml(who, res)), csv: toCsv(m), xlsx: await xlsxFor(kind, m, {}) });
             if (!g || !g.ok) throw new Error((g && (g.error || g.reason)) || "Google export failed");
-            note("Opening\u2026" + tail);
+            note("Opening\u2026" + tail + linkNote(g));
             chrome.tabs.create({ url: g.url }).catch(() => {});
           }
           buttons.forEach((b) => (b.disabled = false));
@@ -1818,7 +1998,7 @@
           }
           const tail = (noAudit.length ? "  (No audit for " + noAudit.join(", ") + ": those lines use the task names.)" : "") + aiNote;
           if (kind === "csv") { save(file + ".csv", "text/csv;charset=utf-8", "\ufeff" + toCsv(lead.concat(m))); note("Saved " + file + ".csv" + tail); }
-          else if (kind === "xls") { save(file + ".xls", "application/vnd.ms-excel", crHtmlTable(m, title, summary)); note("Saved " + file + ".xls (opens in Excel)" + tail); }
+          else if (kind === "xls") saveXlsx(save, note, file, lead.concat(m), { headerRow: lead.length }, crHtmlTable(m, title, summary), tail);
           else if (kind === "md") {
             const text = crMarkdown(report, title);
             save(file + ".md", "text/markdown;charset=utf-8", text);
@@ -1827,9 +2007,9 @@
             else try { await navigator.clipboard.writeText(text); note("Saved " + file + ".md and copied to the clipboard" + tail); } catch (e) { note("Saved " + file + ".md" + tail); }
           } else {
             note("Creating in Google Drive\u2026");
-            const res = await chrome.runtime.sendMessage({ type: "EXPORT_TO_GOOGLE", kind, name: file, share: share.checked, html: crDocHtml(report, title), csv: toCsv(lead.concat(m)) });
+            const res = await chrome.runtime.sendMessage({ type: "EXPORT_TO_GOOGLE", kind, name: file, share: share.checked, html: docLook(crDocHtml(report, title)), csv: toCsv(lead.concat(m)), xlsx: await xlsxFor(kind, lead.concat(m), { headerRow: lead.length }) });
             if (!res || !res.ok) throw new Error((res && (res.error || res.reason)) || "Google export failed");
-            note("Opening\u2026" + tail);
+            note("Opening\u2026" + tail + linkNote(res));
             chrome.tabs.create({ url: res.url }).catch(() => {});
             if (!tail) setTimeout(close, 700);
           }
@@ -1841,7 +2021,7 @@
         const title = d.title || "tasks";
         const file = safeName(title) + "_" + new Date().toISOString().slice(0, 10);
         if (kind === "csv") { save(file + ".csv", "text/csv;charset=utf-8", "﻿" + toCsv(m)); note("Saved " + file + ".csv"); }
-        else if (kind === "xls") { save(file + ".xls", "application/vnd.ms-excel", toHtml(m, title)); note("Saved " + file + ".xls (opens in Excel)"); }
+        else if (kind === "xls") saveXlsx(save, note, file, m, {}, toHtml(m, title), "");
         else if (kind === "md") {
           const text = toMarkdown(rows, title);
           save(file + ".md", "text/markdown;charset=utf-8", text);
@@ -1852,11 +2032,12 @@
           note("Creating in Google Drive…");
           const res = await chrome.runtime.sendMessage({
             type: "EXPORT_TO_GOOGLE", kind, name: file, share: share.checked,
-            html: toDocHtml(rows, title), // Docs: headings + bullets
+            html: docLook(toDocHtml(rows, title)), // Docs: headings + bullets, in the team's look
             csv: toCsv(m), // Sheets: Drive only converts csv/xls into a spreadsheet
+            xlsx: await xlsxFor(kind, m, {}), // …and the formatted .xlsx, used when there
           });
           if (!res || !res.ok) throw new Error((res && (res.error || res.reason)) || "Google export failed");
-          note("Opening…");
+          note("Opening…" + linkNote(res));
           chrome.tabs.create({ url: res.url }).catch(() => {});
           setTimeout(close, 700);
         }

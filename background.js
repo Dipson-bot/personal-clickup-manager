@@ -7,6 +7,7 @@
 import { encryptJSON, decryptJSON, encryptWithPassphrase, decryptWithPassphrase, generateTOTP, totpSecondsRemaining } from "./lib-crypto.js";
 import {
   getFileToken,
+  getExportToken,
   driveFolder,
   uploadDriveFile,
   createGoogleFile,
@@ -23,9 +24,10 @@ import {
   pushTaskFiles,
   pullTaskFiles,
   driveQuota,
+  linkifySheet,
 } from "./lib-drive.js";
 import { runAllAccounts, runAccountLogin, readAgentRouterLogin, URLS, GITHUB_KEEP_COOKIES } from "./lib-automation.js";
-import { getTaskCommentsLite, getTaskTimeEntries, deleteTimeEntry, getUserGroups, getUser, verifyToken, getTeams, fetchTodayEstimate, fetchWeeklySummary, fetchDateRangeEstimate, createTaskCache, fetchTeamMembers, fetchWorkspaceTags, cuTagNames, fmtDuration, findExtraTaskByName, parseTaskIdFromUrl, getCurrentTimeEntry, getRunningTaskProgress, startTimer, stopTimer, getTaskById, setTaskStatus, setTaskDates, taskUrlFor, clientLabelFromContainer, resolveSpaceNamesFor, taskContainer, cuPriorityName, isTaskDone, getSubtasksOfParent, getTaskTree, getTaskDetail, updateTimeEntry, setTaskDueDate, clearTaskTreeCache, listWorkspaceClients, cuRowAssignees, fetchDoneBetween, fetchDoneLite, fetchTrackedHistory, getTaskPanel, addTaskComment, postTaskComment, setTaskDescription, getTaskCommentLinks, createTask, removeTaskAssignee, postAssignedComment, addTimeEntry, weeklyWithToday, listClientFieldOptions, listReachableClients, bgToken, cuRawFetch, getRelatedTasks } from "./lib-clickup.js";
+import { getTaskCommentsLite, getTaskTimeEntries, deleteTimeEntry, getUserGroups, getUser, verifyToken, getTeams, fetchTodayEstimate, fetchWeeklySummary, fetchDateRangeEstimate, createTaskCache, fetchTeamMembers, fetchWorkspaceTags, cuTagNames, fmtDuration, findExtraTaskByName, parseTaskIdFromUrl, getCurrentTimeEntry, getRunningTaskProgress, startTimer, stopTimer, getTaskById, setTaskStatus, setTaskDates, taskUrlFor, clientLabelFromContainer, resolveSpaceNamesFor, taskContainer, cuPriorityName, isTaskDone, getSubtasksOfParent, getTaskTree, getTaskDetail, updateTimeEntry, setTaskDueDate, clearTaskTreeCache, listWorkspaceClients, cuRowAssignees, fetchDoneBetween, fetchDoneLite, fetchTrackedHistory, getTaskPanel, addTaskComment, postTaskComment, setTaskDescription, getTaskCommentLinks, createTask, removeTaskAssignee, postAssignedComment, addTimeEntry, weeklyWithToday, listClientFieldOptions, listReachableClients, bgToken, patientToken, cuRawFetch, getRelatedTasks, slimIndexTask, fetchTeamTasksPage, listAllLists } from "./lib-clickup.js";
 import { resolveRelayKey, pickProbeModel, probeRelay } from "./lib-availability.js";
 import { tidyCollect, tidyLines, tidyResolved, tidyDayOk, tidyUrgent, tidyDateShort } from "./lib-tidy.js";
 
@@ -230,6 +232,98 @@ async function tfAll() {
 async function tfPutMany(recs) {
   const d = await tfDb();
   await new Promise((res, rej) => { const tx = d.transaction("files", "readwrite"); const s = tx.objectStore("files"); for (const r of recs) s.put(r); tx.oncomplete = res; tx.onerror = () => rej(tx.error); });
+}
+// ---- ClickUp task index (Explore › Find these tasks) ----
+// Every task the user can see, one slim row each (slimIndexTask), so a pasted
+// list of task names can be found without ClickUp text search (it has none).
+// Built once through the slow lane (100 tasks a request, resumable: the page
+// reached is saved), then kept fresh with "changed since" reads. Built only when
+// someone uses Find - never on a timer. Meta in storage cuTaskIndex.
+const TIX_DB = "pcm-taskindex";
+function tixDb() {
+  return new Promise((res, rej) => {
+    const r = indexedDB.open(TIX_DB, 1);
+    r.onupgradeneeded = () => { if (!r.result.objectStoreNames.contains("tasks")) r.result.createObjectStore("tasks", { keyPath: "id" }); };
+    r.onsuccess = () => res(r.result);
+    r.onerror = () => rej(r.error);
+  });
+}
+async function tixPut(rows) {
+  if (!rows.length) return;
+  const d = await tixDb();
+  await new Promise((res, rej) => { const tx = d.transaction("tasks", "readwrite"); const st = tx.objectStore("tasks"); for (const r of rows) st.put(r); tx.oncomplete = res; tx.onerror = () => rej(tx.error); });
+}
+async function tixClear() {
+  const d = await tixDb();
+  await new Promise((res, rej) => { const tx = d.transaction("tasks", "readwrite"); tx.objectStore("tasks").clear(); tx.oncomplete = res; tx.onerror = () => rej(tx.error); });
+}
+async function tixCount() {
+  const d = await tixDb();
+  return new Promise((res) => { const q = d.transaction("tasks").objectStore("tasks").count(); q.onsuccess = () => res(q.result || 0); q.onerror = () => res(0); });
+}
+function tixNeedsBuild(m, cfg, settings) {
+  return !m || m.v !== 1 || m.teamId !== String(cfg.teamId) || m.level !== ((settings && settings.cuClientLevel) || "auto") || m.state !== "ready";
+}
+let tixRun = null;
+function syncTaskIndex(opts = {}) {
+  if (tixRun) return tixRun;
+  tixRun = (async () => {
+    const cfg = await getClickupConfig();
+    if (!cfg || !cfg.token || !cfg.teamId) return { ok: false, reason: "not-configured" };
+    const settings = await getSettings();
+    const level = settings.cuClientLevel || "auto";
+    const tok = bgToken(cfg.token);
+    const save = (x) => chrome.storage.local.set({ cuTaskIndex: x }).catch(() => {});
+    let { cuTaskIndex: m } = await chrome.storage.local.get("cuTaskIndex");
+    if (opts.rebuild || !m || m.v !== 1 || m.teamId !== String(cfg.teamId) || m.level !== level) {
+      await tixClear();
+      m = { v: 1, teamId: String(cfg.teamId), level, state: "building", page: 0, read: 0, count: 0, lastSync: 0, startedAt: Date.now() };
+      await save(m);
+    }
+    try {
+      if (m.state === "building") {
+        // Carries on from the page reached (a restarted service worker resumes).
+        for (;;) {
+          const r = await fetchTeamTasksPage(tok, cfg.teamId, m.page, 0);
+          await tixPut(r.tasks.map((x) => slimIndexTask(x, level)));
+          m = { ...m, page: m.page + 1, read: m.read + r.tasks.length, error: "" };
+          await save(m);
+          if (r.last || m.page >= 3000) break;
+        }
+        // What changed while it was reading is picked up just below.
+        m = { ...m, state: "ready", lastSync: (m.startedAt || Date.now()) - 120000, count: await tixCount() };
+        await save(m);
+      }
+      const maxAge = opts.maxAgeMs != null ? opts.maxAgeMs : 5 * 60000;
+      if (Date.now() - (m.lastSync || 0) > maxAge) {
+        const start = Date.now();
+        for (let page = 0; page < 100; page++) {
+          const r = await fetchTeamTasksPage(tok, cfg.teamId, page, (m.lastSync || 0) - 60000);
+          await tixPut(r.tasks.map((x) => slimIndexTask(x, level)));
+          if (r.last) break;
+        }
+        m = { ...m, lastSync: start, count: await tixCount(), error: "" };
+        await save(m);
+      }
+      return { ok: true, meta: m };
+    } catch (e) {
+      const rateLimited = !!(e && e.status === 429);
+      m = { ...m, error: rateLimited ? "rate-limited" : String((e && e.message) || e) };
+      await save(m);
+      return { ok: false, reason: rateLimited ? "rate-limited" : "error", error: m.error, meta: m };
+    } finally { tixRun = null; }
+  })();
+  return tixRun;
+}
+// The Drive "signed in" dot for GET_STATE. Checking it may need a silent Google
+// re-sign-in (the token lasts an hour), which can take a while - the pages gave
+// up after 8 s with "No response from the extension", on every reload. Answer
+// with what's known within 1.5 s; the check carries on and the next poll has it.
+let lastSignedIn = null;
+async function signedInQuick() {
+  if (lastSignedIn === null) { try { lastSignedIn = !!(await getDriveAccount()); } catch (e) { lastSignedIn = false; } }
+  const p = isSignedIn().then((v) => { lastSignedIn = !!v; return lastSignedIn; }).catch(() => lastSignedIn);
+  return Promise.race([p, new Promise((r) => setTimeout(() => r(lastSignedIn), 1500))]);
 }
 let tfSyncing = null;
 function syncTaskFiles() {
@@ -1067,6 +1161,7 @@ const extraTaskCache = new Map();
 // so they run in the background with a keepalive; the CLICKUP_FILTER handler
 // answers instantly with "" building "" and the UI polls for the cached result.
 const FILTER_CACHE_MS = 5 * 60 * 1000;
+const lastFilterError = new Map(); // key -> the error of a build that just failed (told once)
 const filterCache = new Map(); // key -> { at, data? , error? }
 const filterBuilds = new Map(); // key -> in-flight promise
 function startKeepAlive() {
@@ -1594,6 +1689,7 @@ const DEFAULT_SETTINGS = {
   // ---- Close the weekly Extra Task (see maybeCloseExtraTask) ----
   clickupExtraAutoClose: true,
   clickupWarnEmptyComplete: true,
+  clickupOverRepeatMin: 15, // repeat "still over the estimate" every N minutes (0 = once)
   clickupRelatedOn: true, // AI briefs look up related tasks (open and closed)
   clickupRelatedCap: 25, // at most this many related tasks per task
   clickupRelatedIds: "", // extra reference-ID patterns (one per line)
@@ -2960,6 +3056,7 @@ async function clickupPublic() {
     wrapUp: settings.clickupWrapUp !== false,
     extraAutoClose: settings.clickupExtraAutoClose !== false,
     warnEmptyComplete: settings.clickupWarnEmptyComplete !== false,
+    overRepeatMin: Number.isFinite(Number(settings.clickupOverRepeatMin)) ? Number(settings.clickupOverRepeatMin) : 15,
     relatedOn: settings.clickupRelatedOn !== false,
     relatedCap: Number(settings.clickupRelatedCap) || 25,
     relatedIds: String(settings.clickupRelatedIds || ""),
@@ -3221,6 +3318,7 @@ async function refreshCustomBundle() {
         if (Date.now() - (ready.at || 0) < RANGE_FRESH_MS) return;
       }
       const custom = await buildBasisBundle(cfg, await getSettings(), r);
+      await stampFamily({ custom }, cfg, false).catch(() => {}); // names already known only
       rangeCachePut(custom);
       const cur = (await getClickupState()) || {};
       const still = cuFilterCustomRange((await chrome.storage.local.get("cuFilter")).cuFilter);
@@ -3233,7 +3331,10 @@ async function refreshCustomBundle() {
 chrome.storage.onChanged.addListener((ch, area) => {
   if (area === "local" && ch.cuFilter) { refreshCustomBundle().catch(() => {}); updateBadge().catch(() => {}); }
 });
-async function computeFilterData(cfg, settings, assigneeIds, fromTs, toTs) {
+async function computeFilterData(cfg0, settings, assigneeIds, fromTs, toTs) {
+  // Someone is waiting for this (Explore, a picked day): wait for ClickUp's slots
+  // rather than fail when the refresh has used most of the minute.
+  const cfg = { ...cfg0, token: patientToken(cfg0.token), adminToken: cfg0.adminToken ? patientToken(cfg0.adminToken) : cfg0.adminToken };
   const myId = String(cfg.userId);
   const scopeIds = assigneeIds.length ? assigneeIds : [myId];
   const includeSelf = scopeIds.includes(myId);
@@ -3410,6 +3511,45 @@ async function patchStateTask(taskId, fields) {
   walk(st);
   st.at = Date.now();
   await setClickupState(st);
+}
+// Family on the rows: a subtask carries its parent's name (parentName), a parent
+// how many of its subtasks are in the loaded lists (childCount). Parent names are
+// remembered (storage parentNames, 7 days); up to 15 new ones are looked up per
+// refresh, only when fetch is allowed - so it costs almost nothing.
+async function stampFamily(state, cfg, fetchNew) {
+  if (!state) return;
+  const rows = [], seen = new Set();
+  const walk = (o) => {
+    if (!o || typeof o !== "object" || seen.has(o)) return;
+    seen.add(o);
+    if (Array.isArray(o)) { o.forEach(walk); return; }
+    if (o.id != null && typeof o.name === "string") rows.push(o);
+    for (const v of Object.values(o)) if (v && typeof v === "object") walk(v);
+  };
+  walk(state);
+  const kids = new Map(); // parentId -> Set(child ids)
+  for (const t of rows) if (t.parentId) { const k = String(t.parentId); if (!kids.has(k)) kids.set(k, new Set()); kids.get(k).add(String(t.id)); }
+  const g = await chrome.storage.local.get("parentNames").catch(() => ({}));
+  const names = g && g.parentNames && typeof g.parentNames === "object" ? { ...g.parentNames } : {};
+  const known = new Map(rows.map((t) => [String(t.id), t.name])); // a parent that is itself listed
+  const WEEK = 7 * 86400000;
+  let changed = false;
+  if (fetchNew && cfg && cfg.token) {
+    const want = [...kids.keys()].filter((id) => !known.has(id) && !(names[id] && Date.now() - (names[id].at || 0) < WEEK)).slice(0, 15);
+    for (const id of want) {
+      try { const t = await getTaskById(cfg.token, id); if (t && t.name) { names[id] = { name: t.name, at: Date.now() }; changed = true; } } catch (e) { if (e && e.status === 429) break; }
+    }
+  }
+  for (const [id, nm] of known) if (kids.has(id) && (!names[id] || names[id].name !== nm)) { names[id] = { name: nm, at: Date.now() }; changed = true; }
+  // keep it small: the newest 400
+  const keys = Object.keys(names);
+  if (keys.length > 400) { keys.sort((a, b) => (names[b].at || 0) - (names[a].at || 0)).slice(400).forEach((k) => delete names[k]); changed = true; }
+  if (changed) await chrome.storage.local.set({ parentNames: names }).catch(() => {});
+  for (const t of rows) {
+    if (t.parentId && names[String(t.parentId)]) t.parentName = names[String(t.parentId)].name;
+    const c = kids.get(String(t.id));
+    if (c && c.size) t.childCount = c.size; else if ("childCount" in t) delete t.childCount;
+  }
 }
 // One task in two snapshots with different due days - e.g. its date changed
 // between the today fetch and the week fetch, or ClickUp's search still had the
@@ -4354,6 +4494,7 @@ async function refreshClickupImpl({ includeTasks = false, viaAlarm = false, forc
     // be able to sink a refresh, hence the catch.
     await recordDoneHistory(state).catch(() => {});
     dropStaleDueRows(state);
+    await stampFamily(state, cfg, true).catch(() => {}); // subtask / parent hints on the rows
     if (gen !== settingsGen) return { ok: false, reason: "superseded" }; // a newer setting's refresh owns the state
     await setClickupState(state);
     await maybeNotifyClickup(state, { viaAlarm });
@@ -4705,9 +4846,15 @@ async function advanceAutoRun(cfg, doneId) {
   } catch (e) { diagLog("auto-run", String(e && e.message ? e.message : e)); }
 }
 const EST_ALARM_NEAR = "cu-est-near", EST_ALARM_MET = "cu-est-met";
+// While the running task stays past its estimate: a reminder every few minutes
+// (ClickUp setup › "Keep reminding me while it's over", default 15 min, 0 = off).
+const EST_ALARM_OVER = "cu-est-over";
 async function scheduleEstimateAlarms(entry, progress, settings, seenNear, seenMet) {
   await chrome.alarms.clear(EST_ALARM_NEAR).catch(() => {});
   await chrome.alarms.clear(EST_ALARM_MET).catch(() => {});
+  // The repeating one goes only when there's nothing to remind about any more
+  // (re-creating it on every refresh would keep pushing it back).
+  if (!entry || !progress || !(progress.estimateMs > 0) || (settings && settings.clickupRunningNotify === false)) await chrome.alarms.clear(EST_ALARM_OVER).catch(() => {});
   // (Called with no arguments to just clear them - settings may be missing then.)
   // autoOn: this running task is marked to complete itself (autoCompleteTasks).
   let marked = {};
@@ -4720,6 +4867,34 @@ async function scheduleEstimateAlarms(entry, progress, settings, seenNear, seenM
   const nearAt = crossAt - thresholdMs;
   if (notifyOn && !seenNear && nearAt > now + 5000) chrome.alarms.create(EST_ALARM_NEAR, { when: nearAt });
   if (!seenMet && crossAt > now + 5000) chrome.alarms.create(EST_ALARM_MET, { when: crossAt });
+  // Already over (or about to be): the repeating reminder runs from the crossing on.
+  const every = Number(settings.clickupOverRepeatMin);
+  const repeatMin = Number.isFinite(every) ? every : 15;
+  if (notifyOn && repeatMin > 0) {
+    const have = await chrome.alarms.get(EST_ALARM_OVER).catch(() => null);
+    if (!have) chrome.alarms.create(EST_ALARM_OVER, { when: Math.max(now + 60000, crossAt + repeatMin * 60000), periodInMinutes: repeatMin });
+  }
+}
+// Someone else's timer running on the task we're tracking: tell once per their
+// timer (ClickUp lets each person run one timer, on any task - two people can
+// be on the same task at once). Seen only when ClickUp lets us list their
+// entries (workspace admins); otherwise their time shows once it's stopped.
+async function notifyParallelTracking(entry, progress) {
+  const list = progress && Array.isArray(progress.othersRunning) ? progress.othersRunning : [];
+  if (!entry || !list.length) return;
+  const { parallelSeen } = await chrome.storage.local.get("parallelSeen");
+  const seen = parallelSeen && typeof parallelSeen === "object" ? parallelSeen : {};
+  const fresh = list.filter((o) => !seen[String(entry.taskId) + ":" + o.id + ":" + o.startMs]);
+  if (!fresh.length) return;
+  const keep = {};
+  for (const [k, v] of Object.entries(seen)) if (Number(v) > Date.now() - 2 * 86400000) keep[k] = v;
+  for (const o of fresh) keep[String(entry.taskId) + ":" + o.id + ":" + o.startMs] = Date.now();
+  await chrome.storage.local.set({ parallelSeen: keep });
+  const names = fresh.map((o) => o.name).join(", ");
+  const name = (progress && progress.taskName) || entry.taskName || "this task";
+  await notify("parallel-" + entry.taskId + "-" + Date.now(), "\u26A0 " + names + (fresh.length === 1 ? " is" : " are") + " tracking this task too",
+    "\u201C" + name + "\u201D - " + names + " started a timer on it" + (fresh[0].startMs ? " at " + new Date(fresh[0].startMs).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" }) : "") + ", so its estimate is being used by both of you. Check with them before going on.",
+    "danger", taskUrlFor(entry.taskId));
 }
 async function maybeNotifyRunningTask(cfg) {
   if (!cfg || !cfg.token || !cfg.teamId) return;
@@ -4733,10 +4908,16 @@ async function maybeNotifyRunningTask(cfg) {
   if (!entry) { await chrome.storage.local.set({ runningProgress: null }); await scheduleEstimateAlarms(null); return; }
   let progress;
   try {
-    progress = await getRunningTaskProgress(cfg.token, cfg.teamId, entry.taskId, entry.startMs);
+    // Asking for the other assignees' entries only works for workspace admins:
+    // after a refusal, don't ask again for a day (no wasted request per refresh).
+    const { cuOthersRefusedAt } = await chrome.storage.local.get("cuOthersRefusedAt").catch(() => ({}));
+    const tryOthers = !(Number(cuOthersRefusedAt) > Date.now() - 86400000);
+    progress = await getRunningTaskProgress(cfg.token, cfg.teamId, entry.taskId, entry.startMs, Date.now(), { meId: cfg.userId, tryOthers });
+    if (progress && progress.othersRefused) await chrome.storage.local.set({ cuOthersRefusedAt: Date.now() }).catch(() => {});
   } catch (e) {
     return;
   }
+  await notifyParallelTracking(entry, progress).catch(() => {});
   // The floating tracker's bar and face: estimate + time tracked today before this
   // timer started (the live part is added on the page, second by second).
   // closedTodayMs is TODAY's share of that earlier time, so the pages can show
@@ -4746,6 +4927,10 @@ async function maybeNotifyRunningTask(cfg) {
     estimateMs: progress ? progress.estimateMs : 0,
     closedMs: progress ? Math.max(0, progress.trackedMs - Math.max(0, Date.now() - (entry.startMs || Date.now()))) : 0,
     closedTodayMs: progress ? Math.max(0, Number(progress.closedTodayMs) || 0) : 0,
+    // Part of closedMs that someone else tracked (the estimate is the task's), and
+    // anyone tracking it at this very moment.
+    othersMs: progress ? Math.max(0, Number(progress.othersMs) || 0) : 0,
+    othersRunning: progress && Array.isArray(progress.othersRunning) ? progress.othersRunning : [],
     // Its dates: the strip shows today's time against the task's share for a day.
     startDateMs: (progress && progress.startDateMs) || null, dueDateMs: (progress && progress.dueDateMs) || null,
     at: Date.now(),
@@ -4803,6 +4988,18 @@ async function maybeNotifyRunningTask(cfg) {
   const remainingMs = progress.estimateMs - progress.trackedMs;
   const name = progress.taskName || entry.taskName || "this task";
   if (remainingMs <= 0) {
+    // Still running past it, after the first notice: say so again every few
+    // minutes (danger sound), so a timer left on can't run on unnoticed.
+    const every = Number(settings.clickupOverRepeatMin);
+    const repeatMin = Number.isFinite(every) ? every : 15;
+    const overMsNow = progress.trackedMs - progress.estimateMs;
+    const runningOver = (seen.runningOver && typeof seen.runningOver === "object") ? seen.runningOver : {};
+    if (runningMet[key] === today && repeatMin > 0 && overMsNow >= 60000 && Date.now() - (Number(runningOver[key]) || 0) >= (repeatMin - 0.5) * 60000) {
+      await notify("clickup-running-over-" + Date.now(), "Still running - " + fmtDuration(overMsNow) + " over the estimate ⚠️",
+        "\"" + name + "\" has " + fmtDuration(progress.trackedMs) + " tracked against a " + fmtDuration(progress.estimateMs) + " estimate. Stop the timer, complete the task, or raise its estimate.",
+        "danger", taskUrlFor(entry.taskId));
+      await chrome.storage.local.set({ clickupNotified: { ...seen, runningOver: { ...runningOver, [key]: Date.now() } } });
+    }
     if (runningMet[key] !== today) {
       // Tracked time has crossed the task's OWN estimate - alert with the
       // urgent "danger" sound so the user notices even if they miss the toast.
@@ -4817,7 +5014,7 @@ async function maybeNotifyRunningTask(cfg) {
         "danger",
         taskUrl
       );
-      await chrome.storage.local.set({ clickupNotified: { ...seen, runningMet: { ...runningMet, [key]: today } } });
+      await chrome.storage.local.set({ clickupNotified: { ...seen, runningMet: { ...runningMet, [key]: today }, runningOver: { ...runningOver, [key]: Date.now() } } });
     }
   } else if (remainingMs <= thresholdMs) {
     if (runningNear[key] !== today) {
@@ -5506,6 +5703,14 @@ async function updateBadge() {
       }
     }
   }
+  // The running task past its own estimate wins the badge: a red "!".
+  try {
+    const { runningProgress: rp } = await chrome.storage.local.get("runningProgress");
+    if (rp && Number(rp.estimateMs) > 0 && rp.startMs) {
+      const tracked = (Number(rp.closedMs) || 0) + Math.max(0, Date.now() - Number(rp.startMs));
+      if (tracked - Number(rp.estimateMs) >= 60000) { text = "!"; color = "#dc2626"; }
+    }
+  } catch (e) {}
   try {
     await chrome.action.setBadgeBackgroundColor({ color });
     await chrome.action.setBadgeText({ text });
@@ -7301,7 +7506,7 @@ chrome.alarms.onAlarm.addListener(async (alarm) => {
     getClickupState().then((st) => maybeAutoFloat(st)).catch(() => {});
   } else if (alarm.name === CLICKUP_ALARM) {
     refreshClickup({ viaAlarm: true }).then(() => scanComments()).catch(() => {});
-  } else if (alarm.name === EST_ALARM_NEAR || alarm.name === EST_ALARM_MET) {
+  } else if (alarm.name === EST_ALARM_NEAR || alarm.name === EST_ALARM_MET || alarm.name === EST_ALARM_OVER) {
     // The running task's estimate is (almost) up: one check with ClickUp (is the
     // timer still on, exact time) and the alert. Skipped while ClickUp is
     // rate-limiting us; the 5-minute refresh still catches it then.
@@ -7392,13 +7597,14 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       if (TASK_MUTATIONS.has(msg && msg.type)) clearTaskTreeCache();
       switch (msg.type) {
       case "GET_STATE": {
+        // (The Drive "signed in" answer never holds this up - see signedInQuick.)
         hubHello(false, HUB_ACTIVE_MS).catch(() => {}); // popup / options opened = active (hourly at most)
         const settings = await getSettings();
         const accounts = (await getAccounts()).map((a) => publicAccount(a, settings));
         const status = await getStatus();
         const balances = await getBalances();
         const availability = await getAvailability();
-        const signedIn = await isSignedIn();
+        const signedIn = await signedInQuick();
         const clickup = await clickupPublic();
         const { driveLastSync } = await chrome.storage.local.get("driveLastSync");
         sendResponse({ accounts, status, balances, availability, settings, signedIn, clickup, running: isRunning, driveBusy, driveLastSync: driveLastSync || null, today: todayString(), resetHours: RESET_HOURS, now: Date.now() });
@@ -8632,6 +8838,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         if (p.clickupExtraAutoClose !== undefined) patch.clickupExtraAutoClose = !!p.clickupExtraAutoClose;
         if (p.clickupWarnEmptyComplete !== undefined) patch.clickupWarnEmptyComplete = !!p.clickupWarnEmptyComplete;
         if (p.clickupRelatedOn !== undefined) patch.clickupRelatedOn = !!p.clickupRelatedOn;
+        if (p.clickupOverRepeatMin !== undefined) patch.clickupOverRepeatMin = Math.max(0, Math.min(120, Math.round(Number(p.clickupOverRepeatMin) || 0)));
         if (p.clickupRelatedCap !== undefined) patch.clickupRelatedCap = Math.max(1, Math.min(60, Number(p.clickupRelatedCap) || 25));
         if (p.clickupRelatedIds !== undefined) patch.clickupRelatedIds = String(p.clickupRelatedIds || "").slice(0, 2000);
         if (p.clickupHolidayHeadsUp !== undefined) patch.clickupHolidayHeadsUp = !!p.clickupHolidayHeadsUp;
@@ -8785,6 +8992,25 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
           sendResponse({ ok: true, description });
         } catch (e) {
           sendResponse({ ok: false, error: String(e && e.message ? e.message : e) });
+        }
+        break;
+      }
+      case "CLICKUP_ALL_LISTS": {
+        // New task › Client: every List (client) in the workspace the user can
+        // reach, with its id - kept a day (the Lists rarely change).
+        const cfg = await getClickupConfig();
+        if (!cfg || !cfg.token || !cfg.teamId) { sendResponse({ ok: false, reason: "not-configured" }); break; }
+        const { cuAllLists: c } = await chrome.storage.local.get("cuAllLists");
+        if (!msg.force && c && c.teamId === String(cfg.teamId) && Array.isArray(c.lists) && c.lists.length && Date.now() - (c.at || 0) < 24 * 3600 * 1000) { sendResponse({ ok: true, lists: c.lists }); break; }
+        try {
+          const r0 = await getOpenTasks(cfg, false).catch(() => null);
+          const folderIds = [];
+          for (const t of (r0 && r0.data && r0.data.tasks) || []) { const ct = (t && t.container) || {}; if (ct.folderId && !folderIds.includes(ct.folderId)) folderIds.push(ct.folderId); }
+          const lists = await listAllLists(cfg.token, cfg.teamId, folderIds);
+          if (lists.length) await chrome.storage.local.set({ cuAllLists: { at: Date.now(), teamId: String(cfg.teamId), lists } });
+          sendResponse({ ok: true, lists: lists.length ? lists : (c && c.lists) || [] });
+        } catch (e) {
+          sendResponse({ ok: !!(c && c.lists && c.lists.length), lists: (c && c.lists) || [], error: String((e && e.message) || e) });
         }
         break;
       }
@@ -9059,12 +9285,18 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         // Create a Google Sheet / Doc from the export HTML. Asks for the
         // "create files in Drive" permission the first time only.
         try {
-          const tok = await getFileToken(true);
+          // The export client first (its project can make every link clickable);
+          // the older one if that sign-in can't be had, so exports always work.
+          let tok = await getExportToken(true).catch(() => null);
+          if (!tok) tok = await getFileToken(true);
           if (!tok) { sendResponse({ ok: false, reason: "Google didn't grant permission to create the file." }); break; }
-          const r = await createGoogleFile(tok, { name: msg.name || "tasks", html: msg.html || "", csv: msg.csv || "", kind: msg.kind === "docs" ? "docs" : "sheets" });
+          const r = await createGoogleFile(tok, { name: msg.name || "tasks", html: msg.html || "", csv: msg.csv || "", xlsx: msg.xlsx || "", kind: msg.kind === "docs" ? "docs" : "sheets" });
           // Google files are private by default; share on request so the link works for the team.
           const shared = msg.share === false ? false : await shareAnyoneWithLink(tok, r.id).catch(() => false);
-          sendResponse({ ok: true, url: r.url, shared });
+          // A Sheet: make every link in every cell clickable (Sheets API; the file
+          // itself already links each cell to its first link).
+          const links = msg.kind !== "docs" ? await linkifySheet(tok, r.id).catch((e) => ({ ok: false, error: String((e && e.message) || e) })) : null;
+          sendResponse({ ok: true, url: r.url, shared, links });
         } catch (e) {
           sendResponse({ ok: false, error: String(e && e.message ? e.message : e) });
         }
@@ -9653,6 +9885,9 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
           break;
         }
         if (filterBuilds.has(key)) { sendResponse({ ok: true, data: null, building: true }); break; }
+        // A rate-limited build that just failed: say so once (the page stops
+        // waiting), then the next Load starts afresh.
+        if (!forceFresh && lastFilterError.has(key)) { const err = lastFilterError.get(key); lastFilterError.delete(key); sendResponse({ ok: false, reason: "fetch-failed", error: err }); break; }
         const run = (async () => {
           const stop = startKeepAlive();
           try {
@@ -9660,7 +9895,11 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
             cacheFilterResult(key, data);
           } catch (e) {
             const err = String(e && e.message ? e.message : e);
-            filterCache.set(key, { at: Date.now(), data: null, error: err });
+            // A rate-limit miss isn't remembered (the next Load tries again); other
+            // failures only for 15 seconds - it used to stick for 5 minutes.
+            if (!(e && e.status === 429)) filterCache.set(key, { at: Date.now() - FILTER_CACHE_MS + 15000, data: null, error: err });
+            else filterCache.delete(key);
+            lastFilterError.set(key, err);
           } finally {
             stop();
             filterBuilds.delete(key);
@@ -9706,6 +9945,23 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
             await chrome.storage.local.remove("autoRunQueue");
             sendResponse({ ok: false, error: String(e && e.message ? e.message : e) });
           }
+          break;
+        }
+        if (cmd === "autorun-add") {
+          // More tasks at the end of the queue that's already running (each runs
+          // when the one before it completes). Tasks already in it are skipped.
+          const { autoRunQueue: q } = await chrome.storage.local.get("autoRunQueue");
+          if (!q || !Array.isArray(q.ids) || !q.ids.length) { sendResponse({ ok: false, none: true, error: "No queue is running." }); break; }
+          const names = msg.names && typeof msg.names === "object" ? msg.names : {};
+          const room = Math.max(0, 30 - q.ids.length);
+          const add = (Array.isArray(msg.ids) ? msg.ids : []).map(String).filter((id) => id && !q.ids.includes(id)).filter((id, i, a) => a.indexOf(id) === i).slice(0, room);
+          if (!add.length) { sendResponse({ ok: false, error: room ? "Those tasks are already in the queue." : "The queue is full (30 tasks)." }); break; }
+          const { autoCompleteTasks: ac } = await chrome.storage.local.get("autoCompleteTasks");
+          const marks = { ...(ac || {}) };
+          for (const id of add) if (!marks[id]) marks[id] = { name: names[id] || "", at: Date.now() };
+          const next = { ...q, ids: q.ids.concat(add), names: { ...(q.names || {}), ...names }, total: (Number(q.total) || q.ids.length) + add.length };
+          await chrome.storage.local.set({ autoRunQueue: next, autoCompleteTasks: marks });
+          sendResponse({ ok: true, added: add.length, total: next.total, done: next.total - next.ids.length });
           break;
         }
         if (cmd === "autorun-stop") {
@@ -9795,6 +10051,44 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         if (uniq.length && !error) await chrome.storage.local.set({ cuClientNames: { v: 2, at: Date.now(), teamId: String(cfg.teamId), level, names: uniq } }); // v2: shared Folders included
         if (!uniq.length && cached && Array.isArray(cached.names) && cached.names.length) { sendResponse({ ok: true, names: cached.names, error }); break; }
         sendResponse({ ok: uniq.length > 0, names: uniq, error });
+        break;
+      }
+      case "OPEN_TAB_GROUP": {
+        // "Open in a tab group": a list's ClickUp tasks as tabs in one named Chrome
+        // tab group (a week, a day, a client...), next to the tab the user is on.
+        const urls = [...new Set((Array.isArray(msg.urls) ? msg.urls : []).map(String).filter((u) => /^https:\/\/app\.clickup\.com\//.test(u)))].slice(0, 60);
+        if (!urls.length) { sendResponse({ ok: false, reason: "no-tasks" }); break; }
+        try {
+          const [cur] = await chrome.tabs.query({ active: true, lastFocusedWindow: true }).catch(() => []);
+          const winId = cur && cur.windowId;
+          const ids = [];
+          for (const [i, url] of urls.entries()) {
+            const t = await chrome.tabs.create({ url, active: i === 0, ...(winId != null ? { windowId: winId } : {}), ...(cur && cur.index != null ? { index: cur.index + 1 + i } : {}) });
+            ids.push(t.id);
+          }
+          const groupId = await chrome.tabs.group({ tabIds: ids, ...(winId != null ? { createProperties: { windowId: winId } } : {}) });
+          const colors = ["blue", "green", "purple", "cyan", "orange", "pink", "yellow", "red", "grey"];
+          const color = colors.includes(msg.color) ? msg.color : "blue";
+          if (chrome.tabGroups) await chrome.tabGroups.update(groupId, { title: String(msg.title || "Tasks").slice(0, 60), color, collapsed: false }).catch(() => {});
+          sendResponse({ ok: true, opened: ids.length, capped: (msg.urls || []).length > 60 });
+        } catch (e) {
+          sendResponse({ ok: false, error: String((e && e.message) || e) });
+        }
+        break;
+      }
+      case "CLICKUP_TASK_INDEX": {
+        // Explore › Find these tasks. Not built yet (or rebuilding): starts it and
+        // answers at once with state "building" - the page follows cuTaskIndex.
+        // Built: brings it up to date (what changed since, usually one request)
+        // and answers "ready"; the page reads the rows from IndexedDB itself.
+        const cfg = await getClickupConfig();
+        if (!cfg || !cfg.token || !cfg.teamId) { sendResponse({ ok: false, reason: "not-configured" }); break; }
+        const settings = await getSettings();
+        const { cuTaskIndex: m } = await chrome.storage.local.get("cuTaskIndex");
+        const run = syncTaskIndex({ rebuild: !!msg.rebuild, maxAgeMs: msg.force ? 0 : 5 * 60000 });
+        if (msg.rebuild || tixNeedsBuild(m, cfg, settings)) { run.catch(() => {}); sendResponse({ ok: true, state: "building" }); break; }
+        const r = await run.catch((e) => ({ ok: false, error: String((e && e.message) || e) }));
+        sendResponse({ ...r, state: "ready" });
         break;
       }
       case "CLICKUP_DONE_TODAY": {

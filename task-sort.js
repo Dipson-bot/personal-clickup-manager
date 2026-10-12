@@ -310,7 +310,20 @@
   });
   const start = () => { mo.observe(document.documentElement, { childList: true, subtree: true }); keep.observe(document.documentElement, { childList: true, subtree: true }); refreshAll(); };
   if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", start); else start();
-  window.PcmTaskSort = { refresh: refreshAll };
+  window.PcmTaskSort = {
+    refresh: refreshAll,
+    // A task dragged into place inside a list: that list's order is now the
+    // user's own. Its rows' "normal order" becomes what's on screen, and a column
+    // sort goes off (it would put the row straight back). true = a sort was on.
+    takeOrder(list) {
+      if (list) [...list.children].forEach((el, i) => { if (isRow(el)) el._pcsOrd = i; });
+      if (!state.key) return false;
+      state = { key: "", dir: 1 };
+      save();
+      refreshAll();
+      return true;
+    },
+  };
 })();
 
 // While the lists and cards are rebuilt for a changed setting (background:

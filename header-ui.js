@@ -144,6 +144,10 @@
   .pcm-thm .seg { display: grid; grid-template-columns: 1fr 1fr; border: 1px solid var(--border); border-radius: 8px; overflow: hidden; margin-bottom: 12px; }
   .pcm-thm .seg button { font: inherit; font-size: 12.5px; padding: 6px; border: 0; background: none; color: var(--muted); cursor: pointer; }
   .pcm-thm .seg button.on { background: var(--indigo); color: #fff; }
+  .pcm-thm .seg.seg3 { grid-template-columns: 1fr 1fr 1fr; }
+  .pcm-thm .seg.seg3 button { font-size: 11.5px; padding: 6px 2px; }
+  .pcm-thm .wxs { display: flex; align-items: center; gap: 6px; margin: -4px 0 12px; font-size: 11px; color: var(--muted); }
+  .pcm-thm .wxs input { flex: 1; min-width: 0; margin: 0; }
   .pcm-thm h4 { margin: 0 0 6px; font-size: 11px; text-transform: uppercase; letter-spacing: .05em; color: var(--muted); }
   .pcm-thm .sws { display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px; margin-bottom: 12px; }
   .pcm-thm .sws:last-child { margin-bottom: 0; }
@@ -159,6 +163,7 @@
   html.pcm-wall { background: var(--bg); }
   html.pcm-wall body { background: transparent !important; }
   #pcmWall { position: fixed; inset: 0; z-index: -1; pointer-events: none; overflow: hidden; }
+  #pcmWall .wvid { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: var(--wfit, cover); filter: blur(var(--wblur, 0px)); }
   #pcmWall .wimg { position: absolute; inset: -40px; background-position: center; background-repeat: no-repeat; background-size: var(--wfit, cover); filter: blur(var(--wblur, 0px)); }
   .lk-list { display: flex; flex-wrap: wrap; gap: 6px; margin: 0 0 10px; }
   .lk { position: relative; display: inline-flex; }
@@ -203,7 +208,7 @@
     chrome.storage.onChanged.addListener((ch, area) => {
       if (area !== "local") return;
       if (PAL_KEYS.some((k) => ch[k])) chrome.storage.local.get(PAL_KEYS).then(setPal).catch(() => {});
-      if (ch.themeWall || ch.themeWallImg) loadWall();
+      if (ch.themeWall || ch.themeWallImg || ch.themeScene || ch.themeWallVideo) loadWall();
       if (ch.theme && ch.theme.newValue && typeof window.applyTheme === "function" && root.dataset.theme !== ch.theme.newValue) window.applyTheme(ch.theme.newValue);
     });
   } catch (e) {}
@@ -233,11 +238,20 @@
         return '<button type="button" class="sw' + (cur[m] === "custom" && mode === m ? " on" : "") + '" data-m="' + m + '" data-p="custom" title="Your own palette"><i style="--a:' + v.bg + ";--b:" + v.indigo + '"></i>Custom</button>';
       })();
       menu.innerHTML ='<div class="seg"><button type="button" data-mode="light" class="' + (mode === "light" ? "on" : "") + '">☀ Light</button><button type="button" data-mode="dark" class="' + (mode === "dark" ? "on" : "") + '">☾ Dark</button></div>' +
+        "<h4>Background</h4><div class=\"seg seg3\">" + [["weather", "\uD83C\uDF26 Live weather", "Follows the running task: snow at the start, sun on the estimate, storms past it"], ["plain", "Plain", "No background"], ["wall", "\uD83D\uDDBC Wallpaper", "Your own picture or video"]].map(([k, t, tip]) => '<button type="button" data-scene="' + k + '" title="' + tip + '" class="' + (scene === k ? "on" : "") + '">' + t + "</button>").join("") + "</div>" +
+        (scene === "weather" && window.PcmWeather ? '<label class="wxs" title="Lower it if text is hard to read: the cards get more solid and the weather calmer">Softer<input type="range" min="0" max="100" step="5" data-wx-strength value="' + window.PcmWeather.strength + '" aria-label="Weather strength" />Stronger</label>' : "") +
         "<h4>Your looks</h4><div class=\"lk-list\">" + defaultTile() + looks.map(lookTile).join("") + '<button type="button" class="lk-save" data-look-save="1" title="Keep the colours, light / dark and the wallpaper you have on now">\uFF0B Save current look\u2026</button></div>' +
         "<h4>Light palettes</h4><div class=\"sws\">" + sws("light") + "</div><h4>Dark palettes</h4><div class=\"sws\">" + sws("dark") + "</div>" +
         '<button type="button" class="thm-more" data-edit="1">🎨 Custom colours &amp; wallpaper…</button>';
       menu.querySelectorAll("[data-edit]").forEach((b) => { b.onclick = () => { closeMenu(); openAppearance(); }; });
       menu.querySelectorAll("[data-mode]").forEach((b) => { b.onclick = async () => { await setMode(b.dataset.mode); paint(); }; });
+      const wxs = menu.querySelector("[data-wx-strength]");
+      if (wxs) wxs.oninput = () => { window.PcmWeather.setStrength(Number(wxs.value)); const a = document.getElementById("apWxStrength"); if (a) a.value = wxs.value; };
+      menu.querySelectorAll("[data-scene]").forEach((b) => { b.onclick = async () => {
+        // Wallpaper with none chosen yet: go and choose one.
+        if (b.dataset.scene === "wall" && !lastImg && !vidMeta) { closeMenu(); openAppearance(); return; }
+        await setScene(b.dataset.scene); paint();
+      }; });
       menu.querySelectorAll("[data-look]").forEach((b) => { b.onclick = async () => { await useLook(looks.find((l) => l.id === b.dataset.look)); paint(); }; });
       menu.querySelectorAll("[data-look-default]").forEach((b) => { b.onclick = async () => { await useDefaultLook(); paint(); }; });
       menu.querySelectorAll("[data-look-x]").forEach((b) => { b.onclick = async (e) => { e.stopPropagation(); const l = looks.find((x) => x.id === b.dataset.lookX); if (l && confirm("Delete the look \u201c" + l.name + "\u201d?")) { await deleteLook(l); paint(); } }; });
@@ -280,10 +294,40 @@
   // long side when it was chosen (so any size or shape of image works, and it
   // stays small), kept separately so moving a slider doesn't rewrite it.
   const WALL_DEF = { fit: "cover", dim: 35, blur: 0, glass: true, popup: true };
+  // Background: "weather" (Live weather, weather.js - the default, also for
+  // everyone updating), "plain", or "wall" (your picture / video). themeScene.
+  const SCENES = ["weather", "plain", "wall"];
+  let scene = "weather";
+  async function setScene(s) {
+    scene = SCENES.includes(s) ? s : "weather";
+    try { await chrome.storage.local.set({ themeScene: scene }); } catch (e) {}
+    paintWall(lastWall, lastImg); paintAppearance(lastWall, lastImg);
+  }
+  // A video or animated GIF wallpaper is too big for extension storage: the file
+  // itself is kept in this computer's IndexedDB (pcm-wallpaper › files › "wall"),
+  // its description in themeWallVideo { kind: "video" | "gif", name, size, type, at }.
+  let vidMeta = null, vidUrl = "", vidAt = 0;
+  const sizeText = (n) => (n = Number(n) || 0) >= 1048576 ? Math.round(n / 1048576 * 10) / 10 + " MB" : Math.max(1, Math.round(n / 1024)) + " KB";
+  const idb = () => new Promise((res, rej) => { const r = indexedDB.open("pcm-wallpaper", 1); r.onupgradeneeded = () => r.result.createObjectStore("files"); r.onsuccess = () => res(r.result); r.onerror = () => rej(r.error); });
+  const idbDo = async (mode, fn) => { const db = await idb(); return new Promise((res, rej) => { const tx = db.transaction("files", mode); const req = fn(tx.objectStore("files")); tx.oncomplete = () => res(req && req.result); tx.onerror = () => rej(tx.error); }); };
+  const idbPut = (k, v) => idbDo("readwrite", (s) => s.put(v, k));
+  const idbGet = (k) => idbDo("readonly", (s) => s.get(k));
+  const idbDel = (k) => idbDo("readwrite", (s) => s.delete(k));
+  async function motionUrl() {
+    if (!vidMeta) return "";
+    if (vidUrl && vidAt === vidMeta.at) return vidUrl;
+    const blob = await idbGet("wall").catch(() => null);
+    if (vidUrl) URL.revokeObjectURL(vidUrl);
+    vidUrl = blob ? URL.createObjectURL(blob) : ""; vidAt = vidMeta.at;
+    return vidUrl;
+  }
+  document.addEventListener("visibilitychange", () => { const v = wallEl && wallEl.querySelector("video"); if (v) { if (document.hidden) v.pause(); else v.play().catch(() => {}); } });
   const inToolbarPopup = /\/popup\.html$/.test(location.pathname) && !root.classList.contains("in-panel");
   let wallEl = null;
   function paintWall(w, img) {
-    const on = !!img && !(inToolbarPopup && w.popup === false) && !(/\/popup\.html$/.test(location.pathname) && w.popup === false);
+    const W = window.PcmWeather;
+    if (W) { if (scene === "weather") W.start(); else W.stop(); }
+    const on = scene === "wall" && (!!img || !!vidMeta) && !(inToolbarPopup && w.popup === false) && !(/\/popup\.html$/.test(location.pathname) && w.popup === false);
     root.classList.toggle("pcm-wall", on);
     root.classList.toggle("pcm-glass", on && w.glass !== false);
     if (!on) { if (wallEl) { wallEl.remove(); wallEl = null; } return; }
@@ -295,15 +339,36 @@
       (document.body || document.documentElement).appendChild(wallEl);
     }
     const im = wallEl.querySelector(".wimg");
-    const url = 'url("' + img + '")';
-    if (im._url !== url) { im._url = url; im.style.backgroundImage = url; }
+    let vid = wallEl.querySelector("video");
+    if (vidMeta) {
+      // Video / animated GIF from IndexedDB (an object URL, made once per file).
+      motionUrl().then((u) => {
+        if (!wallEl || !u) return;
+        if (vidMeta.kind === "video") {
+          im.style.backgroundImage = ""; im._url = "";
+          if (!vid) { vid = document.createElement("video"); vid.className = "wvid"; vid.muted = true; vid.loop = true; vid.autoplay = true; vid.playsInline = true; vid.setAttribute("aria-hidden", "true"); im.after(vid); }
+          if (vid.src !== u) vid.src = u;
+          if (!document.hidden) vid.play().catch(() => {});
+        } else {
+          if (vid) vid.remove();
+          const url2 = 'url("' + u + '")';
+          if (im._url !== url2) { im._url = url2; im.style.backgroundImage = url2; }
+        }
+      });
+    } else {
+      if (vid) vid.remove();
+      const url = 'url("' + img + '")';
+      if (im._url !== url) { im._url = url; im.style.backgroundImage = url; }
+    }
     wallEl.style.setProperty("--wfit", w.fit === "contain" ? "contain" : "cover");
     wallEl.style.setProperty("--wblur", Math.max(0, Math.min(20, Number(w.blur) || 0)) + "px");
     wallEl.style.setProperty("--wdim", String(Math.max(0, Math.min(85, Number(w.dim != null ? w.dim : 35))) / 100));
   }
   function loadWall() {
     try {
-      chrome.storage.local.get(["themeWall", "themeWallImg"]).then((g) => {
+      chrome.storage.local.get(["themeWall", "themeWallImg", "themeScene", "themeWallVideo"]).then((g) => {
+        scene = SCENES.includes(g && g.themeScene) ? g.themeScene : "weather";
+        vidMeta = g && g.themeWallVideo && g.themeWallVideo.at ? g.themeWallVideo : null;
         const w = { ...WALL_DEF, ...((g && g.themeWall) || {}) };
         const img = typeof (g && g.themeWallImg) === "string" && /^data:image\//.test(g.themeWallImg) ? g.themeWallImg : "";
         const go = () => { paintWall(w, img); paintAppearance(w, img); };
@@ -360,7 +425,7 @@
       theme: g.theme === "dark" ? "dark" : "light",
       palLight: g.themePaletteLight || "classic", palDark: g.themePaletteDark || "classic",
       customLight: g.themeCustomLight || null, customDark: g.themeCustomDark || null,
-      wall: img ? { ...WALL_DEF, ...(g.themeWall || {}) } : null, imgKey, thumb: await lookThumb(img),
+      wall: img ? { ...WALL_DEF, ...(g.themeWall || {}) } : null, imgKey, thumb: await lookThumb(img), scene,
     };
     const next = looks.filter((l) => l.id !== look.id).concat(look);
     await chrome.storage.local.set({ themeLooks: next });
@@ -382,15 +447,18 @@
       const h = await chrome.storage.local.get(look.imgKey).catch(() => ({}));
       if (h[look.imgKey]) { patch.themeWallImg = h[look.imgKey]; patch.themeWall = { ...WALL_DEF, ...(look.wall || {}) }; }
     }
+    patch.themeScene = SCENES.includes(look.scene) ? look.scene : look.imgKey ? "wall" : "plain";
+    scene = patch.themeScene;
     await chrome.storage.local.set(patch).catch(() => {});
     if (!patch.themeWallImg) { await chrome.storage.local.set({ themeWallImg: "" }).catch(() => {}); await chrome.storage.local.remove("themeWallImg").catch(() => {}); }
     setPal(patch);
     if (typeof window.applyTheme === "function") window.applyTheme(look.theme); else root.dataset.theme = look.theme;
     loadWall();
   }
-  // The plain look: no wallpaper, Classic in both modes (light / dark stays as it is).
+  // The plain look: no background, Classic in both modes (light / dark stays as it is).
   async function useDefaultLook() {
-    await chrome.storage.local.set({ themeWallImg: "", themePaletteLight: "classic", themePaletteDark: "classic" }).catch(() => {});
+    scene = "plain";
+    await chrome.storage.local.set({ themeWallImg: "", themePaletteLight: "classic", themePaletteDark: "classic", themeScene: "plain" }).catch(() => {});
     await chrome.storage.local.remove("themeWallImg").catch(() => {});
     setPal({ themePaletteLight: "classic", themePaletteDark: "classic" });
     paintWall(lastWall, ""); lastImg = "";
@@ -458,9 +526,18 @@
     if ($c("apWallBlur")) $c("apWallBlur").value = String(w.blur || 0);
     if ($c("apWallGlass")) $c("apWallGlass").checked = w.glass !== false;
     if ($c("apWallPopup")) $c("apWallPopup").checked = w.popup !== false;
-    if ($c("apWallRemove")) $c("apWallRemove").hidden = !img;
-    if ($c("apWallThumb")) { $c("apWallThumb").style.backgroundImage = img ? 'url("' + img + '")' : ""; $c("apWallThumb").hidden = !img; }
-    c.querySelectorAll("[data-wall-on]").forEach((el) => { el.hidden = !img; });
+    const any = !!img || !!vidMeta;
+    if ($c("apWallRemove")) $c("apWallRemove").hidden = !any;
+    if ($c("apWallThumb")) {
+      const th = $c("apWallThumb");
+      th.style.backgroundImage = img && !vidMeta ? 'url("' + img + '")' : "";
+      th.textContent = vidMeta ? (vidMeta.kind === "video" ? "\uD83C\uDFAC" : "GIF") : "";
+      th.title = vidMeta ? vidMeta.name + " (" + sizeText(vidMeta.size) + ")" : "";
+      th.hidden = !any;
+    }
+    c.querySelectorAll("[data-wall-on]").forEach((el) => { el.hidden = !any; });
+    c.querySelectorAll('input[name="apScene"]').forEach((r) => { r.checked = r.value === scene; });
+    c.querySelectorAll("[data-scene-weather]").forEach((el) => { el.hidden = scene !== "weather"; });
   }
   function wireAppearance() {
     const c = document.getElementById("appearanceCard");
@@ -507,24 +584,99 @@
     // Wallpaper.
     const setWall = (patch) => { const w = { ...lastWall, ...patch }; lastWall = w; paintWall(w, lastImg); chrome.storage.local.set({ themeWall: w }).catch(() => {}); };
     if ($c("apWallPick")) $c("apWallPick").onclick = () => $c("apWallFile") && $c("apWallFile").click();
+    c.querySelectorAll('input[name="apScene"]').forEach((r) => { r.onchange = async () => {
+      if (!r.checked) return;
+      if (r.value === "wall" && !lastImg && !vidMeta) { say("Choose a picture or a video below first."); $c("apWallFile") && $c("apWallFile").click(); paintAppearance(lastWall, lastImg); return; }
+      await setScene(r.value);
+      say(r.value === "weather" ? "Live weather is on - it follows the running task." : r.value === "plain" ? "Plain background." : "Your wallpaper is on.");
+    }; });
+    // Preview every stage of the weather without a timer (this page only).
+    const prev = $c("apWxPrev"), prevTxt = $c("apWxPrevTxt");
+    const showPrev = () => { if (prevTxt && window.PcmWeather) prevTxt.textContent = window.PcmWeather.forecast().text; };
+    // ▶ Play: the whole cycle as a demo - the night, clouds rolling in to the
+    // snowy start, 0% → 250% of the estimate in about 30 s (the slider follows),
+    // a moment at the volcano, then clouds again back to the night. ❚❚ Pause
+    // stops where it is; Play goes on from there (or from the slider).
+    const play = $c("apWxPlay");
+    let demo = null, demoTimer = 0;
+    const DEMO = { night: 25, into: 55, rampTicks: 300, hold: 30, out: 60 }; // ticks of 100 ms
+    const playLabel = (on) => { if (play) { play.textContent = on ? "❚❚ Pause" : "▶ Play"; play.setAttribute("aria-pressed", on ? "true" : "false"); } };
+    const pausePlay = () => { clearInterval(demoTimer); demoTimer = 0; playLabel(false); };
+    const tick = () => {
+      const W = window.PcmWeather;
+      if (!W || !demo) { pausePlay(); return; }
+      if (demo.n > 0) { demo.n--; return; }
+      if (demo.phase === "night") { demo.phase = "into"; demo.n = DEMO.into; demo.at = 0; W.preview(0); }
+      else if (demo.phase === "into") { demo.phase = "ramp"; }
+      else if (demo.phase === "ramp") {
+        demo.at = Math.min(250, demo.at + 250 / DEMO.rampTicks);
+        W.preview(demo.at / 100);
+        if (demo.at >= 250) { demo.phase = "hold"; demo.n = DEMO.hold; }
+      } else if (demo.phase === "hold") { demo.phase = "out"; demo.n = DEMO.out; W.preview("night"); }
+      else { demo = null; pausePlay(); if (prev) prev.value = "0"; showPrev(); return; } // done: resting on the night
+      if (prev && demo) prev.value = String(Math.round(demo.at || 0));
+      showPrev();
+    };
+    if (play) play.onclick = () => {
+      const W = window.PcmWeather;
+      if (!W) return;
+      if (demoTimer) { pausePlay(); return; }
+      if (!demo) {
+        const v = prev ? Number(prev.value) || 0 : 0;
+        demo = v > 0 && v < 250 ? { phase: "ramp", n: 0, at: v } : { phase: "night", n: DEMO.night, at: 0 };
+        if (demo.phase === "night") W.preview("night"); else W.preview(v / 100);
+        showPrev();
+      }
+      playLabel(true);
+      demoTimer = setInterval(tick, 100);
+    };
+    if (prev) prev.oninput = () => { if (window.PcmWeather) { pausePlay(); demo = { phase: "ramp", n: 0, at: Number(prev.value) || 0 }; window.PcmWeather.preview(Number(prev.value) / 100); showPrev(); } };
+    const strg = $c("apWxStrength");
+    if (strg && window.PcmWeather) {
+      strg.value = String(window.PcmWeather.strength);
+      apRefills.push(() => { if (document.activeElement !== strg) strg.value = String(window.PcmWeather.strength); });
+      strg.oninput = () => window.PcmWeather.setStrength(Number(strg.value));
+      try { chrome.storage.onChanged.addListener((ch, area) => { if (area === "local" && ch.themeWeather && document.activeElement !== strg) strg.value = String(window.PcmWeather.strength); }); } catch (e) {}
+    }
+    if ($c("apWxLive")) $c("apWxLive").onclick = () => { pausePlay(); demo = null; if (prev) prev.value = "0"; if (window.PcmWeather) { window.PcmWeather.preview(null); showPrev(); } };
     if ($c("apWallFile")) $c("apWallFile").onchange = async () => {
       const f = $c("apWallFile").files && $c("apWallFile").files[0];
       $c("apWallFile").value = "";
       if (!f) return;
-      if (!/^image\//.test(f.type || "")) { say("That isn't a picture - choose a JPG, PNG, WebP or GIF.", true); return; }
+      // A video or an animated GIF: kept as it is (in IndexedDB) so it moves.
+      if (/^video\/(mp4|webm|ogg)$/.test(f.type || "") || f.type === "image/gif") {
+        if (f.size > 200 * 1048576) { say("That file is " + Math.round(f.size / 1048576) + " MB - choose one under 200 MB (a short loop is plenty).", true); return; }
+        say("Saving the " + (f.type === "image/gif" ? "GIF" : "video") + "…");
+        try {
+          await idbPut("wall", f);
+          vidMeta = { kind: f.type === "image/gif" ? "gif" : "video", name: f.name || "wallpaper", size: f.size, type: f.type, at: Date.now() };
+          await chrome.storage.local.set({ themeWallVideo: vidMeta, themeWall: { ...lastWall }, themeScene: "wall" });
+          await chrome.storage.local.remove("themeWallImg").catch(() => {});
+          lastImg = ""; scene = "wall";
+          paintWall(lastWall, ""); paintAppearance(lastWall, "");
+          say((vidMeta.kind === "gif" ? "Moving GIF" : "Video") + " wallpaper set (" + sizeText(f.size) + ") - it plays muted on a loop and pauses when the page is hidden.");
+        } catch (e) { say("Couldn't keep that file: " + ((e && e.message) || e), true); }
+        return;
+      }
+      if (!/^image\//.test(f.type || "")) { say("Choose a picture (JPG, PNG, WebP, GIF) or a video (MP4, WebM).", true); return; }
       say("Getting the picture ready…");
       try {
         const r = await shrinkImage(f);
-        await chrome.storage.local.set({ themeWallImg: r.data, themeWall: { ...lastWall } });
+        if (vidMeta) { await idbDel("wall").catch(() => {}); vidMeta = null; await chrome.storage.local.remove("themeWallVideo").catch(() => {}); }
+        await chrome.storage.local.set({ themeWallImg: r.data, themeWall: { ...lastWall }, themeScene: "wall" });
+        scene = "wall";
         lastImg = r.data;
         paintWall(lastWall, lastImg); paintAppearance(lastWall, lastImg);
         say("Wallpaper set (" + r.src[0] + "×" + r.src[1] + (r.w && (r.w !== r.src[0]) ? ", shrunk to " + r.w + "×" + r.h : "") + ", " + Math.round(r.data.length * 0.75 / 1024) + " KB). It fills any screen size.");
       } catch (e) { say("Couldn't use that picture: " + ((e && e.message) || e), true); }
     };
     if ($c("apWallRemove")) $c("apWallRemove").onclick = async () => {
-      await chrome.storage.local.remove("themeWallImg").catch(() => {});
-      lastImg = ""; paintWall(lastWall, ""); paintAppearance(lastWall, "");
-      say("Wallpaper removed.");
+      await chrome.storage.local.remove(["themeWallImg", "themeWallVideo"]).catch(() => {});
+      if (vidMeta) { await idbDel("wall").catch(() => {}); vidMeta = null; }
+      lastImg = "";
+      if (scene === "wall") { scene = "weather"; await chrome.storage.local.set({ themeScene: "weather" }).catch(() => {}); }
+      paintWall(lastWall, ""); paintAppearance(lastWall, "");
+      say("Wallpaper removed - back to Live weather.");
     };
     if ($c("apWallFit")) $c("apWallFit").onchange = () => setWall({ fit: $c("apWallFit").value });
     if ($c("apWallDim")) $c("apWallDim").oninput = () => setWall({ dim: Number($c("apWallDim").value) });

@@ -125,7 +125,15 @@
     if (!ids.length) return "click the box on the tasks you want to run first";
     const g = await chrome.storage.local.get("autoRunQueue").catch(() => ({}));
     const q = g && g.autoRunQueue;
-    if (q && Array.isArray(q.ids) && q.ids.length) return "a run is already going (" + (q.total - q.ids.length) + " of " + q.total + " done) - stop that one first";
+    if (q && Array.isArray(q.ids) && q.ids.length) {
+      // A run is going: these go at its end.
+      const a = await send({ type: "DEV_CMD", cmd: "autorun-add", ids, names: picks.names }, 15000);
+      if (!a || !a.ok) return "couldn't add: " + ((a && a.error) || "no answer from the extension");
+      picks = { ids: [], names: {} };
+      arBoxes = false;
+      await chrome.storage.local.set({ autoRunPick: picks, arBoxes: false });
+      return "added " + a.added + " to the running queue - now " + a.done + " of " + a.total + " done";
+    }
     const r = await send({ type: "DEV_CMD", cmd: "autorun-start", ids, names: picks.names }, 30000);
     if (!r || !r.ok) return "couldn't start: " + ((r && r.error) || "no answer from the extension");
     // The queue owns the order now, and shows it on the rows itself.
@@ -146,7 +154,7 @@
     const out = [];
     const n = Object.keys(marked).length;
     if (queue && Array.isArray(queue.ids) && queue.ids.length) out.push({ key: "queue", text: "▶ Queue " + (queue.total - queue.ids.length + 1) + " of " + queue.total + " running" + (queue.paused ? " (paused)" : ""), btn: "Stop", run: stopQueue, tip: "Tasks run one after another: each completes at its estimate, then the next starts" });
-    if (picks.ids.length) out.push({ key: "arpick", text: "▶ " + picks.ids.length + " task" + (picks.ids.length === 1 ? "" : "s") + " in run order", btn: "Start", run: async () => setNote(await startArPick()), tip: picks.ids.map((id, i) => i + 1 + ". " + (picks.names[id] || id)).join("\n") });
+    if (picks.ids.length) out.push({ key: "arpick", text: "▶ " + picks.ids.length + " task" + (picks.ids.length === 1 ? "" : "s") + " in run order", btn: queue && Array.isArray(queue.ids) && queue.ids.length ? "Add to queue" : "Start", run: async () => setNote(await startArPick()), tip: picks.ids.map((id, i) => i + 1 + ". " + (picks.names[id] || id)).join("\n") });
     if (n) out.push({ key: "marks", text: "⏱ " + n + " task" + (n === 1 ? "" : "s") + " complete at " + (n === 1 ? "its" : "their") + " estimate", btn: "Turn off", run: clearMarks, tip: Object.values(marked).map((m) => m.name).filter(Boolean).join("\n") });
     if (boxes) out.push({ key: "boxes", text: "☑ Tick boxes in the task list", btn: "Hide", run: hideBoxes, tip: "Tick a task to have it complete at its estimate" });
     if (arBoxes) out.push({ key: "arboxes", text: "① Numbered boxes in the task list", btn: "Hide", run: hideArBoxes, tip: "Click a task's box to put it in the run order, click it again to take it out" });
@@ -203,7 +211,9 @@
       } else if (qc) qc.remove();
       // The tick box (shown while acBoxes is on).
       let cb = wrap && wrap.querySelector(".ac-box");
-      const want = boxes && wrap && canMark(t);
+      // The boxes belong to the Tasks list only (dashboard / popup), not the other cards.
+      const inMain = !!row.closest("#dashTasks, #cuTaskList");
+      const want = boxes && wrap && inMain && canMark(t);
       if (want && !cb) {
         cb = document.createElement("input");
         cb.type = "checkbox";
@@ -215,7 +225,7 @@
       // The numbered box (shown while arBoxes is on) - its place in the run order.
       // A task already in a running queue shows its queue chip instead.
       let nb = wrap && wrap.querySelector(".ar-box");
-      const wantN = arBoxes && wrap && qi < 0 && canMark(t);
+      const wantN = arBoxes && wrap && inMain && qi < 0 && canMark(t);
       if (wantN && !nb) {
         nb = document.createElement("button");
         nb.type = "button";
@@ -280,7 +290,7 @@
     { name: "/cheats", about: "list the commands you can use" },
     { name: "/autocomplete", about: "choose tasks that complete themselves when their tracked time reaches the estimate  (/autocomplete list | clear | off <n>)" },
     { name: "/autocomplete boxes", about: "a tick box on every task row to mark them right in the table  (/autocomplete boxes off to hide)" },
-    { name: "/autorun", about: "run tasks one after another: each starts, completes at its estimate, then the next starts  (/autorun list | stop | clear)" },
+    { name: "/autorun", about: "run tasks one after another: each starts, completes at its estimate, then the next starts - while one runs, the tasks you pick go at its end  (/autorun list | stop | clear)" },
     { name: "/autorun boxes", about: "a numbered box on every task row: click them in the order you want the tasks to run, then Start  (/autorun boxes off to hide)" },
     { name: "/refresh", about: "read everything from ClickUp again now" },
     { name: "/whoami", about: "who and where you are" },
@@ -397,6 +407,8 @@
       line("unmarked: " + nm, "ok");
       return;
     }
+    if (arg === "checkboxes" || arg === "checkboxes on") arg = "boxes";
+    if (arg === "checkboxes off") arg = "boxes off";
     if (arg === "boxes" || arg === "boxes on") {
       // Only one kind of box at a time, or a row would carry both a tick and a number.
       await chrome.storage.local.set({ acBoxes: true, arBoxes: false });
@@ -465,6 +477,8 @@
       line("queue stopped - the running timer keeps going; queued tasks stay marked for auto-complete (/autocomplete clear unmarks them)", "ok");
       return;
     }
+    if (arg === "checkboxes" || arg === "checkboxes on") arg = "boxes";
+    if (arg === "checkboxes off") arg = "boxes off";
     if (arg === "boxes" || arg === "boxes on") {
       // Only one kind of box at a time, so this switches /autocomplete's ticks off.
       await chrome.storage.local.set({ arBoxes: true, acBoxes: false });
@@ -492,8 +506,9 @@
       line(err || "started - " + n + " task" + (n === 1 ? "" : "s") + ", \"" + String(first).slice(0, 60) + "\" is running (/autorun list to follow it)", err ? "e" : "ok");
       return;
     }
-    if (q && q.ids && q.ids.length) { line("a queue is already running (" + (q.total - q.ids.length) + " of " + q.total + " done) - /autorun stop first", "e"); return; }
-    const list = await openTasksWithEstimate();
+    const running = !!(q && q.ids && q.ids.length);
+    if (running) line("a queue is running (" + (q.total - q.ids.length) + " of " + q.total + " done) - the tasks you pick now go at its end", "hl");
+    const list = (await openTasksWithEstimate()).filter((t) => !running || !q.ids.includes(String(t.id)));
     if (!list.length) { line("no open tasks with an estimate found - open the dashboard once so your tasks load", "e"); return; }
     list.forEach((t, i) => line(String(i + 1).padStart(3) + ". " + t.name.slice(0, 70) + "  · est " + fmt(t.est) + " · " + day(t.due) + (t.client ? " · " + t.client : "") + (t.shared ? "  (shared)" : "")));
     line("type the task numbers IN THE ORDER to run them (e.g. 3 1 2) - Esc cancels", "mu");
@@ -513,11 +528,17 @@
           const total = order.reduce((a, t) => a + t.est, 0);
           line("queue:", "hl");
           order.forEach((t, i) => line("  " + (i + 1) + ". " + t.name.slice(0, 70) + "  · " + fmt(t.est), "hl"));
-          line("about " + fmt(total) + " in all. Each time entry is labelled \"Auto-run queue\" in ClickUp. Start now? (y/n)", "mu");
+          line("about " + fmt(total) + " in all. Each time entry is labelled \"Auto-run queue\" in ClickUp. " + (running ? "Add them to the end of the running queue? (y/n)" : "Start now? (y/n)"), "mu");
           return;
         }
         if (/^y(es)?$/i.test(v)) {
           const names = {}; for (const t of order) names[t.id] = t.name;
+          if (running) {
+            const a = await send({ type: "DEV_CMD", cmd: "autorun-add", ids: order.map((t) => t.id), names }, 15000);
+            line(a && a.ok ? "added " + a.added + " - now " + a.done + " of " + a.total + " done (/autorun list to follow it)" : "couldn't add: " + ((a && a.error) || "no answer"), a && a.ok ? "ok" : "e");
+            setMode(null);
+            return;
+          }
           const r = await send({ type: "DEV_CMD", cmd: "autorun-start", ids: order.map((t) => t.id), names }, 30000);
           line(r && r.ok ? "started - \"" + order[0].name.slice(0, 60) + "\" is running (/autorun list to follow it)" : "couldn't start: " + ((r && r.error) || "no answer"), r && r.ok ? "ok" : "e");
           setMode(null);

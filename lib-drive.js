@@ -28,10 +28,10 @@ const STATE_FILENAME = "daily-login-state.json";
 const ACCOUNTS_FILENAME = "daily-login-accounts.json";
 const KEY_FILENAME = "daily-login-key.json";
 
-function buildAuthUrl({ prompt = "", scope = SCOPE, loginHint = "" } = {}) {
+function buildAuthUrl({ prompt = "", scope = SCOPE, loginHint = "", clientId = GOOGLE_CLIENT_ID } = {}) {
   const redirectUri = chrome.identity.getRedirectURL();
   const params = new URLSearchParams({
-    client_id: GOOGLE_CLIENT_ID,
+    client_id: clientId,
     response_type: "token",
     redirect_uri: redirectUri,
     scope,
@@ -44,12 +44,19 @@ function buildAuthUrl({ prompt = "", scope = SCOPE, loginHint = "" } = {}) {
   return `https://accounts.google.com/o/oauth2/v2/auth?${params.toString()}`;
 }
 
-async function launchAuth({ interactive = false, prompt = "", scope = SCOPE, loginHint = "" } = {}) {
+async function launchAuth({ interactive = false, prompt = "", scope = SCOPE, loginHint = "", clientId = GOOGLE_CLIENT_ID } = {}) {
   try {
-    const redirectedTo = await chrome.identity.launchWebAuthFlow({
-      url: buildAuthUrl({ prompt, scope, loginHint }),
-      interactive,
-    });
+    const opts = { url: buildAuthUrl({ prompt, scope, loginHint, clientId }), interactive };
+    // A silent sign-in that Google doesn't finish at once (needs consent, picks an
+    // account…) used to wait with no end - and everything waiting on it with it.
+    // Give it up after the page has loaded / 8 seconds instead.
+    if (!interactive) Object.assign(opts, { abortOnLoadForNonInteractive: true, timeoutMsForNonInteractive: 8000 });
+    let redirectedTo;
+    try { redirectedTo = await chrome.identity.launchWebAuthFlow(opts); }
+    catch (e) {
+      if (interactive || !/propert|unexpected/i.test(String(e && e.message))) throw e;
+      redirectedTo = await chrome.identity.launchWebAuthFlow({ url: opts.url, interactive: false }); // an older Chrome
+    }
     const hash = new URL(redirectedTo).hash.substring(1);
     const params = new URLSearchParams(hash);
     const token = params.get("access_token");
@@ -74,6 +81,23 @@ export async function getFileToken(interactive = true) {
   await chrome.storage.local.set({ driveFileToken: { token: r.token, expiresAt: now + (r.expiresIn - 60) * 1000 } });
   return r.token;
 }
+// Exports to Google Sheets / Docs sign in with their OWN Google client (the
+// "Personal ClickUp Manager" project made for exports), whose project has the
+// Google Sheets API on - so every link in an exported sheet can be made
+// clickable. Drive sync and the Clients' Drive folders keep GOOGLE_CLIENT_ID:
+// what they stored belongs to that client, and switching would lose it.
+export const EXPORT_CLIENT_ID = "242888253676-9293n9r0reqgnd2u5gur2e8u8nkks5s1.apps.googleusercontent.com";
+export async function getExportToken(interactive = true) {
+  const now = Date.now();
+  const { driveExportToken: c } = await chrome.storage.local.get("driveExportToken");
+  if (c && c.token && c.clientId === EXPORT_CLIENT_ID && c.expiresAt > now + 60000) return c.token;
+  const hint = await getDriveAccount().catch(() => "");
+  let r = await launchAuth({ interactive: false, scope: SCOPE_FILE, clientId: EXPORT_CLIENT_ID, loginHint: hint });
+  if (!r && interactive) r = await launchAuth({ interactive: true, scope: SCOPE_FILE, clientId: EXPORT_CLIENT_ID, loginHint: hint });
+  if (!r || !r.token) return null;
+  await chrome.storage.local.set({ driveExportToken: { token: r.token, clientId: EXPORT_CLIENT_ID, expiresAt: now + (r.expiresIn - 60) * 1000 } });
+  return r.token;
+}
 // Upload an HTML table and let Drive convert it into a Google Sheet / Doc,
 // which keeps the bold "main" rows and the header row.
 // Let anyone with the link view the file (only ever applied to files we create).
@@ -86,28 +110,32 @@ export async function shareAnyoneWithLink(token, fileId) {
   return res.ok;
 }
 
-export async function createGoogleFile(token, { name, html, csv, kind }) {
+export async function createGoogleFile(token, { name, html, csv, xlsx, kind }) {
   // Drive imports HTML as a DOC only; Sheets accepts csv/tsv/xls(x)/ods. Sending
   // HTML with a spreadsheet target produced an empty Google Doc, so each target
   // gets the source format it actually supports.
   const docs = kind === "docs";
   const mimeType = docs ? "application/vnd.google-apps.document" : "application/vnd.google-apps.spreadsheet";
-  const srcType = docs ? "text/html" : "text/csv";
-  const content = docs ? html : csv;
-  if (!content) throw new Error("Nothing to export.");
+  // A formatted .xlsx (base64) keeps its fonts, wrapping and widths in the Sheet.
+  const useX = !docs && !!xlsx;
+  const srcType = docs ? "text/html" : useX ? "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" : "text/csv";
+  const content = docs ? html : useX ? Uint8Array.from(atob(xlsx), (c) => c.charCodeAt(0)) : csv;
+  if (!content || !content.length) throw new Error("Nothing to export.");
   const boundary = "pcm" + Math.random().toString(36).slice(2);
-  const body =
+  const body = new Blob([
     "--" + boundary + "\r\nContent-Type: application/json; charset=UTF-8\r\n\r\n" +
     JSON.stringify({ name, mimeType }) + "\r\n" +
-    "--" + boundary + "\r\nContent-Type: " + srcType + "; charset=UTF-8\r\n\r\n" +
-    content + "\r\n--" + boundary + "--";
+    "--" + boundary + "\r\nContent-Type: " + srcType + (useX ? "" : "; charset=UTF-8") + "\r\n\r\n",
+    content,
+    "\r\n--" + boundary + "--",
+  ]);
   const res = await fetch("https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart&fields=id,webViewLink,mimeType", {
     method: "POST",
     headers: { Authorization: "Bearer " + token, "Content-Type": "multipart/related; boundary=" + boundary },
     body,
   });
   if (res.status === 401) {
-    await chrome.storage.local.remove("driveFileToken");
+    await chrome.storage.local.remove(["driveFileToken", "driveExportToken"]);
     throw new Error("Google sign-in expired - try the export again.");
   }
   if (!res.ok) throw new Error("Google Drive refused the file (HTTP " + res.status + ").");
@@ -118,6 +146,49 @@ export async function createGoogleFile(token, { name, html, csv, kind }) {
     throw new Error("Google Drive created a " + (j.mimeType.includes("document") ? "Doc" : j.mimeType) + " instead - try the other format.");
   }
   return { id, url: (j && j.webViewLink) || (docs ? "https://docs.google.com/document/d/" : "https://docs.google.com/spreadsheets/d/") + id + "/edit" };
+}
+
+// Every link in every cell of a Sheet this extension just made becomes clickable
+// (a cell can hold several - Excel files can only link the whole cell to one).
+// Uses the Sheets API with the same "files this extension created" permission;
+// it has to be turned on for the Google Cloud project (status 403 when it isn't).
+export function sheetLinkRuns(text) {
+  const t = String(text || "");
+  const re = /https?:\/\/[^\s"<>]+/g;
+  const runs = [];
+  let m;
+  while ((m = re.exec(t))) {
+    const u = m[0].replace(/[.,;:!?)\]]+$/, "");
+    if (/^https?:\/\/[^/]*@/i.test(u)) continue; // an email address, not a page
+    const s0 = m.index, e0 = s0 + u.length;
+    if (!runs.length && s0 > 0) runs.push({ startIndex: 0, format: {} });
+    runs.push({ startIndex: s0, format: { link: { uri: u }, underline: true, foregroundColorStyle: { rgbColor: { red: 0.067, green: 0.333, blue: 0.8 } } } });
+    if (e0 < t.length) runs.push({ startIndex: e0, format: {} });
+  }
+  return runs.some((r) => r.format.link) ? runs : null;
+}
+export async function linkifySheet(token, id) {
+  const base = "https://sheets.googleapis.com/v4/spreadsheets/" + encodeURIComponent(id);
+  const g = await fetch(base + "?includeGridData=true&fields=" + encodeURIComponent("sheets(properties(sheetId),data(rowData(values(formattedValue))))"), { headers: { Authorization: "Bearer " + token } });
+  if (!g.ok) return { ok: false, status: g.status };
+  const j = await g.json();
+  const requests = [];
+  for (const sh of (j && j.sheets) || []) {
+    const sheetId = sh.properties && sh.properties.sheetId;
+    for (const d of sh.data || []) (d.rowData || []).forEach((row, r) => (row.values || []).forEach((v, c) => {
+      const text = v && v.formattedValue;
+      const runs = text ? sheetLinkRuns(text) : null;
+      if (!runs) return;
+      requests.push({ updateCells: {
+        range: { sheetId, startRowIndex: r, endRowIndex: r + 1, startColumnIndex: c, endColumnIndex: c + 1 },
+        rows: [{ values: [{ userEnteredValue: { stringValue: text }, textFormatRuns: runs }] }],
+        fields: "userEnteredValue,textFormatRuns",
+      } });
+    }));
+  }
+  if (!requests.length) return { ok: true, linked: 0 };
+  const u = await fetch(base + ":batchUpdate", { method: "POST", headers: { Authorization: "Bearer " + token, "Content-Type": "application/json" }, body: JSON.stringify({ requests }) });
+  return u.ok ? { ok: true, linked: requests.length } : { ok: false, status: u.status };
 }
 
 // ---- normal (visible) Drive folders + uploads, with the drive.file token ----
@@ -178,6 +249,16 @@ export async function getValidToken(allowInteractive) {
 
   // A silent attempt that just failed is not worth repeating on every poll.
   if (!allowInteractive && Date.now() - lastSilentFailAt < 60000) return null;
+  // One silent re-sign-in at a time: every caller waits for the same one.
+  if (!allowInteractive) {
+    if (!silentTokenP) silentTokenP = tokenRefresh(false).finally(() => { silentTokenP = null; });
+    return silentTokenP;
+  }
+  return tokenRefresh(true);
+}
+let silentTokenP = null;
+async function tokenRefresh(allowInteractive) {
+  const now = Date.now();
   // 3. Silent re-auth, naming the account that was connected (see login_hint).
   const hint = await getDriveAccount();
   let result = await launchAuth({ interactive: false, prompt: "none", loginHint: hint });

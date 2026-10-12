@@ -386,7 +386,7 @@ function renderList(accounts, status, today, running) {
 async function load() {
   try {
     showErr("");
-    const state = await send({ type: "GET_STATE" });
+    const state = await send({ type: "GET_STATE" }, 20000); // a cold start can take a while
     if (!state) {
       showErr("The extension returned no data. Reload the extension and reopen this page.");
       return;
@@ -1095,7 +1095,7 @@ function startEditEstimateOpt(estSpan, t) {
   input.placeholder = isShare ? "total, e.g. 5h" : "e.g. 20m, 1h 30m";
   input.title = isShare
     ? "Sets the task's TOTAL ClickUp estimate (this row shows only its share for the day). Enter = save, Esc = cancel."
-    : "Enter = save, Esc = cancel. Accepts 20m, 1h 30m, 1.5 (hours).";
+    : "Enter = keep it (it goes to ClickUp when you press Apply to ClickUp), Esc = cancel. Accepts 20m, 1h 30m, 1.5 (hours).";
   estSpan.textContent = "";
   estSpan.appendChild(input);
   input.focus();
@@ -1119,6 +1119,16 @@ function startEditEstimateOpt(estSpan, t) {
     const raw = input.value.trim();
     const newMs = parseFlexDurationOpt(raw);
     if (!raw || newMs == null || newMs === fullMs) { cancel(); return; }
+    // Kept here like the guesses and the week's moves - ClickUp gets it only with
+    // Apply to ClickUp, so changing an estimate a few times while planning
+    // doesn't fill the task's activity in ClickUp.
+    if (typeof cuEstStaged !== "undefined") {
+      cuEstStaged[String(taskId)] = { ms: newMs, name: t.name || "", was: fullMs || 0, share: !!isShare };
+      cuEstSave();
+      finish(prevText, prevClass);
+      cuGuessRepaint();
+      return;
+    }
     input.disabled = true;
     estSpan.classList.add("syncing"); // spinner while the PUT is in flight
     try {
@@ -1293,6 +1303,199 @@ function cuPrioCmp(a, b) {
 function cuId(t) {
   return String(t && (t.id != null ? t.id : t.taskId));
 }
+
+// ---------- Open in a tab group ----------
+// A small button on a group of tasks (a week, a day, a client, the whole list):
+// every task in it opens as a tab in one Chrome tab group named after the group.
+// More than 15 tabs asks once more on the button itself.
+function cuTaskUrl(t) {
+  if (!t || t.local) return "";
+  const u = String(t.url || t.taskUrl || "");
+  if (/^https:\/\/app\.clickup\.com\//.test(u)) return u;
+  const id = t.id != null ? t.id : t.taskId;
+  return id != null && /^[a-z0-9]+$/i.test(String(id)) ? "https://app.clickup.com/t/" + id : "";
+}
+function cuTabGroupBtn(title, getTasks, color) {
+  const b = document.createElement("button");
+  b.type = "button";
+  b.className = "cu-tgbtn";
+  b.textContent = "\u29C9 Tab group";
+  b.title = "Open these tasks in ClickUp, together in one Chrome tab group named \u201C" + title + "\u201D";
+  let armed = 0;
+  b.addEventListener("mousedown", (e) => e.stopPropagation());
+  b.onclick = async (e) => {
+    e.preventDefault(); e.stopPropagation();
+    const urls = [...new Set((getTasks() || []).map(cuTaskUrl).filter(Boolean))];
+    if (!urls.length) { b.textContent = "No ClickUp tasks"; setTimeout(() => { b.textContent = "\u29C9 Tab group"; }, 1600); return; }
+    if (urls.length > 15 && Date.now() - armed > 4000) { armed = Date.now(); b.textContent = "Open " + Math.min(urls.length, 60) + " tabs? Click again"; setTimeout(() => { if (Date.now() - armed >= 4000) b.textContent = "\u29C9 Tab group"; }, 4100); return; }
+    armed = 0;
+    b.disabled = true; b.textContent = "Opening " + Math.min(urls.length, 60) + "\u2026";
+    const r = await send({ type: "OPEN_TAB_GROUP", title, urls, color }, 60000).catch(() => null);
+    b.disabled = false;
+    b.textContent = r && r.ok ? "Opened " + r.opened + (r.capped ? " (first 60)" : "") : "Couldn't open";
+    setTimeout(() => { b.textContent = "\u29C9 Tab group"; }, 2200);
+  };
+  return b;
+}
+
+// ---------- Tasks list: split by week ----------
+// When the list covers more than one week (this month, a range…), it's cut into
+// weeks under a heading each - "Week of Oct 5 - 9 · 6 tasks · est 4h · tracked 1h"
+// - so it's plain which week a task falls in. Weeks follow "A week runs" (ClickUp
+// setup) and the date the filter goes by (due or start). A task keeps its
+// subtasks with it; tasks with no date come last. On unless switched off in the
+// filter menu (storage cuSplitWeeks).
+let cuSplitWeeks = true;
+chrome.storage.local.get("cuSplitWeeks").then((g) => { if (g && g.cuSplitWeeks === false) { cuSplitWeeks = false; if ($("cuSplitWeeksOpt")) $("cuSplitWeeksOpt").checked = false; if (typeof optRepaintCuPreview === "function" && optClickup) optRepaintCuPreview(); } }).catch(() => {});
+function cuWeekOf(ms) {
+  const modes = { "sun-sat": [0, 7], "mon-sun": [1, 7], "mon-fri": [1, 5], "sun-thu": [0, 5] };
+  const conf = modes[(optClickup && optClickup.weekMode) || "sun-sat"] || modes["sun-sat"];
+  const d = new Date(Number(ms)); d.setHours(0, 0, 0, 0);
+  d.setDate(d.getDate() - ((d.getDay() - conf[0] + 7) % 7));
+  const end = new Date(d); end.setDate(d.getDate() + conf[1] - 1);
+  return { start: d.getTime(), end: end.getTime() };
+}
+function cuSplitByWeekOpt(sorted) {
+  if (!cuSplitWeeks || !Array.isArray(sorted) || sorted.length < 2) return sorted;
+  const basis = cuBasis(cuFilter);
+  const dateOf = (t) => Number(basis === "start" ? (t.startDateMs || t.dueDateMs) : t.dueDateMs) || 0;
+  // Blocks: a task and the subtasks drawn right under it move together.
+  const blocks = [];
+  for (const t of sorted) { if (t.isSubtask && blocks.length && sorted.some((p) => !p.isSubtask && String(p.id) === String(t.parentId))) blocks[blocks.length - 1].push(t); else blocks.push([t]); }
+  const weeks = new Map();
+  for (const b of blocks) {
+    const ms = dateOf(b[0]);
+    const k = ms ? cuWeekOf(ms).start : 0;
+    if (!weeks.has(k)) weeks.set(k, []);
+    weeks.get(k).push(b);
+  }
+  if (weeks.size < 2) return sorted;
+  const thisWeek = cuWeekOf(Date.now()).start;
+  const md = (ms, withMonth) => new Date(ms).toLocaleDateString(undefined, withMonth ? { month: "short", day: "numeric" } : { day: "numeric" });
+  const out = [];
+  // Several months (a long range): a month heading above its weeks. A
+  // week belongs to the month most of its days are in (its Thursday's month).
+  const monthOf = (k) => { const d = new Date(k); d.setDate(d.getDate() + 3); return d.getFullYear() * 12 + d.getMonth(); };
+  const keys = [...weeks.keys()].sort((a, b) => (a || Infinity) - (b || Infinity));
+  const months = new Set(keys.filter(Boolean).map(monthOf));
+  let curMonth = null;
+  for (const k of keys) {
+    const bl = weeks.get(k), rows = bl.flat();
+    if (months.size > 1 && k && monthOf(k) !== curMonth) {
+      curMonth = monthOf(k);
+      const inMonth = keys.filter((x) => x && monthOf(x) === curMonth).flatMap((x) => weeks.get(x).flat());
+      const mh = document.createElement("div");
+      mh.className = "cu-mgroup";
+      const mb = document.createElement("b");
+      mb.textContent = new Date(Math.floor(curMonth / 12), curMonth % 12, 1).toLocaleDateString(undefined, { month: "long", year: "numeric" });
+      const ms = document.createElement("span");
+      const mest = inMonth.reduce((a, t) => a + (Number(t.estimateMs) || 0), 0), mtrk = inMonth.reduce((a, t) => a + (Number(t.spentMs) || 0), 0);
+      ms.textContent = " \u00b7 " + inMonth.length + " task" + (inMonth.length === 1 ? "" : "s") + " \u00b7 est " + fmtDurOpt(mest) + (mtrk > 0 ? " \u00b7 tracked " + fmtDurOpt(mtrk) : "");
+      mh.append(mb, ms);
+      if (typeof cuTabGroupBtn === "function") mh.appendChild(cuTabGroupBtn(mb.textContent, () => inMonth, "blue"));
+      out.push({ _wkHead: mh });
+    }
+    const est = rows.reduce((a, t) => a + (Number(t.estimateMs) || 0), 0), trk = rows.reduce((a, t) => a + (Number(t.spentMs) || 0), 0);
+    const h = document.createElement("div");
+    h.className = "cu-wkgroup" + (k === thisWeek ? " now" : "");
+    const t1 = document.createElement("b");
+    if (k) { const w = cuWeekOf(k); const sameMonth = new Date(w.start).getMonth() === new Date(w.end).getMonth(); t1.textContent = "Week of " + md(w.start, true) + " - " + md(w.end, !sameMonth) + (k === thisWeek ? " · this week" : ""); }
+    else t1.textContent = basis === "start" ? "No start or due date" : "No due date";
+    const t2 = document.createElement("span");
+    t2.textContent = " · " + rows.length + " task" + (rows.length === 1 ? "" : "s") + " · est " + fmtDurOpt(est) + (trk > 0 ? " · tracked " + fmtDurOpt(trk) : "");
+    h.append(t1, t2);
+    h.appendChild(cuTabGroupBtn(t1.textContent.replace(/ · this week$/, ""), () => rows, k === thisWeek ? "green" : "blue"));
+    out.push({ _wkHead: h });
+    for (const b of bl) out.push(...b);
+  }
+  return out;
+}
+
+// ---------- Drag to reorder, in every task list ----------
+// Drop a row on another row of the SAME list and it goes there (above or below,
+// by the pointer); the list keeps that order. A list says what it is with
+// data-reorder: "wk:<day>" (This week by day - one order per day), "tasks:<section>"
+// (the Tasks list - saved as its Custom order for the view, which the first drag
+// turns on; the popup shares it) or "explore". Dropping on ANOTHER day of the
+// week still moves the due date; Ctrl+click / Ctrl+drag still pick several.
+let cuListOrders = {}; // storage cuListOrder: key -> [ids]
+chrome.storage.local.get("cuListOrder").then((g) => { if (g && g.cuListOrder && typeof g.cuListOrder === "object") cuListOrders = g.cuListOrder; }).catch(() => {});
+chrome.storage.onChanged.addListener((ch, area) => { if (area === "local" && ch.cuListOrder && ch.cuListOrder.newValue && typeof ch.cuListOrder.newValue === "object") cuListOrders = ch.cuListOrder.newValue; });
+function cuListOrderFor(key) { const a = cuListOrders && cuListOrders[key]; return Array.isArray(a) && a.length ? a : null; }
+function cuDayKey(ts) { const d = new Date(Number(ts)); return "wk:" + d.getFullYear() + "-" + (d.getMonth() + 1) + "-" + d.getDate(); }
+let cuRoDrag = null; // { row, list, key, target, after }
+const cuRoList = (el) => (el && el.closest ? el.closest(".cu-tasklist[data-reorder]") : null);
+const cuRoRow = (el) => (el && el.closest ? el.closest(".cu-task") : null);
+const cuRoClear = () => document.querySelectorAll(".ro-before, .ro-after").forEach((x) => x.classList.remove("ro-before", "ro-after"));
+const cuRoIds = (list) => [...list.children].filter((r) => r.classList && r.classList.contains("cu-task") && r._cuTask).map((r) => cuId(r._cuTask));
+function cuSaveListOrder(key, list) {
+  if (key.indexOf("tasks:") === 0) {
+    // Grouped by client, one section is split over several lists: keep them all, in page order.
+    const all = [];
+    document.querySelectorAll('#dashTasks .cu-tasklist[data-reorder="' + key + '"]').forEach((l) => all.push(...cuRoIds(l)));
+    cuSetOrderOpt(cuActiveScopeOpt, key.slice(6), all);
+    if (!cuFilter.manualOrder) { cuFilter.manualOrder = true; chrome.storage.local.set({ cuFilter }).catch(() => {}); try { optRenderCuFilterMenu(); optCuFilterBtnLabel(); } catch (e) {} }
+    cuRenderPendingOpt = false;
+    optRepaintCuPreview();
+    return;
+  }
+  const next = { ...cuListOrders, [key]: cuRoIds(list) };
+  // Days long gone don't need their order any more.
+  const old = Date.now() - 45 * 864e5;
+  for (const k of Object.keys(next)) { const m = /^wk:(\d+)-(\d+)-(\d+)$/.exec(k); if (m && new Date(+m[1], +m[2] - 1, +m[3]).getTime() < old) delete next[k]; }
+  cuListOrders = next;
+  chrome.storage.local.set({ cuListOrder: next }).catch(() => {});
+}
+// A press on a row (not its buttons, links or fields) makes it draggable - also
+// rows that can't move to another day (done, configured, Extra Task).
+document.addEventListener("mousedown", (e) => {
+  if (e.button !== 0 || e.ctrlKey || e.metaKey || e.shiftKey || !e.target.closest) return;
+  if (e.target.closest("button, input, select, textarea, a, .pcm-panel, .cu-drag")) return;
+  const row = cuRoRow(e.target);
+  if (!row || !row._cuTask || row.draggable || !cuRoList(row)) return;
+  row.draggable = true;
+  row._roTemp = true;
+  const off = () => { document.removeEventListener("mouseup", off); setTimeout(() => { if (row._roTemp && !cuRoDrag) { row.draggable = false; row._roTemp = false; } }, 0); };
+  document.addEventListener("mouseup", off);
+}, true);
+document.addEventListener("dragstart", (e) => {
+  const row = cuRoRow(e.target), list = cuRoList(row);
+  cuRoDrag = row && list && row._cuTask ? { row, list, key: list.dataset.reorder, target: null, after: false } : null;
+}, true);
+document.addEventListener("dragover", (e) => {
+  if (!cuRoDrag || cuDraggingOpt) return;
+  const row = cuRoRow(e.target);
+  if (!row || row === cuRoDrag.row || !row._cuTask || cuRoList(row) !== cuRoDrag.list) {
+    if (cuRoDrag.target) { cuRoClear(); cuRoDrag.target = null; }
+    return;
+  }
+  e.preventDefault();
+  try { e.dataTransfer.dropEffect = "move"; } catch (x) {}
+  const b = cuRowBox(row);
+  const after = !!b && e.clientY > (b.top + b.bottom) / 2;
+  if (cuRoDrag.target !== row || cuRoDrag.after !== after) {
+    cuRoClear();
+    row.classList.add(after ? "ro-after" : "ro-before");
+    cuRoDrag.target = row; cuRoDrag.after = after;
+  }
+}, true);
+document.addEventListener("drop", (e) => {
+  const d = cuRoDrag;
+  if (!d || !d.target || cuRoList(cuRoRow(e.target)) !== d.list) return;
+  e.preventDefault();
+  e.stopPropagation(); // a reorder, not a move to another day
+  cuRoClear();
+  if (d.after) d.target.after(d.row); else d.target.before(d.row);
+  // The column sort (task-sort.js) would put it straight back: this is your order now.
+  if (window.PcmTaskSort && window.PcmTaskSort.takeOrder) window.PcmTaskSort.takeOrder(d.list);
+  cuSaveListOrder(d.key, d.list);
+}, true);
+document.addEventListener("dragend", () => {
+  const d = cuRoDrag;
+  cuRoDrag = null;
+  cuRoClear();
+  if (d && d.row._roTemp) { d.row.draggable = false; d.row._roTemp = false; }
+}, true);
 // Comparator for the user's custom drag order: tasks appear in the exact order
 // their ids sit in `orderIds`. Ids not in the list (e.g. a task added since the
 // last arrange) sink to the bottom, where they fall back to the normal priority
@@ -1331,7 +1534,7 @@ function sortByPriority(rows, orderIds) {
     const s = subs.get(idOf(p));
     // Grouped view: keep ClickUp's own order (S1, S2, S3…) rather than
     // re-sorting the breakdown by priority.
-    if (s) out.push(...(cuFilter.groupSubtasks ? s : s.slice().sort(cuPrioCmp)));
+    if (s) out.push(...(cuFilter.groupSubtasks && !Array.isArray(orderIds) ? s : s.slice().sort(cmp)));
   }
   return out;
 }
@@ -1430,10 +1633,168 @@ function cuAllNote(spans, t) {
   all.title = "Tracked on this task in all, on any day: " + fmtDurOpt(allMs) + ". This view counts only the time tracked on its own dates (" + fmtDurOpt(spent) + ").";
   spans.appendChild(all);
 }
+// ---------- Suggested estimates (from your own finished tasks) ----------
+// A task with no estimate gets a guess in front of its "no est": the time your
+// finished tasks with a similar name took (tracked time, else their estimate),
+// else your usual time for that client, else your usual task time. A subtask
+// of an estimated parent gets its share of what's left of the parent's estimate
+// (already in the parent's total, so not added again); a parent whose subtasks
+// are listed gets none (ClickUp closes it with them). Clicking a guess keeps it
+// here ("45m ✎", storage cuStagedEsts) until Apply to ClickUp - like the moves -
+// so ClickUp's activity isn't filled with estimate changes while you plan.
+let cuEstStaged = {};
+let cuEstStagedSig = "";
+let cuPerfDone = [];
+let cuGuessMemo = null;
+const cuEstLoad = (v) => {
+  const o = v && v.items && typeof v.items === "object" ? v.items : {};
+  const sig = JSON.stringify(o);
+  if (sig === cuEstStagedSig) return false;
+  cuEstStagedSig = sig; cuEstStaged = { ...o };
+  return true;
+};
+const cuEstSave = () => { cuEstStagedSig = JSON.stringify(cuEstStaged); chrome.storage.local.set({ cuStagedEsts: { at: Date.now(), items: cuEstStaged } }).catch(() => {}); };
+chrome.storage.local.get(["cuStagedEsts", "perfHistory"]).then((g) => {
+  cuPerfDone = g && g.perfHistory && Array.isArray(g.perfHistory.done) ? g.perfHistory.done : [];
+  cuGuessMemo = null;
+  if (cuEstLoad(g && g.cuStagedEsts) && optClickup) cuGuessRepaint();
+}).catch(() => {});
+chrome.storage.onChanged.addListener((ch, area) => {
+  if (area !== "local") return;
+  if (ch.perfHistory) { const v = ch.perfHistory.newValue; cuPerfDone = v && Array.isArray(v.done) ? v.done : []; cuGuessMemo = null; }
+  if (ch.cuStagedEsts && cuEstLoad(ch.cuStagedEsts.newValue) && optClickup) cuGuessRepaint();
+});
+const CU_GUESS_STOP = new Set("the and for with from into onto this that these those are was were page pages task tasks".split(" "));
+function cuGuessWords(name) {
+  return [...new Set(String(name || "")
+    .replace(/^\s*[A-Za-z]{1,8}[- ]?\d+(?:\.[A-Za-z0-9]+)?\s*[|:]\s*/, "")
+    .replace(/\[[^\]]*\]/g, " ")
+    .toLowerCase().replace(/[^a-z0-9]+/g, " ").split(" ")
+    .filter((w) => w.length > 2 && !CU_GUESS_STOP.has(w))
+    .map((w) => (w.length > 4 && w.endsWith("s") && !w.endsWith("ss") ? w.slice(0, -1) : w)))];
+}
+// Your finished tasks: the recently completed list + the Performance history.
+function cuGuessHist() {
+  let done = [];
+  try { done = Array.isArray(cuDoneRowsOpt) ? cuDoneRowsOpt : []; } catch (e) {} // declared further down the file
+  const rows = done.concat(cuPerfDone || []);
+  const key = rows.length + ":" + (rows[0] && (rows[0].id || rows[0].name)) + ":" + (rows[rows.length - 1] && (rows[rows.length - 1].id || rows[rows.length - 1].name));
+  if (cuGuessMemo && cuGuessMemo.key === key) return cuGuessMemo.hist;
+  const seen = new Set(), hist = [];
+  for (const r of rows) {
+    const id = String((r && (r.id || r.taskId)) || (r && r.name) || "");
+    if (!id || seen.has(id)) continue;
+    seen.add(id);
+    const ms = Number(r.spentMs) > 0 ? Number(r.spentMs) : Number(r.estimateMs || r.totalEstimateMs) || 0;
+    if (!(ms >= 120000 && ms <= 12 * 3600000)) continue; // a real piece of work
+    hist.push({ words: cuGuessWords(r.name), ck: String(r.client || "").toLowerCase().replace(/[^a-z0-9]+/g, ""), ms });
+  }
+  cuGuessMemo = { key, hist };
+  return hist;
+}
+const cuMedian = (a) => { const s = a.slice().sort((x, y) => x - y), m = Math.floor(s.length / 2); return s.length % 2 ? s[m] : (s[m - 1] + s[m]) / 2; };
+const cuRound5 = (ms) => Math.max(5, Math.round(ms / 300000) * 5) * 60000;
+// Who is whose subtask in a list being drawn.
+function cuGuessCtx(rows) {
+  const kids = new Map(), byId = new Map();
+  for (const t of rows || []) {
+    if (!t) continue;
+    byId.set(cuId(t), t);
+    if (t.parentId != null && t.parentId !== "") { const k = String(t.parentId); if (!kids.has(k)) kids.set(k, []); kids.get(k).push(t); }
+  }
+  return { kids, byId };
+}
+function cuGuessEst(t, ctx) {
+  if (!t || Number(t.estimateMs) > 0 || t.local || t.type === "cfg" || t.isExtra || /^extra tasks?\b/i.test(String(t.name || ""))) return null;
+  const id = cuId(t);
+  if ((ctx && ctx.kids.has(id)) || Number(t.childCount) > 0) return { none: true, why: "Its subtasks carry the time (ClickUp closes it with them) - estimate those instead." };
+  if (t.parentId != null && t.parentId !== "" && ctx) {
+    const p = ctx.byId.get(String(t.parentId)), pe = p ? Number(p.estimateMs) || 0 : 0;
+    if (pe > 0) {
+      const sib = ctx.kids.get(String(t.parentId)) || [t];
+      const left = pe - sib.reduce((a, s) => a + (Number(s.estimateMs) || 0), 0);
+      const open = sib.filter((s) => !(Number(s.estimateMs) > 0)).length || 1;
+      if (left >= 300000) return { ms: cuRound5(left / open), covered: true, why: "its share of the parent task's " + fmtDurOpt(pe) + " estimate (already in that total)" };
+    }
+  }
+  const hist = cuGuessHist();
+  if (!hist.length) return null;
+  const w = cuGuessWords(t.name);
+  if (w.length) {
+    const sc = hist.map((h) => { const inter = h.words.filter((x) => w.includes(x)).length; return { h, s: (w.length + h.words.length) ? (2 * inter) / (w.length + h.words.length) : 0 }; }) // shared words against both names' length
+      .filter((x) => x.s >= 0.55).sort((a, b) => b.s - a.s).slice(0, 7);
+    if (sc.length) { const ms = cuRound5(cuMedian(sc.map((x) => x.h.ms))); return { ms, why: "usually " + fmtDurOpt(ms) + " - from " + sc.length + " similar task" + (sc.length === 1 ? "" : "s") + " you finished" }; }
+  }
+  const ck = String(t.client || "").toLowerCase().replace(/[^a-z0-9]+/g, "");
+  if (ck) { const same = hist.filter((h) => h.ck === ck); if (same.length >= 3) { const ms = cuRound5(cuMedian(same.map((h) => h.ms))); return { ms, why: "your usual for " + t.client + " (" + same.length + " finished)" }; } }
+  if (hist.length >= 5) { const ms = cuRound5(cuMedian(hist.map((h) => h.ms))); return { ms, why: "your usual task time (" + hist.length + " finished)" }; }
+  return null;
+}
+// What a row adds "with guesses" (its kept or guessed time; not a parent's share).
+function cuGuessMs(t, ctx) {
+  if (!t) return 0;
+  const st = cuEstStaged[cuId(t)];
+  if (Number(t.estimateMs) > 0) return st && !st.share ? (Number(st.ms) || 0) - Number(t.estimateMs) : 0;
+  if (st) { const g = cuGuessEst(t, ctx); return g && g.covered ? 0 : Number(st.ms) || 0; }
+  const g = cuGuessEst(t, ctx);
+  return g && g.ms && !g.covered ? g.ms : 0;
+}
+// The guess (or the kept estimate) in front of a row's "no est".
+function cuEstGuess(estSpan, t, ctx, keptOnly) {
+  if (!estSpan || !t) return;
+  const id = cuId(t), st = cuEstStaged[id];
+  if (!st && (Number(t.estimateMs) > 0 || keptOnly)) return; // keptOnly: Explore shows your kept changes, no guesses
+  const chip = document.createElement("span");
+  if (st) {
+    chip.className = "est-staged";
+    chip.textContent = (Number(st.ms) > 0 ? fmtDurOpt(st.ms) : "no est") + " \u270E";
+    chip.title = "Estimate kept here, not in ClickUp yet" + (Number(st.was) > 0 ? " (it's " + fmtDurOpt(st.was) + " in ClickUp)" : "") + " - press Apply to ClickUp to set it. Click to drop it.";
+    estSpan.style.display = "none";
+    chip.onclick = (e) => { e.preventDefault(); e.stopPropagation(); delete cuEstStaged[id]; cuEstSave(); cuGuessRepaint(); };
+  } else {
+    const g = cuGuessEst(t, ctx);
+    if (!g || g.none) { if (g && g.none) estSpan.title = g.why; return; }
+    chip.className = "est-guess";
+    chip.textContent = "~" + fmtDurOpt(g.ms) + "?";
+    chip.title = "Guess: " + g.why + ". Click to use it - kept here until you press Apply to ClickUp.";
+    chip.onclick = (e) => { e.preventDefault(); e.stopPropagation(); cuEstStaged[id] = { ms: g.ms, name: t.name || "" }; cuEstSave(); cuGuessRepaint(); };
+  }
+  chip.addEventListener("mousedown", (e) => e.stopPropagation());
+  estSpan.before(chip);
+}
+function cuGuessRepaint() {
+  try { cuRenderPendingOpt = false; } catch (e) {}
+  try { optRepaintCuPreview(); } catch (e) {}
+  try { if (optClickup) renderOptionsWeekly(optClickup); } catch (e) {}
+}
+// Apply kept estimates, one at a time, saying how far it is.
+let cuEstSaving = null;
+async function cuApplyEsts(ids) {
+  ids = (ids || []).map(String).filter((id) => cuEstStaged[id]);
+  if (!ids.length) return;
+  cuEstSaving = { done: 0, total: ids.length, failed: [] };
+  cuGuessRepaint();
+  for (const id of ids) {
+    const st = cuEstStaged[id];
+    const r = await send({ type: "SET_CLICKUP_ESTIMATE", taskId: id, estimateMs: Number(st.ms) || 0 }, 20000).catch(() => null);
+    if (r && r.ok) delete cuEstStaged[id]; else cuEstSaving.failed.push(st.name || id);
+    cuEstSaving.done++;
+    cuEstSave();
+    cuGuessRepaint();
+  }
+  const f = cuEstSaving.failed;
+  cuEstSaving = null;
+  optWeekMsg = { at: Date.now(), err: !!f.length, text: f.length ? "Couldn't set the estimate of " + f.join(", ") + " - still kept here." : "Estimates set in ClickUp \u2713" };
+  cuGuessRepaint();
+  try { send({ type: "CLICKUP_REFRESH", force: true }).catch(() => {}); } catch (e) {}
+}
+const CU_OVER_GRACE_MS = 2 * 60000; // tracked time turns red only this far past the estimate
 function markTrk(trk, t, spans) {
   const spent = Number(t && t.spentMs) || 0;
   const est = Number(t && (t.estimateMs != null ? t.estimateMs : t.dayEstimateMs)) || 0;
-  if (est > 0 && spent > est) trk.classList.add("over");
+  // Red only when it really ran over: a task finished right on its estimate (a few
+  // seconds past it) isn't over - 2 minutes of grace.
+  if (est > 0 && spent > est + CU_OVER_GRACE_MS) trk.classList.add("over");
   const st = (optClickup && optClickup.state) || null;
   const run = st && st.running;
   const id = t && (t.id != null ? t.id : t.taskId);
@@ -1470,7 +1831,7 @@ function liveTrk(trk, t, st, run, est, fmt) {
     const ms = Number(trk.dataset.liveBase) + Math.max(0, Date.now() - Number(trk.dataset.liveFrom));
     trk.textContent = fmt(ms);
     const e = Number(trk.dataset.liveEst);
-    trk.classList.toggle("over", e > 0 && ms > e);
+    trk.classList.toggle("over", e > 0 && ms > e + CU_OVER_GRACE_MS);
     return true;
   };
   paint();
@@ -1487,7 +1848,12 @@ function cuDueToastOpt(text) {
 }
 // ---------- export: remember what the list is showing right now ----------
 let cuExportDataOpt = { rows: [], title: "tasks" };
+// What the Tasks card shows right now (after every filter and the search) - the
+// card's 🧭 Plan with AI plans exactly these: due and configured tasks, not the
+// tracked-only rows.
+let cuPlanShownOpt = { label: "", tasks: [] };
 function cuExportRowsOpt(tasks, deadlineTasks, trackedTasks, scope) {
+  cuPlanShownOpt = { label: String(scope || "tasks shown"), tasks: [].concat(tasks || [], deadlineTasks || []).filter((t) => t && t.id != null && !t.local && !t.error) };
   const all = [].concat(tasks || [], deadlineTasks || [], trackedTasks || []);
   const seen = new Set();
   const rows = [];
@@ -1505,6 +1871,7 @@ function cuExportRowsOpt(tasks, deadlineTasks, trackedTasks, scope) {
       // The on-screen "Waiting: Name" chip, so an export can explain the hold-up.
       waitingOn: (() => { const w = cuWaitFor(t); const b = (w && w.blockers) || []; return b.length ? { who: [...new Set(b.map((x) => x.who).filter(Boolean))].join(", "), overdue: b.some((x) => x.overdue), what: b[0] && b[0].name } : null; })(),
       dueDateMs: Number(t.dueDateMs) || null,
+      startDateMs: Number(t.startDateMs) || null,
       estimateMs: Number(t.totalEstimateMs || t.estimateMs || t.dayEstimateMs) || 0,
       spentMs: Number(t.spentMs) || 0,
       status: t.status || "",
@@ -1893,7 +2260,23 @@ function appendNameCellOpt(row, nm, t) {
   const due = dueChipOpt(t);
   const wrap = document.createElement("span");
   wrap.className = "nmwrap";
+  // Family, quietly: a subtask shows its parent's name before its own (not when
+  // it's already drawn under its parent), a parent how many of its subtasks are here.
+  if (t && t.parentName && !t.isSubtask) {
+    const pa = document.createElement("span");
+    pa.className = "cu-parent";
+    pa.textContent = (t.parentName.length > 30 ? t.parentName.slice(0, 29) + "\u2026" : t.parentName) + " \u203A";
+    pa.title = "Subtask of: " + t.parentName + " (open \u25B8 for its parent and siblings)";
+    wrap.appendChild(pa);
+  }
   wrap.appendChild(nm);
+  if (t && t.childCount) {
+    const k = document.createElement("span");
+    k.className = "cu-kids";
+    k.textContent = "\u25BE " + t.childCount;
+    k.title = "Parent task - " + t.childCount + " of its subtasks " + (t.childCount === 1 ? "is" : "are") + " in your lists (open \u25B8 to see all of them)";
+    wrap.appendChild(k);
+  }
   wrap.appendChild(whoSlot(t));
   if (client) {
     const pill = document.createElement("span");
@@ -2532,6 +2915,7 @@ function renderClickupSettings(cu) {
   if ($("cuExtraAutoClose")) $("cuExtraAutoClose").checked = cu.extraAutoClose !== false;
   if ($("cuWarnEmpty")) $("cuWarnEmpty").checked = cu.warnEmptyComplete !== false;
   if ($("cuRelatedOn")) $("cuRelatedOn").checked = cu.relatedOn !== false;
+  if ($("cuOverRepeat") && document.activeElement !== $("cuOverRepeat")) $("cuOverRepeat").value = String(cu.overRepeatMin != null ? cu.overRepeatMin : 15);
   if ($("cuRelatedCap") && document.activeElement !== $("cuRelatedCap")) $("cuRelatedCap").value = String(cu.relatedCap || 25);
   if ($("cuRelatedIds") && document.activeElement !== $("cuRelatedIds")) $("cuRelatedIds").value = cu.relatedIds || "";
   if ($("cuHolidayHeadsUp")) $("cuHolidayHeadsUp").checked = cu.holidayHeadsUp !== false;
@@ -2927,18 +3311,64 @@ function cuWireWeekDrag(box, cu) {
         oldDueMs: Number(t.dueDateMs) || 0, oldStartMs: startMs ? Number(t.startDateMs) || 0 : 0 };
     });
     document.querySelectorAll("#dashTasks .tl-sel").forEach((x) => x.classList.remove("tl-sel"));
-    // On the new day at once, marked as moving (until the background reports back).
-    for (const m of moves) optWeekMoving.set(m.taskId, { to: day, t: m.t, due: m.dueMs, at: Date.now() });
+    // Kept here only (marked "not applied yet") until Apply to ClickUp - so a
+    // day can be rearranged as often as it takes without ClickUp logging every
+    // due-date change. Applying uses the move queue below.
+    cuStageMoves(moves);
     renderOptionsWeekly(optClickup || cu);
-    // The background does the saving (it carries on through a reload) and keeps
-    // everyone posted through storage (cuPendingMoves).
-    const res = await send({ type: "CLICKUP_MOVE_MANY", moves: moves.map(({ t, ...m }) => m) }).catch(() => null);
-    if (!res || !res.ok) {
-      for (const m of moves) optWeekMoving.delete(m.taskId);
-      optWeekMsg = { at: Date.now(), err: true, text: "Couldn't start the move: " + ((res && (res.error || res.reason)) || "no reply from the extension") + "." };
-      renderOptionsWeekly(optClickup || cu);
-    }
   });
+}
+// ---------- This week by day: moves wait for Apply to ClickUp ----------
+// Every drop is staged: the task shows on its new day ("✎ not applied yet") and
+// the days' totals follow, but ClickUp isn't touched until Apply (per day, or
+// Apply all). Dropping it back on its first day un-stages it. Kept in storage
+// (cuStagedMoves), so a reload keeps the plan. taskId -> the move as made the
+// first time (fromTs / oldDueMs = where it really is in ClickUp).
+let optWeekStaged = new Map();
+let optWeekStagedSig = "";
+const cuStagedSave = () => {
+  const items = [...optWeekStaged.values()].map((x) => ({ ...x, t: x.t ? { id: x.t.id, taskId: x.t.taskId, name: x.t.name, estimateMs: x.t.estimateMs, spentMs: x.t.spentMs, client: x.t.client, assignees: x.t.assignees, url: x.t.url, priority: x.t.priority, status: x.t.status, startDateMs: x.t.startDateMs, dueDateMs: x.t.dueDateMs, isSubtask: x.t.isSubtask, parentId: x.t.parentId, parentName: x.t.parentName } : null }));
+  optWeekStagedSig = JSON.stringify(items);
+  chrome.storage.local.set({ cuStagedMoves: { at: Date.now(), items } }).catch(() => {});
+};
+const cuStagedLoad = (v) => {
+  const items = v && Array.isArray(v.items) ? v.items : [];
+  const sig = JSON.stringify(items);
+  if (sig === optWeekStagedSig) return false;
+  optWeekStagedSig = sig;
+  optWeekStaged = new Map(items.filter((x) => x && x.taskId).map((x) => [String(x.taskId), x]));
+  return true;
+};
+chrome.storage.local.get("cuStagedMoves").then((g) => { if (cuStagedLoad(g && g.cuStagedMoves) && optClickup) renderOptionsWeekly(optClickup); }).catch(() => {});
+chrome.storage.onChanged.addListener((ch, area) => { if (area === "local" && ch.cuStagedMoves && cuStagedLoad(ch.cuStagedMoves.newValue) && optClickup) renderOptionsWeekly(optClickup); });
+function cuStageMoves(moves) {
+  const dayOf = (ms) => (Number(ms) > 0 ? new Date(Number(ms)).setHours(0, 0, 0, 0) : 0);
+  for (const m of moves) {
+    const prev = optWeekStaged.get(m.taskId);
+    const first = prev || m; // where it really is in ClickUp
+    if (dayOf(first.oldDueMs) === m.toTs) { optWeekStaged.delete(m.taskId); continue; } // back home: nothing to change
+    const t = { ...(prev && prev.t ? prev.t : m.t), dueDateMs: first.oldDueMs || null, startDateMs: (prev && prev.t ? prev.t.startDateMs : m.t && m.t.startDateMs) };
+    optWeekStaged.set(m.taskId, { taskId: m.taskId, name: m.name, dueMs: m.dueMs, startMs: m.startMs, toTs: m.toTs, fromTs: first.fromTs, oldDueMs: first.oldDueMs, oldStartMs: m.startMs ? Number(t.startDateMs) || 0 : 0, at: Date.now(), t });
+  }
+  cuStagedSave();
+  const n = optWeekStaged.size;
+  optWeekMsg = n ? { at: Date.now(), text: "\u270E " + n + " change" + (n === 1 ? "" : "s") + " kept here - press Apply to ClickUp when the week looks right." } : { at: Date.now(), text: "Back where it was - nothing to change in ClickUp." };
+}
+// Apply some (or all) staged moves: the move queue does it (status, Undo, reload-proof).
+async function cuApplyStaged(ids) {
+  const items = ids.map((id) => optWeekStaged.get(String(id))).filter(Boolean);
+  if (!items.length) return;
+  const moves = items.map(({ t, at, ...m }) => m);
+  for (const x of items) { optWeekMoving.set(x.taskId, { to: x.toTs, t: { ...x.t, dueDateMs: x.dueMs }, due: x.dueMs, at: Date.now() }); optWeekStaged.delete(x.taskId); }
+  cuStagedSave();
+  renderOptionsWeekly(optClickup);
+  const res = await send({ type: "CLICKUP_MOVE_MANY", moves }).catch(() => null);
+  if (!res || !res.ok) {
+    for (const x of items) { optWeekMoving.delete(x.taskId); optWeekStaged.set(x.taskId, x); }
+    cuStagedSave();
+    optWeekMsg = { at: Date.now(), err: true, text: "Couldn't apply: " + ((res && (res.error || res.reason)) || "no reply from the extension") + " - your changes are still kept here." };
+    renderOptionsWeekly(optClickup);
+  }
 }
 // This week by day: its own All / Only me / Shared switch (remembered), apart
 // from the Tasks card's filter.
@@ -3056,7 +3486,7 @@ function renderOptionsWeekly(cu) {
     } else {
       listBox.style.display = "block";
       cuWireWeekDrag(listBox, cu);
-      if (!listBox.querySelector(".wk-hint")) { const hi = document.createElement("div"); hi.className = "hint wk-hint"; hi.style.cssText = "margin:0 0 6px;font-size:11.5px"; hi.textContent = "Drag a task onto another day to move its due date there - from this card or from the Tasks list above · pick several with Ctrl+click (or Ctrl+drag a box here; Esc clears), then drag one of them."; listBox.appendChild(hi); }
+      if (!listBox.querySelector(".wk-hint")) { const hi = document.createElement("div"); hi.className = "hint wk-hint"; hi.style.cssText = "margin:0 0 6px;font-size:11.5px"; hi.textContent = "Drag a task onto another day to move its due date there - from this card or from the Tasks list above · pick several with Ctrl+click (or Ctrl+drag a box here; Esc clears), then drag one of them. Drop a task on another task of the same day to put it there."; listBox.appendChild(hi); }
       // Moves the background is doing (or just did): from storage, so they show
       // after a reload too. Still moving = on the new day, marked.
       for (const it of optWeekPending) {
@@ -3110,12 +3540,35 @@ function renderOptionsWeekly(cu) {
         }
         listBox.appendChild(m);
       }
+      // Changes kept here, not in ClickUp yet: Apply all / Discard.
+      const estKept = Object.keys(cuEstStaged);
+      if (optWeekStaged.size || estKept.length || cuEstSaving) {
+        const n = optWeekStaged.size + estKept.length;
+        const bar = document.createElement("div");
+        bar.className = "wk-stagebar";
+        const tx = document.createElement("span");
+        tx.innerHTML = cuEstSaving ? "<b>Saving estimates in ClickUp\u2026 " + cuEstSaving.done + " of " + cuEstSaving.total + "</b>"
+          : "\u270E <b>" + n + " change" + (n === 1 ? "" : "s") + "</b> not in ClickUp yet" + (estKept.length && optWeekStaged.size ? " (" + optWeekStaged.size + " moved, " + estKept.length + " estimate" + (estKept.length === 1 ? "" : "s") + ")" : estKept.length ? " (estimates)" : "") + " - rearrange as much as you like, then apply.";
+        const ap = document.createElement("button"); ap.type = "button"; ap.className = "wk-apply"; ap.textContent = "Apply all to ClickUp (" + n + ")";
+        ap.title = "Change these tasks' due dates in ClickUp now";
+        ap.disabled = !!cuEstSaving || !n;
+        ap.onclick = () => { ap.disabled = true; if (optWeekStaged.size) cuApplyStaged([...optWeekStaged.keys()]); if (estKept.length) cuApplyEsts(estKept); };
+        const dc = document.createElement("button"); dc.type = "button"; dc.className = "wk-selclear"; dc.textContent = "Discard";
+        dc.title = "Forget these changes - the tasks go back to their days (nothing changes in ClickUp)";
+        dc.onclick = () => { optWeekStaged = new Map(); cuStagedSave(); cuEstStaged = {}; cuEstSave(); optWeekMsg = { at: Date.now(), text: "Changes discarded - nothing was changed in ClickUp." }; renderOptionsWeekly(optClickup); };
+        bar.append(tx, ap, dc);
+        listBox.appendChild(bar);
+      }
       // Whose tasks (the card's own switch) and the card's total line on top.
       const waF = { onlyMe: optWeekAssign === "me", sharedTasks: optWeekAssign === "shared" };
       const byAssign = optWeekAssign !== "all";
       const waLabel = optWeekAssign === "me" ? "only me" : "shared";
       let wkEst = 0, wkTrk = 0;
       const wkIds = new Set();
+      // Where each task is drawn: staged moves (here only), then real moves in progress.
+      const wkMoves = new Map();
+      for (const [id, s] of optWeekStaged) wkMoves.set(id, { to: s.toTs, t: s.t, due: s.dueMs, staged: true });
+      for (const [id, m] of optWeekMoving) wkMoves.set(id, m);
       const wkTot = document.createElement("div");
       wkTot.className = "flt-tot wk-total";
       wkTot.style.margin = "0 0 10px";
@@ -3129,42 +3582,67 @@ function renderOptionsWeekly(cu) {
         // The card's All / Only me / Shared switch narrows each day, and the
         // day's est / tracked are then those of the tasks shown.
         const rows = dedupeExtraRows(Array.isArray(d.tasks) ? d.tasks : []).filter((t) => cuAssignPass(waF, t))
-          .filter((t) => { const m = optWeekMoving.get(cuWeekId(t)); return !m || m.to === d.ts; });
-        // Tasks on their way here: shown here, marked "moving" until ClickUp has them.
-        for (const [mid, m] of optWeekMoving) {
+          .filter((t) => { const m = wkMoves.get(cuWeekId(t)); return !m || m.to === d.ts; });
+        // Tasks on their way here: shown here, marked "moving" until ClickUp has
+        // them - or "not applied yet" while they're only staged here.
+        for (const [mid, m] of wkMoves) {
           if (m.to !== d.ts) continue;
-          const live = !m.saved;
           const i = rows.findIndex((t) => cuWeekId(t) === mid);
+          if (m.staged) { if (i < 0) rows.push({ ...m.t, dueDateMs: m.due, _staged: true }); else rows[i] = { ...rows[i], dueDateMs: m.due, _staged: true }; continue; }
+          const live = !m.saved;
           if (i < 0) rows.push({ ...m.t, dueDateMs: m.due, _moving: live });
           else if (live) rows[i] = { ...rows[i], _moving: true };
         }
         const trackedRows = (Array.isArray(d.trackedTasks) ? d.trackedTasks : []).filter((t) => cuAssignPass(waF, t));
-        const dEst = byAssign ? rows.reduce((a, t) => a + (Number(t.estimateMs) || 0), 0) : Number(d.estimateMs) || 0;
-        const dTrk = byAssign ? rows.concat(trackedRows).reduce((a, t) => a + (Number(t.spentMs) || 0), 0) : Number(d.spentMs) || 0;
+        const dayCtx = cuGuessCtx(rows);
+        // The day's saved total, plus the tasks moved in, minus the ones moved out
+        // (summing the rows instead would drop the multi-day shares it includes).
+        const baseIds = new Set(dedupeExtraRows(Array.isArray(d.tasks) ? d.tasks : []).filter((t) => cuAssignPass(waF, t)).map(cuWeekId));
+        const shownIds = new Set(rows.map(cuWeekId));
+        const moved = (Array.isArray(d.tasks) ? d.tasks : []).filter((t) => baseIds.has(cuWeekId(t)) && !shownIds.has(cuWeekId(t)));
+        const added = rows.filter((t) => !baseIds.has(cuWeekId(t)));
+        const sumK = (l, k) => l.reduce((a, t) => a + (Number(t[k]) || 0), 0);
+        const dEst = byAssign ? sumK(rows, "estimateMs") : Math.max(0, (Number(d.estimateMs) || 0) - sumK(moved, "estimateMs") + sumK(added, "estimateMs"));
+        const dTrk = byAssign ? sumK(rows.concat(trackedRows), "spentMs") : Number(d.spentMs) || 0; // time logged that day - a moved due date doesn't move it
+        const dGuess = rows.reduce((a, t) => a + cuGuessMs(t, dayCtx), 0);
         wkEst += dEst; wkTrk += dTrk; rows.forEach((t) => wkIds.add(String(t.id || t.name)));
         // One line: the text, then the day's Plan with AI on the right.
         head.innerHTML = '<span class="wk-dtxt">' + "<b>" + weekdayNameOpt(new Date(d.ts).getDay()) + " · " + dateTxt + "</b>" +
-          " - est <b>" + fmtDurOpt(dEst) + "</b> · tracked <b>" + fmtDurOpt(dTrk) + "</b>" +
+          " - est <b>" + fmtDurOpt(dEst) + "</b>" + (dGuess !== 0 ? ' <span class="wk-gtot" title="With the guessed estimates (and the ones you kept, not in ClickUp yet) for the tasks that have none">· ~' + fmtDurOpt(dEst + dGuess) + " with guesses</span>" : "") + " · tracked <b>" + fmtDurOpt(dTrk) + "</b>" +
           (byAssign ? ' <span class="hint">· ' + waLabel + "</span>" : "") + "</span>";
         // 🧭 Plan with AI for this day's tasks (across clients).
         if (rows.length && window.PcmTaskPanel && window.PcmTaskPanel.clientTools) {
           const tools = window.PcmTaskPanel.clientTools(weekdayNameOpt(new Date(d.ts).getDay()) + " " + dateTxt, rows.filter((t) => !t.local), { day: true });
-          tools.style.marginLeft = "auto";
+          const tg = cuTabGroupBtn(weekdayNameOpt(new Date(d.ts).getDay()) + " " + dateTxt, () => rows, "purple");
+          tg.style.marginLeft = "auto";
           head.classList.add("wk-dhead");
-          head.appendChild(tools);
+          head.append(tg, tools);
+        }
+        // This day's own Apply: the tasks moved INTO it.
+        const stIn = [...optWeekStaged.values()].filter((s) => s.toTs === d.ts);
+        const estIn = rows.map(cuWeekId).filter((id) => cuEstStaged[id]);
+        if (stIn.length || estIn.length) {
+          const ap = document.createElement("button"); ap.type = "button"; ap.className = "wk-apply sm";
+          ap.textContent = "Apply to ClickUp (" + (stIn.length + estIn.length) + ")";
+          ap.title = [stIn.length ? "the due date of the " + (stIn.length === 1 ? "task" : stIn.length + " tasks") + " moved to this day" : "", estIn.length ? "the " + (estIn.length === 1 ? "estimate" : estIn.length + " estimates") + " you kept for this day" : ""].filter(Boolean).join(" and ").replace(/^/, "Set in ClickUp: ");
+          ap.onclick = (e) => { e.stopPropagation(); ap.disabled = true; if (stIn.length) cuApplyStaged(stIn.map((s) => s.taskId)); if (estIn.length) cuApplyEsts(estIn); };
+          if (!head.classList.contains("wk-dhead")) { head.classList.add("wk-dhead"); ap.style.marginLeft = "auto"; }
+          const first = head.querySelector(".cu-tgbtn");
+          if (first) { first.style.marginLeft = ""; ap.style.marginLeft = "auto"; head.insertBefore(ap, first); } else head.appendChild(ap);
         }
         head.dataset.wkDay = String(d.ts);
         listBox.appendChild(head);
         const tlist = document.createElement("div");
         tlist.className = "cu-tasklist";
         tlist.dataset.wkDay = String(d.ts);
+        tlist.dataset.reorder = cuDayKey(d.ts);
         if (!rows.length && !trackedRows.length) {
           const e = document.createElement("div");
           e.className = "empty";
           e.textContent = "(no tasks this day)";
           tlist.appendChild(e);
         } else {
-          for (const t of sortByPriority(rows)) {
+          for (const t of sortByPriority(rows, cuListOrderFor(cuDayKey(d.ts)))) {
             const row = document.createElement("div");
             row.className = "cu-task";
             // Drag it onto another day: its due date moves there (same time of day).
@@ -3173,6 +3651,7 @@ function renderOptionsWeekly(cu) {
             const nm = makeLinkOpt(t.url, t.name || "(untitled task)");
             appendDoneTickOpt(nm, t);
             if (t._moving) { const mv = document.createElement("span"); mv.className = "wk-mvchip"; mv.textContent = "\u23F3 moving"; nm.appendChild(mv); }
+            if (t._staged) { row.classList.add("wk-staged"); const sc = document.createElement("span"); sc.className = "wk-stchip"; sc.textContent = "\u270E not applied yet"; sc.title = "Moved here in this extension only - press Apply to ClickUp (this day or all) to change its due date in ClickUp. Drag it back to its day to undo."; nm.appendChild(sc); }
             appendNameCellOpt(row, nm, t);
             const spans = document.createElement("span");
             spans.className = "estpairs";
@@ -3180,6 +3659,7 @@ function renderOptionsWeekly(cu) {
             est.className = "est" + (t.estimateMs ? "" : " zero");
             est.textContent = t.estimateMs ? fmtDurOpt(t.estimateMs) : "no est";
             spans.appendChild(est);
+            cuEstGuess(est, t, dayCtx);
             if (Number(t.spentMs) > 0) {
               const trk = document.createElement("span");
               trk.className = "trk";
@@ -3386,7 +3866,7 @@ function renderPeopleMenu() {
   count.className = "n";
   const paintCount = () => {
     const n = optFltPeople.length;
-    count.textContent = n ? n + (n === 1 ? " person" : " people") + " \u00b7 tasks load as you tick" : "Tick anyone to see their tasks";
+    count.textContent = n ? n + (n === 1 ? " person" : " people") + " \u00b7 press Load tasks to see their tasks" : "Tick anyone, then press Load tasks";
     andLab.classList.toggle("off", n < 2); // needs two or more people to mean anything
   };
   const setPicked = (id, on) => {
@@ -3479,34 +3959,148 @@ function renderPeopleMenu() {
 // has nothing in the current range - the list below simply comes up empty.
 let optWorkspaceClients = [];
 let optFltResultClients = [];
+let optClientSig = "";
 function fillClientSelect() {
   const sel = $("optFltClient");
   if (!sel) return "";
   const pick = sel.value;
+  // Rebuilding the list while it's open closes it (the first click on it seemed
+  // to do nothing): wait until it's closed, and skip it when nothing changed.
+  if (document.activeElement === sel) { sel._pendingFill = true; return pick; }
   // One entry per client: names differing only by emoji, spacing or case are the
   // same client (the key canonicalizeClientLabels uses). The spelling your tasks
   // carry wins, because that is what the filter matches against.
   const key = (n) => String(n).toLowerCase().replace(/[^a-z0-9]+/g, "") || String(n);
   const byKey = new Map();
-  for (const n of [].concat(pick ? [pick] : [], optFltResultClients, optWorkspaceClients)) {
-    if (n && !byKey.has(key(n))) byKey.set(key(n), n);
+  // Your clients first (any date - the same list the Tasks card's filter has), then
+  // the workspace's (read once, kept a day) and any the results carry.
+  let mine = [];
+  try { mine = cuAvailableFacets((optClickup && optClickup.state) || {}).clients; } catch (e) {}
+  for (const n of [].concat(pick ? [pick] : [], mine, optFltResultClients, optWorkspaceClients)) {
+    if (n && !/^(extra tasks?|daily tracking)$/i.test(String(n).replace(/^[^a-z0-9]+/i, "")) && !byKey.has(key(n))) byKey.set(key(n), n);
   }
-  const names = [...byKey.values()].sort((a, b) => a.localeCompare(b));
+  const names = [...byKey.values()].sort((a, b) => a.replace(/^[^a-z0-9]+/i, "").localeCompare(b.replace(/^[^a-z0-9]+/i, "")));
+  const sig = names.join("\n");
+  if (sig === optClientSig && sel.options.length > 1) return pick;
+  optClientSig = sig;
   sel.innerHTML = '<option value="">All clients</option>' +
     names.map((n) => '<option value="' + escapeHtml(n) + '"' + (n === pick ? " selected" : "") + ">" + escapeHtml(n) + "</option>").join("");
   sel.value = pick;
   return pick;
 }
+let optWorkspaceClientsP = null;
 async function loadWorkspaceClients() {
-  try {
+  if (optWorkspaceClientsP) return optWorkspaceClientsP;
+  optWorkspaceClientsP = (async () => { try {
     const res = await send({ type: "CLICKUP_CLIENT_NAMES" }, 30000);
     if (res && Array.isArray(res.names)) { optWorkspaceClients = res.names; fillClientSelect(); }
-  } catch (e) {}
+  } catch (e) {} })();
+  return optWorkspaceClientsP;
 }
+// The list is filled when it's first opened (it was never loaded before - only
+// a Load tasks filled it from its own results).
+(function wireExploreClients() {
+  const sel = $("optFltClient");
+  if (!sel) return;
+  const fill = () => { fillClientSelect(); loadWorkspaceClients(); };
+  sel.addEventListener("mousedown", () => { if (sel.options.length <= 1) fillClientSelect(); loadWorkspaceClients(); });
+  sel.addEventListener("focus", () => loadWorkspaceClients());
+  sel.addEventListener("blur", () => { if (sel._pendingFill) { sel._pendingFill = false; fillClientSelect(); } });
+  // Filled ahead, so the first click opens a list that's already there.
+  setTimeout(fill, 2500);
+})();
 
 // Explore tasks reads from ClickUp only after "Load tasks" is pressed; changing a
 // filter afterwards asks for it again instead of loading by itself.
 let optFltArmed = false;
+// ---- Explore's own ▾ Filter (saved as exFilter; never the Tasks card's cuFilter) ----
+const EX_REFINE = ["missingEst", "missingStart", "missingDue", "incomplete", "overdue", "span"];
+const EX_DUE_LABEL = { today: "Today", week: "This week", nextWeek: "Next week", prevWeek: "Previous week", month: "This month", nextMonth: "Next month", prevMonth: "Previous month", custom: "Custom range" };
+const exDefaults = () => ({ due: "today", from: "", to: "", basis: "", dueOnly: true, missingEst: false, missingStart: false, missingDue: false, incomplete: false, overdue: false, span: false, statuses: [], priorities: [] });
+let exFilter = exDefaults();
+let exSeen = { statuses: [], priorities: [] }; // what the last loaded list had, for the Status / Priority ticks
+function exSave() { chrome.storage.local.set({ exFilter }).catch(() => {}); exBtnLabel(); }
+async function exLoad() {
+  try {
+    const g = await chrome.storage.local.get("exFilter");
+    if (g && g.exFilter && typeof g.exFilter === "object") exFilter = { ...exDefaults(), ...g.exFilter };
+    if (exFilter.due === "threeMonths") exFilter.due = "today"; // that choice is gone - Custom date / range covers it
+    else { try { if (localStorage.getItem("optFltDueOnly") === "0") exFilter.dueOnly = false; } catch (e) {} } // the old "Due in this range only" choice
+  } catch (e) {}
+  exBtnLabel();
+}
+// The dates the Due choice covers (weeks as "A week runs" in ClickUp setup).
+function exRange() {
+  const now = new Date();
+  const dayS = (d) => new Date(d).setHours(0, 0, 0, 0), dayE = (d) => new Date(d).setHours(23, 59, 59, 999);
+  const md = (ms) => new Date(ms).toLocaleDateString(undefined, { month: "short", day: "numeric" });
+  const k = exFilter.due || "today";
+  if (k === "week" || k === "nextWeek" || k === "prevWeek") {
+    const off = k === "nextWeek" ? 7 : k === "prevWeek" ? -7 : 0;
+    const w = cuWeekOf(new Date(now).setDate(now.getDate() + off));
+    return { fromTs: w.start, toTs: dayE(w.end), label: EX_DUE_LABEL[k] + " · " + md(w.start) + " – " + md(w.end) };
+  }
+  if (k === "month" || k === "nextMonth" || k === "prevMonth") {
+    const off = k === "nextMonth" ? 1 : k === "prevMonth" ? -1 : 0;
+    const a = new Date(now.getFullYear(), now.getMonth() + off, 1), b = new Date(now.getFullYear(), now.getMonth() + off + 1, 0);
+    return { fromTs: a.getTime(), toTs: dayE(b), label: EX_DUE_LABEL[k] + " (" + a.toLocaleDateString(undefined, { month: "long" }) + ")" };
+  }
+  if (k === "custom" && exFilter.from) {
+    const p = (v) => { const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(v || "")); return m ? new Date(+m[1], +m[2] - 1, +m[3]).getTime() : 0; };
+    let a = p(exFilter.from), b = p(exFilter.to) || a;
+    if (b < a) { const x = a; a = b; b = x; }
+    return { fromTs: a, toTs: dayE(b), label: a === b ? md(a) : md(a) + " – " + md(b) };
+  }
+  return { fromTs: dayS(now), toTs: dayE(now), label: "Today" };
+}
+function exFlags() {
+  return { estimate: !!exFilter.missingEst, start: !!exFilter.missingStart, due: !!exFilter.missingDue, incomplete: !!exFilter.incomplete, overdue: !!exFilter.overdue, span: !!exFilter.span };
+}
+// Status / priority ticks and "Dates by" (start / both) on a loaded row.
+function exPassMore(t, r) {
+  const st = (exFilter.statuses || []), pr = (exFilter.priorities || []);
+  if (st.length && !st.includes(String((t && t.status) || "").toLowerCase())) return false;
+  if (pr.length && !pr.includes(String((t && t.priority) || "none").toLowerCase())) return false;
+  if (r && (exFilter.basis === "start" || exFilter.basis === "both")) { const v = Number(t && t.startDateMs) || 0; if (!(v >= r.fromTs && v <= r.toTs)) return false; }
+  return true;
+}
+function exBtnLabel() {
+  const b = $("exFilterBtn");
+  if (!b) return;
+  const n = (exFilter.due !== "today" ? 1 : 0) + EX_REFINE.filter((k) => exFilter[k]).length + (exFilter.statuses || []).length + (exFilter.priorities || []).length + (exFilter.basis ? 1 : 0);
+  b.innerHTML = "&#9662; Filter" + (n ? " · " + n : "");
+  b.classList.toggle("active", n > 0);
+}
+function exPaintMenu() {
+  const menu = $("exFilterMenu");
+  if (!menu) return;
+  menu.querySelectorAll("[data-ex-due]").forEach((el) => { el.checked = el.getAttribute("data-ex-due") === exFilter.due; });
+  const dates = menu.querySelector("[data-ex-dates]");
+  if (dates) dates.hidden = exFilter.due !== "custom";
+  const f = menu.querySelector("[data-ex-from]"), t = menu.querySelector("[data-ex-to]");
+  if (f && document.activeElement !== f) f.value = exFilter.from || "";
+  if (t && document.activeElement !== t) t.value = exFilter.to || "";
+  const bs = menu.querySelector("[data-ex-basis]");
+  if (bs && document.activeElement !== bs) bs.value = exFilter.basis || "";
+  menu.querySelectorAll("[data-ex]").forEach((el) => { el.checked = !!exFilter[el.getAttribute("data-ex")]; });
+  for (const k of ["statuses", "priorities"]) {
+    const vals = [...new Set([].concat(exSeen[k] || [], exFilter[k] || []))].filter(Boolean).sort();
+    const grp = menu.querySelector('[data-ex-group="' + k + '"]'), list = menu.querySelector('[data-ex-list="' + k + '"]');
+    if (!grp || !list) continue;
+    grp.hidden = !vals.length;
+    list.innerHTML = "";
+    for (const v of vals) {
+      const l = document.createElement("label");
+      const c = document.createElement("input");
+      c.type = "checkbox"; c.setAttribute("data-ex-key", k); c.setAttribute("data-ex-val", v); c.checked = (exFilter[k] || []).includes(v);
+      const sp = document.createElement("span"); sp.textContent = v.replace(/\b\w/g, (x) => x.toUpperCase());
+      l.append(c, " ", sp);
+      list.appendChild(l);
+    }
+  }
+  exBtnLabel();
+}
+
 async function renderOptionsFilter() {
   if (cuEstEditingOpt) { cuRenderPendingOpt = true; return; }
   const box = $("optFltResult");
@@ -3517,53 +4111,25 @@ async function renderOptionsFilter() {
   if (!optFltArmed) {
     ++optFltSeq;
     box.style.display = "block";
+    // A list is already shown: keep it (it vanishing looked like a glitch) and say
+    // it is for the earlier choices until Load tasks is pressed again.
+    if (box.querySelector(".cu-task")) {
+      if (!box.querySelector(".flt-stale")) {
+        const n = document.createElement("div");
+        n.className = "flt-stale";
+        n.innerHTML = "Choices changed - press <b>Load tasks</b> to update this list (it still shows the earlier choices).";
+        box.prepend(n);
+      }
+      return;
+    }
     box.innerHTML = '<div class="flt-tot">Choose the view, people, client and the rest, then press <b>Load tasks</b>. Nothing is read from ClickUp before that.</div>';
     return;
   }
   const seq = ++optFltSeq;
-  const type = $("optFltType").value;
-  const now = new Date();
-  let fromTs, toTs, label;
-  if (type === "week") {
-    // Follows the "A week runs" setting (Options > ClickUp setup > Tracking settings).
-    const modes = { "sun-sat": [0, 7], "mon-sun": [1, 7], "mon-fri": [1, 5], "sun-thu": [0, 5] };
-    const mode = (optClickup && optClickup.weekMode) || "sun-sat";
-    const conf = modes[mode] || modes["sun-sat"];
-    const startDay = conf[0];
-    const days = conf[1];
-    const start = new Date(now);
-    start.setHours(0, 0, 0, 0);
-    start.setDate(start.getDate() - ((start.getDay() - startDay + 7) % 7));
-    if ($("optFltWeekMode").value === "day") {
-      const dow = Number($("optFltWeekDay").value || "1");
-      const day = new Date(start);
-      day.setDate(start.getDate() + ((dow - startDay + 7) % 7));
-      fromTs = dayStartOpt(day);
-      toTs = dayEndOpt(day);
-      label = weekdayNameOpt(dow) + " · " + day.toLocaleDateString(undefined, { month: "short", day: "numeric" });
-    } else {
-      const end = new Date(start);
-      end.setDate(start.getDate() + days - 1);
-      fromTs = dayStartOpt(start);
-      toTs = dayEndOpt(end);
-      const f = (d) => d.toLocaleDateString(undefined, { month: "short", day: "numeric" });
-      label = "This week · " + f(start) + " – " + f(end);
-    }
-    const showSub = $("optFltWeekMode").value === "day";
-    $("optFltWeekDayWrap").style.display = showSub ? "" : "none";
-  } else if (type === "custom") {
-    const s = $("optFltFrom").value;
-    const d = $("optFltTo").value;
-    const startD = s ? new Date(s + "T00:00:00") : new Date(now);
-    const dueD = d ? new Date(d + "T00:00:00") : new Date(now);
-    fromTs = dayStartOpt(startD);
-    toTs = dayEndOpt(dueD);
-    label = (s || "today") + " → " + (d || "today");
-  } else {
-    fromTs = dayStartOpt(now);
-    toTs = dayEndOpt(now);
-    label = "Today";
-  }
+  // Explore's own ▾ Filter (exFilter): the dates, how they're matched, the rest.
+  const exR = exRange();
+  let fromTs = exR.fromTs, toTs = exR.toTs, label = exR.label;
+  const type = exFilter.due;
 
   box.style.display = "block";
   box.innerHTML = '<div class="flt-tot">Loading ' + label + "…</div>";
@@ -3579,7 +4145,7 @@ async function renderOptionsFilter() {
       assigneeIds = optFltPeople.slice();
       optFltPeopleQueried = peopleSig();
       if (!assigneeIds.length) {
-        box.innerHTML = '<div class="flt-tot">Tick at least one person under <b>People</b> - their tasks load as you tick.</div>';
+        box.innerHTML = '<div class="flt-tot">Tick at least one person under <b>People</b>, then press <b>Load tasks</b>.</div>';
         return;
       }
       scopeTag = " · " + peopleLabel();
@@ -3598,10 +4164,20 @@ async function renderOptionsFilter() {
         scopeTag = dept ? " · " + dept.name : "";
       }
     }
+    // A pasted list in "Find these tasks": that list is the filter (any client,
+    // anyone's, any date) and the choices above only narrow it when set.
+    if (window.PcmFindMany && $("optFindText") && $("optFindText").value.trim()) {
+      await renderFindModeOpt(box, seq, { fromTs, toTs, label, assigneeIds, sameTask: deptId === "__pick__" && optFltPeopleAnd && assigneeIds.length > 1 });
+      return;
+    }
     // Live Start/Stop/Complete controls only when viewing your OWN tasks (no
     // department / other-member scope - those are read-only reports).
-    const withControls = assigneeIds.length === 0;
-    const res = await send({ type: "CLICKUP_FILTER", fromTs, toTs, assigneeIds: assigneeIds.length ? assigneeIds : [] });
+    // Explore is for looking things up and reporting: no Start / Complete here
+    // (the Tasks card is where you work on a task).
+    const withControls = false;
+    // By start date: a task can start in the range and be due later, so read two months further.
+    const qTo = exFilter.basis === "start" ? toTs + 62 * 864e5 : toTs;
+    const res = await send({ type: "CLICKUP_FILTER", fromTs, toTs: qTo, assigneeIds: assigneeIds.length ? assigneeIds : [] });
     if (seq !== optFltSeq) return;
     // The background computes a fresh scope in the background and replies with
     // { building: true } until the result is cached - poll patiently instead of
@@ -3613,7 +4189,7 @@ async function renderOptionsFilter() {
         await new Promise((r) => setTimeout(r, 2000));
         waitTries++;
         if (seq !== optFltSeq) return;
-        fltRes = await send({ type: "CLICKUP_FILTER", fromTs, toTs, assigneeIds: assigneeIds.length ? assigneeIds : [] })
+        fltRes = await send({ type: "CLICKUP_FILTER", fromTs, toTs: qTo, assigneeIds: assigneeIds.length ? assigneeIds : [] })
           .catch((e) => ({ ok: false, reason: "send-failed", error: (e && e.message) || String(e) }));
         if (seq !== optFltSeq) return;
         if (!fltRes || !fltRes.ok || fltRes.data) break;
@@ -3648,14 +4224,7 @@ async function renderOptionsFilter() {
     const tasks = d.tasks || [];
     const deadline = d.deadlineTasks || [];
 // Active filter flags - every checked one must be satisfied (AND gate).
-    const flt = {
-      estimate: !!($("optFltOnlyMissing") && $("optFltOnlyMissing").checked),
-      start: !!($("optFltMissingStart") && $("optFltMissingStart").checked),
-      due: !!($("optFltMissingDue") && $("optFltMissingDue").checked),
-      incomplete: !!($("optFltIncomplete") && $("optFltIncomplete").checked),
-      overdue: !!($("optFltOverdue") && $("optFltOverdue").checked),
-      span: !!($("optFltSpan") && $("optFltSpan").checked),
-    };
+    const flt = exFlags();
     const active = Object.keys(flt).filter((k) => flt[k]);
     // "Deadline crossed" = the due date is on a day BEFORE today (day-floor
     // compare), so a task due today never counts; only genuinely past-due tasks
@@ -3688,13 +4257,20 @@ async function renderOptionsFilter() {
     // in progress here (due after the range) and show each task's FULL estimate
     // instead of the share that falls inside the range.
     // "Missing due date" asks for tasks WITHOUT a due date, so it wins over this.
-    const dueOnly = !!($("optFltDueOnly") && $("optFltDueOnly").checked) && !flt.due;
+    const dueOnly = !!exFilter.dueOnly && !flt.due && exFilter.basis !== "start";
     const rangeLo = new Date(fromTs).setHours(0, 0, 0, 0), rangeHi = new Date(toTs).setHours(23, 59, 59, 999);
     const dueInRange = (ms) => { const v = Number(ms) || 0; return v >= rangeLo && v <= rangeHi; };
-    let shownTasks = tasks.filter(passTask);
+    // What this list has, for the menu's Status / Priority ticks.
+    exSeen = {
+      statuses: [...new Set([].concat(tasks, deadline).map((t) => String((t && t.status) || "").toLowerCase()).filter(Boolean))],
+      priorities: [...new Set(tasks.map((t) => String((t && t.priority) || "none").toLowerCase()))],
+    };
+    if ($("exFilterMenu") && !$("exFilterMenu").hidden) exPaintMenu();
+    const exR2 = { fromTs: new Date(fromTs).setHours(0, 0, 0, 0), toTs: new Date(toTs).setHours(23, 59, 59, 999) };
+    let shownTasks = tasks.filter(passTask).filter((t) => exPassMore(t, exR2));
     if (dueOnly) shownTasks = shownTasks.filter((t) => dueInRange(t.dueDateMs))
       .map((t) => (Number(t.totalEstimateMs) > 0 ? { ...t, estimateMs: Number(t.totalEstimateMs) } : t));
-    let shownTracked = (Array.isArray(d.trackedTasks) ? d.trackedTasks : []).filter(passTask);
+    let shownTracked = (Array.isArray(d.trackedTasks) ? d.trackedTasks : []).filter(passTask).filter((t) => exPassMore(t, null));
     let shownDeadline = deadline.filter((dt) => {
       if (dt.error) return false;
       if (dueOnly && dt.dueDateMs && !dueInRange(dt.dueDateMs)) return false;
@@ -3714,7 +4290,8 @@ async function renderOptionsFilter() {
         .map((t) => String((t && t.client) || "").trim()).filter(Boolean))];
       clientPick = fillClientSelect();
       if (clientPick) {
-        const keep = (t) => String((t && t.client) || "").trim() === clientPick;
+        const pk = String(clientPick).toLowerCase().replace(/[^a-z0-9]+/g, "");
+        const keep = (t) => { const c = String((t && t.client) || "").toLowerCase().replace(/[^a-z0-9]+/g, ""); return c === pk || (c.length >= 4 && pk.length >= 4 && (c.includes(pk) || pk.includes(c))); };
         shownTasks = shownTasks.filter(keep);
         shownDeadline = shownDeadline.filter(keep);
         shownTracked = shownTracked.filter(keep);
@@ -3755,35 +4332,12 @@ async function renderOptionsFilter() {
       (clientPick ? " <span class=\"hint\">· client: " + escapeHtml(clientPick) + "</span>" : "") +
       (active.length ? " <span class=\"hint\">(filter: " + filterTags + ")</span>" : "") +
       trackedHint + "</div>";
+    if (total) box.firstElementChild.appendChild(cuTabGroupBtn(label + (clientPick ? " - " + clientPick : ""), () => [].concat(shownTasks, shownDeadline, shownTracked), "cyan"));
     const list = document.createElement("div");
     list.className = "cu-tasklist";
     makeListResizable(list, "explore");
-    for (const t of sortByPriority(shownTasks)) {
-      const row = document.createElement("div");
-      row.className = "cu-task";
-      const nm = makeLinkOpt(t.url, t.name || "(untitled task)");
-      appendDoneTickOpt(nm, t);
-      appendNameCellOpt(row, nm, t);
-      const spans = document.createElement("span");
-      spans.className = "estpairs";
-      const estSpan = document.createElement("span");
-      estSpan.className = "est" + (t.estimateMs ? "" : " zero");
-      estSpan.textContent = t.estimateMs ? fmtDurOpt(t.estimateMs) : "no est";
-      estSpan.title = "Click to edit estimate";
-      estSpan.style.cursor = "pointer";
-      estSpan.addEventListener("click", (e) => { e.stopPropagation(); startEditEstimateOpt(estSpan, t); });
-      spans.appendChild(estSpan);
-      if (Number(t.spentMs) > 0) {
-        const trk = document.createElement("span");
-        trk.className = "trk";
-        trk.textContent = fmtDurOpt(t.spentMs); markTrk(trk, t, spans);
-        spans.appendChild(trk);
-      }
-      row.appendChild(spans);
-      cuAllNote(spans, row._cuTask);
-      if (withControls) appendTaskControlsOpt(row, t);
-      list.appendChild(row);
-    }
+    list.dataset.reorder = "explore";
+    for (const t of sortByPriority(shownTasks, cuListOrderFor("explore"))) list.appendChild(optExploreTaskRow(t, withControls));
     for (const dt of sortByPriority(shownDeadline)) {
       if (dt.error) continue;
       const row = document.createElement("div");
@@ -3847,37 +4401,213 @@ async function renderOptionsFilter() {
   }
 }
 
+// One task row of Explore tasks (also the rows Find these tasks shows).
+function optExploreTaskRow(t, withControls) {
+  const row = document.createElement("div");
+  row.className = "cu-task";
+  const nm = makeLinkOpt(t.url, t.name || "(untitled task)");
+  appendDoneTickOpt(nm, t);
+  appendNameCellOpt(row, nm, t);
+  const spans = document.createElement("span");
+  spans.className = "estpairs";
+  const estSpan = document.createElement("span");
+  estSpan.className = "est" + (t.estimateMs ? "" : " zero");
+  estSpan.textContent = t.estimateMs ? fmtDurOpt(t.estimateMs) : "no est";
+  estSpan.title = "Click to edit estimate";
+  estSpan.style.cursor = "pointer";
+  estSpan.addEventListener("click", (e) => { e.stopPropagation(); startEditEstimateOpt(estSpan, t); });
+  spans.appendChild(estSpan);
+  cuEstGuess(estSpan, t, null, true);
+  if (Number(t.spentMs) > 0) {
+    const trk = document.createElement("span");
+    trk.className = "trk";
+    trk.textContent = fmtDurOpt(t.spentMs); markTrk(trk, t, spans);
+    spans.appendChild(trk);
+  }
+  row.appendChild(spans);
+  cuAllNote(spans, row._cuTask);
+  if (withControls) appendTaskControlsOpt(row, t);
+  return row;
+}
+
+// ---- Explore tasks › Find these tasks (find-many.js) ----
+// The pasted list, the "only within the dates" tick and the user's own picks are
+// kept (storage cuFind), so the list and its results come back after Hide/Show or
+// a reload. The background keeps the ClickUp task index; this reads it.
+let optFindPicks = {};
+let optFindNoSync = false; // a pick / restore re-draws from the index without asking ClickUp
+let optFindWatch = null;
+function optFindSave(extra) {
+  const text = $("optFindText") ? $("optFindText").value : "";
+  return chrome.storage.local.get("cuFind").then((g) => chrome.storage.local.set({ cuFind: { ...(g.cuFind || {}), text, useDates: !!($("optFindUseDates") && $("optFindUseDates").checked), picks: optFindPicks, ...(extra || {}) } })).catch(() => {});
+}
+async function renderFindModeOpt(box, seq, ctx) {
+  const F = window.PcmFindMany;
+  const text = $("optFindText").value;
+  const idxNote = $("optFindIndex");
+  const showMeta = (m) => { if (idxNote) idxNote.textContent = F.indexStatus(m); };
+  let meta = ((await chrome.storage.local.get("cuTaskIndex").catch(() => ({}))) || {}).cuTaskIndex || null;
+  const noSync = optFindNoSync;
+  optFindNoSync = false;
+  if (!(noSync && meta && meta.state === "ready")) {
+    box.innerHTML = '<div class="flt-tot"><span class="cu-busy"></span> Checking for ClickUp changes…</div>';
+    const r = await send({ type: "CLICKUP_TASK_INDEX", force: !!optFindForce }, 120000).catch(() => null);
+    optFindForce = false;
+    if (seq !== optFltSeq) return;
+    meta = ((await chrome.storage.local.get("cuTaskIndex").catch(() => ({}))) || {}).cuTaskIndex || meta;
+    if (!r || r.state === "building" || !meta || meta.state !== "ready") {
+      // First time: every task is read once. Say how far it is, and carry on by
+      // itself when it's done (the page may be reloaded meanwhile - it resumes).
+      const paint = (m) => {
+        showMeta(m);
+        box.innerHTML = '<div class="flt-tot"><span class="cu-busy"></span> <b>' + escapeHtml(F.indexStatus(m)) + "</b><br><span class=\"hint\">First time only: every task you can see in ClickUp is read once (100 per request, paced so nothing else slows down), then only what changes. Your results show here when it's done.</span></div>";
+      };
+      paint(meta);
+      if (r && r.ok === false && r.reason === "not-configured") { box.innerHTML = '<div class="flt-tot" style="color:var(--red)">Connect ClickUp first (ClickUp setup).</div>'; return; }
+      if (optFindWatch) chrome.storage.onChanged.removeListener(optFindWatch);
+      optFindWatch = (ch, area) => {
+        if (area !== "local" || !ch.cuTaskIndex) return;
+        const m = ch.cuTaskIndex.newValue;
+        if (seq !== optFltSeq) { chrome.storage.onChanged.removeListener(optFindWatch); optFindWatch = null; return; }
+        if (m && m.state === "ready") { chrome.storage.onChanged.removeListener(optFindWatch); optFindWatch = null; optFindNoSync = true; renderOptionsFilter(); }
+        else paint(m);
+      };
+      chrome.storage.onChanged.addListener(optFindWatch);
+      return;
+    }
+    if (r && r.ok === false && r.reason === "rate-limited") showMeta({ ...meta, error: "" });
+  }
+  showMeta(meta);
+  box.innerHTML = '<div class="flt-tot"><span class="cu-busy"></span> Matching…</div>';
+  const all = await F.readIndex(meta);
+  if (seq !== optFltSeq) return;
+  // The choices above narrow the search only when they're set.
+  const ckey = (n) => String(n || "").toLowerCase().replace(/[^a-z0-9]+/g, "");
+  const clientPick = $("optFltClient") ? $("optFltClient").value : "";
+  const ck = ckey(clientPick);
+  const useDates = !!($("optFindUseDates") && $("optFindUseDates").checked);
+  const lo = new Date(ctx.fromTs).setHours(0, 0, 0, 0), hi = new Date(ctx.toTs).setHours(23, 59, 59, 999);
+  const inRange = (v) => { v = Number(v) || 0; return v >= lo && v <= hi; };
+  const people = new Set((ctx.assigneeIds || []).map(String));
+  const todayStart = new Date().setHours(0, 0, 0, 0);
+  const flag = (id) => !!($(id) && $(id).checked);
+  const flt = exFlags();
+  const narrowed = [];
+  if (ck) narrowed.push("client: " + clientPick);
+  if (useDates) narrowed.push(ctx.label);
+  if (people.size) narrowed.push(ctx.label.split(" · ").slice(1).join(" · ") || "chosen people");
+  for (const [k, on] of Object.entries(flt)) if (on) narrowed.push({ estimate: "missing estimates", start: "missing start date", due: "missing due date", incomplete: "incomplete", overdue: "deadline crossed", span: "start ≠ due" }[k]);
+  const pool = all.filter((t) => {
+    if (ck) { const c = ckey(t.client); if (!(c === ck || (c.length >= 4 && ck.length >= 4 && (c.includes(ck) || ck.includes(c))))) return false; }
+    if (useDates && !(inRange(t.dueDateMs) || inRange(t.startDateMs) || inRange(t.doneAt))) return false;
+    if (people.size) {
+      const ids = (t.assignees || []).map((a) => String(a && a.id));
+      if (ctx.sameTask ? ![...people].every((p) => ids.includes(p)) : !ids.some((p) => people.has(p))) return false;
+    }
+    if (flt.estimate && Number(t.estimateMs)) return false;
+    if (flt.start && Number(t.startDateMs)) return false;
+    if (flt.due && Number(t.dueDateMs)) return false;
+    if (flt.incomplete && t.done) return false;
+    if (flt.overdue && (t.done || !Number(t.dueDateMs) || new Date(Number(t.dueDateMs)).setHours(0, 0, 0, 0) >= todayStart)) return false;
+    if (!exPassMore(t, null)) return false;
+    if (flt.span && !(Number(t.startDateMs) && Number(t.dueDateMs) && new Date(Number(t.startDateMs)).setHours(0, 0, 0, 0) !== new Date(Number(t.dueDateMs)).setHours(0, 0, 0, 0))) return false;
+    return true;
+  });
+  const res = F.findList(text, pool, optFindPicks);
+  // The tasks found, once each, in the order of the list.
+  const seen = new Set(), found = [];
+  for (const r of res) { const t = r.pick && r.pick.task; if (t && !seen.has(String(t.id))) { seen.add(String(t.id)); found.push(t); } }
+  const n = { done: 0, doing: 0, todo: 0 };
+  for (const t of found) n[F.statusKind(t)]++;
+  const est = found.reduce((x, t) => x + (Number(t.estimateMs) || 0), 0), spent = found.reduce((x, t) => x + (Number(t.spentMs) || 0), 0);
+  const title = "Found tasks" + (clientPick ? " - " + clientPick : "");
+  optFltExport = cuExportRowsOpt(found, [], [], title);
+  box.innerHTML = '<div class="flt-tot"><b>Found ' + res.filter((r) => r.pick).length + " of " + res.length + "</b> · " + n.done + " done · " + n.doing + " in progress · " + n.todo + " to do" +
+    " · est <b>" + fmtDurOpt(est) + "</b> · tracked <b>" + fmtDurOpt(spent) + "</b>" +
+    ' <span class="hint">· searched ' + pool.length.toLocaleString() + " of " + all.length.toLocaleString() + " tasks" + (narrowed.length ? " (" + escapeHtml(narrowed.join(" · ")) + ")" : " (all clients, anyone's, any date)") + "</span></div>";
+  if (found.length) box.firstElementChild.appendChild(cuTabGroupBtn("Found" + (clientPick ? " - " + clientPick : ""), () => found, "cyan"));
+  box.appendChild(F.renderChecklist(res, {
+    scope: clientPick, searched: pool.length,
+    onPick: (line, id) => {
+      if (id === undefined) delete optFindPicks[line]; else optFindPicks[line] = id;
+      optFindSave();
+      optFindNoSync = true;
+      renderOptionsFilter();
+    },
+  }));
+  const list = document.createElement("div");
+  list.className = "cu-tasklist";
+  makeListResizable(list, "explore");
+  list.dataset.reorder = "explore";
+  // Your own drag order first; the rest keep the order of the pasted list.
+  const exOrder = cuListOrderFor("explore");
+  if (exOrder) { const rank = new Map(exOrder.map((id, i) => [String(id), i])); const pos = new Map(found.map((t, i) => [t, i])); found.sort((a, b) => ((rank.has(cuId(a)) ? rank.get(cuId(a)) : 1e9) - (rank.has(cuId(b)) ? rank.get(cuId(b)) : 1e9)) || pos.get(a) - pos.get(b)); }
+  for (const t of cuGroupSubtaskRowsOpt(found)) list.appendChild(optExploreTaskRow(t, false));
+  box.appendChild(list);
+  optFindSave({ shown: true });
+}
+let optFindForce = false;
+(function initFindTasks() {
+  const ta = $("optFindText");
+  if (!ta) return;
+  let tm = 0;
+  ta.addEventListener("input", () => { clearTimeout(tm); tm = setTimeout(() => optFindSave(), 400); });
+  if ($("optFindUseDates")) $("optFindUseDates").addEventListener("change", () => optFindSave());
+  if ($("optFindReindex")) $("optFindReindex").onclick = async () => {
+    const b = $("optFindReindex");
+    b.disabled = true;
+    await send({ type: "CLICKUP_TASK_INDEX", rebuild: true }, 20000).catch(() => null);
+    b.disabled = false;
+    if (ta.value.trim()) { optFltArmed = true; renderOptionsFilter(); }
+  };
+  chrome.storage.local.get(["cuFind", "cuTaskIndex"]).then((g) => {
+    const f = g.cuFind || {};
+    if ($("optFindIndex")) $("optFindIndex").textContent = window.PcmFindMany ? window.PcmFindMany.indexStatus(g.cuTaskIndex) : "";
+    if (!ta.value && f.text) ta.value = f.text;
+    if ($("optFindUseDates")) $("optFindUseDates").checked = !!f.useDates;
+    optFindPicks = f.picks && typeof f.picks === "object" ? f.picks : {};
+    // Shown before (and not cleared): show it again - from the saved index, no ClickUp request.
+    if (f.shown && f.text && f.text.trim() && g.cuTaskIndex && g.cuTaskIndex.state === "ready") { optFltArmed = true; optFindNoSync = true; renderOptionsFilter(); }
+  }).catch(() => {});
+})();
+
 // Show/hide the week-mode / day / custom-date controls based on the filter type.
 function initOptionsFilterControls() {
-  const type = $("optFltType");
-  const weekMode = $("optFltWeekMode");
-  const show = () => {
-    const t = type.value;
-    $("optFltWeekModeWrap").style.display = t === "week" ? "" : "none";
-    $("optFltWeekDayWrap").style.display = t === "week" && weekMode.value === "day" ? "" : "none";
-    $("optFltFromWrap").style.display = t === "custom" ? "" : "none";
-    $("optFltToWrap").style.display = t === "custom" ? "" : "none";
-  };
-  type.onchange = () => { show(); renderOptionsFilter(); };
-  weekMode.onchange = () => { show(); renderOptionsFilter(); };
-  $("optFltWeekDay").onchange = renderOptionsFilter;
-  $("optFltFrom").onchange = renderOptionsFilter;
-  $("optFltTo").onchange = renderOptionsFilter;
-  ["optFltOnlyMissing", "optFltMissingStart", "optFltMissingDue", "optFltIncomplete", "optFltOverdue", "optFltSpan"].forEach((id) => {
-    const el = $(id);
-    if (el) el.onchange = renderOptionsFilter;
+  // Explore's ▾ Filter menu (exFilter, its own - saved apart from the Tasks card's).
+  const btn = $("exFilterBtn"), menu = $("exFilterMenu");
+  if (!btn || !menu) return;
+  const open = (on) => { menu.hidden = !on; btn.setAttribute("aria-expanded", on ? "true" : "false"); if (on) exPaintMenu(); };
+  btn.onclick = (e) => { e.stopPropagation(); open(menu.hidden); };
+  menu.addEventListener("click", (e) => e.stopPropagation());
+  document.addEventListener("click", () => { if (!menu.hidden) open(false); });
+  document.addEventListener("keydown", (e) => { if (e.key === "Escape" && !menu.hidden) open(false); });
+  menu.addEventListener("change", (e) => {
+    const el = e.target;
+    if (!el) return;
+    if (el.hasAttribute("data-ex-basis")) exFilter.basis = el.value || "";
+    else if (el.hasAttribute("data-ex-due")) { exFilter.due = el.checked ? el.getAttribute("data-ex-due") : "today"; }
+    else if (el.hasAttribute("data-ex-from") || el.hasAttribute("data-ex-to")) {
+      exFilter[el.hasAttribute("data-ex-from") ? "from" : "to"] = el.value || "";
+      if (exFilter.from) exFilter.due = "custom";
+    } else if (el.hasAttribute("data-ex")) exFilter[el.getAttribute("data-ex")] = !!el.checked;
+    else if (el.hasAttribute("data-ex-val")) {
+      const k = el.getAttribute("data-ex-key"), v = el.getAttribute("data-ex-val");
+      const set = new Set(exFilter[k] || []);
+      if (el.checked) set.add(v); else set.delete(v);
+      exFilter[k] = [...set];
+    }
+    exSave();
+    exPaintMenu();
+    renderOptionsFilter(); // waits for Load tasks unless a list is already shown
   });
-  // "Due in this range only" is a view mode, remembered on this computer.
-  const dueOnlyEl = $("optFltDueOnly");
-  if (dueOnlyEl) {
-    try { if (localStorage.getItem("optFltDueOnly") === "0") dueOnlyEl.checked = false; } catch (e) {}
-    dueOnlyEl.onchange = () => { try { localStorage.setItem("optFltDueOnly", dueOnlyEl.checked ? "1" : "0"); } catch (e) {} renderOptionsFilter(); };
-  }
+  const clear = menu.querySelector("[data-exclear]");
+  if (clear) clear.onclick = () => { exFilter = exDefaults(); exSave(); exPaintMenu(); renderOptionsFilter(); };
+  exLoad().then(() => exPaintMenu());
+  // Department / one of its people / Pick people… (any mix, from any department).
   const deptSel = $("optFltDept");
   if (deptSel) deptSel.onchange = () => { syncDeptUserSelect(); renderOptionsFilter(); };
   const deptUserSel = $("optFltDeptUser");
   if (deptUserSel) deptUserSel.onchange = renderOptionsFilter;
-  loadWorkspaceClients();
   const peopleBtn = $("optFltPeopleBtn");
   if (peopleBtn) peopleBtn.onclick = (e) => {
     e.stopPropagation();
@@ -3888,18 +4618,7 @@ function initOptionsFilterControls() {
     const wrap = $("optFltPeopleWrap");
     if (wrap && !wrap.contains(e.target)) closePeopleMenu();
   });
-  show();
-
-  // The older Weekly Totals select should stay in sync with the toggle buttons.
-  const sel = $("cuWeeklyTo");
-  if (sel) {
-    sel.onchange = async () => {
-      try {
-        await send({ type: "CLICKUP_SET", patch: { clickupWeeklyTo: sel.value } });
-        await load();
-      } catch (e) {}
-    };
-  }
+  syncDeptUserSelect();
 }
 
 // ---------------------------------------------------------------------------
@@ -4371,14 +5090,15 @@ function cuTrkTodayMs(st, t, spentShown, prior, now) {
 // entries, kept by the background in runningProgress), so "Tracking now" goes
 // on from 30m instead of starting at 0m after a stop / complete and restart.
 // `today` is the share of that earlier time tracked today, for the today pill.
-let cuRunPrior = { key: "", ms: 0, today: 0, est: 0 };
+let cuRunPrior = { key: "", ms: 0, today: 0, est: 0, oth: 0, par: [] };
 let cuNowTick = null; // the "Tracking now" line's repaint, run again when the earlier time arrives
 function cuLoadRunPrior() {
   try {
     chrome.storage.local.get("runningProgress").then(({ runningProgress: rp }) => {
       cuRunPrior = rp && rp.taskId
-        ? { key: String(rp.taskId) + ":" + String(rp.startMs || ""), ms: Math.max(0, Number(rp.closedMs) || 0), today: Math.max(0, Number(rp.closedTodayMs) || 0), est: Math.max(0, Number(rp.estimateMs) || 0) }
-        : { key: "", ms: 0, today: 0, est: 0 };
+        ? { key: String(rp.taskId) + ":" + String(rp.startMs || ""), ms: Math.max(0, Number(rp.closedMs) || 0), today: Math.max(0, Number(rp.closedTodayMs) || 0), est: Math.max(0, Number(rp.estimateMs) || 0),
+            oth: Math.max(0, Number(rp.othersMs) || 0), par: Array.isArray(rp.othersRunning) ? rp.othersRunning : [] }
+        : { key: "", ms: 0, today: 0, est: 0, oth: 0, par: [] };
       if (cuNowTick) cuNowTick();
     }).catch(() => {});
   } catch (e) {}
@@ -4686,7 +5406,20 @@ function cuAvailableFacets(st) {
   scan(tw.tasks); scan(tw.deadlineTasks); scan(tw.trackedTasks);
   if (cuCustomCache.data) { scan(cuCustomCache.data.tasks); scan(cuCustomCache.data.deadlineTasks); }
   if (cuOverdueCache.data) scan(cuOverdueCache.data.tasks);
-  return { statuses: Array.from(statuses).sort(), priorities: CU_PRIORITY_ORDER.filter((p) => priorities.has(p)), clients: Array.from(clients).sort((a, b) => a.localeCompare(b)) };
+  // Every client you have work for - not just the ones with something due in the
+  // dates loaded: your open tasks (any date - the list Insights and Bulk edit
+  // keep) and what you finished recently. Clients only (a status or priority
+  // seen there isn't in this view). Already on the page: no ClickUp request.
+  let doneRows = [];
+  try { doneRows = Array.isArray(cuDoneRowsOpt) ? cuDoneRowsOpt : []; } catch (e) {} // declared further down the file
+  const more = [].concat((typeof insCache !== "undefined" && insCache && Array.isArray(insCache.data)) ? insCache.data : [], doneRows);
+  for (const t of more) { const c = String((t && t.client) || "").trim(); if (c && !/^(extra tasks?|daily tracking)$/i.test(c.replace(/^[^a-z0-9]+/i, ""))) clients.add(c); }
+  // One per client: names differing only by emoji, spacing or case are the same
+  // client - the spelling of the tasks in view wins (that's what the filter matches).
+  const ck = (n) => String(n).toLowerCase().replace(/[^a-z0-9]+/g, "") || String(n);
+  const byKey = new Map();
+  for (const c of clients) if (!byKey.has(ck(c))) byKey.set(ck(c), c);
+  return { statuses: Array.from(statuses).sort(), priorities: CU_PRIORITY_ORDER.filter((p) => priorities.has(p)), clients: Array.from(byKey.values()).sort((a, b) => a.replace(/^[^a-z0-9]+/i, "").localeCompare(b.replace(/^[^a-z0-9]+/i, ""))) };
 }
 
 // Visible "working" indicator for the today card while the first ClickUp refresh
@@ -4757,6 +5490,12 @@ function renderNowTracking() {
   // entry, and showing only it ("9m") hid the 30m already tracked on the task.
   const sess = document.createElement("span");
   sess.className = "cu-now-sess";
+  // The estimate is the task's: time someone else tracked on it (before it was
+  // handed to you) is counted in, said on its own line with what's left - and a
+  // warning when someone is tracking it at this very moment.
+  const oth = document.createElement("div");
+  oth.className = "cu-now-oth";
+  oth.hidden = true;
   let askedFor = "";
   const tick = () => {
     if (!run.startMs) { time.textContent = ""; sess.textContent = ""; return; }
@@ -4769,7 +5508,16 @@ function renderNowTracking() {
     const prior = known ? cuRunPrior.ms : 0;
     const est = known ? cuRunPrior.est : 0;
     time.textContent = fmtDurOpt(prior + live) + (est > 0 ? " / " + fmtDurOpt(est) : "");
-    sess.textContent = !known ? "adding earlier time…" : prior > 0 ? "(" + fmtDurOpt(prior) + " before + " + fmtDurOpt(live) + " now)" : "";
+    const othMs = known ? cuRunPrior.oth : 0, par = known ? cuRunPrior.par : [];
+    const mineBefore = Math.max(0, prior - othMs);
+    sess.textContent = !known ? "adding earlier time…" : prior > 0 ? "(" + (othMs > 0 ? fmtDurOpt(othMs) + " others + " : "") + (mineBefore > 0 ? fmtDurOpt(mineBefore) + " before + " : "") + fmtDurOpt(live) + " now)" : "";
+    const othBits = [];
+    if (par.length) othBits.push("\u26A0 " + par.map((o) => o.name || "Someone").join(", ") + (par.length === 1 ? " is" : " are") + " tracking this task right now too");
+    if (othMs > 0) othBits.push(fmtDurOpt(othMs) + " tracked by others before you" + (est > 0 ? (prior + live < est ? " \u00b7 " + fmtDurOpt(est - prior - live) + " left of " + fmtDurOpt(est) : " \u00b7 estimate used up") : ""));
+    oth.hidden = !othBits.length;
+    oth.classList.toggle("warn", par.length > 0);
+    oth.textContent = othBits.join(" \u00b7 ");
+    oth.title = othMs > 0 ? "The estimate is for the whole task, so time someone else tracked on it counts too: " + fmtDurOpt(othMs) + " by others + " + fmtDurOpt(Math.max(0, prior - othMs)) + " earlier by you + " + fmtDurOpt(live) + " this timer. Your daily totals count only your own time." : "";
     sess.title = !known ? "Looking up how much was tracked on this task before this timer" : prior > 0 ? "Tracked on this task before this timer: " + fmtDurOpt(prior) + " · this timer: " + fmtDurOpt(live) + " · total " + fmtDurOpt(prior + live) : "";
     // Today's own share, when this task was also worked on an earlier day: the
     // big figure is everything ever tracked on it, which on a task that runs for
@@ -4858,7 +5606,7 @@ function renderNowTracking() {
   const noteRow = document.createElement("div");
   noteRow.className = "cu-now-noterow";
   noteRow.append(note, saved);
-  el.append(top, noteRow);
+  el.append(top, oth, noteRow);
 }
 
 // "Group subtasks under their parent": arrange the rows ALREADY in view so a
@@ -5470,7 +6218,7 @@ function renderClickupPreviewBody(st) {
     const first = lists.children.length;
     // Custom (drag) order layers on the active scope. In the grouped-by-client
     // view each row carries its client (groupName) and only moves within it.
-    const scope = view.scope || null;
+    const scope = view.scope || "extended";
     const useOrder = !!(cuFilter.manualOrder && scope);
     const canDrag = useOrder; // grouped: rows move within their own client (groupName)
     const mainOrder = useOrder ? cuOrderForOpt(scope, "main") : null;
@@ -5485,6 +6233,7 @@ function renderClickupPreviewBody(st) {
       if (!grouped) lists.appendChild(dHead);
       const dList = document.createElement("div");
       dList.className = "cu-tasklist";
+      dList.dataset.reorder = "tasks:deadline";
       dList.style.maxHeight = "120px";
       for (const dt of sortByPriority(viewDeadline, deadlineOrder)) {
         const row = document.createElement("div");
@@ -5535,6 +6284,7 @@ function renderClickupPreviewBody(st) {
       if (!grouped) lists.appendChild(listHead);
       const listEl = document.createElement("div");
       listEl.className = "cu-tasklist";
+      listEl.dataset.reorder = "tasks:main";
       if (!grouped) makeListResizable(listEl, "dash");
       // Preserve parent -> subtask grouping: sort only the top-level rows by
       // estimate (desc), then emit each parent's subtasks (original order) right
@@ -5559,11 +6309,13 @@ function renderClickupPreviewBody(st) {
       for (const p of parentRows) {
         sorted.push(p);
         const subs = subsByParent.get(String(p.id));
-        if (subs) { for (const s of subs) { sorted.push(s); emittedSubs.add(s); } lastSubs.add(subs[subs.length - 1]); }
+        if (subs) { const ss = mainOrder ? subs.slice().sort(cuManualCmp(mainOrder)) : subs; for (const s of ss) { sorted.push(s); emittedSubs.add(s); } lastSubs.add(ss[ss.length - 1]); }
       }
       // Orphaned subtasks (parent filtered out by a refine box) - append so none vanish.
       for (const subs of subsByParent.values()) for (const s of subs) if (!emittedSubs.has(s)) sorted.push(s);
-      for (const t of sorted) {
+      const tasksGuessCtx = cuGuessCtx(viewTasks);
+      for (const t of cuSplitByWeekOpt(sorted)) {
+        if (t && t._wkHead) { listEl.appendChild(t._wkHead); continue; }
         const row = document.createElement("div");
         // A parent with its subtasks right under it: tinted, bold, "N subtasks";
         // its subtasks hang off a line from it (└ on the last one).
@@ -5584,6 +6336,7 @@ function renderClickupPreviewBody(st) {
         est.className = "est" + (t.estimateMs ? "" : " zero");
         est.textContent = t.estimateMs ? fmtDurOpt(t.estimateMs) : "no est";
         spans.appendChild(est);
+        cuEstGuess(est, t, tasksGuessCtx);
         if (Number(t.spentMs) > 0) {
           const trk = document.createElement("span");
           trk.className = "trk";
@@ -5611,6 +6364,7 @@ function renderClickupPreviewBody(st) {
       lists.appendChild(listHead);
       const listEl = document.createElement("div");
       listEl.className = "cu-tasklist";
+      listEl.dataset.reorder = "tasks:tracked";
       listEl.style.maxHeight = "120px";
       for (const t of sortByPriority(viewTracked, trackedOrder)) {
         const row = document.createElement("div");
@@ -5653,6 +6407,41 @@ function renderClickupPreviewBody(st) {
       }
     }
   };
+  // The totals of exactly what the table shows - whatever filter, picked day,
+  // client or search is on (tracked-only rows add their time, not an estimate,
+  // the same as the client headings).
+  {
+    const shownDl = viewDeadline.filter((t) => !t.error);
+    const nShown = shownDl.length + viewTasks.length + viewTracked.length;
+    if (nShown) {
+      const estAll = viewTasks.reduce((a, t) => a + (Number(t.estimateMs) || 0), 0) + shownDl.reduce((a, t) => a + (Number(t.dayEstimateMs) || 0), 0);
+      const trkAll = [].concat(viewTasks, shownDl, viewTracked).reduce((a, t) => a + (Number(t.spentMs) || 0), 0);
+      const noEst = viewTasks.filter((t) => !Number(t.estimateMs)).length + shownDl.filter((t) => !Number(t.dayEstimateMs)).length;
+      const tot = document.createElement("div");
+      tot.className = "cu-totals";
+      const b = (txt) => { const e = document.createElement("b"); e.textContent = txt; return e; };
+      tot.append("Shown: ", b(String(nShown)), " task" + (nShown === 1 ? "" : "s") + " · estimated ", b(fmtDurOpt(estAll)), " · tracked ", b(fmtDurOpt(trkAll)));
+      if (noEst) { const s = document.createElement("span"); s.className = "cu-totals-warn"; s.textContent = noEst + " without an estimate"; tot.append(" · ", s); }
+      {
+        const gctx = cuGuessCtx(viewTasks);
+        const withG = viewTasks.reduce((a, t) => a + cuGuessMs(t, gctx), 0);
+        if (withG !== 0) { const s = document.createElement("span"); s.className = "cu-gtot"; s.title = "With the guessed estimates (and the ones you kept, not in ClickUp yet) for the tasks that have none"; s.textContent = "~" + fmtDurOpt(Math.max(0, estAll + withG)) + " with guesses"; tot.append(" \u00b7 ", s); }
+        const kept = viewTasks.map(cuId).filter((id) => cuEstStaged[id]);
+        if (cuEstSaving) tot.append(" \u00b7 ", Object.assign(document.createElement("b"), { textContent: "Saving estimates\u2026 " + cuEstSaving.done + " of " + cuEstSaving.total }));
+        else if (kept.length) {
+          const ap = document.createElement("button"); ap.type = "button"; ap.className = "wk-apply sm"; ap.textContent = "Apply " + kept.length + " estimate" + (kept.length === 1 ? "" : "s") + " to ClickUp";
+          ap.onclick = () => { ap.disabled = true; cuApplyEsts(kept); };
+          const dc = document.createElement("button"); dc.type = "button"; dc.className = "wk-selclear"; dc.textContent = "Discard";
+          dc.title = "Forget the estimates you kept (nothing changes in ClickUp)";
+          dc.onclick = () => { for (const id of kept) delete cuEstStaged[id]; cuEstSave(); cuGuessRepaint(); };
+          tot.append(" ", ap, " ", dc);
+        }
+      }
+      tot.title = "Added up from the rows below, under the filter, day, client and search that are on now.";
+      tot.appendChild(cuTabGroupBtn(($("dashTasksScope") && $("dashTasksScope").textContent) || "Tasks", () => [].concat(viewTasks, shownDl, viewTracked)));
+      lists.appendChild(tot);
+    }
+  }
   if (clientsSel.length) {
     // All client groups sit in ONE scroll box with the stretch bar under it
     // (each group's own list stops scrolling on its own inside it).
@@ -5680,6 +6469,7 @@ function renderClickupPreviewBody(st) {
       subSpan.className = "cu-chsub";
       subSpan.textContent = "est " + fmtDurOpt(est) + (trk > 0 ? " \u00b7 tracked " + fmtDurOpt(trk) : "");
       head.appendChild(subSpan);
+      head.appendChild(cuTabGroupBtn(c, () => t1.concat(d1, k1), "orange"));
       if (window.PcmTaskPanel && window.PcmTaskPanel.clientTools) head.appendChild(window.PcmTaskPanel.clientTools(c, t1.concat(d1, k1)));
       // Each client in its own card, so the groups are easy to tell apart.
       const card = document.createElement("div");
@@ -5699,7 +6489,8 @@ function renderClickupPreviewBody(st) {
     // day - say which, or it reads as "my tasks have vanished".
     e.textContent = searchKey
       ? "No task here matches “" + cuSearchOpt.trim() + "”."
-      : view.loading ? "Loading tasks for these dates…" : "No tasks in this view.";
+      : view.loading ? "Loading tasks for these dates…"
+      : (clientsSel.length ? "None of your tasks for " + clientsSel.join(", ") + " in these dates. Explore tasks (below) shows everyone's." : "No tasks in this view.");
     lists.appendChild(e);
   } else if (lists !== box && searchHidden > 0) {
     const n = document.createElement("div");
@@ -5941,6 +6732,7 @@ $("cuSave").onclick = async () => {
         clickupExtraAutoClose: $("cuExtraAutoClose") ? $("cuExtraAutoClose").checked : true,
         clickupWarnEmptyComplete: $("cuWarnEmpty") ? $("cuWarnEmpty").checked : true,
         clickupRelatedOn: $("cuRelatedOn") ? $("cuRelatedOn").checked : true,
+        clickupOverRepeatMin: $("cuOverRepeat") && $("cuOverRepeat").value !== "" ? Number($("cuOverRepeat").value) : 15,
         clickupRelatedCap: $("cuRelatedCap") ? Number($("cuRelatedCap").value) || 25 : 25,
         clickupRelatedIds: $("cuRelatedIds") ? $("cuRelatedIds").value : "",
         clickupHolidayHeadsUp: $("cuHolidayHeadsUp") ? $("cuHolidayHeadsUp").checked : true,
@@ -6283,10 +7075,79 @@ const OPT_WEEKLY_NUDGE_MS = 5 * 60000;
 function optCuFilterBtnLabel() {
   const btn = $("optCuFilterBtn");
   if (!btn) return;
-  const n = cuActiveFilterCount(cuFilter);
+  const n = cuActiveFilterCount(cuFilter) - (Array.isArray(cuFilter.clients) ? cuFilter.clients.length : 0);
   btn.textContent = "▾ Filter" + (n ? " · " + n : "");
   btn.classList.toggle("active", n > 0);
+  cuClientBtnLabel();
 }
+// ---------- Tasks card › Client (its own dropdown, out of the Filter menu) ----------
+// Your clients (any date - see cuAvailableFacets), ticked like before (All, one,
+// several), plus a search box that also finds any other client in the workspace
+// (the list Explore uses, read once and kept a day). The ticks are cuFilter.clients,
+// as before, so the popup and the badge follow them.
+function cuClientBtnLabel() {
+  const b = $("optCuClientBtn");
+  if (!b) return;
+  const cl = Array.isArray(cuFilter.clients) ? cuFilter.clients : [];
+  const short = (s) => { s = String(s).replace(/^[^a-z0-9]+/i, ""); return s.length > 20 ? s.slice(0, 19) + "\u2026" : s; };
+  b.textContent = "\u25BE " + (cl.length === 1 ? "Client \u00b7 " + short(cl[0]) : cl.length > 1 ? "Clients \u00b7 " + cl.length : "Client");
+  b.title = cl.length ? "Showing " + cl.join(", ") + " - click to change" : "Show only some clients' tasks - your clients are listed; search to find any client in the workspace";
+  b.classList.toggle("active", cl.length > 0);
+}
+function cuClientPaintSearch() {
+  const menu = $("optCuClientMenu");
+  if (!menu) return;
+  const q = String(($("optCuClientSearch") && $("optCuClientSearch").value) || "").trim().toLowerCase();
+  const key = (n) => String(n).toLowerCase().replace(/[^a-z0-9]+/g, "");
+  let shown = 0;
+  for (const l of menu.querySelectorAll("#optCuFilterClientList label")) {
+    const all = l.classList.contains("cu-filter-all");
+    const hit = !q || all || l.textContent.toLowerCase().includes(q);
+    l.hidden = !hit || (all && !!q);
+    if (hit && !all) shown++;
+  }
+  const more = $("optCuClientMore"), grp = $("optCuClientMoreGroup");
+  const mine = new Set([...menu.querySelectorAll("#optCuFilterClientList input[data-cf-client]")].map((x) => key(x.getAttribute("data-cf-client"))));
+  const extra = q ? (optWorkspaceClients || []).filter((n) => !mine.has(key(n)) && n.toLowerCase().includes(q) && !/^(extra tasks?|daily tracking)$/i.test(n.replace(/^[^a-z0-9]+/i, ""))).slice(0, 30) : [];
+  if (more) cuBuildFacetList(more, "data-cf-client", extra, Array.isArray(cuFilter.clients) ? cuFilter.clients : [], (v) => v);
+  if (grp) grp.hidden = !extra.length;
+  const note = $("optCuClientNote");
+  if (note) note.textContent = q && !shown && !extra.length ? (optWorkspaceClientsP ? "No client matches \u201C" + q + "\u201D." : "") : (!q ? "Type to find a client you aren't on yet." : "");
+}
+(function wireCuClientMenu() {
+  const btn = $("optCuClientBtn"), menu = $("optCuClientMenu"), search = $("optCuClientSearch");
+  if (!btn || !menu) return;
+  const open = (on) => {
+    menu.hidden = !on;
+    btn.setAttribute("aria-expanded", on ? "true" : "false");
+    if (!on) return;
+    optOpenCuFilterMenu(false); // one menu at a time
+    if (search) search.value = "";
+    try { optRenderCuFilterMenu(); } catch (e) {} // draws "Your clients"
+    if (typeof insCache !== "undefined" && !insCache && typeof insFetchOpen === "function") { const p = insFetchOpen(false); if (p && p.then) p.then(() => { try { optRenderCuFilterMenu(); cuClientPaintSearch(); } catch (e) {} }).catch(() => {}); }
+    loadWorkspaceClients().then(() => cuClientPaintSearch());
+    cuClientPaintSearch();
+    if (search) setTimeout(() => search.focus(), 0);
+  };
+  btn.onclick = (e) => { e.stopPropagation(); open(menu.hidden); };
+  if (search) search.addEventListener("input", cuClientPaintSearch);
+  menu.addEventListener("click", (e) => e.stopPropagation());
+  menu.addEventListener("change", (e) => {
+    const el = e.target;
+    if (!el || el.tagName !== "INPUT" || el === search) return;
+    if (el.hasAttribute("data-cf-client-all")) cuFilter.clients = el.checked ? [...menu.querySelectorAll("#optCuFilterClientList input[data-cf-client]")].map((x) => x.getAttribute("data-cf-client")) : [];
+    else if (el.hasAttribute("data-cf-client")) { cuSingleClearGroup(el); cuToggleArrayVal(cuFilter, "clients", el.getAttribute("data-cf-client"), el.checked); }
+    else return;
+    chrome.storage.local.set({ cuFilter }).catch(() => {});
+    optRenderCuFilterMenu();
+    optCuFilterBtnLabel();
+    cuClientPaintSearch();
+    optRepaintCuPreview();
+  });
+  document.addEventListener("click", () => { if (!menu.hidden) open(false); });
+  document.addEventListener("keydown", (e) => { if (e.key === "Escape" && !menu.hidden) open(false); });
+  cuClientBtnLabel();
+})();
 function cuPrettyName(s) { s = String(s || ""); return s ? s.charAt(0).toUpperCase() + s.slice(1) : s; }
 function cuArrEq(a, b) { a = Array.isArray(a) ? a : []; b = Array.isArray(b) ? b : []; if (a.length !== b.length) return false; const s = new Set(a); return b.every((x) => s.has(x)); }
 function cuToggleArrayVal(f, key, val, on) {
@@ -6451,7 +7312,7 @@ function optRenderCuFilterMenu() {
   const clients = Array.isArray(cuFilter.clients) ? cuFilter.clients : [];
   const statusVals = Array.from(new Set(facets.statuses.concat(statuses))).sort();
   const priorityVals = CU_PRIORITY_ORDER.filter((p) => facets.priorities.includes(p) || priorities.includes(p));
-  const clientVals = Array.from(new Set(facets.clients.concat(clients))).sort((a, b) => a.localeCompare(b));
+  const clientVals = Array.from(new Set(facets.clients.concat(clients))).sort((a, b) => a.replace(/^[^a-z0-9]+/i, "").localeCompare(b.replace(/^[^a-z0-9]+/i, "")));
   cuBuildFacetList($("optCuFilterStatusList"), "data-cf-status", statusVals, statuses);
   cuBuildFacetList($("optCuFilterPriorityList"), "data-cf-priority", priorityVals, priorities);
   cuBuildFacetList($("optCuFilterClientList"), "data-cf-client", clientVals, clients, (v) => v);
@@ -6464,6 +7325,14 @@ function optOpenCuFilterMenu(open) {
   const menu = $("optCuFilterMenu");
   const btn = $("optCuFilterBtn");
   if (!menu || !btn) return;
+  if (open && $("optCuClientMenu")) { $("optCuClientMenu").hidden = true; if ($("optCuClientBtn")) $("optCuClientBtn").setAttribute("aria-expanded", "false"); } // one menu at a time
+  // The Client list includes every client you have open tasks for: read that list
+  // once if this page hasn't got it yet (the same one Insights uses, cached).
+  if (open) { try { optRenderCuFilterMenu(); } catch (e) {} } // the Client list as it is now
+  if (open && typeof insCache !== "undefined" && !insCache && typeof insFetchOpen === "function") {
+    const p = insFetchOpen(false);
+    if (p && p.then) p.then(() => { try { optRenderCuFilterMenu(); } catch (e) {} }).catch(() => {});
+  }
   menu.hidden = !open;
   btn.setAttribute("aria-expanded", open ? "true" : "false");
 }
@@ -7365,6 +8234,7 @@ function insOpenDrill(drill, client) {
   // Delegated so the dynamically-rebuilt Status/Priority boxes are handled too.
   menu.addEventListener("change", (e) => {
     const el = e.target;
+    if (el && el.id === "cuSplitWeeksOpt") return; // a view switch, not a filter (its own handler)
     if (el && el.hasAttribute && el.hasAttribute("data-cf-basis")) {
       cuFilter.dateBasis = el.value || "";
       chrome.storage.local.set({ cuFilter }).catch(() => {});
@@ -8016,15 +8886,18 @@ if ($("optFltColl")) for (const ev of ["change", "input"]) $("optFltColl").addEv
   optFltArmed = false;
 }, true);
 if ($("optFltClearBtn")) $("optFltClearBtn").onclick = () => {
-  for (const id of ["optFltOnlyMissing", "optFltMissingStart", "optFltMissingDue", "optFltIncomplete", "optFltOverdue", "optFltSpan"]) {
-    if ($(id)) $(id).checked = false;
-  }
+  for (const k of EX_REFINE) exFilter[k] = false;
+  exFilter.statuses = []; exFilter.priorities = [];
+  exSave(); exPaintMenu();
   for (const id of ["optFltClient", "optFltDept", "optFltDeptUser"]) if ($(id)) $(id).value = "";
   if ($("optFltDeptUserWrap")) $("optFltDeptUserWrap").style.display = "none";
   optFltPeople = [];
   savePeople();
   if ($("optFltPeopleWrap")) $("optFltPeopleWrap").style.display = "none";
   closePeopleMenu();
+  if ($("optFindText")) { $("optFindText").value = ""; $("optFindUseDates").checked = false; }
+  optFindPicks = {};
+  chrome.storage.local.set({ cuFind: { text: "", useDates: false, picks: {}, shown: false } }).catch(() => {});
   renderOptionsFilter();
 };
 
@@ -8420,7 +9293,7 @@ for (const [id, mood] of [["celebrateTryHappy", "happy"], ["celebrateTrySad", "s
   };
 }
 // ---- Animations and effects (fx.js + the toolbar ring in background.js) ----
-const FX_KEYS = ["fxLiquid", "fxChart", "fxCount", "fxIconRing"];
+const FX_KEYS = ["fxLiquid", "fxChart", "fxCount", "fxIconRing", "fxWeather"];
 (async () => {
   try { const g = await chrome.storage.local.get("settings"); const st = g.settings || {}; for (const k of FX_KEYS) if ($(k)) $(k).checked = st[k] !== false; } catch (e) {}
 })();
@@ -8553,7 +9426,7 @@ const ADMIN_FILES = [
   "manifest.json", "background.js", "popup.html", "popup.js", "options.html", "options.js", "phone-timer.js",
   "offscreen.html", "offscreen.js", "update.html", "update.js", "auto-update.html", "auto-update.js", "wrapup.html", "wrapup.js",
   "notify-menu.js", "export-tasks.js", "lib-zip.js", "lib-unzip.js", "lib-automation.js",
-  "lib-availability.js", "lib-clickup.js", "lib-crypto.js", "lib-tidy.js", "lib-drive.js", "task-panel.js", "lib-updater.js", "offscreen-updater.js", "celebrate.js", "celebrate.html", "celebrate-window.js", "fx.js", "pcm-help.js", "tracker.html", "tracker.js", "bulk-edit.js", "pcm-search.js", "lib-taskfiles.js", "task-files.js", "reminders.js", "hub.js", "task-sort.js", "breakdown.js", "calendar.js", "notices.js", "insights-plus.js", "header-ui.js", "plan-apply.js", "task-notes.js", "md-notes.js", "mention.js", "long-list.js", "local-tasks.js", "ui-extras.js", "assignees.js", "add-time.js", "team-hub.gs", "vendor/pdf.min.js", "vendor/pdf.worker.min.js", "vendor/pdfjs-LICENSE.txt",
+  "lib-availability.js", "lib-clickup.js", "lib-crypto.js", "lib-tidy.js", "lib-drive.js", "find-many.js", "task-panel.js", "lib-updater.js", "offscreen-updater.js", "celebrate.js", "celebrate.html", "celebrate-window.js", "fx.js", "pcm-help.js", "tracker.html", "tracker.js", "bulk-edit.js", "pcm-search.js", "lib-taskfiles.js", "task-files.js", "reminders.js", "hub.js", "task-sort.js", "breakdown.js", "calendar.js", "notices.js", "insights-plus.js", "header-ui.js", "weather.js", "plan-apply.js", "task-notes.js", "md-notes.js", "mention.js", "long-list.js", "local-tasks.js", "ui-extras.js", "assignees.js", "add-time.js", "team-hub.gs", "vendor/pdf.min.js", "vendor/pdf.worker.min.js", "vendor/pdfjs-LICENSE.txt",
   "icons/icon16.png", "icons/icon48.png", "icons/icon128.png", "icons/celebrate.png", "icons/sad.png",
   "sounds/notify.wav", "sounds/danger.mp3", "sounds/winner.wav",
   "README.md", "CHANGELOG.md",
@@ -9191,7 +10064,7 @@ if ($("admCalCard")) {
 // Where the timer shows (Floating window / Taskbar / Both / Neither) is picked once
 // and kept; the Dashboard card invites people to try the taskbar until they pick.
 const DESK_REL = "https://github.com/Dipson-bot/personal-clickup-manager/releases";
-const DESK_TAG = "desktop-v0.3.6";
+const DESK_TAG = "desktop-v0.3.8";
 let deskOs = "";
 async function deskPlatform() {
   if (deskOs) return deskOs;
@@ -9471,3 +10344,37 @@ if ($("admSitesPublish")) $("admSitesPublish").onclick = async () => {
   }
 };
 
+
+// Tasks card › 🧭 Plan with AI: whatever the list shows (filters, a picked day, a range, search).
+(function wireCardPlanOpt() {
+  const btn = $("optCuPlanBtn"), note = $("optCuPlanNote");
+  if (!btn || !note) return;
+  btn.addEventListener("click", (e) => {
+    e.stopPropagation();
+    const shown = cuPlanShownOpt;
+    if (!shown.tasks.length) { note.hidden = false; note.className = "pcm-err pcm-chnote"; note.textContent = "No tasks are shown right now - change the filter, then plan."; return; }
+    if (!window.PcmTaskPanel || !window.PcmTaskPanel.clientTools) return;
+    const label = shown.label + (cuSearchOpt ? " · search: " + cuSearchOpt : "");
+    const tools = window.PcmTaskPanel.clientTools(label, shown.tasks, { day: true, list: true, button: btn, noteEl: note });
+    tools._run();
+  });
+})();
+
+// Card titles are shortcuts: "This week" applies the This week filter; the
+// Today card's title (it already names the filter on, e.g. "Due Oct 18") jumps
+// to the Tasks list showing those tasks.
+(function wireCardTitles() {
+  const toTasks = () => { const c = $("dashTasksCard"); if (c) c.scrollIntoView({ behavior: "smooth", block: "start" }); };
+  const wk = $("optWeekTitle");
+  if (wk) wk.addEventListener("click", () => {
+    const snap = cuSnapshotFilter();
+    for (const k of [...CU_DATE_KEYS, "deadlineCrossed"]) snap[k] = false;
+    snap.dueWeek = true;
+    cuApplyFilterSnapshot(snap); // saved like any filter: the popup and badge follow
+    toTasks();
+  });
+  const td = $("dashTodayTitle");
+  if (td) td.addEventListener("click", toTasks);
+})();
+
+if ($("cuSplitWeeksOpt")) $("cuSplitWeeksOpt").addEventListener("change", (e) => { cuSplitWeeks = !!e.target.checked; chrome.storage.local.set({ cuSplitWeeks }).catch(() => {}); optRepaintCuPreview(); });

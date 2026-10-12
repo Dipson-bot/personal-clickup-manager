@@ -118,6 +118,18 @@
     return wk || all || 1;
   }
   const dailyShare = (estMs, fromMs, toMs) => (estMs > 0 ? estMs / workDays(fromMs, toMs) : 0);
+  // Today's share of a task: what's left of its estimate (beforeMs = tracked before
+  // today) over the working days from TODAY to its due date - due today or late:
+  // all of what's left. Not from its start date: a 1h task started weeks ago and
+  // due today is 1h today, not 3m. 0 = nothing left (it's over: see d.over).
+  function todayShare(estMs, beforeMs, dueMs, now) {
+    if (!(estMs > 0)) return 0;
+    const left = estMs - Math.max(0, Number(beforeMs) || 0);
+    if (left <= 0) return 0;
+    const t0 = new Date(now || Date.now()); t0.setHours(0, 0, 0, 0);
+    if (!dueMs || Number(dueMs) < t0.getTime()) return left;
+    return left / workDays(t0.getTime(), Number(dueMs));
+  }
   const shortDur = (ms) => { const m = Math.round(Math.max(0, ms) / 60000); const h = Math.floor(m / 60); return h ? h + "h" + (m % 60 ? String(m % 60).padStart(2, "0") : "") : m + "m"; };
   function ssRing(pct, color) {
     const r = 9, c = 2 * Math.PI * r, f = Math.max(0, Math.min(100, pct)) / 100;
@@ -137,7 +149,10 @@
   const faceCls = (p, anim) => "face" + (anim === false ? "" : " live " + faceMood(p));
   function stripStyleHtml(style, d) {
     const s = STRIP_STYLES.includes(style) ? style : "B";
-    const an = d.anim === false ? "" : " an";
+    // d.over ("+12m over"): the task is past its estimate - red, said in place of
+    // its time, with a slow pulse so it can't go unnoticed.
+    const an = (d.anim === false ? "" : " an") + (d.over ? " ov" : "");
+    if (d.over) d = { ...d, tt: '<span class="ovt">' + d.over + "</span>", tc: "var(--red)", tp: 100 };
     const tb = '<b style="width:' + d.tp.toFixed(1) + "%;background-color:" + d.tc + '"></b>', dc = d.dc || "var(--green)", db = '<b style="width:' + d.dp.toFixed(1) + "%;background-color:" + dc + '"></b>';
     if (s === "L") return '<div class="ss ssL' + an + '"><div class="c"><span class="lb">Task ' + d.tt + '</span><i class="tr">' + tb + '</i></div><div class="c"><span class="lb day">Today ' + d.dt + '</span><i class="tr">' + db + "</i></div></div>";
     if (s === "F") return '<div class="ss ssF' + an + '"><div class="bars"><i class="tr">' + tb + '</i><i class="tr">' + db + '</i></div><div class="tms"><span>' + d.tt + '</span><span class="day">' + d.dt + "</span></div></div>";
@@ -188,6 +203,11 @@
     @keyframes fcShake { 0%, 60%, 100% { transform: rotate(0); } 10%, 30%, 50% { transform: rotate(-8deg); } 20%, 40% { transform: rotate(8deg); } }
     @keyframes fcBreathe { 0%, 100% { transform: scale(1); } 50% { transform: scale(1.05); } }
     @keyframes fcBlink { 0%, 92%, 100% { transform: scaleY(1); } 95% { transform: scaleY(.1); } }
+    .ss.ov { border-radius: 6px; animation: ssOver 1.8s ease-in-out infinite; }
+    .ss.ov .ovt { color: var(--red); font-weight: 800; }
+    .ssB.ov .cell:first-child { border-color: var(--red); }
+    @keyframes ssOver { 0%, 100% { box-shadow: 0 0 0 0 rgba(220,38,38,0); } 50% { box-shadow: 0 0 0 3px rgba(220,38,38,.6); } }
+    @media (prefers-reduced-motion: reduce) { .ss.ov { animation: none; box-shadow: 0 0 0 2px rgba(220,38,38,.6); } }
     @media (prefers-reduced-motion: reduce) { .ss.an *, .ss.an *::before, .ss.an *::after, .face.live svg, .face.live svg * { animation: none !important; } }
   `;
 
@@ -203,8 +223,10 @@
     .nm:hover { text-decoration: underline; }
     .row { display: flex; align-items: center; gap: 8px; min-width: 0; }
     .trk { flex: 1; height: 7px; border-radius: 999px; background: var(--track); overflow: hidden; }
-    .trk b { display: block; height: 100%; border-radius: 999px; overflow: hidden; transition: width .6s, background .6s; }
-    .trk b .tdy { display: block; height: 100%; border-radius: 999px; background: rgba(255,255,255,.55); }
+    .trk b { display: flex; height: 100%; border-radius: 999px; overflow: hidden; transition: width .6s, background .6s; }
+    .trk b .tdy { display: block; flex: none; height: 100%; border-radius: 999px; background: rgba(255,255,255,.55); }
+    .trk b .oth { display: block; flex: none; height: 100%; background: repeating-linear-gradient(135deg, rgba(0,0,0,.30) 0 3px, rgba(0,0,0,.10) 3px 6px); }
+    .warn { color: var(--red) !important; font-weight: 600; }
     .tm { font-variant-numeric: tabular-nums; color: var(--muted); white-space: nowrap; }
     .lab { font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
     .sub { color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
@@ -427,9 +449,13 @@
     const earlierToday = rp ? Math.max(0, Number(rp.closedTodayMs) || 0) : 0;
     const dayStart = new Date(now); dayStart.setHours(0, 0, 0, 0);
     const trackedToday = earlierToday + Math.max(0, now - Math.max(run.startMs || now, dayStart.getTime()));
-    const multiDay = !!rp && (rp.closedMs || 0) > earlierToday + 60000;
+    // Time someone else tracked on the task (closedMs includes it - the estimate
+    // is the task's): its own striped part of the bar and a short line.
+    const othMs = rp ? Math.max(0, Number(rp.othersMs) || 0) : 0;
+    const othRun = rp && Array.isArray(rp.othersRunning) ? rp.othersRunning : [];
+    const multiDay = !!rp && (rp.closedMs || 0) - othMs > earlierToday + 60000;
     // Today against the task's share for a day (its estimate over its working days).
-    const share = rp ? dailyShare(Number(rp.estimateMs) || 0, rp.startDateMs, rp.dueDateMs) : 0;
+    const share = rp ? todayShare(Number(rp.estimateMs) || 0, Math.max(0, (Number(rp.closedMs) || 0) - earlierToday), rp.dueDateMs, now) : 0;
     const dp = share ? trackedToday / share : null;
     const todayTrk = share && Math.abs(share - (Number(rp.estimateMs) || 0)) > 60000 ? "today " + fmt(trackedToday) + " / " + fmt(share) : multiDay ? fmt(trackedToday) + " today" : "";
     const p = est > 0 ? tracked / est : null;
@@ -438,6 +464,9 @@
     const width = p == null ? 100 : Math.min(100, p * 100);
     const time = p == null ? fmt(tracked) : over ? "+" + fmt(tracked - est) + " over" : fmt(tracked) + " / " + fmt(est);
     const label = moodLabel(p);
+    const othNote = othMs > 0 ? fmt(othMs) + " by others" + (est > 0 && tracked < est ? " \u00b7 " + fmt(est - tracked) + " left" : "") : "";
+    const parNote = othRun.length ? "\u26A0 " + othRun.map((o) => o.name || "Someone").join(", ") + " tracking it too" : "";
+    const othTip = othMs > 0 ? fmt(othMs) + " of this was tracked by others before you (the estimate is for the whole task)" : "";
     const labColor = over && p > 1.07 ? "var(--red)" : p != null && p >= 0.93 ? "var(--green)" : "var(--text)";
     // The recurring Extra Task must never offer Done: completing it makes ClickUp
     // create next week's copy early. Recognised by id AND by name (same rule as the
@@ -448,9 +477,10 @@
     // so the bar says at a glance how much of that total is today's work. Only
     // when there IS time from an earlier day - otherwise today is the whole bar.
     const todayPct = multiDay && tracked > 0 ? Math.min(100, (trackedToday / tracked) * 100) : 0;
-    const todaySeg = todayPct > 0
-      ? '<i class="tdy" style="width:' + todayPct.toFixed(1) + '%" title="' + esc("Today " + fmt(trackedToday) + " of " + fmt(tracked) + " on this task") + '"></i>'
-      : "";
+    const othPct = othMs > 0 && tracked > 0 ? Math.min(100, (othMs / tracked) * 100) : 0;
+    const todaySeg = (othPct > 0 ? '<i class="oth" style="width:' + othPct.toFixed(1) + '%" title="' + esc(othTip) + '"></i>' : "") + (todayPct > 0
+      ? '<i class="tdy" style="width:' + Math.min(todayPct, 100 - othPct).toFixed(1) + '%" title="' + esc("Today " + fmt(trackedToday) + " of " + fmt(tracked) + " on this task") + '"></i>'
+      : "");
     const bar = '<div class="row"><div class="trk"><b style="width:' + width.toFixed(1) + "%;background:" + barColor + (p == null ? ";opacity:.35" : "") + '">' + todaySeg + '</b></div><span class="tm"' + (over ? ' style="color:var(--red)"' : "") + (todayTrk ? ' title="' + esc(fmt(tracked) + " on this task in total · " + todayTrk) + '"' : "") + ">" + esc(time) + "</span></div>";
     if (expanded) {
       if (bigKey !== run.taskId + ":" + run.startMs) { closeBig(); return; }
@@ -462,8 +492,8 @@
       eb.style.opacity = p == null ? ".35" : "";
       if (eb._tdy !== todaySeg) { eb._tdy = todaySeg; eb.innerHTML = todaySeg; }
       const et = d.getElementById("eTime");
-      et.textContent = time + (todayTrk ? " · " + todayTrk : "") + (today ? " · " + today : "");
-      et.style.color = over ? "var(--red)" : "";
+      et.textContent = (parNote ? parNote + " · " : "") + time + (othNote ? " · " + othNote : "") + (todayTrk ? " · " + todayTrk : "") + (today ? " · " + today : "");
+      et.style.color = over || parNote ? "var(--red)" : "";
       return;
     }
     if (full) {
@@ -495,9 +525,12 @@
       if (b._tdy !== todaySeg) { b._tdy = todaySeg; b.innerHTML = todaySeg; }
       const tm = d.getElementById("fTime");
       tm.textContent = time;
-      tm.title = todayTrk ? fmt(tracked) + " on this task in total · " + todayTrk : "";
+      tm.title = [todayTrk ? fmt(tracked) + " on this task in total · " + todayTrk : "", othTip].filter(Boolean).join(" · ");
       tm.style.color = over ? "var(--red)" : "";
-      d.getElementById("fToday").textContent = today || label;
+      const fT = d.getElementById("fToday");
+      fT.textContent = parNote || othNote || today || label;
+      fT.title = [parNote, othTip, today].filter(Boolean).join(" · ");
+      fT.classList.toggle("warn", !!parNote);
     } else if (slim()) {
       // Slim at rest: the face and the chosen strip style (General › Floating
       // tracker › Strip style) - this task and today, side by side. The task's
@@ -510,9 +543,10 @@
         tp: dp == null ? 100 : Math.min(100, dp * 100), tc: ssColor(dp), dc: tgt ? ssColor(spent / tgt, true) : "", tt: share ? shortDur(trackedToday) + "/" + shortDur(share) : shortDur(trackedToday),
         dp: tgt ? Math.min(100, (spent / tgt) * 100) : 0, dt: tgt ? shortDur(spent) + "/" + shortDur(tgt) : shortDur(spent),
         anim: data.settings.stripAnim !== false,
+        over: over ? "+" + shortDur(tracked - est) + " over" : "",
       });
       ssPhase(root);
-      root.title = (run.taskName || "") + (share ? " - today " + fmt(trackedToday) + " / " + fmt(share) : "") + " - overall " + time + (today ? " · " + today : "");
+      root.title = (parNote ? parNote + " - " : "") + (run.taskName || "") + (share ? " - today " + fmt(trackedToday) + " / " + fmt(share) : "") + " - overall " + time + (othNote ? " (" + othNote + ")" : "") + (today ? " · " + today : "");
     } else {
       root.dataset.key = "";
       // Today's total sits under the mood word in the small view too, so it no
@@ -520,7 +554,7 @@
       // the line costs no room. Same line the idle view shows.
       root.innerHTML = '<div class="face">' + faceSVG(p, compact() ? 40 : 50) + '</div><div class="col">' + bar +
         '<div class="lab" style="color:' + labColor + '">' + esc(label) + "</div>" +
-        (today ? '<div class="sub" title="' + esc("Tracked today across all your tasks, out of your daily target") + '">' + esc(today) + "</div>" : "") + "</div>";
+        (parNote || othNote ? '<div class="sub' + (parNote ? " warn" : "") + '" title="' + esc(othTip) + '">' + esc(parNote || othNote) + "</div>" : today ? '<div class="sub" title="' + esc("Tracked today across all your tasks, out of your daily target") + '">' + esc(today) + "</div>" : "") + "</div>";
     }
   }
   // Today's open tasks to suggest when nothing is running: not done, not the

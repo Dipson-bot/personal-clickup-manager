@@ -102,6 +102,17 @@ export function bgToken(t) {
   return s;
 }
 const isBg = (t) => !!(t && typeof t === "object" && t.bg);
+// A request someone asked for but that runs in the background while the page
+// waits for it (Explore tasks): it goes in the fast lane, but may wait as long
+// as background work for a free slot instead of failing after 20 seconds - right
+// after the extension starts, the refresh uses most of the minute.
+export function patientToken(t) {
+  if (t == null || (typeof t === "object" && (t.bg || t.patient))) return t;
+  const s = new String(String(t));
+  s.patient = true;
+  return s;
+}
+const isPatient = (t) => !!(t && typeof t === "object" && t.patient);
 const rlState = new Map(); // token -> { sent: [startedAt], inFlight, waiters: [], pausedUntil }
 function rlOf(token) {
   const k = String(token || "");
@@ -133,7 +144,7 @@ async function guardedFetch(token, url, init) {
         else if (bg && (st.fgWaiting > 0 || st.inFlight >= RL_CONCURRENT - 1)) wait = 250; // someone is waiting: after them
       }
       if (wait > 0) {
-        if (now + wait - t0 > (bg ? RL_BG_MAX_WAIT_MS : RL_MAX_WAIT_MS)) throw rlPausedError(wait);
+        if (now + wait - t0 > (bg || isPatient(token) ? RL_BG_MAX_WAIT_MS : RL_MAX_WAIT_MS)) throw rlPausedError(wait);
         await rlSleep(wait);
         continue;
       }
@@ -1035,6 +1046,74 @@ async function relFolderTasks(token, teamId, folderId) {
   relFolderCache.set(folderId, { at: Date.now(), tasks });
   return tasks;
 }
+// New task › Client: every List the user can reach - their Spaces' Folders and
+// folderless Lists, everything shared with them (a shared client Folder isn't in
+// any Space they belong to) and the Folders their own tasks are in. A client is a
+// List, so this is every client a task can be created for. [{ id, name, folder }]
+export async function listAllLists(token, teamId, folderIds) {
+  const out = new Map();
+  const add = (l, folder) => { if (l && l.id != null && !out.has(String(l.id))) out.set(String(l.id), { id: String(l.id), name: String(l.name || ""), folder: String(folder || "") }); };
+  const seenF = new Set();
+  const soft = (e) => { if (e && e.status === 429) throw e; };
+  const doFolder = async (id, name) => {
+    id = String(id); if (seenF.has(id)) return; seenF.add(id);
+    try { const lj = await cuFetch(token, "/folder/" + encodeURIComponent(id) + "/list", [["archived", "false"]]); for (const l of Array.isArray(lj && lj.lists) ? lj.lists : []) add(l, name); } catch (e) { soft(e); }
+  };
+  try {
+    const sj = await cuFetch(token, "/team/" + encodeURIComponent(teamId) + "/shared");
+    const sh = (sj && sj.shared) || {};
+    for (const l of Array.isArray(sh.lists) ? sh.lists : []) add(l, "");
+    for (const f of Array.isArray(sh.folders) ? sh.folders : []) if (f && f.id != null) await doFolder(f.id, f.name);
+  } catch (e) { soft(e); }
+  try {
+    const spj = await cuFetch(token, "/team/" + encodeURIComponent(teamId) + "/space", [["archived", "false"]]);
+    for (const s of Array.isArray(spj && spj.spaces) ? spj.spaces : []) {
+      try {
+        const fj = await cuFetch(token, "/space/" + encodeURIComponent(s.id) + "/folder", [["archived", "false"]]);
+        for (const fo of Array.isArray(fj && fj.folders) ? fj.folders : []) {
+          seenF.add(String(fo.id));
+          for (const l of Array.isArray(fo.lists) ? fo.lists : []) add(l, fo.name);
+        }
+        const lj = await cuFetch(token, "/space/" + encodeURIComponent(s.id) + "/list", [["archived", "false"]]);
+        for (const l of Array.isArray(lj && lj.lists) ? lj.lists : []) add(l, "");
+      } catch (e) { soft(e); }
+    }
+  } catch (e) { soft(e); }
+  for (const id of folderIds || []) if (id) await doFolder(id, "");
+  return [...out.values()];
+}
+// Explore › Find these tasks: ClickUp's API has no text search, so the
+// background keeps an index of every task the user can see (IndexedDB
+// "pcm-taskindex") and pasted names are matched against it on this computer.
+// One slim row per task - the fields Explore's rows and the export read.
+export function slimIndexTask(x, level) {
+  const id = String(x.id);
+  const ctr = taskContainer(x);
+  return {
+    id, name: x.name || "", url: x.url || taskUrlFor(id),
+    status: (x.status && x.status.status) || "", done: isTaskDone(x),
+    doneAt: Number(x.date_done || x.date_closed) || 0,
+    dueDateMs: x.due_date ? Number(x.due_date) : 0,
+    startDateMs: x.start_date ? Number(x.start_date) : 0,
+    createdAt: Number(x.date_created) || 0, updatedAt: Number(x.date_updated) || 0,
+    assignees: cuRowAssignees(x),
+    list: ctr.listName, listId: ctr.listId, folder: ctr.folderName,
+    client: clientLabelFromContainer(ctr, level || "auto", null) || "",
+    parentId: x.parent != null ? String(x.parent) : "", isSubtask: x.parent != null,
+    priority: cuPriorityName(x),
+    estimateMs: Number(x.time_estimate) || 0, spentMs: Number(x.time_spent) || 0,
+  };
+}
+// One page (100) of every task the user can see - open and closed, subtasks too,
+// anyone's. sinceMs: only the tasks changed after it (keeping the index fresh
+// costs one request when little changed).
+export async function fetchTeamTasksPage(token, teamId, page, sinceMs) {
+  const params = [["page", String(page)], ["include_closed", "true"], ["subtasks", "true"], ["archived", "false"], ["order_by", sinceMs ? "updated" : "created"], ["reverse", "true"]];
+  if (sinceMs) params.push(["date_updated_gt", String(Math.floor(sinceMs))]);
+  const j = await cuFetch(token, "/team/" + encodeURIComponent(teamId) + "/task", params);
+  const tasks = j && Array.isArray(j.tasks) ? j.tasks : [];
+  return { tasks, last: tasks.length < 100 || !!(j && j.last_page) };
+}
 // The related tasks of one loaded task (getTaskPanel's data). opts: { cap, ids, teamId }.
 export async function getRelatedTasks(token, d, opts = {}) {
   const cap = Math.max(1, Math.min(60, Number(opts.cap) || 25));
@@ -1171,7 +1250,9 @@ export async function getTaskPanel(token, taskId, force) {
   data.related = rel.length ? (await Promise.all(rel.map(async ([id, kind]) => {
     try {
       const r = await cuFetch(token, "/task/" + encodeURIComponent(id));
-      return { id, kind, name: (r && r.name) || "", status: (r && r.status && r.status.status) || "", done: isTaskDone(r), url: (r && r.url) || taskUrlFor(id) };
+      return { id, kind, name: (r && r.name) || "", status: (r && r.status && r.status.status) || "", done: isTaskDone(r), url: (r && r.url) || taskUrlFor(id),
+        assignees: (Array.isArray(r && r.assignees) ? r.assignees : []).map((a) => a && (a.username || a.email)).filter(Boolean),
+        dueDateMs: r && r.due_date ? Number(r.due_date) : 0 };
     } catch (e) { return { id, kind, name: "", status: "", done: false, url: taskUrlFor(id) }; }
   }))) : [];
   panelCache.set(key, { at: Date.now(), data });
@@ -1933,7 +2014,15 @@ export async function stopTimer(token, teamId) {
 // Separate from the daily-aggregate estimate/tracked numbers used elsewhere in
 // this file. Returns null if the task has no estimate set (nothing to compare
 // against).
-export async function getRunningTaskProgress(token, teamId, taskId, startMs, now = Date.now()) {
+// The estimate is the TASK's, not the person's: time someone else tracked on it
+// (before it was handed over, or alongside) counts too, so a 30m task with 15m
+// already on it starts at 15m / 30m. ClickUp's time-entry list only returns the
+// token user's own entries, so the others' time is the task's own total
+// (time_spent, everyone) minus ours. opts.meId = our user id; opts.tryOthers =
+// also ask for the other assignees' entries (works for workspace admins) to see
+// anyone tracking it RIGHT NOW - othersRefused comes back when ClickUp says no,
+// so the caller can stop asking for a while.
+export async function getRunningTaskProgress(token, teamId, taskId, startMs, now = Date.now(), opts = {}) {
   const task = await getTaskById(token, taskId);
   if (!task || !task.hasEstimate) return null;
   const { start, end } = localDayBounds(now);
@@ -1942,18 +2031,35 @@ export async function getRunningTaskProgress(token, teamId, taskId, startMs, now
     ["end_date", String(end)],
     ["task_id", String(taskId)],
   ];
-  let j;
-  try { j = await cuFetchTimeEntries(token, teamId, params, null); }
-  catch (e) {
-    if (e && (e.status === 401 || e.status === 429)) throw e;
-    // Fall back to today only if ClickUp refuses the long window.
-    j = await cuFetchTimeEntries(token, teamId, [["start_date", String(start)], ["end_date", String(end)], ["task_id", String(taskId)]], null);
+  const me = String((opts && opts.meId) || "");
+  const otherIds = (task.assignees || []).map((a) => String(a && a.id || "")).filter((id) => id && id !== me);
+  let j = null, withOthers = false, othersRefused = false;
+  if (opts && opts.tryOthers && me && otherIds.length) {
+    try { j = await cuFetch(token, "/team/" + teamId + "/time_entries", params.concat([["assignee", [me, ...otherIds].join(",")]])); withOthers = true; }
+    catch (e) { if (e && e.status === 429) throw e; othersRefused = true; j = null; }
+  }
+  if (!j) {
+    try { j = await cuFetchTimeEntries(token, teamId, params, null); }
+    catch (e) {
+      if (e && (e.status === 401 || e.status === 429)) throw e;
+      // Fall back to today only if ClickUp refuses the long window.
+      j = await cuFetchTimeEntries(token, teamId, [["start_date", String(start)], ["end_date", String(end)], ["task_id", String(taskId)]], null);
+    }
   }
   const entries = (j && Array.isArray(j.data)) ? j.data : [];
   let closedMs = 0;
   let closedTodayMs = 0;
+  let othersClosedMs = 0;
+  const othersRunning = [];
   for (const e of entries) {
     const dur = Number(e.duration) || 0;
+    const uid = String((e.user && e.user.id) || "");
+    if (withOthers && uid && uid !== me) {
+      // Someone else's entry: a running one (no end yet) is them tracking it now.
+      if (!Number(e.end) || dur < 0) othersRunning.push({ id: uid, name: String((e.user && (e.user.username || e.user.email)) || "Someone"), startMs: Number(e.start) || 0 });
+      else if (dur > 0) othersClosedMs += dur;
+      continue;
+    }
     if (dur <= 0) continue; // the live entry reports 0/negative while running - skip it here
     // ...and when it comes back with its time so far instead: it has no end yet
     // (or is the very entry that's running) - the page adds the live part itself,
@@ -1969,7 +2075,11 @@ export async function getRunningTaskProgress(token, teamId, taskId, startMs, now
     if (eEnd > start) closedTodayMs += dur;
   }
   const liveMs = Math.max(0, now - startMs);
-  return { estimateMs: task.estimateMs, trackedMs: closedMs + liveMs, closedTodayMs, taskName: task.name || "", startDateMs: task.startDateMs || null, dueDateMs: task.dueDateMs || null };
+  // Everyone's total on the task minus ours = the others' (also catches someone
+  // who tracked and was then taken off the task, whose entries we can't list).
+  let othersMs = Math.max(othersClosedMs, (Number(task.spentMs) || 0) - closedMs);
+  if (othersMs < 60000) othersMs = 0;
+  return { estimateMs: task.estimateMs, trackedMs: closedMs + othersMs + liveMs, myTrackedMs: closedMs + liveMs, othersMs, othersRunning, othersRefused, closedTodayMs, taskName: task.name || "", startDateMs: task.startDateMs || null, dueDateMs: task.dueDateMs || null };
 }
 
 // ---------- time entries (today-only tracked time) ----------

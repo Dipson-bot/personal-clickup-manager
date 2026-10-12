@@ -145,6 +145,8 @@
   .lt-chip button:hover { color: var(--red, #dc2626); }
   .lt-pick { position: relative; }
   .lt-pick input { width: 100%; box-sizing: border-box; }
+  .lt-grp { padding: 6px 10px 2px; font-size: 10.5px; font-weight: 700; text-transform: uppercase; letter-spacing: .04em; color: var(--muted); }
+  .lt-opt.on { background: var(--bg2); }
   .lt-sug { position: absolute; left: 0; right: 0; top: 100%; z-index: 5; margin-top: 2px; max-height: 220px; overflow: auto; background: var(--card); border: 1px solid var(--border); border-radius: 8px; box-shadow: 0 10px 24px rgba(0,0,0,.15); text-transform: none; letter-spacing: 0; font-weight: 400; }
   .lt-opt { padding: 6px 9px; font-size: 12.5px; cursor: pointer; color: var(--text); }
   .lt-opt:hover { background: rgba(99,102,241,.1); }
@@ -225,7 +227,7 @@
     const acts = el("span", "lt-acts");
     const ap = el("button", "lt-btn pri", busy.has(d.id) ? "Creating…" : "Apply to ClickUp");
     ap.type = "button"; ap.disabled = busy.has(d.id);
-    ap.title = d.listName ? "Create this task in ClickUp, in the List “" + d.listName + "”" : "Pick a List first (opens the editor)";
+    ap.title = d.listName ? "Create this task in ClickUp, in the List “" + d.listName + "”" : "Pick the client first (opens the editor)";
     ap.onclick = (e) => { e.preventDefault(); e.stopPropagation(); apply(d.id); };
     const x = el("button", "lt-x", "✕");
     x.type = "button"; x.title = "Delete this draft";
@@ -273,7 +275,7 @@
       '<p class="hint">Kept only in this extension until you press <b>Apply to ClickUp</b> (or the time you set comes) - then it\'s created in ClickUp with these people, dates, estimate, priority and description.</p>' +
       '<label class="f">Task name<input type="text" data-k="name" maxlength="1000" placeholder="e.g. Fix the slow server response (TTFB)" /></label>' +
       '<div class="f">Make it a subtask of <span class="opt">(optional)</span><div class="lt-pick" data-k="parentbox"><input type="text" data-k="parentq" placeholder="Search your open tasks…" autocomplete="off" /><div class="lt-sug" data-k="parentsug" hidden></div></div><div class="lt-chosen" data-k="parentchosen" hidden></div></div>' +
-      '<label class="f" data-k="listrow">List (where it goes in ClickUp)<select data-k="list"><option value="">Loading your Lists…</option></select></label>' +
+      '<div class="f" data-k="listrow">Client <span class="opt">(type to find any client)</span><div class="lt-pick"><input type="text" data-k="list" placeholder="Type a client name…" autocomplete="off" /><div class="lt-sug" data-k="listsug" hidden></div></div></div>' +
       '<div class="f">Assignees<div class="lt-people" data-k="people"><span data-k="chips"></span><input type="text" data-k="pq" placeholder="Type a name…" autocomplete="off" /></div><div class="lt-sug" data-k="psug" hidden></div></div>' +
       '<div class="row3"><div class="f">Start date<button type="button" class="lt-date" data-k="start"></button></div>' +
       '<div class="f">Due date<button type="button" class="lt-date" data-k="due"></button></div>' +
@@ -374,19 +376,59 @@
     const ed = window.PcmMd ? window.PcmMd.editor(d.md || "", { maxLength: 20000, placeholder: "What needs doing, links, steps… Paste from Claude / ChatGPT keeps its formatting." }) : null;
     if (ed) $("desc").replaceWith(ed); else { const ta = el("textarea"); ta.value = d.md || ""; ta.style.cssText = "min-height:120px;font:inherit"; ta.getMarkdown = () => ta.value; $("desc").replaceWith(ta); }
     const descEl = () => dlg.querySelector(".md-ed") || dlg.querySelector("textarea");
-    const fillLists = (ls) => {
-      const opts = ['<option value="">' + (ls.length ? "Pick a List…" : listsErr ? "Couldn't read your Lists" : "No Lists found") + "</option>"];
-      let known = false;
-      for (const l of ls) {
-        if (String(l.id) === String(d.listId)) known = true;
-        const label = (l.client && l.client !== l.name ? l.client + " › " : "") + l.name + (l.folder && l.folder !== l.client ? " (" + l.folder + ")" : "");
-        opts.push('<option value="' + esc(l.id) + '">' + esc(label) + "</option>");
-      }
-      if (d.listId && !known) opts.push('<option value="' + esc(d.listId) + '">' + esc(d.listName || "List " + d.listId) + "</option>");
-      sel.innerHTML = opts.join("");
-      sel.value = d.listId ? String(d.listId) : "";
+    // Client: type to find it. Your clients (the Lists your tasks are in) first,
+    // then every other client (List) in the workspace - read once, kept a day.
+    const lsug = $("listsug");
+    let allLists = null, allListsP = null, lhi = -1, lhits = [];
+    const getAll = () => allListsP || (allListsP = send({ type: "CLICKUP_ALL_LISTS" }, 60000).then((r) => { allLists = (r && Array.isArray(r.lists)) ? r.lists : []; return allLists; }).catch(() => { allLists = []; return allLists; }));
+    const key = (s) => String(s || "").toLowerCase().replace(/[^a-z0-9]+/g, "");
+    sel.dataset.id = d.listId ? String(d.listId) : "";
+    if (d.listId) sel.value = d.listName || d.client || "";
+    const pickedClient = { id: sel.dataset.id, name: d.listName || "", client: d.client || "" };
+    const paintClients = () => {
+      const q = key(sel.value === pickedClient.name && pickedClient.id ? "" : sel.value);
+      const mine = (lists || []).map((l) => ({ id: String(l.id), name: l.name, folder: l.folder, mine: true }));
+      const mineIds = new Set(mine.map((l) => l.id));
+      const rest = (allLists || []).filter((l) => !mineIds.has(String(l.id))).map((l) => ({ ...l, id: String(l.id) }));
+      const hit = (l) => !q || key(l.name).includes(q) || key(l.folder).includes(q);
+      const a = mine.filter(hit).slice(0, 30), b = q ? rest.filter(hit).slice(0, 40) : [];
+      lhits = a.concat(b);
+      let h = "";
+      if (a.length) h += '<div class="lt-grp">Your clients</div>' + a.map((l, i) => '<div class="lt-opt" data-i="' + i + '">' + esc(l.name) + (l.folder ? ' <span class="m">' + esc(l.folder) + "</span>" : "") + "</div>").join("");
+      if (b.length) h += '<div class="lt-grp">Other clients in the workspace</div>' + b.map((l, i) => '<div class="lt-opt" data-i="' + (a.length + i) + '">' + esc(l.name) + (l.folder ? ' <span class="m">' + esc(l.folder) + "</span>" : "") + "</div>").join("");
+      if (!h) h = '<div class="lt-none">' + (q ? (allLists ? "No client matches \u201C" + esc(sel.value.trim()) + "\u201D." : "Looking through every client…") : listsErr ? esc(listsErr) : "Loading your clients…") + "</div>";
+      else if (q && !allLists) h += '<div class="lt-none">Looking through every client…</div>';
+      else if (!q) h += '<div class="lt-none">Type to find any other client.</div>';
+      lsug.innerHTML = h;
+      lsug.hidden = false;
+      lhi = -1;
     };
-    getLists(false).then(fillLists);
+    const pickClient = (l) => {
+      if (!l) return;
+      pickedClient.id = l.id; pickedClient.name = l.name; pickedClient.client = l.name;
+      sel.dataset.id = l.id; sel.value = l.name;
+      sel.classList.remove("bad");
+      lsug.hidden = true;
+    };
+    sel.addEventListener("focus", () => { paintClients(); getAll().then(() => { if (document.activeElement === sel) paintClients(); }); });
+    sel.addEventListener("input", () => { sel.dataset.id = ""; pickedClient.id = ""; paintClients(); getAll().then(() => { if (document.activeElement === sel) paintClients(); }); });
+    sel.addEventListener("keydown", (e) => {
+      const opts = [...lsug.querySelectorAll(".lt-opt")];
+      if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+        e.preventDefault();
+        if (!opts.length) return;
+        lhi = (lhi + (e.key === "ArrowDown" ? 1 : -1) + opts.length) % opts.length;
+        opts.forEach((o, i) => o.classList.toggle("on", i === lhi));
+        opts[lhi].scrollIntoView({ block: "nearest" });
+      } else if (e.key === "Enter") {
+        if (lsug.hidden) return;
+        e.preventDefault();
+        pickClient(lhits[lhi >= 0 ? lhi : 0]);
+      } else if (e.key === "Escape" && !lsug.hidden) { e.stopPropagation(); lsug.hidden = true; }
+    });
+    lsug.onmousedown = (e) => { const o = e.target.closest(".lt-opt"); if (!o) return; e.preventDefault(); pickClient(lhits[Number(o.dataset.i)]); };
+    sel.addEventListener("blur", () => setTimeout(() => { lsug.hidden = true; if (!sel.dataset.id && pickedClient.id) { sel.dataset.id = pickedClient.id; sel.value = pickedClient.name; } }, 150));
+    getLists(false).then(() => { if (document.activeElement === sel) paintClients(); });
     const read = () => {
       errEl.textContent = "";
       dlg.querySelectorAll(".bad").forEach((x) => x.classList.remove("bad"));
@@ -395,13 +437,13 @@
       const est = parseDur($("est").value);
       if (est == null) { $("est").classList.add("bad"); errEl.textContent = "Estimate: try 45m, 1h 30m or 1.5 (hours)."; $("est").focus(); return null; }
       if (dates.start && dates.due && dates.start > dates.due) { errEl.textContent = "The start date is after the due date."; return null; }
-      let listId = sel.value, listName = "", client = "";
+      let listId = sel.dataset.id || "", listName = "", client = "";
       if (parent && parent.listId) { listId = parent.listId; listName = parent.listName || ""; client = parent.client || parent.listName || ""; }
       else if (listId) {
-        const l = (lists || []).find((x) => String(x.id) === listId);
-        listName = l ? l.name : d.listName || "List " + listId;
-        client = l ? (l.client || l.name) : d.client || "";
-      }
+        const l = (lists || []).find((x) => String(x.id) === listId) || (allLists || []).find((x) => String(x.id) === listId);
+        listName = l ? l.name : pickedClient.name || d.listName || "List " + listId;
+        client = l ? (l.client || l.name) : pickedClient.client || d.client || listName;
+      } else if (sel.value.trim()) { sel.classList.add("bad"); errEl.textContent = "Pick the client from the list that opens as you type."; sel.focus(); return null; }
       let applyAt = 0;
       if (dates.applyday) {
         const [hh, mm] = ($("applytime").value || "09:00").split(":").map(Number);
@@ -418,12 +460,12 @@
     dlg.querySelector("[data-cancel]").onclick = closeEditor;
     dlg.querySelector("[data-save]").onclick = async () => {
       const v = read(); if (!v) return;
-      if (v.applyAt && !v.listId) { sel.classList.add("bad"); errEl.textContent = "Pick the List it goes in, so it can be sent at that time."; return; }
+      if (v.applyAt && !v.listId) { sel.classList.add("bad"); errEl.textContent = "Pick the client, so it can be sent at that time."; return; }
       await upsert(v); closeEditor();
     };
     dlg.querySelector("[data-apply]").onclick = async () => {
       const v = read(); if (!v) return;
-      if (!v.listId) { sel.classList.add("bad"); errEl.textContent = "Pick the List it goes in (or Save draft and choose later)."; return; }
+      if (!v.listId) { sel.classList.add("bad"); errEl.textContent = "Pick the client (or Save draft and choose later)."; return; }
       v.applyAt = 0; // applied now
       await upsert(v);
       closeEditor();

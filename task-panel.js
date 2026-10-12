@@ -32,6 +32,31 @@
   .pcm-files { display: flex; flex-wrap: wrap; gap: 6px; }
   .pcm-file { font-size: 11px; padding: 2px 8px; border: 1px solid var(--border); border-radius: 10px; background: var(--card); text-decoration: none; max-width: 240px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; word-break: normal !important; }
   .pcm-te { margin: 4px 0 8px; display: grid; gap: 4px; }
+  .pcm-family { margin: 2px 0 10px; padding: 6px 10px; border-radius: 8px; background: var(--bg2, rgba(127,127,127,.06)); font-size: 12px; display: grid; gap: 4px; }
+  .pcm-fam-line { display: flex; flex-wrap: wrap; align-items: baseline; gap: 6px; }
+  .pcm-fam-k { color: var(--muted); font-weight: 600; }
+  .pcm-fam-solo { color: var(--muted); }
+  .pcm-fam-list { display: grid; gap: 2px; margin-left: 14px; max-height: 180px; overflow: auto; }
+  .pcm-fam-sub { display: flex; align-items: baseline; gap: 6px; }
+  .pcm-fam-n { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .pcm-fam-st { flex: none; font-size: 10.5px; padding: 0 6px; border-radius: 999px; border: 1px solid var(--border); color: var(--muted); }
+  .pcm-fam-st.done { color: var(--green, #16a34a); border-color: currentColor; }
+  .pcm-fam-acts { display: inline-flex; gap: 8px; flex: none; }
+  .pcm-fam-back { margin: 0 0 6px; }
+  .pcm-fam-showing { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 10px; margin: 0 0 6px; padding: 8px 12px; border-radius: 8px; background: rgba(99,102,241,.12); border-left: 3px solid var(--indigo); font-size: 13px; }
+  .pcm-fam-sname { flex: 1 1 260px; min-width: 0; }
+  .pcm-fam-facts { display: inline-flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+  .pcm-fam-avs { display: inline-flex; }
+  .pcm-fam-av { display: inline-grid; place-items: center; width: 24px; height: 24px; border-radius: 50%; color: #fff; font-size: 10.5px; font-weight: 700; border: 2px solid var(--card, #fff); margin-left: -5px; cursor: default; }
+  .pcm-fam-av:first-child { margin-left: 0; }
+  .pcm-fam-av.more { background: var(--muted); }
+  .pcm-fam-chip { padding: 2px 9px; border-radius: 999px; border: 1px solid var(--border); background: var(--card); font-size: 11.5px; font-weight: 600; }
+  .pcm-fam-chip.due { color: var(--indigo); border-color: currentColor; }
+  .pcm-fam-chip.late { color: var(--red, #dc2626); }
+  .pcm-fam-wd { display: inline-flex; gap: 6px; flex: none; color: var(--muted); font-size: 11px; }
+  .pcm-fam-due.late { color: var(--red, #dc2626); font-weight: 600; }
+  .pcm-fam-due.none { opacity: .7; }
+  .pcm-fam-me .pcm-fam-n { font-weight: 700; }
   .cu-task .trk { cursor: pointer; }
   .cu-task .trk:hover { text-decoration: underline dotted; }
   .pcm-tepop { position: fixed; z-index: 2147483000; width: min(560px, calc(100vw - 16px)); max-height: min(420px, calc(100vh - 16px)); overflow: auto; box-sizing: border-box; padding: 10px 12px; border-radius: 10px; border: 1px solid var(--border); background: var(--card, #fff); color: var(--text); box-shadow: 0 10px 30px rgba(0,0,0,.25); font-size: 12px; }
@@ -444,6 +469,12 @@
     "Ask before starting: access, logins, files or client confirmations each task still needs, or 'Nothing'.\n" +
     "Where each is done: dashboard screen and setting, page, file or tool - or 'Not known - need: ...'.\n\n" +
     RELATED_RULES + "\n" + SITE_SAFETY;
+  // The Tasks card's own Plan with AI: whatever the list shows under the current
+  // filter (a day, a week, a month, a range, a client, a search…).
+  const LIST_QUESTION = DAY_QUESTION
+    .replace("Plan my work day: the ClickUp tasks I've put on {DAY}, for a web / SEO agency (they can be for different clients).", "Plan my work on these ClickUp tasks - {DAY} - for a web / SEO agency (they can be for different clients).")
+    .replace("Order for the day:", "Order:")
+    .replace("Does it fit the day: the estimates added up against a working day; if it's too much, which tasks to move to another day and why.", "Does it fit: the estimates added up against the working days in that period (about 7 hours each); if it's too much, which tasks to move later and why.");
   const PLAN_AUDIT = {
     in: "the client's audit parts for each task are under that task - follow them over a task's own wording when they differ.",
     some: "only some tasks have matching audit parts (under those tasks). For the others, say they aren't in the saved audit and that a newer audit may be in Slack.",
@@ -1489,8 +1520,96 @@
   }
 
   // ---------- the panel ----------
+  // Where this task sits: subtask of… / parent of N subtasks / independent - with
+  // Open here (this dropdown shows that task, ← Back returns) and ClickUp ↗.
+  function buildFamily(p, d) {
+    const box = el("div", "pcm-family");
+    const openHere = (id) => { p._back = (p._back || []).concat([{ id: d.id, name: d.name }]); load(p, id); };
+    const acts = (id, url) => {
+      const span = el("span", "pcm-fam-acts");
+      const here = el("button", "pcm-link", "Open here"); here.type = "button"; here.title = "Show that task in this dropdown (\u2190 Back returns)";
+      here.onclick = (e) => { e.stopPropagation(); openHere(id); };
+      span.appendChild(here);
+      if (safeUrl(url)) span.appendChild(link(url, "ClickUp \u2197"));
+      return span;
+    };
+    const st = (s, done) => el("span", "pcm-fam-st" + (done ? " done" : ""), done ? "\u2713 " + (s || "done") : s || "open");
+    // Who it's on and when it's due (from what the details already loaded - no extra request).
+    const whoDue = (who, due, done) => {
+      const bits = el("span", "pcm-fam-wd");
+      const names = (Array.isArray(who) ? who : []).filter(Boolean);
+      bits.appendChild(el("span", "pcm-fam-who", names.length ? names.join(", ") : "unassigned"));
+      if (Number(due) > 0) {
+        const late = !done && new Date(Number(due)).setHours(0, 0, 0, 0) < new Date().setHours(0, 0, 0, 0);
+        const c = el("span", "pcm-fam-due" + (late ? " late" : ""), "due " + fmtDay(Number(due)));
+        if (late) c.title = "Past its due date";
+        bits.appendChild(c);
+      } else bits.appendChild(el("span", "pcm-fam-due none", "no due date"));
+      return bits;
+    };
+    const subs = Array.isArray(d.subtasks) ? d.subtasks : [];
+    if (d.parentId) {
+      const par = (d.related || []).find((x) => x.kind === "parent") || {};
+      const line = el("div", "pcm-fam-line");
+      line.append(el("span", "pcm-fam-k", "\u21B3 Subtask of"), el("b", "", par.name || "its parent task"));
+      if (par.status) line.appendChild(st(par.status, par.done));
+      if (par.name) line.appendChild(whoDue(par.assignees, par.dueDateMs, par.done));
+      line.appendChild(acts(d.parentId, par.url || "https://app.clickup.com/t/" + d.parentId));
+      box.appendChild(line);
+    }
+    if (subs.length) {
+      const doneN = subs.filter((s) => s.done).length;
+      const line = el("div", "pcm-fam-line");
+      line.append(el("span", "pcm-fam-k", "\u25BE Parent task"), el("span", "", subs.length + " subtask" + (subs.length === 1 ? "" : "s") + " (" + doneN + " done)"));
+      box.appendChild(line);
+      const list = el("div", "pcm-fam-list");
+      for (const s of subs.slice(0, 25)) {
+        const r = el("div", "pcm-fam-sub");
+        r.append(st(s.status, s.done), el("span", "pcm-fam-n", s.name || "(subtask)"), whoDue(s.assignees, s.dueDateMs, s.done), acts(s.id, s.url));
+        if (String(s.id) === String(p._rowId || "")) r.classList.add("pcm-fam-me"); // the row you opened
+        list.appendChild(r);
+      }
+      box.appendChild(list);
+    }
+    if (!d.parentId && !subs.length) box.appendChild(el("div", "pcm-fam-line pcm-fam-solo", "\u25CB Independent task - no parent, no subtasks"));
+    return box;
+  }
   function fill(p, d) {
     p.textContent = "";
+    // Came here with Open here: the way back.
+    if (!p._rowId) p._rowId = d.id; // the task of the row this dropdown belongs to
+    if (p._back && p._back.length) {
+      // Moved with Open here: say which task this is now, plainly.
+      const bar = el("div", "pcm-fam-showing");
+      bar.append(el("span", "pcm-fam-k", "Showing"), el("b", "pcm-fam-sname", d.name || "(task)"));
+      // Who it's on (the same coloured initials as the task rows), its status and
+      // due date - big enough to see at a glance.
+      const facts = el("span", "pcm-fam-facts");
+      const people = Array.isArray(d.assigneePeople) && d.assigneePeople.length ? d.assigneePeople : (d.assignees || []).map((n) => ({ id: n, username: n }));
+      const ini = (n) => { const w = String(n || "").split("@")[0].replace(/[._-]+/g, " ").trim().split(/\s+/).filter(Boolean); return !w.length ? "?" : (w.length > 1 ? w[0][0] + w[w.length - 1][0] : w[0].slice(0, 2)).toUpperCase(); };
+      const col = (k) => { let h = 0; for (const ch of String(k || "")) h = (h * 31 + ch.charCodeAt(0)) >>> 0; return "hsl(" + (h % 360) + ", 55%, 42%)"; };
+      if (people.length) {
+        const av = el("span", "pcm-fam-avs");
+        for (const p2 of people.slice(0, 4)) { const c = el("span", "pcm-fam-av", ini(p2.username)); c.style.background = col(p2.id); c.title = p2.username; av.appendChild(c); }
+        if (people.length > 4) av.appendChild(el("span", "pcm-fam-av more", "+" + (people.length - 4)));
+        av.title = "Assigned to " + people.map((p2) => p2.username).join(", ");
+        facts.appendChild(av);
+      } else facts.appendChild(el("span", "pcm-fam-chip", "unassigned"));
+      if (d.status) facts.appendChild(el("span", "pcm-fam-chip", d.status));
+      if (Number(d.dueDateMs) > 0) {
+        const late = !/^(complete|done|closed)$/i.test(d.status || "") && new Date(Number(d.dueDateMs)).setHours(0, 0, 0, 0) < new Date().setHours(0, 0, 0, 0);
+        facts.appendChild(el("span", "pcm-fam-chip due" + (late ? " late" : ""), "Due " + fmtDay(Number(d.dueDateMs))));
+      } else facts.appendChild(el("span", "pcm-fam-chip", "no due date"));
+      bar.appendChild(facts);
+      if (safeUrl(d.url)) bar.appendChild(link(d.url, "ClickUp \u2197"));
+      p.appendChild(bar);
+      const prev = p._back[p._back.length - 1];
+      const back = el("button", "pcm-btn pcm-fam-back", "\u2190 Back to " + (prev.name && prev.name.length > 50 ? prev.name.slice(0, 49) + "\u2026" : prev.name || "the task"));
+      back.type = "button";
+      back.onclick = (e) => { e.stopPropagation(); const b = p._back.pop(); load(p, b.id); };
+      p.appendChild(back);
+      setTimeout(() => { try { p.scrollIntoView({ block: "nearest", behavior: "smooth" }); } catch (x) {} }, 0);
+    }
     const meta = el("div", "pcm-meta");
     if (d.status) { const s = el("span"); s.append("Status "); s.appendChild(el("b", "", d.status)); meta.appendChild(s); }
     if (d.dueDateMs) { const s = el("span"); s.append("Due "); s.appendChild(el("b", "", fmtDay(d.dueDateMs))); meta.appendChild(s); }
@@ -1508,6 +1627,7 @@
       meta.appendChild(rem);
     }
     p.appendChild(meta);
+    p.appendChild(buildFamily(p, d));
 
     const ds = el("div");
     buildDescription(ds, d);
@@ -1575,7 +1695,7 @@
   const PLAN_MAX = 150000; // characters in the whole plan brief
   const PLAN_RELATED_BUDGET = 60; // related tasks looked up for a whole plan (2 ClickUp requests each)
   // The plan brief for one client's tasks ([{ id, name }]). onStep(done, total).
-  async function clientPlan(client, tasks, onStep, day) {
+  async function clientPlan(client, tasks, onStep, day, mode) {
     const ids = [...new Set((tasks || []).map((t) => String((t && (t.id || t.taskId)) || "")).filter((x) => x && !/^local-/.test(x)))].slice(0, 30);
     if (!ids.length) throw new Error("No ClickUp tasks in this group.");
     const got = new Array(ids.length);
@@ -1622,13 +1742,14 @@
     });
     const failed = got.filter((d) => d && d.failed);
     const estAll = ds.reduce((a, d) => a + (Number(d.estimateMs) || 0), 0);
-    const text = (day ? DAY_QUESTION.replace("{DAY}", day) : PLAN_QUESTION).replace("{AUDIT}", PLAN_AUDIT[aud]) +
-      (day ? "\n\nDay: " + day + "\nTasks: " + ds.length + (estAll ? " (estimates add up to " + fmtDur(estAll) + ")" : "") : "\n\nClient: " + client + "\nOpen tasks: " + ds.length) +
+    const isList = mode === "list";
+    const text = (day ? (isList ? LIST_QUESTION : DAY_QUESTION).replace("{DAY}", day) : PLAN_QUESTION).replace("{AUDIT}", PLAN_AUDIT[aud]) +
+      (day ? "\n\n" + (isList ? "Tasks shown: " : "Day: ") + day + "\nTasks: " + ds.length + (estAll ? " (estimates add up to " + fmtDur(estAll) + ")" : "") : "\n\nClient: " + client + "\nOpen tasks: " + ds.length) +
       (ds.some((d) => d._related && d._related.more) ? "\nRelated tasks: at most " + relCap + " per task for this plan (the most important first); where more exist it says how many were left out." : "") +
       notesText +
       (failed.length ? "\n\nCouldn't load (left out): " + failed.map((f) => f.name).join(", ") : "") +
       "\n\n" + blocks.join("\n\n") +
-      (day ? "\n\nNow answer with the headings above: the order for the day, GO or WAIT for every task, whether it fits the day, what to do together, the audit check, what to ask for, and where each is done - nothing invented."
+      (day ? "\n\nNow answer with the headings above: the order" + (isList ? "" : " for the day") + ", GO or WAIT for every task, whether it fits " + (isList ? "the time available" : "the day") + ", what to do together, the audit check, what to ask for, and where each is done - nothing invented."
         : "\n\nNow answer with the headings above: the order, GO or WAIT for every task, the audit check, duplicates, what to ask for, and where each is done - nothing invented.");
     return { text, count: ds.length, failed: failed.map((f) => f.name), audit: aud, clientFiles: files, client: ds[0]._client || client };
   }
@@ -1641,13 +1762,16 @@
   function clientTools(client, tasks, opts) {
     opts = opts || {};
     const wrap = el("span", "pcm-chtools");
-    const plan = el("button", "pcm-btn", "🧭 Plan with AI");
+    // opts.button: a button already on the page (the Tasks card's); opts.noteEl:
+    // where the status line goes (a fixed spot, so a redraw can't drop it).
+    const plan = opts.button || el("button", "pcm-btn", "🧭 Plan with AI");
     plan.type = "button";
     plan.title = "All of " + client + "'s tasks here (descriptions, subtasks, dependencies, comments, notes and the audit for each) with questions for the AI: which to do first, which can be done now and which must wait (and for what), where a task differs from the audit, duplicates, and what to ask for before starting. With the ClickUp Tracker app it's saved in " + client + "'s folder and a short prompt for Claude Code is copied (Copy full plan is there for other AIs); without it the whole plan is copied.";
     wrap.append(plan);
     let note = null;
     const say = (t, err) => {
       const card = wrap.closest(".cu-clientcard");
+      if (!note && opts.noteEl) { note = opts.noteEl; note.hidden = false; note.textContent = ""; }
       if (!note) { note = el("div", "pcm-note pcm-chnote"); const h = wrap.closest(".cu-clienthead, .flt-tot"); if (h) h.after(note); else if (card) card.prepend(note); }
       note.className = (err ? "pcm-err" : "pcm-note") + " pcm-chnote";
       note.textContent = t;
@@ -1680,7 +1804,7 @@
           say(what === "related"
             ? "Looking up related tasks - finished ones too (" + n + " of " + of + ")… not ready to paste yet - this line says when it is."
             : "Gathering " + client + "'s tasks from ClickUp (" + n + " of " + of + ")… not ready to paste yet - this line says when it is. You can keep working meanwhile.");
-        }, opts.day ? client : "");
+        }, opts.day ? client : "", opts.list ? "list" : "");
         const tail = (p.failed.length ? " Left out (couldn't load): " + p.failed.join(", ") + "." : "") +
           (p.audit === "none" && !opts.day ? " No audit is saved for " + client + " - the AI will ask about it (add it in Clients)." : "");
         if (!opts.day && window.PcmFiles && window.PcmFiles.desk) {
@@ -1717,7 +1841,8 @@
         say("Couldn't make the plan: " + ((e && e.message) || e), true);
       } finally { plan.disabled = false; btn.textContent = label; }
     };
-    plan.onclick = (e) => { e.stopPropagation(); run(plan); };
+    if (!opts.button) plan.onclick = (e) => { e.stopPropagation(); run(plan); };
+    wrap._run = () => run(plan); // an outside button starts it itself
     return wrap;
   }
   async function load(p, id, force) {

@@ -320,6 +320,8 @@
      the row shows which client a task belongs to without opening ClickUp. The
      name+pill share a flex wrapper - only the name shrinks, the pill stays put. */
   .cu-task .nmwrap { flex: 1; min-width: 0; display: inline-flex; align-items: baseline; gap: 6px; }
+  .cu-task .nmwrap .cu-parent { flex: 0 0 auto; min-width: 0; max-width: 30%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--muted); font-size: 11px; opacity: .85; }
+  .cu-task .nmwrap .cu-kids { flex: none; color: var(--muted); font-size: 10.5px; font-weight: 600; opacity: .85; cursor: help; }
   .cu-task .nmwrap .nm { flex: 0 1 auto; }
   .cu-client {
     flex: 0 0 auto; max-width: 18ch; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
@@ -349,6 +351,46 @@
   .cu-task .cu-prio.p-none { visibility: hidden; }
 
   .cu-task .estpairs { min-width: 4.4em; justify-content: flex-end; }
+  /* Columns that line up: fixed widths right of the name (also with a guess). */
+  .cu-task .cu-due { width: 50px; box-sizing: border-box; text-align: center; overflow: hidden; text-overflow: ellipsis; }
+  .cu-task .estpairs { flex: 0 0 auto; width: 118px; box-sizing: border-box; overflow: hidden; }
+  /* Narrow lists (the popup, a slim side panel): the row gives things up in order
+     so the task name always keeps room and no column runs over the next one -
+     first the parent name before a subtask (still in the name tooltip), then the
+     fixed time width, the client pill, and last the people and due columns. */
+  .cu-tasklist { container-type: inline-size; container-name: cutl; }
+  .cu-task .nmwrap { overflow: hidden; }
+  .cu-task .nmwrap .nm { min-width: 4em; }
+  @container cutl (max-width: 700px) { .cu-tasklist .cu-task .nmwrap .cu-parent { display: none; } }
+  @container cutl (max-width: 560px) {
+    .cu-tasklist .cu-task .estpairs { width: 76px; min-width: 0; justify-content: flex-end; }
+    .cu-tasklist .cu-task .estpairs:has(.est-guess, .est-staged) .est.zero { display: none; }
+    .cu-tasklist .cu-task .cu-client { width: 64px; }
+    .cu-tasklist .cu-task .cu-due { width: 42px; }
+    .cu-tasklist .cu-task .cu-who { width: auto; }
+    .cu-tasklist .cu-task .nmwrap, .cu-tasklist .cu-task { gap: 5px; }
+  }
+  @container cutl (max-width: 470px) { .cu-tasklist .cu-task .cu-client { display: none; } }
+  @container cutl (max-width: 380px) { .cu-tasklist .cu-task .cu-who, .cu-tasklist .cu-task .tn-marks { display: none; } }
+  @container cutl (max-width: 320px) { .cu-tasklist .cu-task .cu-due { display: none; } }
+  /* Split by week: a heading per week (a month heading above them when the list spans months) */
+  .cu-mgroup { margin: 10px 0 2px; padding: 4px 8px; border-radius: 7px; background: color-mix(in srgb, var(--indigo) 14%, transparent); font-size: 11.5px; color: var(--muted); }
+  .cu-mgroup b { color: var(--text); font-size: 12px; }
+  .cu-wkgroup { margin: 8px 0 2px; padding: 3px 7px; border-left: 3px solid var(--indigo); background: color-mix(in srgb, var(--indigo) 7%, transparent); border-radius: 0 6px 6px 0; font-size: 11px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .cu-mgroup:first-child, .cu-wkgroup:first-child { margin-top: 2px; }
+  .cu-wkgroup b { color: var(--text); }
+  .cu-wkgroup.now { border-left-color: var(--green); background: color-mix(in srgb, var(--green) 9%, transparent); }
+  .est-guess, .est-staged { margin-right: 3px; padding: 0 5px; border-radius: 999px; font-size: 10.5px; font-weight: 700; cursor: pointer; white-space: nowrap; }
+  .est-guess { color: var(--muted); border: 1px dashed var(--border); }
+  .est-guess:hover { color: var(--indigo, #4f46e5); border-color: currentColor; }
+  .est-staged { color: #d97706; border: 1px dashed currentColor; background: rgba(217, 119, 6, .09); }
+  .pop-estbar { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin: 4px 0 6px; padding: 5px 8px; border: 1px dashed #d97706; border-radius: 7px; background: rgba(217, 119, 6, .08); font-size: 11.5px; font-weight: 600; }
+  .pop-estbar.ok { border: 1px solid #16a34a; color: #16a34a; background: rgba(22, 163, 74, .08); }
+  .pop-estbar.err { border-color: var(--red, #dc2626); color: var(--red, #dc2626); }
+  .pop-estbar > span { flex: 1 1 auto; }
+  .pop-apply, .pop-discard { font: inherit; font-size: 11px; font-weight: 700; padding: 1px 8px; border-radius: 6px; cursor: pointer; }
+  .pop-apply { border: 1px solid #16a34a; background: #16a34a; color: #fff; }
+  .pop-discard { border: 1px solid var(--border); background: var(--card); color: var(--text); }
   /* Every estimate is click-to-edit (one delegated handler in the page script). */
   .cu-task .est { cursor: pointer; border-bottom: 1px dotted transparent; }
   .cu-task .est:hover { border-bottom-color: currentColor; color: var(--indigo); }
@@ -421,6 +463,13 @@
   .cu-filter-mode button.on { background: var(--indigo); color: #fff; }
   .cu-filter-h { font-size: 9px; font-weight: 700; letter-spacing: 0.06em; text-transform: uppercase; color: var(--muted); padding: 4px 7px 2px; }
   html[data-theme="dark"] .cu-filter-menu { box-shadow: 0 10px 24px rgba(0, 0, 0, 0.5); }
+  .cu-client-menu { min-width: 220px; }
+  .cu-filter-menu.cu-client-menu input.cu-client-search { display: block; width: 100%; box-sizing: border-box; margin: 2px 0 6px; padding: 5px 8px; font: inherit; font-size: 12px; border: 1px solid var(--border); border-radius: 7px; background: var(--bg); color: var(--text); }
+  .cu-client-search:focus { outline: none; border-color: var(--indigo, #4f46e5); }
+  .cu-client-note { font-size: 11px; color: var(--muted); padding: 2px 4px 0; }
+  .cu-client-note:empty { display: none; }
+  .cu-filter-menu label[hidden], .cu-filter-menu .cu-filter-group[hidden] { display: none !important; } /* a search hides rows: the menu's label { display:flex } must not show them again */
+  #cuClientWrap { margin-right: 4px; }
 
   html[data-theme="dark"] {
     --bg: #0f1115; --card: #181b21; --text: #e8eaed; --muted: #9aa3b2; --border: #2b3038; --bg2: #22262e; --field: #181b21;
@@ -478,6 +527,8 @@
   .cu-now-time { flex: none; font-variant-numeric: tabular-nums; color: var(--green); font-weight: 700; }
   .cu-now-sess { flex: none; font-size: .86em; color: var(--muted); font-variant-numeric: tabular-nums; white-space: nowrap; }
   .cu-now-sess:empty { display: none; }
+  .cu-now-oth { margin: 3px 0 0 14px; font-size: .86em; color: var(--muted); line-height: 1.35; overflow-wrap: anywhere; }
+  .cu-now-oth.warn { color: var(--red, #dc2626); font-weight: 600; }
   /* Today's share of the running task's time, beside the all-days total. The row
      and the strip already space their items, so the pill drops its own margin. */
   .cu-now .trk-today, .cu-task .trk-today { flex: none; margin-left: 0; }
@@ -555,7 +606,23 @@
       <div class="card-title">
         <span>Today · Estimate &amp; Tracked</span>
         <span class="spacer"></span>
+        <div class="cu-filter" id="cuClientWrap">
+          <button type="button" class="cu-filter-btn" id="cuClientBtn" aria-expanded="false" aria-haspopup="true" title="Show only some clients' tasks - your clients are listed; search to find any client in the workspace">&#9662; Client</button>
+          <div class="cu-filter-menu cu-client-menu" id="cuClientMenu" hidden role="menu">
+            <input type="search" id="cuClientSearch" class="cu-client-search" placeholder="Search clients…" autocomplete="off" aria-label="Search clients" />
+            <div class="cu-filter-group" id="cuFilterClientGroup">
+              <div class="cu-filter-h">Your clients</div>
+              <div id="cuFilterClientList"></div>
+            </div>
+            <div class="cu-filter-group" id="cuClientMoreGroup" hidden>
+              <div class="cu-filter-h">More clients in the workspace</div>
+              <div id="cuClientMore"></div>
+            </div>
+            <div class="cu-client-note" id="cuClientNote"></div>
+          </div>
+        </div>
         <div class="cu-filter">
+          <button type="button" class="cu-filter-btn" id="cuPlanBtn" title="Copy every task shown here (under whatever filter is on) with what the AI needs to plan them: the order, what can be done now and what must wait, whether it fits the time, what to do together, the audit check and what to ask for first.">&#129517; Plan</button>
           <button type="button" class="cu-filter-btn" id="cuExportBtn" title="Export the tasks shown here (CSV, Excel, Google Sheets/Docs)">&#10515; Export</button>
           <button type="button" class="cu-filter-btn" id="cuFilterBtn" aria-expanded="false" aria-haspopup="true" title="Filter today's estimate &amp; task list">&#9662; Filter</button>
           <div class="cu-filter-menu" id="cuFilterMenu" hidden role="menu">
@@ -569,26 +636,23 @@
                 <button type="button" data-fmode="multi">Multiple</button>
               </div>
               <label class="cu-switch-row" title="Drag tasks into any order using the handle on the left. Your arrangement is remembered for each date view on its own (today, tomorrow, next week) and layers on top of the other filters."><span>Custom order <small>drag to arrange</small></span><input type="checkbox" class="cu-switch" data-cf="manualOrder" /></label>
+              <label class="cu-switch-row" title="When the list covers more than one week (this month, a range…), show it week by week, each under a heading with its tasks, estimate and tracked time."><span>Split by week <small>month or range</small></span><input type="checkbox" class="cu-switch" id="cuSplitWeeks" checked /></label>
             </div>
 <div class="cu-filter-group">
               <div class="cu-filter-h">Due <small>(nothing ticked = today)</small></div>
               <label class="cu-basis" title="Which date puts a task in the range: its due date, its start date, or both (start and due both inside the range)."><span>Dates by</span> <select data-cf-basis aria-label="Dates by"><option value="">due date</option><option value="start">start date</option><option value="both">start and due date</option></select></label>
+              <label title="Tasks due any day last week (Sunday through Saturday) - including the ones already completed."><input type="checkbox" data-cf="duePrevWeek" /> <span>Previous week</span></label>
               <label title="Tasks due any day this week (Sunday through Saturday)."><input type="checkbox" data-cf="dueWeek" /> <span>This week</span></label>
               <label title="Tasks due any day next week (next Sunday through Saturday)."><input type="checkbox" data-cf="dueNextWeek" /> <span>Next week</span></label>
-              <label title="Tasks due any day last week (Sunday through Saturday) - including the ones already completed."><input type="checkbox" data-cf="duePrevWeek" /> <span>Previous week</span></label>
+              <label title="Tasks due any day last month - including the ones already completed."><input type="checkbox" data-cf="duePrevMonth" /> <span>Previous month</span></label>
               <label title="Tasks due any day this month."><input type="checkbox" data-cf="dueThisMonth" /> <span>This month</span></label>
               <label title="Tasks due any day next month."><input type="checkbox" data-cf="dueNextMonth" /> <span>Next month</span></label>
-              <label title="Tasks due any day last month - including the ones already completed."><input type="checkbox" data-cf="duePrevMonth" /> <span>Previous month</span></label>
               <label title="Pick one day (From only) or a date range (From and To)."><input type="checkbox" data-cf="dueCustom" /> <span>Custom date / range</span></label>
               <div class="cu-filter-dates" data-cf-dates hidden>
                 <input type="date" data-cf-from aria-label="From date" title="From (or the single day)" />
                 <span>to</span>
                 <input type="date" data-cf-to aria-label="To date (optional)" title="To - leave empty for a single day" />
               </div>
-            </div>
-            <div class="cu-filter-group" id="cuFilterClientGroup" hidden>
-              <div class="cu-filter-h">Client</div>
-              <div id="cuFilterClientList"></div>
             </div>
             <div class="cu-filter-group" id="cuFilterStatusGroup" hidden>
               <div class="cu-filter-h">Status</div>
@@ -800,6 +864,7 @@
   <script src="fx.js"></script>
   <script src="notify-menu.js"></script>
   <script src="reminders.js"></script>
+  <script src="lib-zip.js"></script>
   <script src="export-tasks.js"></script>
   <script src="task-panel.js"></script>
   <script src="assignees.js"></script>
@@ -821,6 +886,7 @@
   <script src="notices.js"></script>
   <script src="plan-apply.js"></script>
   <script src="popup.js"></script>
+  <script src="weather.js"></script>
   <script src="header-ui.js"></script>
 </body>
 </html>

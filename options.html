@@ -95,7 +95,11 @@
   #appearanceCard .ap-c { display: inline-flex; align-items: center; gap: 6px; margin: 0; font-weight: 400; font-size: 12.5px; }
   #appearanceCard input[type="color"] { width: 36px; height: 26px; padding: 0 2px; border: 1px solid var(--border); border-radius: 6px; background: none; cursor: pointer; }
   #appearanceCard .ap-lnk { background: none; border: 0; color: var(--indigo); padding: 0 2px; cursor: pointer; font: inherit; font-size: 12.5px; }
-  #appearanceCard .ap-thumb { width: 96px; height: 54px; border-radius: 8px; border: 1px solid var(--border); background-size: cover; background-position: center; }
+  #appearanceCard .ap-thumb[hidden] { display: none; }
+  #appearanceCard .ap-scene { display: flex; flex-direction: column; gap: 6px; margin: 0 0 10px; }
+  #appearanceCard .ap-scene .ap-c { align-items: flex-start; }
+  #appearanceCard .ap-scene input { margin-top: 2px; }
+  #appearanceCard .ap-thumb { display: flex; align-items: center; justify-content: center; font-size: 20px; font-weight: 700; color: var(--muted); width: 96px; height: 54px; border-radius: 8px; border: 1px solid var(--border); background-size: cover; background-position: center; }
   #appearanceCard input[type="range"] { width: 180px; }
   .card {
     background: var(--card); border: 1px solid var(--border);
@@ -136,6 +140,28 @@
   .row > div { flex: 1; }
   .checkbox { display: flex; align-items: center; gap: 8px; margin-top: 12px; font-size: 14px; }
   .checkbox input { width: auto; }
+  /* A row with a dropdown (Size, Strip style…): wraps instead of squeezing its
+     hint into a thin column when the page is zoomed in or narrow. */
+  .checkbox:has(> select) { flex-wrap: wrap; row-gap: 4px; }
+  .checkbox > select { max-width: 100%; min-width: 0; text-overflow: ellipsis; }
+  .checkbox:has(> select) > .hint { flex: 1 1 220px; min-width: 0; }
+  /* Zoomed in (or a narrow window): rows wrap instead of squeezing their text
+     into a thin column - field rows, setup steps, Insights rows and the
+     multi-day example table. */
+  .row { flex-wrap: wrap; }
+  .row > * { min-width: 0; }
+  .card .pcm-step { flex-wrap: wrap; }
+  .card .pcm-step > .tx { flex: 1 1 220px; min-width: 0; }
+  #insView .hy-row, #insView .trow { flex-wrap: wrap; }
+  #insView .hy-row > .l, #insView .trow > .ttl { flex: 1 1 220px; min-width: 0; }
+  .md-ex { overflow-x: auto; }
+  .md-ex th { min-width: 11em; }
+  #insView .card .hy-row > .l, #insView .card .trow > .ttl, #insView .hy-row > .l { flex: 1 1 160px !important; min-width: 0; }
+  #arQuotaTimesRow > div { flex: 1 1 160px; }
+  .card select, .card input[type="file"] { max-width: 100%; min-width: 0; }
+  .card .ap-row > select { flex: 0 1 auto; }
+  .cu-now-top { flex-wrap: wrap; row-gap: 6px; }
+  table.hb-users { display: block; max-width: 100%; overflow-x: auto; }
   .btns { margin-top: 18px; display: flex; gap: 8px; flex-wrap: wrap; }
   button {
     padding: 10px 16px; font-size: 14px; border-radius: 8px;
@@ -261,6 +287,9 @@
   .cu-task.cu-dragging { opacity: .4; }
   .cu-task.cu-drop-before { box-shadow: inset 0 2px 0 0 var(--indigo); }
   .cu-task.cu-drop-after { box-shadow: inset 0 -2px 0 0 var(--indigo); }
+  /* Drag to reorder (any list): rows lay out as their cells, so the line is drawn on them. */
+  .cu-task.ro-before > * { box-shadow: inset 0 2px 0 0 var(--indigo); }
+  .cu-task.ro-after > * { box-shadow: inset 0 -2px 0 0 var(--indigo); }
   /* Name column: grows to fill the row (flex-basis 0) but shrinks with min-width:0
      so a long title ellipsis-truncates instead of pushing the est/tracked/controls
      onto a second line - matches the popup's single-line task rows. */
@@ -271,6 +300,8 @@
      name still ellipsis-truncates while the pill stays a fixed, non-shrinking tag
      and the est/controls stay inline on one row. */
   .cu-task .nmwrap { flex: 1 1 0; min-width: 0; display: inline-flex; align-items: baseline; gap: 7px; }
+  .cu-task .nmwrap .cu-parent { flex: 0 0 auto; min-width: 0; max-width: 30%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--muted); font-size: 11px; opacity: .85; }
+  .cu-task .nmwrap .cu-kids { flex: none; color: var(--muted); font-size: 10.5px; font-weight: 600; opacity: .85; cursor: help; }
   .cu-task .nmwrap .nm { margin-right: 0; max-width: none; flex: 0 1 auto; }
   .cu-client {
     flex: 0 0 auto; max-width: 24ch; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
@@ -334,6 +365,13 @@
   .cu-task .est { color: var(--muted); flex-shrink: 0; font-variant-numeric: tabular-nums; }
   .cu-task .est.zero { color: var(--amber); }
   .cu-task .estpairs { display: inline-flex; gap: 6px; flex-shrink: 0; align-items: baseline; }
+  /* Columns that line up on every row: everything right of the task name has a
+     fixed width (a long client name ends in …, its full name on hover), so a
+     guess chip, a longer client or a "Tmrw" vs "Oct 14" can't push the rest. */
+  .cu-task .cu-client { width: 17ch; max-width: 17ch; box-sizing: border-box; text-align: center; }
+  .cu-task .cu-due { width: 62px; box-sizing: border-box; text-align: center; overflow: hidden; text-overflow: ellipsis; }
+  .cu-task .estpairs { flex: 0 0 auto; width: 146px; box-sizing: border-box; justify-content: flex-end; overflow: hidden; }
+  .cu-totals .wk-selclear, .cu-totals .wk-apply { padding: 1px 8px; font-size: 11px; line-height: 1.5; }
   .cu-task .trk { color: var(--green); flex-shrink: 0; font-variant-numeric: tabular-nums; font-size: 11.5px; }
   .cu-task .tick { color: var(--green); font-weight: 700; margin-left: 3px; }
   /* Per-task Start/Stop/Complete controls (options mirror of the popup). */
@@ -559,6 +597,36 @@
   .flt-row { display: flex; flex-wrap: wrap; gap: 10px 14px; align-items: flex-end; }
   .flt-row > div { min-width: 120px; font-size: 12.5px; }
   .flt-row label { font-size: 11px; color: var(--muted); display: block; margin-bottom: 4px; }
+  .cu-tgbtn { margin-left: 8px; padding: 1px 8px; font: inherit; font-size: 11px; font-weight: 600; border: 1px solid var(--border); border-radius: 999px; background: var(--card); color: var(--text); cursor: pointer; white-space: nowrap; vertical-align: 1px; }
+  .cu-tgbtn:hover { border-color: var(--indigo); color: var(--indigo); }
+  .cu-tgbtn:disabled { opacity: .6; cursor: default; }
+  .cu-clienthead .cu-tgbtn { margin-left: auto; }
+  .cu-mgroup { margin: 14px 0 2px; padding: 6px 10px; border-radius: 8px; background: color-mix(in srgb, var(--indigo) 14%, transparent); font-size: 13.5px; color: var(--muted); }
+  .cu-mgroup:first-child { margin-top: 2px; }
+  .cu-mgroup b { color: var(--text); font-size: 14px; }
+  .cu-wkgroup { margin: 10px 0 2px; padding: 4px 8px; border-left: 3px solid var(--indigo); background: color-mix(in srgb, var(--indigo) 7%, transparent); border-radius: 0 6px 6px 0; font-size: 12.5px; color: var(--muted); }
+  .cu-wkgroup:first-child { margin-top: 2px; }
+  .cu-wkgroup b { color: var(--text); }
+  .cu-wkgroup.now { border-left-color: var(--green); background: color-mix(in srgb, var(--green) 9%, transparent); }
+  .est-guess, .est-staged { margin-right: 4px; padding: 0 6px; border-radius: 999px; font-size: 11px; font-weight: 700; cursor: pointer; white-space: nowrap; }
+  .est-guess { color: var(--muted); border: 1px dashed var(--border); }
+  .est-guess:hover { color: var(--indigo); border-color: var(--indigo); }
+  .est-staged { color: var(--amber, #d97706); border: 1px dashed currentColor; background: color-mix(in srgb, var(--amber, #d97706) 9%, transparent); }
+  .cu-gtot, .wk-gtot { color: var(--indigo); font-weight: 600; }
+  .cu-totals { margin: 6px 0 4px; padding: 6px 10px; border-radius: 8px; background: var(--bg2); font-size: 12.5px; color: var(--muted); }
+  .cu-totals b { color: var(--text); }
+  .cu-totals-warn { color: var(--amber); font-weight: 600; }
+  .flt-find { margin-top: 10px; }
+  .cu-busy { display: inline-block; width: 10px; height: 10px; margin-right: 4px; border: 2px solid var(--indigo); border-right-color: transparent; border-radius: 50%; animation: cuBusy .8s linear infinite; vertical-align: -1px; }
+  @keyframes cuBusy { to { transform: rotate(360deg); } }
+  @media (prefers-reduced-motion: reduce) { .cu-busy { animation: none; } }
+  .flt-find > label { display: block; font-size: 11px; color: var(--muted); margin-bottom: 4px; }
+  .flt-find > label .hint { font-weight: 400; }
+  .flt-find textarea { width: 100%; box-sizing: border-box; min-height: 64px; padding: 7px 10px; font: inherit; font-size: 12.5px; border: 1px solid var(--border); border-radius: 8px; background: var(--field, var(--bg)); color: var(--text); resize: vertical; }
+  .flt-find-row { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 14px; margin-top: 4px; font-size: 12px; }
+  .flt-find-row .chk { display: inline-flex; align-items: center; gap: 5px; }
+  .flt-find-row .chk label { margin: 0; font-size: 12px; color: var(--text); }
+  .flt-find-row .hint { flex: 1; min-width: 180px; }
   .flt-row .chk { display: flex; align-items: center; gap: 6px; min-width: 0; padding-bottom: 7px; }
   .flt-row .chk label { display: inline-flex; align-items: center; gap: 4px; margin: 0; line-height: 1; }
   .flt-row .chk input { width: auto; margin: 0; vertical-align: middle; }
@@ -591,11 +659,13 @@
   .cu-filter-btn:hover { color: var(--text); background: var(--bg2); }
   .cu-filter-btn.active { color: var(--indigo); border-color: var(--indigo); }
   .cu-filter-menu { position: absolute; top: calc(100% + 5px); right: 0; z-index: 40; min-width: 190px; max-width: 280px; max-height: 380px; overflow-y: auto; background: var(--card); color: var(--text); border: 1px solid var(--border); border-radius: 10px; box-shadow: 0 10px 26px rgba(0, 0, 0, 0.16); padding: 6px; text-transform: none; letter-spacing: 0; }
-  /* Explore "Pick people": tick anyone, grouped by department; tasks load as you tick. */
+  /* Explore "Pick people": tick anyone, grouped by department; tasks load with Load tasks. */
+  #optFltResult .flt-stale { margin: 0 0 8px; padding: 6px 10px; border: 1px dashed #d97706; border-radius: 8px; background: rgba(217, 119, 6, .08); color: #b45309; font-size: 12.5px; }
   .flt-people { position: relative; }
   .flt-people-btn { min-width: 150px; text-align: left; }
   .flt-people-menu { position: absolute; top: calc(100% + 4px); left: 0; z-index: 60; min-width: 240px; max-width: 320px; max-height: 340px; overflow-y: auto; background: var(--card); color: var(--text); border: 1px solid var(--border); border-radius: 9px; box-shadow: 0 10px 24px rgba(0, 0, 0, 0.22); padding: 6px; }
   .flt-people-menu[hidden] { display: none; }
+  .flt-people-menu [hidden] { display: none !important; } /* the People search hides rows: label { display:flex } must not show them again */
   .flt-people-menu .grp { font-size: 10.5px; font-weight: 700; letter-spacing: .04em; text-transform: uppercase; color: var(--muted); margin: 8px 4px 3px; }
   .flt-people-menu .grp:first-child { margin-top: 2px; }
   .flt-people-menu label { display: flex; align-items: center; gap: 8px; padding: 3px 4px; border-radius: 6px; font-size: 12.5px; font-weight: 400; cursor: pointer; margin: 0; }
@@ -610,6 +680,13 @@
   .flt-people-menu .pnone { font-size: 12px; color: var(--muted); padding: 6px 4px; }
   .flt-people-menu .foot button { width: auto; font-size: 12px; padding: 4px 10px; }
   .cu-filter-menu[hidden] { display: none; }
+  .cu-client-menu { min-width: 240px; }
+  .cu-client-search { width: 100%; box-sizing: border-box; margin: 2px 0 6px; padding: 5px 8px; font: inherit; font-size: 12.5px; border: 1px solid var(--border); border-radius: 7px; background: var(--bg); color: var(--text); }
+  .cu-client-search:focus { outline: none; border-color: var(--indigo); }
+  .cu-filter-menu.cu-client-menu input.cu-client-search { width: 100%; display: block; }
+  .cu-client-note { font-size: 11px; color: var(--muted); padding: 2px 4px 0; }
+  .cu-client-note:empty { display: none; }
+  .cu-filter-menu label[hidden], .cu-filter-menu .cu-filter-group[hidden] { display: none !important; } /* a search hides rows: the menu's label { display:flex } must not show them again */
   .cu-filter-menu label { display: flex; align-items: center; gap: 8px; padding: 6px 8px; font-size: 12.5px; font-weight: 500; color: var(--text); cursor: pointer; border-radius: 7px; white-space: nowrap; }
   .cu-filter-menu label:hover { background: var(--bg2); }
   .cu-filter-menu label span { overflow: hidden; text-overflow: ellipsis; }
@@ -731,6 +808,8 @@
   #cuTodayWrap .cu-preview { margin-top: 0; padding-top: 0; }
   #cuTodayWrap .cu-preview > .hint { line-height: 1.55; }
   .opt-toggle.sm button { padding: 4px 10px; font-size: 12px; }
+  h3.dash-click { cursor: pointer; }
+  h3.dash-click:hover { text-decoration: underline dotted; text-underline-offset: 3px; }
   /* A day line with its Plan with AI button: one row, text on the left (not the chart's day-column look). */
   #optWeekList .flt-tot.wk-dhead { display: flex; flex-direction: row; align-items: center; justify-content: flex-start; text-align: left; gap: 8px; }
   #optWeekList .wk-dhead .wk-dtxt { flex: 1; min-width: 0; }
@@ -739,6 +818,13 @@
   #optWeekList .cu-task[draggable="true"], #optWeekList .cu-task[draggable="true"] > * { cursor: grab; }
   #optWeekList .cu-task.wk-dragging > * { opacity: .45; }
   #optWeekList .cu-task.wk-moving > * { opacity: .6; }
+  #optWeekList .cu-task.wk-staged > * { background: color-mix(in srgb, var(--amber, #d97706) 9%, transparent); }
+  #optWeekList .wk-stchip { margin-left: 6px; padding: 0 6px; border-radius: 999px; font-size: 10.5px; font-weight: 700; color: var(--amber, #d97706); border: 1px dashed currentColor; white-space: nowrap; }
+  .wk-stagebar { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; margin: 0 0 10px; padding: 7px 10px; border: 1px dashed var(--amber, #d97706); border-radius: 8px; background: color-mix(in srgb, var(--amber, #d97706) 8%, transparent); font-size: 12.5px; }
+  .wk-stagebar > span { flex: 1 1 260px; }
+  .wk-apply { font: inherit; font-size: 12px; font-weight: 700; padding: 3px 10px; border-radius: 7px; border: 1px solid var(--green, #16a34a); background: var(--green, #16a34a); color: #fff; cursor: pointer; white-space: nowrap; }
+  .wk-apply.sm { font-size: 11px; padding: 1px 8px; }
+  .wk-apply:disabled { opacity: .6; cursor: default; }
   #optWeekList .wk-mvchip { margin-left: 6px; padding: 0 6px; border-radius: 999px; font-size: 10.5px; font-weight: 700; color: var(--amber, #d97706); border: 1px solid currentColor; }
   .wk-band { position: fixed; z-index: 2147483000; border: 1px solid var(--indigo); background: rgba(99,102,241,.12); pointer-events: none; border-radius: 3px; }
   #optWeekList .wk-selbar b { color: var(--indigo); }
@@ -826,6 +912,8 @@
   .cu-now-time { flex: none; font-variant-numeric: tabular-nums; color: var(--green); font-weight: 700; }
   .cu-now-sess { flex: none; font-size: .86em; color: var(--muted); font-variant-numeric: tabular-nums; white-space: nowrap; }
   .cu-now-sess:empty { display: none; }
+  .cu-now-oth { margin: 3px 0 0 14px; font-size: .86em; color: var(--muted); line-height: 1.35; overflow-wrap: anywhere; }
+  .cu-now-oth.warn { color: var(--red, #dc2626); font-weight: 600; }
   /* Today's share of the running task's time, beside the all-days total. The row
      and the strip already space their items, so the pill drops its own margin. */
   .cu-now .trk-today, .cu-task .trk-today { flex: none; margin-left: 0; }
@@ -1190,7 +1278,7 @@
 
     <div class="dash-top">
       <div class="card dash-card" id="cuTodayWrap" style="display:none;">
-        <div class="dash-h"><h3 id="dashTodayTitle">Today</h3><span class="spacer"></span><span class="dash-chip" id="dashTodayChip" style="display:none;"></span></div>
+        <div class="dash-h"><h3 id="dashTodayTitle" class="dash-click" title="Show these tasks in the Tasks list">Today</h3><span class="spacer"></span><span class="dash-chip" id="dashTodayChip" style="display:none;"></span></div>
         <div id="cuPreview" class="cu-preview"></div>
     <!-- Start-tracking control for the auto-detected Extra(s) Task(s). Relocated up
          here (out of the collapsible Settings below) so it stays visible near today's
@@ -1215,7 +1303,7 @@
       </div>
 
       <div class="card dash-card cu-needs-config" id="dashWeekCard" style="display:none;">
-        <div class="dash-h"><h3>This week</h3><span class="hint" id="optWeekRange"></span><span class="spacer"></span>
+        <div class="dash-h"><h3 id="optWeekTitle" class="dash-click" title="Show this week's tasks in the Tasks list (applies the This week filter)">This week</h3><span class="hint" id="optWeekRange"></span><span class="spacer"></span>
           <div class="opt-toggle sm" id="optWeekToggle">
             <button type="button" data-to="today">To today</button>
             <button type="button" data-to="friday" title="The whole week, Sunday to Saturday (tasks due on a weekend count too)">Whole week</button>
@@ -1237,7 +1325,23 @@
       <div class="dash-h"><h3>Tasks</h3><span class="hint" id="dashTasksScope"></span><span class="spacer"></span>
         <input type="search" id="dashSearch" class="dash-search" placeholder="Search these tasks" title="Narrows the lists below to the tasks whose name, client, status or assignee matches. It only filters what is already loaded - it never asks ClickUp for anything, so it costs none of your rate limit. Esc clears it." autocomplete="off" />
         <button type="button" class="icon-btn" id="dashRefresh" title="Refresh from ClickUp now">↻</button>
+        <div class="cu-filter" id="optCuClientWrap">
+          <button type="button" class="cu-filter-btn" id="optCuClientBtn" aria-expanded="false" aria-haspopup="true" title="Show only some clients' tasks - your clients are listed; search to find any client in the workspace">&#9662; Client</button>
+          <div class="cu-filter-menu cu-client-menu" id="optCuClientMenu" hidden role="menu">
+            <input type="search" id="optCuClientSearch" class="cu-client-search" placeholder="Search clients…" autocomplete="off" aria-label="Search clients" />
+            <div class="cu-filter-group" id="optCuFilterClientGroup">
+              <div class="cu-filter-h">Your clients</div>
+              <div id="optCuFilterClientList"></div>
+            </div>
+            <div class="cu-filter-group" id="optCuClientMoreGroup" hidden>
+              <div class="cu-filter-h">More clients in the workspace</div>
+              <div id="optCuClientMore"></div>
+            </div>
+            <div class="cu-client-note" id="optCuClientNote"></div>
+          </div>
+        </div>
         <div class="cu-filter">
+          <button type="button" class="cu-filter-btn" id="optCuPlanBtn" title="Copy every task shown here - under whatever filter, day, range, client or search is on - with what the AI needs to plan them: the order, what can be done now and what must wait (and for what), whether it fits the time, what to do together, the audit check and what to ask for first. Related tasks (finished ones too) come along.">&#129517; Plan with AI</button>
           <button type="button" class="cu-filter-btn" id="optCuExportBtn" title="Export the tasks shown here (CSV, Excel, Google Sheets/Docs)">&#10515; Export</button>
           <button type="button" class="cu-filter-btn" id="optCuFilterBtn" aria-expanded="false" aria-haspopup="true" title="Filter today's estimate &amp; task list">&#9662; Filter</button>
           <div class="cu-filter-menu" id="optCuFilterMenu" hidden role="menu">
@@ -1251,26 +1355,23 @@
                 <button type="button" data-fmode="multi">Multiple</button>
               </div>
               <label class="cu-switch-row" title="Drag tasks into any order using the handle on the left. Your arrangement is remembered for each date view on its own (today, tomorrow, next week) and layers on top of the other filters."><span>Custom order <small>drag to arrange</small></span><input type="checkbox" class="cu-switch" data-cf="manualOrder" /></label>
+              <label class="cu-switch-row" title="When the list covers more than one week (this month, a range…), show it week by week, each under a heading with its tasks, estimate and tracked time."><span>Split by week <small>month or range</small></span><input type="checkbox" class="cu-switch" id="cuSplitWeeksOpt" checked /></label>
             </div>
             <div class="cu-filter-group">
               <div class="cu-filter-h">Due <small>(nothing ticked = today)</small></div>
               <label class="cu-basis" title="Which date puts a task in the range: its due date, its start date, or both (start and due both inside the range)."><span>Dates by</span> <select data-cf-basis aria-label="Dates by"><option value="">due date</option><option value="start">start date</option><option value="both">start and due date</option></select></label>
+              <label title="Tasks due any day last week (Sunday through Saturday) - including the ones already completed."><input type="checkbox" data-cf="duePrevWeek" /> <span>Previous week</span></label>
               <label title="Tasks due any day this week (Sunday through Saturday)."><input type="checkbox" data-cf="dueWeek" /> <span>This week</span></label>
               <label title="Tasks due any day next week (next Sunday through Saturday)."><input type="checkbox" data-cf="dueNextWeek" /> <span>Next week</span></label>
-              <label title="Tasks due any day last week (Sunday through Saturday) - including the ones already completed."><input type="checkbox" data-cf="duePrevWeek" /> <span>Previous week</span></label>
+              <label title="Tasks due any day last month - including the ones already completed."><input type="checkbox" data-cf="duePrevMonth" /> <span>Previous month</span></label>
               <label title="Tasks due any day this month."><input type="checkbox" data-cf="dueThisMonth" /> <span>This month</span></label>
               <label title="Tasks due any day next month."><input type="checkbox" data-cf="dueNextMonth" /> <span>Next month</span></label>
-              <label title="Tasks due any day last month - including the ones already completed."><input type="checkbox" data-cf="duePrevMonth" /> <span>Previous month</span></label>
               <label title="Pick one day (From only) or a date range (From and To)."><input type="checkbox" data-cf="dueCustom" /> <span>Custom date / range</span></label>
               <div class="cu-filter-dates" data-cf-dates hidden>
                 <input type="date" data-cf-from aria-label="From date" title="From (or the single day)" />
                 <span>to</span>
                 <input type="date" data-cf-to aria-label="To date (optional)" title="To - leave empty for a single day" />
               </div>
-            </div>
-            <div class="cu-filter-group" id="optCuFilterClientGroup" hidden>
-              <div class="cu-filter-h">Client</div>
-              <div id="optCuFilterClientList"></div>
             </div>
             <div class="cu-filter-group" id="optCuFilterStatusGroup" hidden>
               <div class="cu-filter-h">Status</div>
@@ -1299,6 +1400,7 @@
           </div>
         </div>
       </div>
+      <div class="pcm-note pcm-chnote" id="optCuPlanNote" hidden style="margin:6px 0 8px"></div>
       <div id="cuNow" class="cu-now" hidden></div>
       <div id="dashTasks" class="dash-tasks"></div>
     </div>
@@ -1327,75 +1429,54 @@
     <div class="card cu-needs-config" id="dashExploreCard" style="display:none;">
       <div class="dash-h"><h3>Explore tasks</h3><span class="hint">any date range, client, department or teammate</span><span class="spacer"></span>
         <button type="button" class="cu-filter-btn primary" id="optFltGo" title="Read the tasks for these choices from ClickUp (pressed again: read them again)">Load tasks</button>
+        <div class="cu-filter" id="exFilterWrap">
+          <button type="button" class="cu-filter-btn" id="exFilterBtn" aria-expanded="false" aria-haspopup="true" title="Dates, status, priority and more - Explore's own filter (the Tasks card's isn't changed)">&#9662; Filter</button>
+          <div class="cu-filter-menu" id="exFilterMenu" hidden role="menu">
+            <div class="cu-filter-bar"><div class="cu-filter-clear cu-filter-defaults"><button type="button" data-exclear title="Back to Today with nothing else ticked">Clear all</button></div></div>
+            <div class="cu-filter-group">
+              <div class="cu-filter-h">Due</div>
+              <label class="cu-basis" title="Which date puts a task in the range: its due date, its start date, or both."><span>Dates by</span> <select data-ex-basis aria-label="Dates by"><option value="">due date</option><option value="start">start date</option><option value="both">start and due date</option></select></label>
+              <label title="Tasks due today."><input type="checkbox" data-ex-due="today" /> <span>Today</span></label>
+              <label title="Tasks due any day last week - finished ones too."><input type="checkbox" data-ex-due="prevWeek" /> <span>Previous week</span></label>
+              <label title="Tasks due any day this week (as "A week runs" in ClickUp setup)."><input type="checkbox" data-ex-due="week" /> <span>This week</span></label>
+              <label title="Tasks due any day next week."><input type="checkbox" data-ex-due="nextWeek" /> <span>Next week</span></label>
+              <label title="Tasks due any day last month - finished ones too."><input type="checkbox" data-ex-due="prevMonth" /> <span>Previous month</span></label>
+              <label title="Tasks due any day this month."><input type="checkbox" data-ex-due="month" /> <span>This month</span></label>
+              <label title="Tasks due any day next month."><input type="checkbox" data-ex-due="nextMonth" /> <span>Next month</span></label>
+              <label title="Pick one day (From only) or a range (From and To)."><input type="checkbox" data-ex-due="custom" /> <span>Custom date / range</span></label>
+              <div class="cu-filter-dates" data-ex-dates hidden>
+                <input type="date" data-ex-from aria-label="From date" title="From (or the single day)" />
+                <span>to</span>
+                <input type="date" data-ex-to aria-label="To date (optional)" title="To - leave empty for a single day" />
+              </div>
+              <label title="On: only tasks DUE in these dates, with their full estimates. Off: also multi-day tasks in progress on these dates, with the part of their estimate inside them."><input type="checkbox" data-ex="dueOnly" /> <span>Due in the range only</span></label>
+            </div>
+            <div class="cu-filter-group" data-ex-group="statuses" hidden>
+              <div class="cu-filter-h">Status</div>
+              <div data-ex-list="statuses"></div>
+            </div>
+            <div class="cu-filter-group" data-ex-group="priorities" hidden>
+              <div class="cu-filter-h">Priority</div>
+              <div data-ex-list="priorities"></div>
+            </div>
+            <div class="cu-filter-sep"></div>
+            <div class="cu-filter-group">
+              <div class="cu-filter-h">Refine</div>
+              <label title="Only tasks with no time estimate."><input type="checkbox" data-ex="missingEst" /> <span>Missing estimate</span></label>
+              <label title="Only tasks with no start date."><input type="checkbox" data-ex="missingStart" /> <span>Missing start date</span></label>
+              <label title="Only tasks with no due date."><input type="checkbox" data-ex="missingDue" /> <span>Missing due date</span></label>
+              <label title="Only tasks that aren't completed."><input type="checkbox" data-ex="incomplete" /> <span>Incomplete</span></label>
+              <label title="Only unfinished tasks whose due date has passed."><input type="checkbox" data-ex="overdue" /> <span>Deadline crossed</span></label>
+              <label title="Only tasks whose start and due dates are on different days (multi-day)."><input type="checkbox" data-ex="span" /> <span>Start ≠ due date</span></label>
+            </div>
+          </div>
+        </div>
         <button type="button" class="cu-filter-btn" id="optFltClearBtn" title="Clear the tick boxes, client and department">Clear filters</button>
         <button type="button" class="cu-filter-btn" id="optFltExportBtn" title="Export these tasks (CSV, Excel, Google Sheets/Docs)">&#10515; Export</button>
         <button type="button" class="cu-collapse-btn" data-optcollapse="filter" data-optcolltarget="optFltColl" title="Show / hide">▸ Show</button>
       </div>
       <div class="opt-coll" id="optFltColl">
       <div class="flt-row" style="margin-top:8px;">
-        <div>
-          <label>View</label>
-          <select id="optFltType">
-            <option value="today">Today</option>
-            <option value="week">This week</option>
-            <option value="custom">Custom range</option>
-          </select>
-        </div>
-        <div id="optFltWeekModeWrap">
-          <label>Week mode</label>
-          <select id="optFltWeekMode">
-            <option value="all">Whole week (Mon-Fri)</option>
-            <option value="day">One day</option>
-          </select>
-        </div>
-        <div id="optFltWeekDayWrap" style="display:none;">
-          <label>Day</label>
-          <select id="optFltWeekDay">
-            <option value="1">Monday</option>
-            <option value="2">Tuesday</option>
-            <option value="3">Wednesday</option>
-            <option value="4">Thursday</option>
-            <option value="5">Friday</option>
-            <option value="6">Saturday</option>
-            <option value="0">Sunday</option>
-          </select>
-        </div>
-        <div id="optFltFromWrap" style="display:none;">
-          <label>From</label>
-          <input type="date" id="optFltFrom" />
-        </div>
-        <div id="optFltToWrap" style="display:none;">
-          <label>To</label>
-          <input type="date" id="optFltTo" />
-        </div>
-        <div class="chk" title="On: only tasks whose DUE DATE is inside these dates, with their full estimates. Off: also multi-day tasks that are in progress on these dates (started before, due after), with the part of their estimate that falls inside the range.">
-          <input type="checkbox" id="optFltDueOnly" checked />
-          <label for="optFltDueOnly" style="margin:0;font-weight:600;color:var(--text);font-size:12px;">Due in this range only</label>
-        </div>
-        <div class="chk">
-          <input type="checkbox" id="optFltOnlyMissing" />
-          <label for="optFltOnlyMissing" style="margin:0;font-weight:400;color:var(--text);font-size:12px;">Only missing estimates</label>
-        </div>
-        <div class="chk">
-          <input type="checkbox" id="optFltMissingStart" />
-          <label for="optFltMissingStart" style="margin:0;font-weight:400;color:var(--text);font-size:12px;">Missing start date</label>
-        </div>
-        <div class="chk">
-          <input type="checkbox" id="optFltMissingDue" />
-          <label for="optFltMissingDue" style="margin:0;font-weight:400;color:var(--text);font-size:12px;">Missing due date</label>
-        </div>
-        <div class="chk">
-          <input type="checkbox" id="optFltIncomplete" />
-          <label for="optFltIncomplete" style="margin:0;font-weight:400;color:var(--text);font-size:12px;">Incomplete (not completed)</label>
-        </div>
-        <div class="chk">
-          <input type="checkbox" id="optFltOverdue" />
-          <label for="optFltOverdue" style="margin:0;font-weight:400;color:var(--text);font-size:12px;">Deadline crossed (incomplete)</label>
-        </div>
-        <div class="chk">
-          <input type="checkbox" id="optFltSpan" />
-          <label for="optFltSpan" style="margin:0;font-weight:400;color:var(--text);font-size:12px;">Start ≠ due date (extended)</label>
-        </div>
         <div>
           <label>Client</label>
           <select id="optFltClient">
@@ -1418,6 +1499,15 @@
           <label>People</label>
           <button type="button" id="optFltPeopleBtn" class="flt-people-btn" aria-haspopup="true" aria-expanded="false">Choose people &#9662;</button>
           <div id="optFltPeopleMenu" class="flt-people-menu" hidden></div>
+        </div>
+      </div>
+      <div class="flt-find">
+        <label for="optFindText">Find these tasks <span class="hint">- optional: paste task names, one per line, with or without bullets or headings. Any client, anyone's, open or closed; the choices above narrow it only when set.</span></label>
+        <textarea id="optFindText" rows="4" spellcheck="false" placeholder="Paste task names here, e.g.&#10;Fix conflicting local entity data across address, geo, and areaServed&#10;Improve slow and highly variable TTFB&#10;(leave empty to explore by the choices above)"></textarea>
+        <div class="flt-find-row">
+          <span class="chk" title="Off (default): the dates above are ignored, so a task done months ago is still found. On: only tasks due, started or completed within those dates."><input type="checkbox" id="optFindUseDates" /><label for="optFindUseDates">Only within the dates above</label></span>
+          <span class="hint" id="optFindIndex"></span>
+          <button type="button" class="cu-filter-btn" id="optFindReindex" title="Read every ClickUp task again from the start (only needed if something looks missing)">Rebuild index</button>
         </div>
       </div>
       <div id="optFltResult" class="cu-fltr" style="display:none;"></div>
@@ -1515,6 +1605,7 @@
           <div class="set-line indent"><input type="checkbox" id="cuHalfway" /><label for="cuHalfway">Also at halfway</label></div>
           <div class="set-line indent"><input type="checkbox" id="cuAlmostThere" /><label for="cuAlmostThere">Also when almost there</label></div>
           <div class="set-line" id="cuRunningThresholdRow"><input type="checkbox" id="cuRunningNotify" /><label for="cuRunningNotify">Warn me</label><input type="text" id="cuRunningThreshold" inputmode="numeric" placeholder="10" /><span>minutes before a running task reaches its estimate</span></div>
+          <div class="set-line indent"><span class="grow">Keep reminding me while it's over the estimate, every</span><input type="number" id="cuOverRepeat" min="0" max="120" style="width:64px" /><span>min (0 = once)</span></div>
           <div class="set-line"><input type="checkbox" id="cuIdleNotify" /><label for="cuIdleNotify">Remind me when no timer is running, every</label><input type="text" id="cuIdleRepeat" inputmode="numeric" placeholder="60" /><span>minutes</span></div>
           <div class="set-line" id="cuIdleRow"><span class="grow">Office hours</span><input type="text" id="cuIdleStart" inputmode="numeric" placeholder="8" /><span>to</span><input type="text" id="cuIdleEnd" inputmode="numeric" placeholder="17" /><span>o'clock</span>
             <p class="hint" id="officeHoursNote">All reminders stay quiet outside these hours and at weekends.</p></div>
@@ -2364,6 +2455,7 @@
     <div class="checkbox"><input type="checkbox" id="fxLiquid" /><label for="fxLiquid" style="margin:0;font-weight:400;">Flowing progress bars <span class="hint">- a soft light moves along the Estimated / Tracked bars (a little faster once a target is met)</span></label></div>
     <div class="checkbox"><input type="checkbox" id="fxChart" /><label for="fxChart" style="margin:0;font-weight:400;">Animated week chart <span class="hint">- bars grow in, and a day lifts when you point at it</span></label></div>
     <div class="checkbox"><input type="checkbox" id="fxCount" /><label for="fxCount" style="margin:0;font-weight:400;">Counting numbers <span class="hint">- totals roll up to their new value</span></label></div>
+    <div class="checkbox"><input type="checkbox" id="fxWeather" /><label for="fxWeather" style="margin:0;font-weight:400;">Moving weather <span class="hint">- the Live weather background's snow, rain and clouds move (off = a still picture that still changes with the timer)</span></label></div>
     <div class="checkbox"><input type="checkbox" id="fxIconRing" /><label for="fxIconRing" style="margin:0;font-weight:400;">Progress ring on the toolbar icon <span class="hint">- fills with today's tracked time against your target; green when it's met</span></label></div>
     <div class="btns" style="margin-top:6px;"><button type="button" id="fxAllOff">Turn all animations off</button><span class="saved" id="fxMsg" style="display:none;"></span></div>
   </div>
@@ -2510,7 +2602,7 @@
 
   <div class="card" id="appearanceCard">
     <h2>Appearance</h2>
-    <p class="hint" style="margin:0 0 12px;line-height:1.5;">Light / dark and the ready-made palettes are in the <b>☀</b> button at the top of every page. Here you can make your own palette and put a picture behind the dashboard.</p>
+    <p class="hint" style="margin:0 0 12px;line-height:1.5;">Light / dark and the ready-made palettes are in the <b>☀</b> button at the top of every page. Here you can make your own palette and choose the background: Live weather (it follows your running task), plain, or your own picture or video.</p>
     <h3 style="font-size:13px;margin:0 0 6px;">Your own palette</h3>
     <div class="ap-row"><span class="ap-lab">Light</span>
       <label class="ap-c">Background <input type="color" id="apC_light_bg" /></label>
@@ -2523,12 +2615,20 @@
       <label class="ap-c">Accent <input type="color" id="apC_dark_accent" /></label>
       <button type="button" id="apUse_dark">Use it</button><button type="button" class="ap-lnk" id="apReset_dark">Reset</button></div>
     <p class="hint" style="margin:4px 0 14px;">Text, borders and lines are worked out from these so everything stays readable; an accent that's too light for white button text is darkened just enough.</p>
-    <h3 style="font-size:13px;margin:0 0 6px;">Wallpaper</h3>
+    <h3 style="font-size:13px;margin:0 0 6px;">Background</h3>
+    <div class="ap-scene">
+      <label class="ap-c"><input type="radio" name="apScene" value="weather" /> <span>🌦 <b>Live weather</b> <span class="hint">- follows the running task: snow when it starts, the sun comes out as you near the estimate, perfect weather on it, then clouds, rain and storms past it (and a volcano when it's far past)</span></span></label>
+      <label class="ap-c"><input type="radio" name="apScene" value="plain" /> <span><b>Plain</b> <span class="hint">- just the colours</span></span></label>
+      <label class="ap-c"><input type="radio" name="apScene" value="wall" /> <span>🖼 <b>Your wallpaper</b> <span class="hint">- a picture, a moving GIF or a video (below)</span></span></label>
+    </div>
+    <div class="ap-row" data-scene-weather hidden><span class="ap-lab">Preview</span><button type="button" id="apWxPlay" aria-pressed="false" title="Play the whole cycle: the night, clouds rolling in, snow to sun to storms to the volcano, and back to the night">&#9654; Play</button><input type="range" id="apWxPrev" min="0" max="250" step="5" value="0" title="Drag to see each stage: 0% = just started, 100% = on the estimate, 250% = far past it" /><span class="hint" id="apWxPrevTxt">drag to see every stage</span><button type="button" class="ap-lnk" id="apWxLive">Back to the live timer</button></div>
+    <div class="ap-row" data-scene-weather hidden><span class="ap-lab">Strength</span><span class="hint">softer</span><input type="range" id="apWxStrength" min="0" max="100" step="5" value="70" aria-label="Weather strength" title="Lower it if text is hard to read: the cards get more solid and the weather calmer" /><span class="hint">stronger - lower it if any text is hard to read</span></div>
+    <h3 style="font-size:13px;margin:10px 0 6px;">Wallpaper</h3>
     <div class="ap-row">
       <div class="ap-thumb" id="apWallThumb" hidden></div>
-      <button type="button" id="apWallPick">Choose a picture…</button>
+      <button type="button" id="apWallPick">Choose a picture or video…</button>
       <button type="button" class="ap-lnk" id="apWallRemove" hidden>Remove</button>
-      <input type="file" id="apWallFile" accept="image/*" hidden />
+      <input type="file" id="apWallFile" accept="image/*,video/mp4,video/webm" hidden />
     </div>
     <div data-wall-on hidden>
       <div class="ap-row"><span class="ap-lab">Fit</span>
@@ -2538,7 +2638,7 @@
       <div class="checkbox" style="margin:2px 0 4px;"><input type="checkbox" id="apWallGlass" /><label for="apWallGlass" style="margin:0;font-weight:400;">See-through cards</label></div>
       <div class="checkbox" style="margin:0 0 4px;"><input type="checkbox" id="apWallPopup" /><label for="apWallPopup" style="margin:0;font-weight:400;">Also in the popup and side panel</label></div>
     </div>
-    <p class="hint" style="margin:6px 0 0;">Any picture works, whatever its size or shape: it's shrunk to fit (at most 2560 px wide) and kept only on this computer.</p>
+    <p class="hint" style="margin:6px 0 0;">Any picture works, whatever its size or shape: it's shrunk to fit (at most 2560 px wide). A video (MP4, WebM) or a moving GIF plays muted on a loop (up to 200 MB). Both are kept only on this computer.</p>
     <p class="hint" id="apMsg" style="margin:6px 0 0;"></p>
   </div>
 
@@ -2626,6 +2726,7 @@
 <script src="celebrate.js"></script>
 <script src="pcm-help.js"></script>
 <script src="pcm-search.js"></script>
+<script src="find-many.js"></script>
 <script src="task-sort.js"></script>
 <script src="breakdown.js"></script>
 <script src="calendar.js"></script>
@@ -2638,6 +2739,7 @@
 <script src="task-files.js"></script>
 <script src="reminders.js"></script>
 <script src="hub.js"></script>
+<script src="weather.js"></script>
 <script src="header-ui.js"></script>
 </body>
 </html>
