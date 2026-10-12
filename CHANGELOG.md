@@ -1,5 +1,9 @@
 # Changelog
 
+## v4.2.3
+- The weather background is now called Task weather, and it is no longer the default: the plain background is back for everyone who hadn't picked one (Task weather is animated, so it uses a little more of the computer). Turn it on in the ☀ menu › Background or in General › Appearance.
+- New: Cards - glassy to solid. Over Task weather or a wallpaper, slide it to solid if text is hard to read on the see-through cards (the ☀ menu, or Cards in General › Appearance). Weather strength now only softens the weather behind.
+
 ## v4.2.2
 - Weather strength: if any text is hard to read over the weather, turn it down with the slider in the ☀ menu (under Background) or in General › Appearance - the cards get more solid and the scene calmer.
 - Zooming in (or a narrow window) no longer breaks the layout: rows like Floating tracker › Size and Strip style, the Agent Router times, setup steps and Insights wrap instead of squeezing their text into a thin column, and wide dropdowns and tables stay inside their card.

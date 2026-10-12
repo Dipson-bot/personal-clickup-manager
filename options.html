@@ -2455,7 +2455,7 @@
     <div class="checkbox"><input type="checkbox" id="fxLiquid" /><label for="fxLiquid" style="margin:0;font-weight:400;">Flowing progress bars <span class="hint">- a soft light moves along the Estimated / Tracked bars (a little faster once a target is met)</span></label></div>
     <div class="checkbox"><input type="checkbox" id="fxChart" /><label for="fxChart" style="margin:0;font-weight:400;">Animated week chart <span class="hint">- bars grow in, and a day lifts when you point at it</span></label></div>
     <div class="checkbox"><input type="checkbox" id="fxCount" /><label for="fxCount" style="margin:0;font-weight:400;">Counting numbers <span class="hint">- totals roll up to their new value</span></label></div>
-    <div class="checkbox"><input type="checkbox" id="fxWeather" /><label for="fxWeather" style="margin:0;font-weight:400;">Moving weather <span class="hint">- the Live weather background's snow, rain and clouds move (off = a still picture that still changes with the timer)</span></label></div>
+    <div class="checkbox"><input type="checkbox" id="fxWeather" /><label for="fxWeather" style="margin:0;font-weight:400;">Moving weather <span class="hint">- the Task weather background's snow, rain and clouds move (off = a still picture that still changes with the timer)</span></label></div>
     <div class="checkbox"><input type="checkbox" id="fxIconRing" /><label for="fxIconRing" style="margin:0;font-weight:400;">Progress ring on the toolbar icon <span class="hint">- fills with today's tracked time against your target; green when it's met</span></label></div>
     <div class="btns" style="margin-top:6px;"><button type="button" id="fxAllOff">Turn all animations off</button><span class="saved" id="fxMsg" style="display:none;"></span></div>
   </div>
@@ -2602,7 +2602,7 @@
 
   <div class="card" id="appearanceCard">
     <h2>Appearance</h2>
-    <p class="hint" style="margin:0 0 12px;line-height:1.5;">Light / dark and the ready-made palettes are in the <b>☀</b> button at the top of every page. Here you can make your own palette and choose the background: Live weather (it follows your running task), plain, or your own picture or video.</p>
+    <p class="hint" style="margin:0 0 12px;line-height:1.5;">Light / dark and the ready-made palettes are in the <b>☀</b> button at the top of every page. Here you can make your own palette and choose the background: plain, Task weather (it follows your running task), or your own picture or video - and how solid the cards are over it.</p>
     <h3 style="font-size:13px;margin:0 0 6px;">Your own palette</h3>
     <div class="ap-row"><span class="ap-lab">Light</span>
       <label class="ap-c">Background <input type="color" id="apC_light_bg" /></label>
@@ -2617,12 +2617,13 @@
     <p class="hint" style="margin:4px 0 14px;">Text, borders and lines are worked out from these so everything stays readable; an accent that's too light for white button text is darkened just enough.</p>
     <h3 style="font-size:13px;margin:0 0 6px;">Background</h3>
     <div class="ap-scene">
-      <label class="ap-c"><input type="radio" name="apScene" value="weather" /> <span>🌦 <b>Live weather</b> <span class="hint">- follows the running task: snow when it starts, the sun comes out as you near the estimate, perfect weather on it, then clouds, rain and storms past it (and a volcano when it's far past)</span></span></label>
-      <label class="ap-c"><input type="radio" name="apScene" value="plain" /> <span><b>Plain</b> <span class="hint">- just the colours</span></span></label>
+      <label class="ap-c"><input type="radio" name="apScene" value="weather" /> <span>🌦 <b>Task weather</b> <span class="hint">- follows the running task: snow when it starts, the sun comes out as you near the estimate, perfect weather on it, then clouds, rain and storms past it (and a volcano when it's far past). It's animated, so it uses a little more of the computer.</span></span></label>
+      <label class="ap-c"><input type="radio" name="apScene" value="plain" /> <span><b>Plain</b> <span class="hint">- just the colours (the default)</span></span></label>
       <label class="ap-c"><input type="radio" name="apScene" value="wall" /> <span>🖼 <b>Your wallpaper</b> <span class="hint">- a picture, a moving GIF or a video (below)</span></span></label>
     </div>
     <div class="ap-row" data-scene-weather hidden><span class="ap-lab">Preview</span><button type="button" id="apWxPlay" aria-pressed="false" title="Play the whole cycle: the night, clouds rolling in, snow to sun to storms to the volcano, and back to the night">&#9654; Play</button><input type="range" id="apWxPrev" min="0" max="250" step="5" value="0" title="Drag to see each stage: 0% = just started, 100% = on the estimate, 250% = far past it" /><span class="hint" id="apWxPrevTxt">drag to see every stage</span><button type="button" class="ap-lnk" id="apWxLive">Back to the live timer</button></div>
-    <div class="ap-row" data-scene-weather hidden><span class="ap-lab">Strength</span><span class="hint">softer</span><input type="range" id="apWxStrength" min="0" max="100" step="5" value="70" aria-label="Weather strength" title="Lower it if text is hard to read: the cards get more solid and the weather calmer" /><span class="hint">stronger - lower it if any text is hard to read</span></div>
+    <div class="ap-row" data-scene-weather hidden><span class="ap-lab">Strength</span><span class="hint">softer</span><input type="range" id="apWxStrength" min="0" max="100" step="5" value="70" aria-label="Weather strength" title="How strong the weather behind the cards is" /><span class="hint">stronger</span></div>
+    <div class="ap-row" data-scene-any hidden><span class="ap-lab">Cards</span><span class="hint">glassy</span><input type="range" id="apCardSolid" min="0" max="100" step="10" value="50" aria-label="Cards: glassy to solid" title="How see-through the cards are over the weather or your wallpaper" /><span class="hint">solid - slide right if any text is hard to read</span></div>
     <h3 style="font-size:13px;margin:10px 0 6px;">Wallpaper</h3>
     <div class="ap-row">
       <div class="ap-thumb" id="apWallThumb" hidden></div>

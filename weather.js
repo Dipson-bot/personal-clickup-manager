@@ -1,9 +1,12 @@
-// Live weather background: the running task's timer as the weather. It starts
+// Task weather background: the running task's timer as the weather. It starts
 // with snow, clears up and the sun comes out as the tracked time nears the
 // estimate, is perfect on the estimate, then clouds over, rains, storms and at
 // last the mountain erupts as the task runs further past it. No timer: calm
 // skies. Shared by the popup, side panel and options page; switched on by
-// header-ui.js (Background: Live weather / Plain / Wallpaper - themeScene).
+// header-ui.js (Background: Task weather / Plain / Wallpaper - themeScene). Not
+// the default (it animates, so it uses a little more of the computer): chosen in
+// the ☀ menu or General › Appearance. How see-through the cards are is its own
+// setting there (themeCards, header-ui.js), shared with wallpapers.
 // Light on the computer: one canvas, ~30 frames a second, a capped number of
 // particles, nothing while the page is hidden, a still picture when Windows
 // asks for reduced motion or "Moving weather" is off (settings.fxWeather).
@@ -104,12 +107,11 @@
   // ---------- drawing ----------
   let on = false, cv = null, ctx = null, W = 0, H = 0, raf = 0, last = 0, dirty = true, t0 = performance.now();
   let motion = true;
-  // themeWeather.strength 0-100 (default 70): how strong the background is -
-  // lower = more solid cards and a calmer, veiled scene (easier to read).
+  // themeWeather.strength 0-100 (default 70): how strong the scene is - lower =
+  // a calmer, veiled scene. (The cards' own see-through is themeCards.)
   let strength = 70;
   function applyStrength(v) {
     strength = Math.max(0, Math.min(100, Number.isFinite(Number(v)) ? Number(v) : 70));
-    root.style.setProperty("--pcm-glass", Math.round(97 - strength * .19) + "%");
     dirty = true;
   }
   applyStrength(70);
@@ -359,7 +361,7 @@
     const f = forecast();
     if (f.text === chipText) return;
     chipText = f.text;
-    document.querySelectorAll(".pcm-wx-chip").forEach((el) => { el.textContent = f.text; el.title = "Live weather: the running task's time against its estimate - snow at the start, sun on the estimate, storms past it. Change it with the ☀ button (Background)."; });
+    document.querySelectorAll(".pcm-wx-chip").forEach((el) => { el.textContent = f.text; el.title = "Task weather: the running task's time against its estimate - snow at the start, sun on the estimate, storms past it. Change it with the ☀ button (Background)."; });
   }
   function placeChips() {
     if (document.querySelector(".pcm-wx-chip")) return;

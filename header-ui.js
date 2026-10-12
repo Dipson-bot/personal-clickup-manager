@@ -177,7 +177,7 @@
   .lk-save { font: inherit; font-size: 11.5px; padding: 4px 10px; margin: 0; width: auto; border: 1px dashed var(--border); border-radius: 9px; background: none; color: var(--indigo); cursor: pointer; align-self: center; }
   .ap-looks { margin: 0 0 14px; }
   #pcmWall .wdim { position: absolute; inset: 0; background: var(--bg); opacity: var(--wdim, .35); }
-  html.pcm-wall.pcm-glass .card, html.pcm-wall.pcm-glass .sidenav { background: color-mix(in srgb, var(--card) 84%, transparent) !important; backdrop-filter: blur(10px); }
+  html.pcm-wall.pcm-glass .card, html.pcm-wall.pcm-glass .sidenav { background: color-mix(in srgb, var(--card) var(--pcm-glass, 84%), transparent) !important; backdrop-filter: blur(10px); }
   `;
   document.head.appendChild(pcss);
   const ccss = document.createElement("style"); // your own palettes (rewritten when they change)
@@ -238,13 +238,16 @@
         return '<button type="button" class="sw' + (cur[m] === "custom" && mode === m ? " on" : "") + '" data-m="' + m + '" data-p="custom" title="Your own palette"><i style="--a:' + v.bg + ";--b:" + v.indigo + '"></i>Custom</button>';
       })();
       menu.innerHTML ='<div class="seg"><button type="button" data-mode="light" class="' + (mode === "light" ? "on" : "") + '">☀ Light</button><button type="button" data-mode="dark" class="' + (mode === "dark" ? "on" : "") + '">☾ Dark</button></div>' +
-        "<h4>Background</h4><div class=\"seg seg3\">" + [["weather", "\uD83C\uDF26 Live weather", "Follows the running task: snow at the start, sun on the estimate, storms past it"], ["plain", "Plain", "No background"], ["wall", "\uD83D\uDDBC Wallpaper", "Your own picture or video"]].map(([k, t, tip]) => '<button type="button" data-scene="' + k + '" title="' + tip + '" class="' + (scene === k ? "on" : "") + '">' + t + "</button>").join("") + "</div>" +
-        (scene === "weather" && window.PcmWeather ? '<label class="wxs" title="Lower it if text is hard to read: the cards get more solid and the weather calmer">Softer<input type="range" min="0" max="100" step="5" data-wx-strength value="' + window.PcmWeather.strength + '" aria-label="Weather strength" />Stronger</label>' : "") +
+        "<h4>Background</h4><div class=\"seg seg3\">" + [["weather", "\uD83C\uDF26 Task weather", "Follows the running task: snow at the start, sun on the estimate, storms past it (animated - uses a little more of the computer)"], ["plain", "Plain", "No background"], ["wall", "\uD83D\uDDBC Wallpaper", "Your own picture or video"]].map(([k, t, tip]) => '<button type="button" data-scene="' + k + '" title="' + tip + '" class="' + (scene === k ? "on" : "") + '">' + t + "</button>").join("") + "</div>" +
+        (scene !== "plain" ? '<label class="wxs" title="How see-through the cards are - make them solid if text is hard to read">Cards: glassy<input type="range" min="0" max="100" step="10" data-card-solid value="' + cardSolid + '" aria-label="Cards: glassy to solid" />solid</label>' : "") +
+        (scene === "weather" && window.PcmWeather ? '<label class="wxs" title="How strong the weather behind is - softer is calmer">Weather: softer<input type="range" min="0" max="100" step="5" data-wx-strength value="' + window.PcmWeather.strength + '" aria-label="Weather strength" />stronger</label>' : "") +
         "<h4>Your looks</h4><div class=\"lk-list\">" + defaultTile() + looks.map(lookTile).join("") + '<button type="button" class="lk-save" data-look-save="1" title="Keep the colours, light / dark and the wallpaper you have on now">\uFF0B Save current look\u2026</button></div>' +
         "<h4>Light palettes</h4><div class=\"sws\">" + sws("light") + "</div><h4>Dark palettes</h4><div class=\"sws\">" + sws("dark") + "</div>" +
         '<button type="button" class="thm-more" data-edit="1">🎨 Custom colours &amp; wallpaper…</button>';
       menu.querySelectorAll("[data-edit]").forEach((b) => { b.onclick = () => { closeMenu(); openAppearance(); }; });
       menu.querySelectorAll("[data-mode]").forEach((b) => { b.onclick = async () => { await setMode(b.dataset.mode); paint(); }; });
+      const cs = menu.querySelector("[data-card-solid]");
+      if (cs) cs.oninput = () => { setCards(Number(cs.value)); const a = document.getElementById("apCardSolid"); if (a) a.value = cs.value; };
       const wxs = menu.querySelector("[data-wx-strength]");
       if (wxs) wxs.oninput = () => { window.PcmWeather.setStrength(Number(wxs.value)); const a = document.getElementById("apWxStrength"); if (a) a.value = wxs.value; };
       menu.querySelectorAll("[data-scene]").forEach((b) => { b.onclick = async () => {
@@ -294,12 +297,26 @@
   // long side when it was chosen (so any size or shape of image works, and it
   // stays small), kept separately so moving a slider doesn't rewrite it.
   const WALL_DEF = { fit: "cover", dim: 35, blur: 0, glass: true, popup: true };
-  // Background: "weather" (Live weather, weather.js - the default, also for
-  // everyone updating), "plain", or "wall" (your picture / video). themeScene.
+  // Background: "plain" (the default), "weather" (Task weather, weather.js -
+  // animated, so only when chosen), or "wall" (your picture / video). themeScene.
   const SCENES = ["weather", "plain", "wall"];
-  let scene = "weather";
+  // Cards over a background (Task weather or a wallpaper): themeCards.solid 0-100
+  // - 0 = glassy (70% card colour), 100 = fully solid (best for reading).
+  let cardSolid = 50;
+  function applyCards(v) {
+    cardSolid = Math.max(0, Math.min(100, Number.isFinite(Number(v)) ? Number(v) : 50));
+    root.style.setProperty("--pcm-glass", Math.round(70 + cardSolid * .3) + "%");
+    root.classList.toggle("pcm-solid", cardSolid >= 100);
+  }
+  applyCards(50);
+  try {
+    chrome.storage.local.get("themeCards").then((g) => applyCards(g && g.themeCards && g.themeCards.solid)).catch(() => {});
+    chrome.storage.onChanged.addListener((ch, area) => { if (area === "local" && ch.themeCards) { applyCards(ch.themeCards.newValue && ch.themeCards.newValue.solid); const a = document.getElementById("apCardSolid"); if (a && document.activeElement !== a) a.value = String(cardSolid); } });
+  } catch (e) {}
+  const setCards = (v) => { applyCards(v); try { chrome.storage.local.set({ themeCards: { solid: cardSolid } }); } catch (e) {} };
+  let scene = "plain";
   async function setScene(s) {
-    scene = SCENES.includes(s) ? s : "weather";
+    scene = SCENES.includes(s) ? s : "plain";
     try { await chrome.storage.local.set({ themeScene: scene }); } catch (e) {}
     paintWall(lastWall, lastImg); paintAppearance(lastWall, lastImg);
   }
@@ -367,7 +384,7 @@
   function loadWall() {
     try {
       chrome.storage.local.get(["themeWall", "themeWallImg", "themeScene", "themeWallVideo"]).then((g) => {
-        scene = SCENES.includes(g && g.themeScene) ? g.themeScene : "weather";
+        scene = SCENES.includes(g && g.themeScene) ? g.themeScene : "plain";
         vidMeta = g && g.themeWallVideo && g.themeWallVideo.at ? g.themeWallVideo : null;
         const w = { ...WALL_DEF, ...((g && g.themeWall) || {}) };
         const img = typeof (g && g.themeWallImg) === "string" && /^data:image\//.test(g.themeWallImg) ? g.themeWallImg : "";
@@ -538,6 +555,7 @@
     c.querySelectorAll("[data-wall-on]").forEach((el) => { el.hidden = !any; });
     c.querySelectorAll('input[name="apScene"]').forEach((r) => { r.checked = r.value === scene; });
     c.querySelectorAll("[data-scene-weather]").forEach((el) => { el.hidden = scene !== "weather"; });
+    c.querySelectorAll("[data-scene-any]").forEach((el) => { el.hidden = scene === "plain"; });
   }
   function wireAppearance() {
     const c = document.getElementById("appearanceCard");
@@ -588,7 +606,7 @@
       if (!r.checked) return;
       if (r.value === "wall" && !lastImg && !vidMeta) { say("Choose a picture or a video below first."); $c("apWallFile") && $c("apWallFile").click(); paintAppearance(lastWall, lastImg); return; }
       await setScene(r.value);
-      say(r.value === "weather" ? "Live weather is on - it follows the running task." : r.value === "plain" ? "Plain background." : "Your wallpaper is on.");
+      say(r.value === "weather" ? "Task weather is on - it follows the running task." : r.value === "plain" ? "Plain background." : "Your wallpaper is on.");
     }; });
     // Preview every stage of the weather without a timer (this page only).
     const prev = $c("apWxPrev"), prevTxt = $c("apWxPrevTxt");
@@ -631,6 +649,8 @@
       demoTimer = setInterval(tick, 100);
     };
     if (prev) prev.oninput = () => { if (window.PcmWeather) { pausePlay(); demo = { phase: "ramp", n: 0, at: Number(prev.value) || 0 }; window.PcmWeather.preview(Number(prev.value) / 100); showPrev(); } };
+    const solid = $c("apCardSolid");
+    if (solid) { solid.value = String(cardSolid); solid.oninput = () => setCards(Number(solid.value)); }
     const strg = $c("apWxStrength");
     if (strg && window.PcmWeather) {
       strg.value = String(window.PcmWeather.strength);
@@ -674,9 +694,9 @@
       await chrome.storage.local.remove(["themeWallImg", "themeWallVideo"]).catch(() => {});
       if (vidMeta) { await idbDel("wall").catch(() => {}); vidMeta = null; }
       lastImg = "";
-      if (scene === "wall") { scene = "weather"; await chrome.storage.local.set({ themeScene: "weather" }).catch(() => {}); }
+      if (scene === "wall") { scene = "plain"; await chrome.storage.local.set({ themeScene: "plain" }).catch(() => {}); }
       paintWall(lastWall, ""); paintAppearance(lastWall, "");
-      say("Wallpaper removed - back to Live weather.");
+      say("Wallpaper removed - back to the plain background.");
     };
     if ($c("apWallFit")) $c("apWallFit").onchange = () => setWall({ fit: $c("apWallFit").value });
     if ($c("apWallDim")) $c("apWallDim").oninput = () => setWall({ dim: Number($c("apWallDim").value) });
