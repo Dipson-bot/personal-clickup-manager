@@ -40,6 +40,18 @@
     return wk || all || 1;
   }
   const dailyShare = (estMs, fromMs, toMs) => (estMs > 0 ? estMs / workDays(fromMs, toMs) : 0);
+  // Today's share of a task: what's left of its estimate (beforeMs = tracked before
+  // today) over the working days from TODAY to its due date - due today or late:
+  // all of what's left. Not from its start date: a 1h task started weeks ago and
+  // due today is 1h today, not 3m. 0 = nothing left (it's over: see d.over).
+  function todayShare(estMs, beforeMs, dueMs, now) {
+    if (!(estMs > 0)) return 0;
+    const left = estMs - Math.max(0, Number(beforeMs) || 0);
+    if (left <= 0) return 0;
+    const t0 = new Date(now || Date.now()); t0.setHours(0, 0, 0, 0);
+    if (!dueMs || Number(dueMs) < t0.getTime()) return left;
+    return left / workDays(t0.getTime(), Number(dueMs));
+  }
   const shortDur = (ms) => { const m = Math.round(Math.max(0, ms) / 60000); const h = Math.floor(m / 60); return h ? h + "h" + (m % 60 ? String(m % 60).padStart(2, "0") : "") : m + "m"; };
   function ssRing(pct, color) {
     const r = 9, c = 2 * Math.PI * r, f = Math.max(0, Math.min(100, pct)) / 100;
@@ -59,7 +71,10 @@
   const faceCls = (p, anim) => "face" + (anim === false ? "" : " live " + faceMood(p));
   function stripStyleHtml(style, d) {
     const s = STRIP_STYLES.includes(style) ? style : "B";
-    const an = d.anim === false ? "" : " an";
+    // d.over ("+12m over"): the task is past its estimate - red, said in place of
+    // its time, with a slow pulse so it can't go unnoticed.
+    const an = (d.anim === false ? "" : " an") + (d.over ? " ov" : "");
+    if (d.over) d = { ...d, tt: '<span class="ovt">' + d.over + "</span>", tc: "var(--red)", tp: 100 };
     const tb = '<b style="width:' + d.tp.toFixed(1) + "%;background-color:" + d.tc + '"></b>', dc = d.dc || "var(--green)", db = '<b style="width:' + d.dp.toFixed(1) + "%;background-color:" + dc + '"></b>';
     if (s === "L") return '<div class="ss ssL' + an + '"><div class="c"><span class="lb">Task ' + d.tt + '</span><i class="tr">' + tb + '</i></div><div class="c"><span class="lb day">Today ' + d.dt + '</span><i class="tr">' + db + "</i></div></div>";
     if (s === "F") return '<div class="ss ssF' + an + '"><div class="bars"><i class="tr">' + tb + '</i><i class="tr">' + db + '</i></div><div class="tms"><span>' + d.tt + '</span><span class="day">' + d.dt + "</span></div></div>";
@@ -110,6 +125,11 @@
     @keyframes fcShake { 0%, 60%, 100% { transform: rotate(0); } 10%, 30%, 50% { transform: rotate(-8deg); } 20%, 40% { transform: rotate(8deg); } }
     @keyframes fcBreathe { 0%, 100% { transform: scale(1); } 50% { transform: scale(1.05); } }
     @keyframes fcBlink { 0%, 92%, 100% { transform: scaleY(1); } 95% { transform: scaleY(.1); } }
+    .ss.ov { border-radius: 6px; animation: ssOver 1.8s ease-in-out infinite; }
+    .ss.ov .ovt { color: var(--red); font-weight: 800; }
+    .ssB.ov .cell:first-child { border-color: var(--red); }
+    @keyframes ssOver { 0%, 100% { box-shadow: 0 0 0 0 rgba(220,38,38,0); } 50% { box-shadow: 0 0 0 3px rgba(220,38,38,.6); } }
+    @media (prefers-reduced-motion: reduce) { .ss.ov { animation: none; box-shadow: 0 0 0 2px rgba(220,38,38,.6); } }
     @media (prefers-reduced-motion: reduce) { .ss.an *, .ss.an *::before, .ss.an *::after, .face.live svg, .face.live svg * { animation: none !important; } }
   `;
 
@@ -150,7 +170,8 @@
     const todayTask = (t ? t.closedMs : 0) + (run ? Math.max(0, Date.now() - Math.max(run.startMs, dayStart.getTime())) : 0);
     const tracked = t && t.totalClosedMs != null ? t.totalClosedMs + live : (t ? t.closedMs : 0) + live;
     const est = t ? t.estimateMs : 0;
-    const share = dailyShare(est, t && t.startDateMs, t && t.dueDateMs);
+    // Tracked before today = every closed entry minus today's closed ones.
+    const share = todayShare(est, t && t.totalClosedMs != null ? Math.max(0, t.totalClosedMs - (t.closedMs || 0)) : 0, t && t.dueDateMs);
     const dp = share ? todayTask / share : null;
     const p = est > 0 ? tracked / est : null;
     const over = p != null && tracked - est >= 60000;
@@ -290,7 +311,8 @@
     if (ss) {
       // Task cell: this task today / its share for a day (7h over a week = 1h24).
       const html = stripStyleHtml(settings.style || "B", { tp: n.dp == null ? 100 : Math.min(100, n.dp * 100), tc: ssColor(n.dp), dc: n.target ? ssColor(n.todayMs / n.target, true) : "", tt: n.share ? shortDur(n.todayTask) + "/" + shortDur(n.share) : shortDur(n.todayTask),
-        dp: n.target ? Math.min(100, (n.todayMs / n.target) * 100) : 0, dt: n.target ? shortDur(n.todayMs) + "/" + shortDur(n.target) : shortDur(n.todayMs), anim: settings.anim !== false });
+        dp: n.target ? Math.min(100, (n.todayMs / n.target) * 100) : 0, dt: n.target ? shortDur(n.todayMs) + "/" + shortDur(n.target) : shortDur(n.todayMs), anim: settings.anim !== false,
+        over: n.over ? "+" + shortDur(n.tracked - n.est) + " over" : "" });
       if (ss._html !== html) { ss._html = html; ss.innerHTML = html; ssPhase(ss); }
     }
     const bar = $("bar"); if (bar) { bar.style.width = n.width.toFixed(1) + "%"; bar.style.background = n.color; bar.style.opacity = n.p == null ? ".35" : ""; }
@@ -421,7 +443,14 @@
   }
   // The strip's height is learned again when the window changes size on its own
   // (strip size setting, taskbar height, DPI) - never in the middle of the card.
-  window.addEventListener("resize", () => { if (!peek.on && !peekBusy) peek.h = 0; });
+  window.addEventListener("resize", () => { if (!peek.on && !peekBusy) { peek.h = 0; learnRoom(); } });
+  // A window that keeps the card's room (the strip): the strip has its own height
+  // at the taskbar side from the start, and the room stays see-through.
+  async function learnRoom() {
+    if (!stripMode() || big) return;
+    const p = await T.peek("plan", 0).catch(() => null);
+    if (p && p.room && !peek.on) { peek = { on: false, dir: p.dir, h: p.stripH, busy: false }; render(true); }
+  }
   // How tall the hover card's content is, measured off-screen at the strip's width.
   function peekNeed() {
     const m = document.createElement("div");
@@ -456,6 +485,7 @@
           await new Promise((r) => requestAnimationFrame(() => r()));
           await T.peek(false);
         }
+        // (With the card's room there is no growing or shrinking: these just tell the app.)
       }
     } finally { peekBusy = false; }
   }
@@ -476,6 +506,7 @@
     await T.expand(on);
     if (on) { T.comments(true); if (st.running) T.seen(st.running.taskId); }
     render(true);
+    if (!on) learnRoom(); // back to the strip with its room
     if (on) setTimeout(() => { const c = $("cmt"); if (c) c.focus(); }, 60);
   }
   function extraPanel() {
@@ -500,12 +531,13 @@
   // ---------- data ----------
   T.on("state", (s) => { st = s; if (key !== "extra") render(); });
   T.on("comments", (c) => { comments = c; patch(); if (big) paintComments(); });
-  T.on("settings", (s) => { settings = s; render(true); });
+  T.on("settings", (s) => { settings = s; render(true); learnRoom(); });
   T.on("big", (on) => { setBig(!!on); });
   (async () => {
     settings = (await T.settings()) || settings;
     st = await T.state();
     render(true);
+    learnRoom();
     T.comments(true);
   })();
   setInterval(() => { if (key !== "extra") patch(); }, 1000);

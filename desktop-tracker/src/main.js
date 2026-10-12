@@ -80,6 +80,51 @@ function dockBounds() {
   const x = Math.round(Math.max(tb.x, Math.min(tb.x + tb.width - w, tb.x + off)));
   return { x, y: tb.y + Math.round((tb.height - h) / 2), width: w, height: h };
 }
+// ---------- the hover card's room ----------
+// Growing the window when the pointer came onto the strip (and shrinking it when
+// it left) flickered on Windows: a see-through window that moves and resizes at
+// once paints a frame or two of the old picture. Now the strip's window keeps
+// the card's room above it (below it at the top of the screen) all the time:
+// that part is see-through and lets every click through to what's underneath,
+// and hovering only shows or hides the card inside. Nothing moves, so nothing
+// can flicker. Only the strip (on the taskbar, or the Slim size); the other sizes
+// and the bigger view are ordinary windows.
+const CARD_ROOM = 264; // the tallest hover card (peekH) + the gap
+let room = null; // { dir: "up" | "down", h } while the window holds the card's room
+let cardH = 0, solid = null;
+const stripTall = () => !!cu && !expanded && (docked() || settings.size === "slim");
+// The strip's own place, from the window's.
+function baseOf(full) {
+  if (!room) return full;
+  return { x: full.x, y: room.dir === "up" ? full.y + room.h : full.y, width: full.width, height: full.height - room.h };
+}
+function withRoom(base) {
+  const disp = screen.getDisplayMatching(base);
+  const dir = base.y - CARD_ROOM >= disp.bounds.y ? "up" : "down";
+  room = { dir, h: CARD_ROOM };
+  return { x: base.x, y: dir === "up" ? base.y - CARD_ROOM : base.y, width: base.width, height: base.height + CARD_ROOM };
+}
+// Put the window at a strip place: with the card's room when it's the strip.
+function placeStrip(base) {
+  if (!win || win.isDestroyed()) return;
+  if (stripTall()) {
+    const want = withRoom(base), cur = win.getBounds();
+    if (cur.x !== want.x || cur.y !== want.y || cur.width !== want.width || cur.height !== want.height) win.setBounds(want);
+    setSolid(false);
+  } else {
+    room = null;
+    const cur = win.getBounds();
+    if (cur.x !== base.x || cur.y !== base.y || cur.width !== base.width || cur.height !== base.height) win.setBounds(base);
+    setSolid(true);
+  }
+}
+// Clicks: caught only where something is drawn (the strip, the open card).
+function setSolid(on) {
+  if (!win || win.isDestroyed() || solid === on) return;
+  solid = on;
+  if (on) win.setIgnoreMouseEvents(false);
+  else win.setIgnoreMouseEvents(true, { forward: true });
+}
 function keepOnTop() {
   if (!win || win.isDestroyed() || !win.isVisible() || !docked()) return;
   win.setAlwaysOnTop(true, "screen-saver");
@@ -96,14 +141,16 @@ function createWindow() {
   const [w, h] = cu ? smallSize() : SETUP;
   const wa = screen.getPrimaryDisplay().workArea;
   const dock = docked();
-  const b = dock ? dockBounds() : settings.bounds && cu ? settings.bounds : { x: wa.x + wa.width - w - 16, y: wa.y + wa.height - h - 16, width: w, height: h };
+  const b0 = dock ? dockBounds() : settings.bounds && cu ? settings.bounds : { x: wa.x + wa.width - w - 16, y: wa.y + wa.height - h - 16, width: w, height: h };
+  room = null; solid = null; cardH = 0;
+  const b = stripTall() ? withRoom({ ...b0, width: dock ? b0.width : w, height: dock ? b0.height : h }) : b0;
   win = new BrowserWindow({
-    x: b.x, y: b.y, width: dock ? b.width : cu ? w : SETUP[0], height: dock ? b.height : cu ? h : SETUP[1],
+    x: b.x, y: b.y, width: room ? b.width : dock ? b.width : cu ? w : SETUP[0], height: room ? b.height : dock ? b.height : cu ? h : SETUP[1],
     frame: false, transparent: true, resizable: false, maximizable: false, fullscreenable: false,
     // On the taskbar the strip is only ~42 px tall: without a thick frame Windows
     // does not hold it to its minimum window height (which made it 64 px).
     thickFrame: !dock, minHeight: dock ? 20 : undefined,
-    alwaysOnTop: true, skipTaskbar: true, show: false, hasShadow: true,
+    alwaysOnTop: true, skipTaskbar: true, show: false, hasShadow: !room, // a shadow on a see-through window flashes when it changes
     title: "ClickUp Tracker", backgroundColor: "#00000000",
     webPreferences: { preload: path.join(__dirname, "preload.js"), contextIsolation: true, nodeIntegration: false, sandbox: true },
   });
@@ -112,18 +159,18 @@ function createWindow() {
   win.setOpacity(dock ? 1 : Number(settings.opacity) || 1);
   win.loadFile(path.join(__dirname, "index.html"));
   win.once("ready-to-show", () => { if (!settings.hiddenByExt) win.showInactive(); });
+  setSolid(!room);
   // Remember where it is (only the small window's place).
   const remember = () => {
     if (!win || expanded || !cu || peekBase) return; // not while the hover card has it grown
     if (docked()) {
       // Slide along the taskbar only: keep the new left/right place, snap back into the band.
-      const tb = taskbarOf(screen.getPrimaryDisplay()), nb = win.getBounds();
+      const tb = taskbarOf(screen.getPrimaryDisplay()), nb = baseOf(win.getBounds());
       settings.dockX = nb.x - tb.x; saveSettings();
-      const d = dockBounds();
-      if (nb.x !== d.x || nb.y !== d.y || nb.height !== d.height) win.setBounds(d);
+      placeStrip(dockBounds());
       return;
     }
-    settings.bounds = win.getBounds(); saveSettings();
+    settings.bounds = baseOf(win.getBounds()); saveSettings();
   };
   win.on("moved", remember);
   if (process.env.PCM_DEMO) { const log = (w) => console.log("[demo] " + w + " " + JSON.stringify(win && win.getBounds())); win.on("move", () => log("move")); win.on("resize", () => log("resize")); log("created dock=" + dock); }
@@ -137,7 +184,8 @@ function setExpanded(on) {
   if (process.env.PCM_DEMO) console.log("[demo] setExpanded " + on);
   if (!win || !cu || on === expanded) return;
   if (on) {
-    beforeBig = win.getBounds();
+    beforeBig = baseOf(win.getBounds());
+    room = null; setSolid(true);
     const wa = screen.getDisplayMatching(beforeBig).workArea;
     const w = Math.min(BIG[0], wa.width), h = Math.min(BIG[1], wa.height);
     const x = Math.max(wa.x, Math.min(beforeBig.x, wa.x + wa.width - w));
@@ -147,7 +195,7 @@ function setExpanded(on) {
     win.setOpacity(1);
   } else {
     expanded = false;
-    if (beforeBig) win.setBounds(docked() ? dockBounds() : beforeBig);
+    if (beforeBig) placeStrip(docked() ? dockBounds() : beforeBig);
     win.setOpacity(docked() ? 1 : Number(settings.opacity) || 1);
   }
 }
@@ -249,9 +297,10 @@ function setOpacity(v) { settings.opacity = v; saveSettings(); if (win && !expan
 function setSize(s) {
   settings.size = s; saveSettings();
   if (win && !expanded) {
-    const b = win.getBounds(); const [w, h] = smallSize();
-    win.setBounds({ x: b.x + b.width - w, y: b.y + b.height - h, width: w, height: h });
-    settings.bounds = win.getBounds(); saveSettings();
+    const b = baseOf(win.getBounds()); const [w, h] = smallSize();
+    const nb = { x: b.x + b.width - w, y: b.y + b.height - h, width: w, height: h };
+    placeStrip(nb);
+    settings.bounds = nb; saveSettings();
   }
   send("settings", publicSettings());
   buildTray();
@@ -486,6 +535,15 @@ const peekH = (need) => Math.max(56, Math.min(260, Math.round(Number(need) || PE
 let peekBase = null, peekDir = "up", peekOn = false, peekClear = 0;
 function peek(on, need) {
   if (!win || win.isDestroyed()) return null;
+  if (room && !expanded) {
+    // The card's room is already there: only say where, and remember how tall
+    // the card is (the pointer counts as on it there).
+    const stripH = baseOf(win.getBounds()).height;
+    if (on === "plan") return { dir: room.dir, stripH, room: true };
+    if (on) { peekOn = true; cardH = peekH(need); return { dir: room.dir, stripH, room: true }; }
+    peekOn = false; cardH = 0;
+    return null;
+  }
   if (on === "plan") {
     // Which way it will open, without growing yet.
     if (expanded) return null;
@@ -521,15 +579,25 @@ let pointerIn = false;
 // second, never while it's grown, being dragged or in the bigger view).
 let dockTick = 0;
 function keepDocked() {
-  if (!win || win.isDestroyed() || !win.isVisible() || expanded || peekOn || peekBase || !docked()) return;
-  const d = dockBounds(), b = win.getBounds();
+  if (!win || win.isDestroyed() || !win.isVisible() || expanded || peekBase || !docked()) return;
+  if (!room && peekOn) return;
+  const d = dockBounds();
+  if (room) { const want = withRoom(d), b = win.getBounds(); if (b.x !== want.x || b.y !== want.y || b.width !== want.width || b.height !== want.height) win.setBounds(want); return; }
+  const b = win.getBounds();
   if (b.x !== d.x || b.y !== d.y || b.width !== d.width || b.height !== d.height) win.setBounds(d);
 }
 function watchPointer() {
   if (!win || win.isDestroyed() || !win.isVisible()) return;
-  if (++dockTick % 5 === 0 && !pointerIn) keepDocked();
-  const p = screen.getCursorScreenPoint(), b = win.getBounds();
-  const inside = p.x >= b.x && p.x < b.x + b.width && p.y >= b.y && p.y < b.y + b.height;
+  if (++dockTick % 15 === 0 && !pointerIn) keepDocked();
+  const p = screen.getCursorScreenPoint(), full = win.getBounds();
+  const hit = (r) => p.x >= r.x && p.x < r.x + r.width && p.y >= r.y && p.y < r.y + r.height;
+  let inside;
+  if (room && !expanded) {
+    const s = baseOf(full);
+    const c = peekOn && cardH ? { x: s.x, y: room.dir === "up" ? s.y - cardH : s.y + s.height, width: s.width, height: cardH } : null;
+    inside = hit(s) || (!!c && hit(c));
+    setSolid(inside);
+  } else inside = hit(full);
   if (inside === pointerIn) return;
   pointerIn = inside;
   if (!expanded) win.setOpacity(inside ? 1 : Number(settings.opacity) || 1);
@@ -617,10 +685,10 @@ app.whenReady().then(async () => {
   createWindow();
   buildTray();
   refresh();
-  setInterval(watchPointer, 200);
+  setInterval(watchPointer, 70); // quick enough that a click on the strip is never let through
   setInterval(keepOnTop, 1500);                      // back above the taskbar if Windows covered it
   setInterval(paintTrayText, 15000);                 // menu-bar time / tooltip
-  screen.on("display-metrics-changed", () => { if (win && docked() && !expanded && !peekBase) win.setBounds(dockBounds()); });
+  screen.on("display-metrics-changed", () => { if (win && docked() && !expanded && !peekBase) placeStrip(dockBounds()); });
   setInterval(() => refresh(), 60000);       // the timer, today's time, next tasks
   setInterval(() => checkComments(false), 30000); // each task at most every 3 minutes
   checkUpdate();
