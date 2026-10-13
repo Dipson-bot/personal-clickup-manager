@@ -1,7 +1,7 @@
 {
   "name": "clickup-tracker",
   "productName": "ClickUp Tracker",
-  "version": "0.3.8",
+  "version": "0.3.9",
   "description": "Always-on-top ClickUp timer companion for Personal ClickUp Manager",
   "main": "src/main.js",
   "author": "Dipson-bot",
@@ -53,12 +53,14 @@
       ],
       "icon": "build/icon.png",
       "category": "public.app-category.productivity",
-      "artifactName": "ClickUp-Tracker-${arch}.${ext}"
+      "artifactName": "ClickUp-Tracker-${arch}.${ext}",
+      "identity": null
     },
     "linux": {
       "target": "AppImage",
       "icon": "build/icon.png",
       "category": "Utility"
-    }
+    },
+    "afterPack": "scripts/adhoc-sign.js"
   }
 }

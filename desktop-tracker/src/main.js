@@ -10,6 +10,7 @@ const http = require("http");
 const fs = require("fs");
 const { ClickUp } = require("./clickup");
 const clientdirs = require("./clientdirs");
+const extupdate = require("./extupdate");
 
 if (!app.requestSingleInstanceLock()) { app.quit(); }
 
@@ -137,6 +138,11 @@ function setDock(on) {
   send("settings", publicSettings());
 }
 
+// A Mac has no taskbar: the time lives in the menu bar, and the floating strip
+// (which on Windows sits on the taskbar) would just hang at the bottom of the
+// screen. So on a Mac the strip is off unless chosen in the menu-bar menu.
+const isMac = process.platform === "darwin";
+function stripWanted() { return !settings.hiddenByExt && (!isMac || settings.macStrip === true); }
 function createWindow() {
   const [w, h] = cu ? smallSize() : SETUP;
   const wa = screen.getPrimaryDisplay().workArea;
@@ -158,7 +164,7 @@ function createWindow() {
   win.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
   win.setOpacity(dock ? 1 : Number(settings.opacity) || 1);
   win.loadFile(path.join(__dirname, "index.html"));
-  win.once("ready-to-show", () => { if (!settings.hiddenByExt) win.showInactive(); });
+  win.once("ready-to-show", () => { if (stripWanted()) win.showInactive(); });
   setSolid(!room);
   // Remember where it is (only the small window's place).
   const remember = () => {
@@ -267,7 +273,9 @@ function buildTray() {
   const login = app.getLoginItemSettings();
   tray.setContextMenu(Menu.buildFromTemplate([
     ...(cu ? [...actionItems(), { type: "separator" }] : []),
-    { label: win && win.isVisible() ? "Hide tracker" : "Show tracker", click: toggleWindow },
+    isMac
+      ? { label: "Also show the floating strip", type: "checkbox", checked: !!(win && win.isVisible()), toolTip: "The timer is in the menu bar; this adds the small floating window too", click: toggleWindow }
+      : { label: win && win.isVisible() ? "Hide tracker" : "Show tracker", click: toggleWindow },
     ...(process.platform === "win32" ? [{ label: "On the taskbar", type: "checkbox", checked: settings.dock !== false, enabled: canDock(), toolTip: canDock() ? "" : "Needs the taskbar at the top or bottom of the screen, not auto-hidden", click: (m) => setDock(m.checked) }] : []),
     ...(process.platform === "darwin" ? [{ label: "Show the time in the menu bar", type: "checkbox", checked: settings.menubar !== false, click: (m) => { settings.menubar = m.checked; saveSettings(); paintTrayText(); } }] : []),
     { label: "Refresh now", click: () => refresh(true) },
@@ -290,7 +298,9 @@ function toggleWindow() {
   if (!win) { createWindow(); return; }
   if (win.isVisible()) win.hide(); else { win.showInactive(); }
   // Shown / hidden by hand: remembered (the extension's next change still applies).
-  settings.hiddenByExt = !win.isVisible(); saveSettings();
+  settings.hiddenByExt = !win.isVisible();
+  if (isMac) settings.macStrip = win.isVisible();
+  saveSettings();
   buildTray();
 }
 function setOpacity(v) { settings.opacity = v; saveSettings(); if (win && !expanded) win.setOpacity(v); buildTray(); }
@@ -399,6 +409,19 @@ function startLink() {
       });
       return;
     }
+    // /pcm/update: install a new version of the extension into its own folder
+    // (no browser permission or click needed) - see extupdate.js for the checks.
+    if (req.method === "POST" && req.url === "/pcm/update" && fromExt) {
+      let body = "";
+      req.on("data", (c) => { body += c; if (body.length > 4000) req.destroy(); });
+      req.on("end", async () => {
+        let out;
+        try { out = await extupdate.handle(origin, JSON.parse(body || "{}")); } catch (e) { out = { ok: false, error: String((e && e.message) || e) }; }
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.end(JSON.stringify(out));
+      });
+      return;
+    }
     if (req.method !== "POST" || req.url !== "/pcm" || !fromExt) { res.writeHead(404); res.end(); return; }
     let body = "";
     req.on("data", (c) => { body += c; if (body.length > 20000) req.destroy(); });
@@ -407,7 +430,7 @@ function startLink() {
       try { m = JSON.parse(body); } catch (e) {}
       try { await fromExtension(m); } catch (e) {}
       res.writeHead(200, { "Content-Type": "application/json" });
-      res.end(JSON.stringify({ app: "clickup-tracker", version: app.getVersion(), signedIn: !!cu, user: (cu && cu.username) || "", shown: !!(win && !win.isDestroyed() && win.isVisible()), platform: process.platform, folders: true, folderFiles: true }));
+      res.end(JSON.stringify({ app: "clickup-tracker", version: app.getVersion(), signedIn: !!cu, user: (cu && cu.username) || "", shown: isMac ? !settings.hiddenByExt : !!(win && !win.isDestroyed() && win.isVisible()), platform: process.platform, folders: true, folderFiles: true, extUpdate: true }));
     });
   });
   srv.on("error", () => {}); // port in use (another copy): no link, the app still works
@@ -481,7 +504,7 @@ async function fromExtension(m) {
   if (typeof m.show === "boolean" && m.show !== extShow) {
     extShow = m.show;
     settings.hiddenByExt = !m.show; saveSettings();
-    if (win) { if (m.show) win.showInactive(); else win.hide(); }
+    if (win) { if (m.show && stripWanted()) win.showInactive(); else win.hide(); }
     buildTray();
   }
   if (m.token && !cu && !linking) {
@@ -700,7 +723,7 @@ app.whenReady().then(async () => {
   setInterval(checkUpdate, 6 * 3600000);
   nativeTheme.on("updated", () => send("settings", publicSettings()));
 });
-app.on("second-instance", () => { if (win) { win.show(); settings.hiddenByExt = false; saveSettings(); buildTray(); } });
+app.on("second-instance", () => { if (win) { win.show(); settings.hiddenByExt = false; if (isMac) settings.macStrip = true; saveSettings(); buildTray(); } });
 
 // PCM_DEMO=1: made-up data so the window and the taskbar strip can be looked at
 // without a ClickUp token. Never used in normal running.
