@@ -27,7 +27,7 @@ import {
   linkifySheet,
 } from "./lib-drive.js";
 import { runAllAccounts, runAccountLogin, readAgentRouterLogin, URLS, GITHUB_KEEP_COOKIES } from "./lib-automation.js";
-import { getTaskCommentsLite, getTaskTimeEntries, deleteTimeEntry, getUserGroups, getUser, verifyToken, getTeams, fetchTodayEstimate, fetchWeeklySummary, fetchDateRangeEstimate, createTaskCache, fetchTeamMembers, fetchWorkspaceTags, cuTagNames, fmtDuration, findExtraTaskByName, parseTaskIdFromUrl, getCurrentTimeEntry, getRunningTaskProgress, startTimer, stopTimer, getTaskById, setTaskStatus, setTaskDates, taskUrlFor, clientLabelFromContainer, resolveSpaceNamesFor, taskContainer, cuPriorityName, isTaskDone, getSubtasksOfParent, getTaskTree, getTaskDetail, updateTimeEntry, setTaskDueDate, clearTaskTreeCache, listWorkspaceClients, cuRowAssignees, fetchDoneBetween, fetchDoneLite, fetchTrackedHistory, getTaskPanel, addTaskComment, postTaskComment, setTaskDescription, getTaskCommentLinks, createTask, removeTaskAssignee, postAssignedComment, addTimeEntry, weeklyWithToday, listClientFieldOptions, listReachableClients, bgToken, patientToken, cuRawFetch, getRelatedTasks, slimIndexTask, fetchTeamTasksPage, listAllLists } from "./lib-clickup.js";
+import { getTaskCommentsLite, getTaskTimeEntries, deleteTimeEntry, getUserGroups, getUser, verifyToken, getTeams, fetchTodayEstimate, fetchWeeklySummary, fetchDateRangeEstimate, createTaskCache, fetchTeamMembers, fetchWorkspaceTags, cuTagNames, fmtDuration, findExtraTaskByName, parseTaskIdFromUrl, getCurrentTimeEntry, getRunningTaskProgress, startTimer, stopTimer, getTaskById, setTaskStatus, setTaskDates, taskUrlFor, clientLabelFromContainer, resolveSpaceNamesFor, taskContainer, cuPriorityName, isTaskDone, getSubtasksOfParent, getTaskTree, getTaskDetail, updateTimeEntry, setTaskDueDate, clearTaskTreeCache, listWorkspaceClients, cuRowAssignees, fetchDoneBetween, fetchDoneLite, fetchTrackedHistory, getTaskPanel, addTaskComment, postTaskComment, setTaskDescription, getTaskCommentLinks, createTask, removeTaskAssignee, postAssignedComment, addTimeEntry, weeklyWithToday, listClientFieldOptions, listReachableClients, bgToken, patientToken, cuRawFetch, getRelatedTasks, slimIndexTask, fetchTeamTasksPage, listAllLists, setPausedClients } from "./lib-clickup.js";
 import { resolveRelayKey, pickProbeModel, probeRelay } from "./lib-availability.js";
 import { tidyCollect, tidyLines, tidyResolved, tidyDayOk, tidyUrgent, tidyDateShort } from "./lib-tidy.js";
 
@@ -761,6 +761,7 @@ async function buildDiagReport(pageInfo) {
   L.push("  latest known: " + ((updateInfo && updateInfo.latest) || "?") + " · settings file checked " + when(updatePolicy && updatePolicy.at));
   L.push("  install automatically: " + (settings.autoUpdate === false ? "off" : "on"));
   if (autoUpdateState) L.push("  last automatic install: " + (autoUpdateState.reason || "ok") + " · tries failed " + (autoUpdateState.fails || 0) + " · " + when(autoUpdateState.lastTry));
+  try { const fx = await chrome.storage.local.get(["autoUpdateClickOnly", "autoUpdateViaTab"]); L.push("  waiting for a click: " + (fx.autoUpdateClickOnly ? "yes" + (fx.autoUpdateClickOnly.version ? " (v" + fx.autoUpdateClickOnly.version + ")" : " (old, for every version)") : "no") + " · last update tab: " + (fx.autoUpdateViaTab ? (fx.autoUpdateViaTab.reason || "ok") + (fx.autoUpdateViaTab.version ? " (v" + fx.autoUpdateViaTab.version + ")" : "") + " · " + when(fx.autoUpdateViaTab.at) : "never")); } catch (e) {}
   const sm = await getSiteMonitorConfig().catch(() => ({ sites: [] }));
   const down = siteMonitorState && typeof siteMonitorState === "object" ? Object.values(siteMonitorState).filter((s) => s && s.down).length : 0;
   add("Site monitor", (sm.enabled ? "on" : "off") + " · " + (Array.isArray(sm.sites) ? sm.sites.length : 0) + " sites · " + down + " down");
@@ -936,13 +937,16 @@ async function checkOneSite(url, timeoutMs = SITE_MONITOR_CHECK_TIMEOUT_MS, plai
 // The readable version of the check (one GET, same as the plain one). Returns
 // null when the page couldn't be read (so the caller falls back), never a false
 // "down" for a read problem; a real outage (no reply / timeout) is still down.
-async function readOneSite(url, timeoutMs) {
+async function readOneSite(url, timeoutMs, confirming = false) {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   const t0 = Date.now();
   let res;
   try {
-    res = await fetch(url, { method: "GET", cache: "no-store", credentials: "omit", redirect: "follow", signal: controller.signal });
+    // The confirming read asks the way a browser does (for an HTML page, past any cache).
+    res = await fetch(url, confirming
+      ? { method: "GET", cache: "reload", credentials: "omit", redirect: "follow", signal: controller.signal, headers: { Accept: "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8" } }
+      : { method: "GET", cache: "no-store", credentials: "omit", redirect: "follow", signal: controller.signal });
   } catch (e) {
     clearTimeout(timer);
     if (e && e.name === "AbortError") return { ok: false, status: 0, error: "No reply within " + Math.round(timeoutMs / 1000) + "s" };
@@ -962,7 +966,23 @@ async function readOneSite(url, timeoutMs) {
     if (res.status >= 500) return { ok: false, status: res.status, ms, read: true, error: "HTTP " + res.status + ((blankPageReason(html) && " - " + blankPageReason(html)) || "") };
     if (res.status >= 400) return { ok: true, status: res.status, ms, read: true }; // as before: only 5xx counts as down
     const why = blankPageReason(html);
-    if (why) return { ok: false, blank: true, status: res.status, ms, read: true, error: "Page is broken: " + why + " (HTTP " + res.status + ")" };
+    if (why) {
+      // The server said it was sending a page, but nothing arrived: a reading
+      // hiccup on this computer, not a blank site.
+      const said = Number(res.headers.get("content-length")) || 0;
+      if (!html.length && said > 0) return null;
+      // A blank / error page is only believed when a second read a few seconds
+      // later (asked the way a browser asks) shows it too: a firewall or cache
+      // answering one automated request with an empty "200 OK" is common, and
+      // the site is fine for everyone else (a false "site blank" alert).
+      if (!confirming) {
+        await sleepMs(4000);
+        const again = await readOneSite(url, timeoutMs, true);
+        if (!again || again.ok) return again ? { ...again, ms } : null;
+        return again;
+      }
+      return { ok: false, blank: true, status: res.status, ms, read: true, error: "Page is broken: " + why + " (HTTP " + res.status + ")" };
+    }
     return { ok: true, status: res.status, ms, read: true };
   } catch (e) {
     clearTimeout(timer);
@@ -1083,7 +1103,19 @@ async function checkSites(opts = {}) {
   const now = Date.now();
   const state = (await chrome.storage.local.get("siteMonitorState"))["siteMonitorState"] || {};
   const siteSnooze = (await chrome.storage.local.get("siteSnooze")).siteSnooze || {};
-  const sites = cfg.sites.filter((s) => s && s.url && (!opts.url || s.url === opts.url));
+  // A paused client's site isn't checked at all (no alerts, no requests): marked
+  // so Site monitor can say so, and checked again once the client is resumed.
+  for (const s of cfg.sites) {
+    if (!s || !s.url) continue;
+    const p = isPausedSite(s);
+    if (p) state[s.url] = { ...(state[s.url] || { up: null, fails: 0, lastCheck: 0 }), paused: true };
+    else if (state[s.url] && state[s.url].paused) { const { paused, ...rest } = state[s.url]; state[s.url] = rest; }
+  }
+  // A site switched off in Site monitor (its Monitor tick) isn't checked either.
+  const siteOff = (await chrome.storage.local.get("siteOff")).siteOff || {};
+  for (const s of cfg.sites) if (s && s.url && siteOff[s.url]) state[s.url] = { ...(state[s.url] || { up: null, fails: 0, lastCheck: 0 }), off: true };
+  for (const s of cfg.sites) if (s && s.url && !siteOff[s.url] && state[s.url] && state[s.url].off) { const { off, ...rest } = state[s.url]; state[s.url] = rest; }
+  const sites = cfg.sites.filter((s) => s && s.url && (!opts.url || s.url === opts.url) && !isPausedSite(s) && !siteOff[s.url]);
   // 1) One check per site (30s timeout), a few sites at a time.
   const results = new Map();
   const first = await mapLimit(sites, SITE_MONITOR_PARALLEL, (s) => checkOneSite(s.url));
@@ -4607,6 +4639,65 @@ async function loadCompanyCal() {
 loadCompanyCal().catch(() => {});
 chrome.storage.onChanged.addListener((ch, area) => { if (area === "local" && ch.companyCalendar) companyCal = normalizeCompanyCal(ch.companyCalendar.newValue); });
 // From the settings file: replace the list when it has one.
+function normalizePausedClients(list) {
+  const seen = new Set();
+  return (Array.isArray(list) ? list : []).map((p) => ({
+    name: String((p && p.name) || "").trim().slice(0, 80),
+    since: /^\d{4}-\d{2}-\d{2}$/.test(String(p && p.since)) ? String(p.since) : "",
+    note: String((p && p.note) || "").trim().slice(0, 140),
+  })).filter((p) => { const k = p.name.toLowerCase().replace(/[^a-z0-9]+/g, ""); if (k.length < 3 || seen.has(k)) return false; seen.add(k); return true; }).slice(0, 100);
+}
+// The totals leave paused clients' unfinished tasks out (lib-clickup); keep its
+// list current, and recount at once when it changes.
+// What this person sees: the team's list, minus the ones they resumed for
+// themselves, plus their own (paused-clients.js keeps the same rule).
+async function effectivePausedClients() {
+  const g = await chrome.storage.local.get(["pausedClients", "myPausedClients", "myResumedClients"]).catch(() => ({}));
+  const k = (n) => String(n || "").toLowerCase().replace(/[^a-z0-9]+/g, "");
+  const resumed = Array.isArray(g.myResumedClients) ? g.myResumedClients : [];
+  const out = (Array.isArray(g.pausedClients) ? g.pausedClients : []).filter((p) => p && !resumed.includes(k(p.name)));
+  for (const p of Array.isArray(g.myPausedClients) ? g.myPausedClients : []) if (p && !out.some((x) => k(x.name) === k(p.name))) out.push(p);
+  return out;
+}
+// Everything else that belongs to a paused client goes quiet too: its sites are
+// not checked (no down / blank alerts), its tasks get no tidy-up nudges.
+let pausedKeysBg = [];
+const pausedKeyBg = (n) => String(n || "").toLowerCase().replace(/[^a-z0-9]+/g, "");
+function rememberPaused(list) { pausedKeysBg = (Array.isArray(list) ? list : []).map((p) => pausedKeyBg(p && p.name)).filter((k) => k.length >= 3); return list; }
+// A site: the client's name anywhere in the site's name or address
+// (":house: Acme Roofing SEO", acmeroofing.com).
+function isPausedSite(site) {
+  if (!pausedKeysBg.length || !site) return false;
+  let host = "";
+  try { host = new URL(site.url).hostname.replace(/^www\./, ""); } catch (e) {}
+  const hay = [pausedKeyBg(site.name), pausedKeyBg(host)].filter(Boolean);
+  return pausedKeysBg.some((p) => hay.some((h) => h === p || (p.length >= 5 && h.includes(p)) || (h.length >= 4 && p.startsWith(h))));
+}
+// A task row (raw or slim): its client, list or folder.
+function isPausedRow(t) {
+  if (!pausedKeysBg.length || !t) return false;
+  const c = t.container || {};
+  for (const n of [t.client, c.listName, t.list && t.list.name, c.folderName]) {
+    const k = pausedKeyBg(n);
+    if (k && pausedKeysBg.some((p) => k === p || (k.length >= 4 && p.length >= 4 && (k.startsWith(p) || p.startsWith(k))))) return true;
+  }
+  return false;
+}
+try {
+  effectivePausedClients().then(rememberPaused).then(setPausedClients).catch(() => {});
+  chrome.storage.onChanged.addListener(async (ch, area) => {
+    if (area !== "local" || !(ch.pausedClients || ch.myPausedClients || ch.myResumedClients)) return;
+    setPausedClients(rememberPaused(await effectivePausedClients()));
+    try { clearFilterCache(); } catch (e) {}
+    refreshClickup({ includeTasks: true, forceWeeks: true }).catch(() => {});
+  });
+} catch (e) {}
+async function applyPausedClients(policy) {
+  if (!policy || !Array.isArray(policy.pausedClients)) return;
+  const next = normalizePausedClients(policy.pausedClients);
+  const { pausedClients } = await chrome.storage.local.get("pausedClients");
+  if (JSON.stringify(pausedClients || []) !== JSON.stringify(next)) await chrome.storage.local.set({ pausedClients: next });
+}
 async function applyCompanyCal(policy) {
   if (!policy || !Array.isArray(policy.calendar)) return;
   const next = normalizeCompanyCal(policy.calendar);
@@ -4849,6 +4940,47 @@ const EST_ALARM_NEAR = "cu-est-near", EST_ALARM_MET = "cu-est-met";
 // While the running task stays past its estimate: a reminder every few minutes
 // (ClickUp setup › "Keep reminding me while it's over", default 15 min, 0 = off).
 const EST_ALARM_OVER = "cu-est-over";
+// Stop (or complete) a task once its tracked time reaches a set limit
+// (autoStopTasks { [taskId]: { name, ms, scope: "today" | "total", action: "stop" |
+// "complete", daily, firedDay } }). Checked against ClickUp's own entries every
+// time the running task's progress is worked out (each refresh, every start and
+// restart), so pauses and restarts can't throw it off; between those, an alarm
+// set for the moment the limit is reached checks again with fresh numbers.
+const STOPAT_ALARM = "cu-stopat";
+async function maybeAutoStop(cfg, entry, progress, key, today) {
+  const { autoStopTasks: rules } = await chrome.storage.local.get("autoStopTasks").catch(() => ({}));
+  const rule = rules && rules[key];
+  if (!rule || !progress || !(Number(rule.ms) > 0) || (rule.daily && rule.firedDay === today)) { await chrome.alarms.clear(STOPAT_ALARM).catch(() => {}); return false; }
+  const now = Date.now();
+  const dayStart = new Date(now).setHours(0, 0, 0, 0);
+  const tracked = rule.scope === "total"
+    ? Number(progress.trackedMs) || 0
+    : (Number(progress.closedTodayMs) || 0) + Math.max(0, now - Math.max(Number(entry.startMs) || now, dayStart));
+  const left = Number(rule.ms) - tracked;
+  if (left > 15000) { chrome.alarms.create(STOPAT_ALARM, { when: now + left + 2000 }); return false; }
+  const name0 = progress.taskName || entry.taskName || rule.name || "this task";
+  try {
+    await stopTimer(cfg.token, cfg.teamId);
+    if (rule.action === "complete") await setTaskStatus(cfg.token, key, "complete");
+    const next = { ...rules };
+    if (rule.daily) next[key] = { ...rule, firedDay: today }; else delete next[key];
+    await chrome.storage.local.set({ autoStopTasks: next, runningProgress: null });
+    await chrome.alarms.clear(STOPAT_ALARM).catch(() => {});
+    await scheduleEstimateAlarms(null);
+    if (rule.action === "complete") await advanceAutoRun(cfg, key).catch(() => {});
+    const st = (await getClickupState().catch(() => null)) || {};
+    if (rule.action === "complete" && String(st.activeTaskId || "") === key) await setClickupState({ ...st, activeTaskId: null });
+    await notify("clickup-stopat-" + Date.now(), rule.action === "complete" ? "Completed at your limit \u2713" : "Timer stopped at your limit \u2713",
+      "\u201C" + name0 + "\u201D reached " + fmtDuration(Number(rule.ms)) + (rule.scope === "total" ? " in all" : " today") + ", so the timer was stopped" + (rule.action === "complete" ? " and the task marked complete" : "") + "." + (rule.daily ? " Same again tomorrow." : ""),
+      undefined, taskUrlFor(key));
+    clearFilterCache();
+    setTimeout(() => { refreshClickup({ includeTasks: true }).catch(() => {}); }, 2000);
+    return true;
+  } catch (e) {
+    diagLog("stop-at", String(e && e.message ? e.message : e));
+    return false;
+  }
+}
 async function scheduleEstimateAlarms(entry, progress, settings, seenNear, seenMet) {
   await chrome.alarms.clear(EST_ALARM_NEAR).catch(() => {});
   await chrome.alarms.clear(EST_ALARM_MET).catch(() => {});
@@ -4912,7 +5044,8 @@ async function maybeNotifyRunningTask(cfg) {
     // after a refusal, don't ask again for a day (no wasted request per refresh).
     const { cuOthersRefusedAt } = await chrome.storage.local.get("cuOthersRefusedAt").catch(() => ({}));
     const tryOthers = !(Number(cuOthersRefusedAt) > Date.now() - 86400000);
-    progress = await getRunningTaskProgress(cfg.token, cfg.teamId, entry.taskId, entry.startMs, Date.now(), { meId: cfg.userId, tryOthers });
+    const { autoStopTasks: stopRules } = await chrome.storage.local.get("autoStopTasks").catch(() => ({}));
+    progress = await getRunningTaskProgress(cfg.token, cfg.teamId, entry.taskId, entry.startMs, Date.now(), { meId: cfg.userId, tryOthers, anyway: !!(stopRules && stopRules[String(entry.taskId)]) });
     if (progress && progress.othersRefused) await chrome.storage.local.set({ cuOthersRefusedAt: Date.now() }).catch(() => {});
   } catch (e) {
     return;
@@ -4982,8 +5115,9 @@ async function maybeNotifyRunningTask(cfg) {
       }
     }
   }
+  if (await maybeAutoStop(cfg, entry, progress, key, today).catch(() => false)) return;
   if (settings.clickupRunningNotify === false) return;
-  if (!progress) return; // task has no estimate set - nothing to compare against
+  if (!progress || !(progress.estimateMs > 0)) return; // task has no estimate set - nothing to compare against
   const thresholdMs = Math.max(1, Number(settings.clickupRunningThresholdMin) || 10) * 60000;
   const remainingMs = progress.estimateMs - progress.trackedMs;
   const name = progress.taskName || entry.taskName || "this task";
@@ -5435,7 +5569,8 @@ async function tidyReminderPayload(opts = {}) {
     return { ok: false, reason: "no-tasks", error: res && res.error };
   }
   const todayStart = new Date().setHours(0, 0, 0, 0);
-  const model = tidyCollect(res.data.tasks, st.waiting, todayStart, { offDay: offDayReason(s.clickupWeekMode) });
+  // A paused client's tasks get no tidy-up nudges.
+  const model = tidyCollect(res.data.tasks.filter((t) => !isPausedRow(t)), st.waiting, todayStart, { offDay: offDayReason(s.clickupWeekMode) });
   // Yesterday's blocked list, so we can spot what has been freed up since.
   const { cuTidyBlocked } = await chrome.storage.local.get("cuTidyBlocked");
   const snap = cuTidyBlocked && typeof cuTidyBlocked === "object" ? cuTidyBlocked : {};
@@ -6575,6 +6710,9 @@ function normalizeUpdatePolicy(p) {
     calendar: Array.isArray(o.calendar) ? o.calendar : undefined,
     // Reminders the admin set for everyone (Reminders › 📣 For everyone).
     teamReminders: Array.isArray(o.teamReminders) ? o.teamReminders.slice(0, 40) : undefined,
+    // Clients who have paused working with us (Admin › Paused clients): their
+    // tasks are struck through everywhere (paused-clients.js).
+    pausedClients: Array.isArray(o.pausedClients) ? normalizePausedClients(o.pausedClients) : undefined,
   };
 }
 function normalizePreview(p) {
@@ -6671,6 +6809,7 @@ async function checkForUpdate(force, forceNotify = false) {
   scheduleUpdateAlarm();
   await maybeApplyTeamSites(policy).catch(() => {});
   await applyCompanyCal(policy).catch(() => {});
+  await applyPausedClients(policy).catch(() => {});
   await applyTeamReminders(policy).catch(() => {});
   // "Notify everyone now": a nonce this copy hasn't acted on yet skips the
   // reminder gap and any hold.
@@ -6857,6 +6996,33 @@ function autoUpdateWhen(st, ui, autoOn, now) {
   }
   return { go: true, why: "" };
 }
+// The taskbar app updates this extension's folder (desktop-tracker/src/extupdate.js):
+// it finds the folder the browser has on record for this extension and writes a
+// random code there; reading that code back from this extension proves it is
+// the folder it runs from; then the app downloads this project's release,
+// checks it and installs it (backup, manifest last). { ok, version } or
+// { ok: false, reason: "no-app" | "not-found" | "app-wrong-folder" | ... }.
+async function installViaDesktop(ui) {
+  const post = async (body, ms) => {
+    const ctl = new AbortController();
+    const t = setTimeout(() => ctl.abort(), ms);
+    try {
+      const res = await fetch(DESK_URL + "/update", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body), signal: ctl.signal });
+      return res.ok ? await res.json() : null; // 404 = an app too old to do it
+    } catch (e) { return null; } finally { clearTimeout(t); }
+  };
+  if (!ui || !ui.zip || !ui.latest) return { ok: false, reason: "no-update" };
+  const nonce = Array.from(crypto.getRandomValues(new Uint8Array(16)), (b) => (b % 36).toString(36)).join("");
+  const loc = await post({ op: "locate", nonce }, 6000);
+  if (!loc) return { ok: false, reason: "no-app" };
+  if (!loc.ok) return { ok: false, reason: loc.reason || "app-failed", error: loc.error || "" };
+  let seen = "";
+  try { seen = (await (await fetch(chrome.runtime.getURL("pcm-folder-check.txt") + "?t=" + Date.now(), { cache: "no-store" })).text()).trim(); } catch (e) {}
+  if (seen !== nonce) return { ok: false, reason: "app-wrong-folder", error: "the folder the taskbar app found isn't the one this extension runs from" };
+  const res = await post({ op: "install", nonce, version: ui.latest, zip: ui.zip }, 200000);
+  if (!res) return { ok: false, reason: "app-no-reply" };
+  return res.ok ? { ok: true, version: res.version, via: "app" } : { ok: false, reason: res.reason || "app-failed", error: res.error || "" };
+}
 async function maybeAutoUpdate() {
   const settings = await getSettings();
   const { updateInfo: ui, autoUpdateState: prevState } = await chrome.storage.local.get(["updateInfo", "autoUpdateState"]);
@@ -6872,13 +7038,20 @@ async function maybeAutoUpdate() {
     tabs = ctx.map((c) => c.documentUrl).filter((u) => u && String(u).startsWith(chrome.runtime.getURL("")) && !/\/auto-update\.html/.test(String(u)));
   } catch (e) {}
   st.lastTry = now;
-  await ensureOffscreenDocument();
-  let r = null;
-  for (let i = 0; i < 10 && !r; i++) {
-    try { r = await chrome.runtime.sendMessage({ target: "offscreen", type: "AUTO_UPDATE", ui: { latest: ui.latest, zip: ui.zip } }); }
-    catch (e) { await new Promise((res) => setTimeout(res, 300)); }
+  // First the taskbar app (ClickUp Tracker 0.3.9+): it writes the new version
+  // into this extension's folder itself - no browser permission, no click.
+  // Quietly skipped when the app isn't installed, running or new enough.
+  const app = await installViaDesktop(ui).catch((e) => ({ ok: false, reason: "app-error", error: String((e && e.message) || e) }));
+  const appTrace = "taskbar app: " + (app.ok ? "installed" : app.reason + (app.error ? " (" + String(app.error).slice(0, 80) + ")" : ""));
+  let r = app.ok ? app : null;
+  if (!r) {
+    await ensureOffscreenDocument();
+    for (let i = 0; i < 10 && !r; i++) {
+      try { r = await chrome.runtime.sendMessage({ target: "offscreen", type: "AUTO_UPDATE", ui: { latest: ui.latest, zip: ui.zip } }); }
+      catch (e) { await new Promise((res) => setTimeout(res, 300)); }
+    }
   }
-  const trace = ["hidden page: " + (!r ? "no reply" : r.ok ? "installed" : r.reason + (r.error ? " (" + String(r.error).slice(0, 80) + ")" : ""))];
+  const trace = [appTrace].concat(app.ok ? [] : ["hidden page: " + (!r ? "no reply" : r.ok ? "installed" : r.reason + (r.error ? " (" + String(r.error).slice(0, 80) + ")" : ""))]);
   // The hidden page couldn't do it (often the folder permission - Chrome applies
   // "Allow on every visit" to the extension's tabs - or anything else that went
   // wrong there): do the same install from a tab opened in the background; if
@@ -6888,33 +7061,45 @@ async function maybeAutoUpdate() {
   // the notice and the Version and updates card say how to finish it. (Opening
   // a fresh tab in front every 30 minutes is what made it "keep coming back".)
   const openTabs = await chrome.tabs.query({ url: chrome.runtime.getURL("auto-update.html") + "*" }).catch(() => []);
-  const waitingForClick = /^(needs-click|permission)$/.test(String(st.reason || ""));
+  // Waiting for a click on THIS version - but not forever: after 6 hours the
+  // background tab is tried once more (Chrome often has the folder permission
+  // back by then, e.g. after a restart).
+  const waitingForClick = /^(needs-click|permission)$/.test(String(st.reason || "")) && (!st.lastTabAt || now - Number(st.lastTabAt) < 6 * 3600000);
   // A browser where even the update tab in front needed a click (Comet doesn't
   // keep "Allow on every visit") would get that tab popping up with EVERY
   // release. There, no tab is opened by itself any more: the update waits for
   // the person - one notice, the popup's banner, Version and updates › Update now.
   // (Ends as soon as the hidden page manages an update by itself.)
   const { autoUpdateClickOnly: clickFlag, autoUpdateViaTab: lastTab } = await chrome.storage.local.get(["autoUpdateClickOnly", "autoUpdateViaTab"]);
+  // A browser that needed a click before still gets an automatic try with every
+  // release - from a tab that STAYS in the background (quiet): where Chrome kept
+  // "Allow on every visit" it installs by itself; where it can't (Comet), that tab
+  // closes and the one "click to finish" notice says so - no tab jumping in front.
+  // (It used to skip the try altogether: one update that needed a click switched
+  // automatic updates off on that computer for every later release.)
   const clickOnly = !!clickFlag || !!(lastTab && lastTab.reason === "needs-click");
-  if (!(r && r.ok) && (openTabs.length || waitingForClick || (clickOnly && r && r.reason === "permission"))) {
+  if (!(r && r.ok) && (openTabs.length || waitingForClick)) {
     trace.push("update tab: not opened " + (openTabs.length ? "again (one is already open)" : waitingForClick ? "again (waiting for your click)" : "(this browser always needs a click - waiting for you)"));
     // Still waiting for the same click: keep saying so, quietly. (Recording the
     // hidden page's "permission" here fired a second notice - "set up again" -
     // whose button opened the update page in yet another tab.)
     r = { ok: false, reason: waitingForClick ? st.reason : "needs-click" };
   } else if (!(r && r.ok) && !(r && /^(no-update|no-folder)$/.test(r.reason || ""))) {
-    const t = await installViaTab();
+    const t = await installViaTab({ quiet: clickOnly });
+    st.lastTabAt = now;
     if (t) {
       trace.push((t.woke ? "tab (brought to the front): " : "background tab: ") + (t.ok ? "installed" : t.reason + (t.error ? " (" + String(t.error).slice(0, 80) + ")" : "")));
-      await chrome.storage.local.set({ autoUpdateViaTab: { ok: !!t.ok || !/^(permission|no-folder|moved|tab-timeout|no-update|needs-click)$/.test(t.reason || ""), at: now, reason: t.reason || "" } });
-      if (t.reason === "needs-click") await chrome.storage.local.set({ autoUpdateClickOnly: true });
+      await chrome.storage.local.set({ autoUpdateViaTab: { ok: !!t.ok || !/^(permission|no-folder|moved|tab-timeout|stalled|no-update|needs-click)$/.test(t.reason || ""), at: now, reason: t.reason || "", version: ui.latest } });
+      if (t.reason === "needs-click") await chrome.storage.local.set({ autoUpdateClickOnly: { version: ui.latest, at: now } });
       r = t;
       autoReadyCache = null;
     } else trace.push("background tab: couldn't open one");
   }
   diagLog("automatic update", trace.join(" -> "));
   // The hidden page installed it by itself: this browser keeps the permission now.
-  if (r && r.ok && /^hidden page: installed/.test(trace[0])) await chrome.storage.local.remove(["autoUpdateClickOnly", "autoUpdateViaTab"]).catch(() => {});
+  // Installed (by the hidden page or a tab): any "needs a click" note is history.
+  if (r && r.ok) await chrome.storage.local.remove(["autoUpdateClickOnly", "autoUpdateViaTab"]).catch(() => {});
+  if (r && r.ok && trace.some((x) => /^(hidden page|taskbar app): installed/.test(x))) await chrome.storage.local.remove(["autoUpdateViaTab"]).catch(() => {});
   if (r && r.ok) {
     // Put back the tab the person was using if the update tab came to the front.
     try {
@@ -6982,7 +7167,8 @@ async function maybeAutoUpdate() {
 // tab the person was using is put back afterwards. A tab that needs a click
 // (needs-click) stays open in front. The background keeps itself awake while the
 // tab downloads and installs.
-async function installViaTab() {
+async function installViaTab(opts = {}) {
+  const quiet = !!(opts && opts.quiet);
   const nonce = Math.random().toString(36).slice(2) + Date.now().toString(36);
   let tab = null, onMsg = null, timer = null, keep = null, woke = false;
   const bringForward = async () => {
@@ -6999,7 +7185,8 @@ async function installViaTab() {
   const answer = new Promise((resolve) => {
     onMsg = (msg) => {
       if (!msg || msg.nonce !== nonce) return;
-      if (msg.type === "AUTO_UPDATE_TAB_FRONT") { bringForward(); return; }
+      // Quiet: not brought to the front - it needs a click, and the notice asks for it.
+      if (msg.type === "AUTO_UPDATE_TAB_FRONT") { if (quiet) resolve({ ok: false, reason: "needs-click", quiet: true }); else bringForward(); return; }
       if (msg.type === "AUTO_UPDATE_TAB_RESULT") resolve(msg);
     };
     chrome.runtime.onMessage.addListener(onMsg);
@@ -7018,7 +7205,7 @@ async function installViaTab() {
   }
   const r = await answer;
   cleanup();
-  if (!r.ok && r.reason !== "needs-click") {
+  if (!r.ok && (r.reason !== "needs-click" || quiet)) {
     if (tab && tab.id != null) await chrome.tabs.remove(tab.id).catch(() => {});
     if (woke) {
       const { autoUpdateWake: w } = await chrome.storage.local.get("autoUpdateWake").catch(() => ({}));
@@ -7506,7 +7693,7 @@ chrome.alarms.onAlarm.addListener(async (alarm) => {
     getClickupState().then((st) => maybeAutoFloat(st)).catch(() => {});
   } else if (alarm.name === CLICKUP_ALARM) {
     refreshClickup({ viaAlarm: true }).then(() => scanComments()).catch(() => {});
-  } else if (alarm.name === EST_ALARM_NEAR || alarm.name === EST_ALARM_MET || alarm.name === EST_ALARM_OVER) {
+  } else if (alarm.name === EST_ALARM_NEAR || alarm.name === EST_ALARM_MET || alarm.name === EST_ALARM_OVER || alarm.name === STOPAT_ALARM) {
     // The running task's estimate is (almost) up: one check with ClickUp (is the
     // timer still on, exact time) and the alert. Skipped while ClickUp is
     // rate-limiting us; the 5-minute refresh still catches it then.

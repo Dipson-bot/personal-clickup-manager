@@ -31,7 +31,8 @@ async function check(ask) {
   return { ok: true };
 }
 async function install() {
-  const r = await installPackage(root, { latest: ui.latest, zip: ui.zip }, chrome.runtime.getManifest());
+  // Progress on the page, so it never just says "Installing…" while nothing moves.
+  const r = await installPackage(root, { latest: ui.latest, zip: ui.zip }, chrome.runtime.getManifest(), (msg) => { if (!finished) $("s").textContent = msg; });
   return { ok: true, version: r.version };
 }
 async function done(r) {
@@ -43,7 +44,21 @@ async function done(r) {
     ? "The extension's folder has moved - choose it again in the update page (Options › Version and updates)."
     : "This tab closes by itself. You'll get a notice with what to do.");
   tell({ type: "AUTO_UPDATE_TAB_RESULT", ...r });
-  if (!r.ok) return;
+  if (!r.ok) {
+    // Normally the background closes this tab. Still here 20 s later (it was
+    // asleep): don't leave it looking stuck - offer the way to finish.
+    setTimeout(() => {
+      $("s").textContent = (r.error ? "It stopped with: " + r.error + ". " : "") + "You can close this tab, or install the update from the update page - it takes a few seconds.";
+      if (!$("page")) {
+        const b = document.createElement("button");
+        b.id = "page"; b.type = "button"; b.textContent = "Open the update page";
+        b.style.cssText = "margin-top:14px;font:inherit;font-size:14px;font-weight:600;padding:10px 20px;border:0;border-radius:10px;background:#4f46e5;color:#fff;cursor:pointer;";
+        b.onclick = () => { chrome.tabs.create({ url: chrome.runtime.getURL("update.html") }).catch(() => {}); };
+        $("s").after(b);
+      }
+    }, 20000);
+    return;
+  }
   // Record the update and restart from here: works even if the background went to sleep meanwhile.
   try {
     const { autoUpdateWake: w } = await chrome.storage.local.get("autoUpdateWake");
@@ -96,6 +111,27 @@ async function stale() {
   return !u || !u.latest || !newer(u.latest, chrome.runtime.getManifest().version);
 }
 
+// Watchdog: still not done after 2 minutes (a stalled download, or the extension's
+// background went to sleep and never answered) - say so plainly instead of
+// sitting on "Installing…", with a way to finish it.
+setTimeout(() => {
+  if (finished || !$("go").hidden) return;
+  $("t").textContent = "The update is taking longer than it should";
+  $("s").textContent = "Something held it up (often a slow or blocked download). Try again, or install it from the update page - it takes a few seconds.";
+  document.title = "\u26A0 Update didn't finish";
+  $("go").textContent = "Try again";
+  $("go").hidden = false;
+  $("go").onclick = () => location.reload();
+  if (!$("page")) {
+    const b = document.createElement("button");
+    b.id = "page"; b.type = "button"; b.textContent = "Open the update page";
+    b.style.cssText = "margin:14px 0 0 8px;font:inherit;font-size:14px;padding:10px 16px;border:1px solid #c9c0b3;border-radius:10px;background:none;color:inherit;cursor:pointer;";
+    b.onclick = () => { chrome.tabs.create({ url: chrome.runtime.getURL("update.html") }).catch(() => {}); };
+    $("go").after(b);
+  }
+  tell({ type: "AUTO_UPDATE_TAB_RESULT", ok: false, reason: "stalled", error: "no result after 2 minutes" });
+}, 120000);
+
 (async () => {
   if (await stale().catch(() => false)) { finished = true; closeMe(); return; }
   let r = await attempt(false);
@@ -114,6 +150,7 @@ async function stale() {
   if (!r || r.ok || r.reason !== "permission") return;
   // Chrome wants a click this time.
   $("t").textContent = "One click to finish the update";
+  document.title = "\uD83D\uDC49 Click to finish the update";
   $("s").textContent = "Chrome needs your OK once to let the extension update its own folder. Click the button - it installs and the extension restarts.";
   $("go").hidden = false;
   $("go").focus();

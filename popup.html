@@ -585,6 +585,10 @@
   .cu-filter-menu input.cu-switch:checked { background: var(--indigo); }
   .cu-filter-menu input.cu-switch:checked::after { left: 15px; }
   .cu-filter-menu input.cu-switch:focus-visible { outline: 2px solid var(--indigo); outline-offset: 2px; }
+  /* Search, number, email and web-address boxes follow the theme too (they were
+     left out above, so they stayed browser-white in dark mode and on backgrounds). */
+  :where(input[type="search"], input[type="email"], input[type="url"], input[type="number"], input[type="date"], input[type="time"]) { background: var(--field, var(--card)); color: var(--text); border: 1px solid var(--border); border-radius: 8px; }
+  :where(input[type="search"])::placeholder { color: var(--muted); }
 </style>
 </head>
 <body>
@@ -887,6 +891,7 @@
   <script src="plan-apply.js"></script>
   <script src="popup.js"></script>
   <script src="weather.js"></script>
+  <script src="paused-clients.js"></script>
   <script src="header-ui.js"></script>
 </body>
 </html>

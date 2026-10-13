@@ -3,16 +3,27 @@
 // columns of the first row: Task (with the number of tasks), Assignee, Client,
 // Due, Time. Click a label: A-Z / earliest / smallest first (▲), click again:
 // the other way (▼), a third time: the normal order again. Subtasks move with
-// their task, section headings inside a list stay where they are, and the
-// choice is remembered and applies to every list. Works on the rows the pages
+// their task, section headings inside a list stay where they are. A sort is a
+// quick look at ONE list (the Tasks list, one day of the week…): the others keep
+// their order, it isn't remembered after a reload, "↺ Your order" puts it back,
+// and the order you arranged by dragging is never changed by it. Works on the rows the pages
 // already draw (each row carries its task as row._cuTask), so no list code
 // needs to know about it.
 (() => {
   "use strict";
-  const KEY = "pcm.taskSort";
-  let state = { key: "", dir: 1 };
-  try { const s = JSON.parse(localStorage.getItem(KEY) || "{}"); if (s && s.key) state = { key: String(s.key), dir: s.dir === -1 ? -1 : 1 }; } catch (e) {}
-  const save = () => { try { localStorage.setItem(KEY, JSON.stringify(state)); } catch (e) {} };
+  // The old shared, remembered sort (one choice for every list) is dropped.
+  try { localStorage.removeItem("pcm.taskSort"); } catch (e) {}
+  // Each list's own sort, while the page is open: keyed by where the list sits
+  // (its card + its place among the task lists there), so a redraw keeps it.
+  const sorts = new Map();
+  const NONE = { key: "", dir: 1 };
+  function sortKey(list) {
+    const host = (list.parentElement && list.parentElement.closest("[id]")) || document.body;
+    const all = [];
+    for (const r of host.querySelectorAll(".cu-task")) if (r.parentElement && !all.includes(r.parentElement)) all.push(r.parentElement);
+    return (host.id || "body") + ":" + all.indexOf(list);
+  }
+  const stateOf = (list) => sorts.get(sortKey(list)) || NONE;
 
   const COLS = [
     { key: "name", label: "Task", sel: ".nm", tip: "Sort by task name" },
@@ -63,7 +74,7 @@
     for (const [id, k] of n) if (k > c) { best = id; c = k; }
     return best;
   }
-  function compare(a, b) {
+  function compare(a, b, state) {
     // Pinned tasks (task-notes.js) stay on top whatever the column sort.
     const pa = !!(window.PcmTaskNotes && a && window.PcmTaskNotes.isPinned(a.id)), pb = !!(window.PcmTaskNotes && b && window.PcmTaskNotes.isPinned(b.id));
     if (pa !== pb) return pa ? -1 : 1;
@@ -80,6 +91,8 @@
     .pcs-sorthead { position: relative; height: 18px; margin: 8px 0 3px; padding-bottom: 3px; border-bottom: 1px solid var(--border); font-size: 10.5px; font-weight: 600; text-transform: uppercase; letter-spacing: .04em; color: var(--muted); user-select: none; }
     .pcs-sorthead button { position: absolute; top: 0; background: none; border: 0; padding: 0 2px; font: inherit; letter-spacing: inherit; text-transform: inherit; color: inherit; cursor: pointer; white-space: nowrap; line-height: 18px; overflow: hidden; text-overflow: ellipsis; }
     .pcs-sorthead button:hover, .pcs-sorthead button.on { color: var(--indigo, #6366f1); }
+    .pcs-sorthead .pcs-back { position: absolute; top: 0; line-height: 16px; padding: 0 7px; border: 1px solid currentColor; border-radius: 999px; color: var(--indigo, #6366f1); text-transform: none; letter-spacing: 0; font-size: 10.5px; font-weight: 700; cursor: pointer; white-space: nowrap; background: var(--card); }
+    .pcs-sorthead .pcs-back[hidden] { display: none; }
     .pcs-sorthead .pcs-grip { position: absolute; top: 1px; width: 7px; height: 16px; cursor: col-resize; border-radius: 2px; }
     .pcs-sorthead .pcs-grip::after { content: ""; position: absolute; left: 3px; top: 3px; bottom: 3px; width: 1px; background: var(--border); }
     .pcs-sorthead .pcs-grip:hover::after, .pcs-sorthead .pcs-grip.drag::after { background: var(--indigo, #6366f1); width: 2px; left: 2px; }
@@ -104,6 +117,7 @@
       if (isRow(el)) { if (!run) runs.push((run = [])); run.push(el); } else run = null;
     }
     listMe = pickMe(kids.filter(isRow));
+    const state = stateOf(list);
     for (const r of runs) {
       const blocks = [];
       for (const el of r.slice().sort((a, b) => a._pcsOrd - b._pcsOrd)) {
@@ -111,7 +125,7 @@
         else blocks.push([el]);
       }
       // A day plan applied from Insights > Plan keeps its own order (plan-apply.js).
-      if (state.key && !document.documentElement.classList.contains("pcm-plan-on")) blocks.sort((x, y) => compare(x[0]._cuTask, y[0]._cuTask) || x[0]._pcsOrd - y[0]._pcsOrd);
+      if (state.key && !document.documentElement.classList.contains("pcm-plan-on")) blocks.sort((x, y) => compare(x[0]._cuTask, y[0]._cuTask, state) || x[0]._pcsOrd - y[0]._pcsOrd);
       // Only move rows when the order really changes (the lists redraw every
       // second while a timer runs; moving rows under the mouse loses clicks).
       const want = blocks.flat();
@@ -145,6 +159,9 @@
         if (grip.style.left !== gl) grip.style.left = gl;
       }
     }
+    // "↺ Your order" sits right after the Task label (free room up to Who).
+    const back = head.querySelector(".pcs-back"), tb = head.querySelector('button[data-key="name"]');
+    if (back && !back.hidden && tb && !tb.hidden) { const l = Math.round((parseFloat(tb.style.left) || 0) + tb.scrollWidth + 10) + "px"; if (back.style.left !== l) back.style.left = l; }
     // A label never runs into the next one: it gets "…" instead.
     spots.sort((a, b) => a.left - b.left);
     spots.forEach((s, i) => {
@@ -156,13 +173,16 @@
   function paint(head, list) {
     place(head, list);
     const n = rowsOf(list).length;
+    const state = stateOf(list);
+    const back = head.querySelector(".pcs-back");
+    if (back) back.hidden = !state.key;
     for (const btn of head.querySelectorAll("button")) {
       const col = COLS.find((c) => c.key === btn.dataset.key);
       const on = state.key === col.key;
       btn.classList.toggle("on", on);
       const text = (btn._narrow ? col.short : col.label) + (col.key === "name" ? " (" + n + ")" : "") + (on ? (state.dir === 1 ? " ▲" : " ▼") : "");
       if (btn.textContent !== text) btn.textContent = text;
-      btn.title = col.tip + (on ? (state.dir === 1 ? " - click for the other way" : " - click for the normal order") : "");
+      btn.title = col.tip + " (this list only - your own order comes back with \u21BA Your order)" + (on ? (state.dir === 1 ? " - click for the other way" : " - click for your order") : "");
     }
     place(head, list);
   }
@@ -177,14 +197,22 @@
       b.dataset.key = col.key;
       b.onclick = (e) => {
         e.stopPropagation();
-        if (state.key !== col.key) state = { key: col.key, dir: 1 };
-        else if (state.dir === 1) state = { key: col.key, dir: -1 };
-        else state = { key: "", dir: 1 };
-        save();
+        const k = sortKey(list), state = stateOf(list);
+        if (state.key !== col.key) sorts.set(k, { key: col.key, dir: 1 });
+        else if (state.dir === 1) sorts.set(k, { key: col.key, dir: -1 });
+        else sorts.delete(k);
         refreshAll();
       };
       head.appendChild(b);
     }
+    // Back to the order you arranged (only shown while this list is sorted).
+    const back = document.createElement("span");
+    back.className = "pcs-back";
+    back.textContent = "\u21BA Your order";
+    back.title = "Back to the order you arranged (sorting only changed how this list is shown)";
+    back.hidden = true;
+    back.onclick = (e) => { e.stopPropagation(); sorts.delete(sortKey(list)); refreshAll(); };
+    head.appendChild(back);
     for (const col of COLS) {
       if (!col.resize) continue;
       const g = document.createElement("span");
@@ -308,6 +336,13 @@
       if (lastY > 0 && (window.scrollY || 0) < lastY - 4) window.scrollTo(window.scrollX || 0, lastY);
     } finally { setTimeout(() => { guarding = false; }, 0); }
   });
+  // A drag starting in a sorted list: the list goes back to your own order first,
+  // so what gets saved as the arrangement is yours plus the move - never the sort.
+  document.addEventListener("dragstart", (e) => {
+    const row = e.target && e.target.closest && e.target.closest(".cu-task");
+    const list = row && row.parentElement;
+    if (list && stateOf(list).key) { sorts.delete(sortKey(list)); refreshAll(); }
+  }, true);
   const start = () => { mo.observe(document.documentElement, { childList: true, subtree: true }); keep.observe(document.documentElement, { childList: true, subtree: true }); refreshAll(); };
   if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", start); else start();
   window.PcmTaskSort = {
@@ -317,9 +352,8 @@
     // sort goes off (it would put the row straight back). true = a sort was on.
     takeOrder(list) {
       if (list) [...list.children].forEach((el, i) => { if (isRow(el)) el._pcsOrd = i; });
-      if (!state.key) return false;
-      state = { key: "", dir: 1 };
-      save();
+      if (!list || !stateOf(list).key) return false;
+      sorts.delete(sortKey(list));
       refreshAll();
       return true;
     },

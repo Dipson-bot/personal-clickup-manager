@@ -74,10 +74,30 @@ async function removeFile(root, path) {
 // back up what it replaces, then write it (manifest.json last). Any failure
 // while writing restores the previous files. Throws on any problem.
 // `running` = chrome.runtime.getManifest(); `step(text)` reports progress.
+// The download, with a time limit (a stalled download used to leave the update
+// tab on "Installing…" for good) and one more try before giving up.
+async function download(url, step) {
+  let lastErr = null;
+  for (let attempt = 1; attempt <= 2; attempt++) {
+    const ctl = new AbortController();
+    const t = setTimeout(() => ctl.abort(), 90000);
+    try {
+      step(attempt === 1 ? "Downloading the update…" : "Downloading again…");
+      const res = await fetch(url, { cache: "no-store", signal: ctl.signal });
+      if (!res.ok) throw new Error("Download failed (HTTP " + res.status + ").");
+      const buf = await res.arrayBuffer();
+      clearTimeout(t);
+      return buf;
+    } catch (e) {
+      clearTimeout(t);
+      lastErr = e && e.name === "AbortError" ? new Error("The download didn't finish within 90 seconds.") : e;
+      if (attempt === 1) await new Promise((ok) => setTimeout(ok, 3000));
+    }
+  }
+  throw lastErr || new Error("Download failed.");
+}
 export async function installPackage(root, ui, running, step = () => {}) {
-  const res = await fetch(ui.zip, { cache: "no-store" });
-  if (!res.ok) throw new Error("Download failed (HTTP " + res.status + ").");
-  const files = await unzip(await res.arrayBuffer());
+  const files = await unzip(await download(ui.zip, step));
   step("Downloaded and unpacked " + files.length + " files.");
 
   const mf = files.find((f) => f.path === "manifest.json");

@@ -1489,7 +1489,7 @@ function cuSplitByWeek(sorted) {
   if (weeks.size < 2) return sorted;
   const thisWeek = cuWeekOf(Date.now()).start;
   const md = (ms, withMonth) => new Date(ms).toLocaleDateString(undefined, withMonth ? { month: "short", day: "numeric" } : { day: "numeric" });
-  const sums = (rows) => " \u00b7 " + rows.length + " task" + (rows.length === 1 ? "" : "s") + " \u00b7 est " + fmtDur(rows.reduce((a, t) => a + (Number(t.estimateMs) || 0), 0)) + (rows.some((t) => Number(t.spentMs) > 0) ? " \u00b7 tracked " + fmtDur(rows.reduce((a, t) => a + (Number(t.spentMs) || 0), 0)) : "");
+  const sums = (rows) => " \u00b7 " + rows.length + " task" + (rows.length === 1 ? "" : "s") + " \u00b7 est " + fmtDur(rows.reduce((a, t) => a + cuEstOf(t), 0)) + (rows.some((t) => Number(t.spentMs) > 0) ? " \u00b7 tracked " + fmtDur(rows.reduce((a, t) => a + (Number(t.spentMs) || 0), 0)) : "");
   // A week belongs to the month most of its days are in (its Thursday's month).
   const monthOf = (k) => { const d = new Date(k); d.setDate(d.getDate() + 3); return d.getFullYear() * 12 + d.getMonth(); };
   const keys = [...weeks.keys()].sort((a, b) => (a || Infinity) - (b || Infinity));
@@ -1934,7 +1934,7 @@ function renderClickupTasksByClient(tasks, deadlineTasks, trackedTasks, scope, s
     const t3 = trackedTasks.filter((t) => clientOf(t) === c);
     if (!t1.length && !t2.length && !t3.length) continue;
     any = true;
-    const est = t1.reduce((a, t) => a + (Number(t.estimateMs) || 0), 0)
+    const est = t1.reduce((a, t) => a + cuEstOf(t), 0)
       + t2.reduce((a, t) => a + (Number(t.dayEstimateMs) || 0), 0);
     const trk = t1.concat(t2, t3).reduce((a, t) => a + (Number(t.spentMs) || 0), 0);
     const head = document.createElement("div");
@@ -2230,10 +2230,65 @@ function initFilterControls() {
 // Render the weekly totals card. fetchWeeklySummary (in the background) already
 // computed BOTH Mon→today and Mon→Friday aggregates during the last refresh, so
 // the ToToday/ToFriday toggle just repaints from the cached state - no lag.
+// A row's estimate as it counts in a total: nothing for an unfinished task of a
+// paused client (Admin › Paused clients) - its tracked time still counts.
+function cuEstOf(t) {
+  if (!t) return 0;
+  if (!t.done && (t.paused || (window.PcmPaused && window.PcmPaused.pausedFor(t)))) return 0;
+  return Number(t.estimateMs) || 0;
+}
+// The running timer's minutes since the last ClickUp refresh. The totals from
+// ClickUp stop at the refresh (every ~5 minutes) but the timer doesn't, so the
+// Due today card and This week fell a few minutes behind the "50m today" pills.
+function cuLiveSinceRefresh(st) {
+  const r = st && st.running;
+  if (!r || !r.startMs) return 0;
+  const dayStart = new Date().setHours(0, 0, 0, 0);
+  return Math.max(0, Date.now() - Math.max(Number(r.startMs) || 0, Number(st.at) || 0, dayStart));
+}
+// This week with those minutes added to today (a copy - the state isn't changed).
+function cuWeekWithLive(w, live) {
+  if (!w || !(live > 0) || !w.today || !w.friday) return w;
+  const today = new Date().toDateString();
+  const add = (x) => (x ? { ...x, spentMs: (Number(x.spentMs) || 0) + live } : x);
+  return { ...w, today: add(w.today), friday: add(w.friday), perDay: Array.isArray(w.perDay) ? w.perDay.map((d) => (d && new Date(d.ts).toDateString() === today ? add(d) : d)) : w.perDay };
+}
+// Something being used right there (typing in any box, an open ▸ details panel,
+// a description editor, a confirm prompt): a timed re-draw would rebuild the list
+// under it - the editor lost its cursor every 30 s while a timer ran.
+// Someone is using the page right now: a drag (moving / reordering tasks), a
+// mouse button held, something clicked or typed in the last few seconds, an open
+// menu. Background redraws (new data from ClickUp, timers) wait until it's over,
+// so the lists never jump or flicker under the cursor.
+let pcmLastAct = 0, pcmPointerDown = false;
+for (const ev of ["pointerdown", "keydown", "dragstart", "dragover", "drop", "input", "wheel"]) document.addEventListener(ev, () => { pcmLastAct = Date.now(); }, { capture: true, passive: true });
+document.addEventListener("pointerdown", () => { pcmPointerDown = true; }, { capture: true, passive: true });
+for (const ev of ["pointerup", "pointercancel", "dragend"]) document.addEventListener(ev, () => { pcmPointerDown = false; pcmLastAct = Date.now(); }, { capture: true, passive: true });
+function cuUserBusy() {
+  if (pcmPointerDown || Date.now() - pcmLastAct < 4000) return true;
+  try { if (cuDragging) return true; } catch (e) {}
+  const a = document.activeElement;
+  if (a && a !== document.body && (a.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(a.tagName))) return true;
+  return !!document.querySelector(".cu-filter-menu:not([hidden]), .flt-people-menu:not([hidden]), .pcm-thm");
+}
+function cuBusyHere(root) {
+  const a = document.activeElement;
+  if (a && a !== document.body && (a.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(a.tagName))) return true;
+  return !!(root && root.querySelector(".pcm-panel, .md-area, .cu-rowconfirm"));
+}
+// New data from the background: redraw once the person isn't in the middle of
+// something (a few seconds at most), so nothing jumps under the cursor.
+let cuLoadIdleT = 0;
+function cuLoadWhenIdle() {
+  clearTimeout(cuLoadIdleT);
+  if (cuUserBusy()) { cuLoadIdleT = setTimeout(cuLoadWhenIdle, 1500); return; }
+  load();
+}
+let cuLiveCardTick = null; // repaints the Due today card's tracked figure
 function renderWeekly() {
   const cu = state.clickup || {};
   const card = $("weekCard");
-  const w = cu.state && cu.state.weekly;
+  const w = cuWeekWithLive(cu.state && cu.state.weekly, cuLiveSinceRefresh(cu.state));
   const wkList = $("weekList");
   if (!cu.configured || !w || !w.today || !w.friday) {
     if (card) card.style.display = "none";
@@ -3086,11 +3141,20 @@ function renderClickup() {
   if (fill.parentElement) fill.parentElement.title = todayEstMs > 0 ? CU_TODAY_EST_TIP : "";
 
   const trk = $("cuFillTrk");
-  const trkPct = targetMs > 0 ? Math.min(100, Math.round((spentTot / targetMs) * 100)) : 0;
+  // Today's whole total (not narrowed to some clients) goes on with the running
+  // timer between refreshes, like the "today" pills.
+  const liveOn = !!st && view.scope === "today" && !(cuFilter.clients && cuFilter.clients.length);
+  const trkShown = () => spentTot + (liveOn ? cuLiveSinceRefresh(st) : 0);
+  const trkPct = targetMs > 0 ? Math.min(100, Math.round((trkShown() / targetMs) * 100)) : 0;
   trk.style.width = trkPct + "%";
-  const trkMet = targetMs > 0 && spentTot >= targetMs;
+  const trkMet = targetMs > 0 && trkShown() >= targetMs;
   trk.className = "cu-fill trk" + (trkMet ? " met" : "");
-  $("cuTrkVal").textContent = st ? fmtDur(spentTot) + (targetMs > 0 ? " / " + fmtDur(targetMs) : "") : "-";
+  $("cuTrkVal").textContent = st ? fmtDur(trkShown()) + (targetMs > 0 ? " / " + fmtDur(targetMs) : "") : "-";
+  cuLiveCardTick = liveOn ? () => {
+    const s = trkShown();
+    $("cuTrkVal").textContent = fmtDur(s) + (targetMs > 0 ? " / " + fmtDur(targetMs) : "");
+    trk.style.width = (targetMs > 0 ? Math.min(100, Math.round((s / targetMs) * 100)) : 0) + "%";
+  } : null;
   // Wider-than-today scopes get today's own figure too, so a cumulative-looking
   // bar (Deadline crossed) can't be read as today's work. The Today card's bar is
   // already today's, so the chip stays hidden there.
@@ -4343,7 +4407,7 @@ chrome.storage.onChanged.addListener((changes, area) => {
     cuOverdueCache = { status: "", data: null, at: 0 };
     load();
   }
-  if (changes.clickupState) { cuOverdueInvalidate(); cuTomorrowInvalidate(); load(); }
+  if (changes.clickupState) { cuOverdueInvalidate(); cuTomorrowInvalidate(); cuLoadWhenIdle(); }
   // Filter changed on the options page -> mirror it here and repaint. Guarded so
   // a change this popup itself made (identical values) doesn't double-render.
   if (changes.cuFilterMode) {
@@ -4470,3 +4534,16 @@ if (window.PcmTaskNotes) window.PcmTaskNotes.onChange(() => { try { renderClicku
     tools._run();
   });
 })();
+
+// While a timer runs: the Today card's tracked figure and This week go on with it.
+setInterval(() => {
+  try {
+    if (document.hidden) return;
+    if (cuLiveCardTick) cuLiveCardTick();
+    // only the number - re-drawing the whole card every 30 s made it flicker
+    if (state && state.clickup && state.clickup.state && state.clickup.state.running && $("weekTrk")) {
+      const cu = state.clickup, w = cuWeekWithLive(cu.state.weekly, cuLiveSinceRefresh(cu.state));
+      if (w && w.today && w.friday) $("weekTrk").textContent = fmtDur(Number((cu.weeklyTo === "friday" ? w.friday : w.today).spentMs) || 0);
+    }
+  } catch (e) {}
+}, 30000);

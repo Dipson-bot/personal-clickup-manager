@@ -992,7 +992,9 @@ async function relTask(token, id) {
   const hit = relTaskCache.get(id);
   if (hit && Date.now() - hit.at < REL_TTL) return hit.data;
   const [t, cj] = await Promise.all([
-    cuFetch(token, "/task/" + encodeURIComponent(id)),
+    // Its description too: a review task's real instructions often live in the
+    // task it is linked to (Copy for AI / Plan with AI read them from here).
+    cuFetch(token, "/task/" + encodeURIComponent(id), [["include_markdown_description", "true"]]),
     cuFetch(token, "/task/" + encodeURIComponent(id) + "/comment").catch(() => ({ comments: [] })),
   ]);
   const comments = (Array.isArray(cj && cj.comments) ? cj.comments : []).map((c) => ({
@@ -1006,6 +1008,7 @@ async function relTask(token, id) {
     assignees: (Array.isArray(t && t.assignees) ? t.assignees : []).map((a) => a && (a.username || a.email)).filter(Boolean),
     parentId: t && t.parent != null ? String(t.parent) : "",
     subtaskIds: (Array.isArray(t && t.subtasks) ? t.subtasks : []).map((s) => String(s.id)),
+    description: String((t && (t.markdown_description || t.description || t.text_content)) || "").trim().slice(0, 8000),
     comments,
   };
   relTaskCache.set(id, { at: Date.now(), data });
@@ -1124,6 +1127,9 @@ export async function getRelatedTasks(token, d, opts = {}) {
   for (const x of d.blocks || []) add(x, "this waits on it (dependency)");
   for (const x of d.linked || []) add(x, "linked task");
   if (d.parentId) add(d.parentId, "parent");
+  // Its own subtasks: their comments ("done, see screenshot", "blocked by…") are
+  // often what closes the task (their descriptions are in the brief already).
+  for (const s of (Array.isArray(d.subtasks) ? d.subtasks : []).slice(0, 15)) add(s.id, "subtask");
   // ClickUp links in the description and comments.
   const text = [d.name, d.description].concat((d.comments || []).map((c) => c.text)).join("\n");
   for (const u of extractTaskLinks(text)) { const m = /app\.clickup\.com\/t\/(?:\d+\/)?([a-z0-9]+)/i.exec(u); if (m) add(m[1], "mentioned"); }
@@ -1173,7 +1179,7 @@ export async function getRelatedTasks(token, d, opts = {}) {
   await Promise.all([worker(), worker()]); // two at a time (the request guard paces them too)
   const foundIds = new Set(out.flatMap((r) => idsIn(r.name || "", prefixes, opts.ids)));
   const notFound = missing.filter((id) => !foundIds.has(id));
-  const order = (r) => (/dependency/.test(r.rel) ? 0 : /linked/.test(r.rel) ? 1 : r.rel === "parent" ? 2 : /family/.test(r.rel) ? 4 : /mentioned|same ID/.test(r.rel) ? 3 : 5);
+  const order = (r) => (/dependency/.test(r.rel) ? 0 : /linked/.test(r.rel) ? 1 : r.rel === "parent" || r.rel === "subtask" ? 2 : /family/.test(r.rel) ? 4 : /mentioned|same ID/.test(r.rel) ? 3 : 5);
   out.sort((a, b) => order(a) - order(b));
   return { tasks: out, notFound, more: Math.max(0, want.size - cap) };
 }
@@ -1244,9 +1250,13 @@ export async function getTaskPanel(token, taskId, force) {
     blocks: deps.filter((x) => String(x.depends_on) === key && x.task_id).map((x) => String(x.task_id)),
     subtasks,
   };
-  // The parent and the tasks it waits on, by name with their state, so a brief
-  // can say "wait for X" (a few small calls, only when there are any).
-  const rel = [...(data.parentId ? [[data.parentId, "parent"]] : []), ...data.waitsOn.slice(0, 5).map((x) => [x, "waits"])];
+  // The parent, the tasks it waits on, the ones waiting on it and its ClickUp
+  // "Related" (linked) tasks, by name with their state - shown in the ▸ panel
+  // and used by briefs (a few small calls, only when there are any).
+  const seenRel = new Set();
+  const rel = [...(data.parentId ? [[data.parentId, "parent"]] : []), ...data.waitsOn.slice(0, 5).map((x) => [x, "waits"]),
+    ...data.blocks.slice(0, 5).map((x) => [x, "blocks"]), ...data.linked.slice(0, 5).map((x) => [x, "linked"])]
+    .filter(([id]) => (seenRel.has(String(id)) ? false : (seenRel.add(String(id)), true)));
   data.related = rel.length ? (await Promise.all(rel.map(async ([id, kind]) => {
     try {
       const r = await cuFetch(token, "/task/" + encodeURIComponent(id));
@@ -1643,6 +1653,28 @@ function resolveCustomFieldValue(cf) {
 
 // The client name from a task's custom fields (the first client-named field with
 // a non-empty value), or "" when the task has no such field.
+// Paused clients (Admin › Paused clients, set by the background): an unfinished
+// task of theirs adds NO estimate to any total - today, the 7h target, the week,
+// date ranges - while its tracked time still counts. Its row stays (struck
+// through on the pages), marked paused: true. Same matching as paused-clients.js:
+// letters and digits only, exact or one a prefix of the other.
+let pausedKeys = [];
+const pausedKeyOf = (n) => String(n || "").toLowerCase().replace(/[^a-z0-9]+/g, "");
+export function setPausedClients(list) {
+  pausedKeys = (Array.isArray(list) ? list : []).map((p) => pausedKeyOf(p && p.name)).filter((k) => k.length >= 3);
+}
+export function isPausedTask(t) {
+  if (!pausedKeys.length || !t || isTaskDone(t)) return false;
+  const c = taskContainer(t) || {};
+  let field = "";
+  try { field = taskClientField(t) || ""; } catch (e) {}
+  for (const n of [c.listName, field, c.folderName]) {
+    const k = pausedKeyOf(n);
+    if (!k) continue;
+    if (pausedKeys.some((p) => k === p || (k.length >= 4 && p.length >= 4 && (k.startsWith(p) || p.startsWith(k))))) return true;
+  }
+  return false;
+}
 export function taskClientField(t) {
   const cfs = t && Array.isArray(t.custom_fields) ? t.custom_fields : [];
   for (const cf of cfs) {
@@ -2024,7 +2056,8 @@ export async function stopTimer(token, teamId) {
 // so the caller can stop asking for a while.
 export async function getRunningTaskProgress(token, teamId, taskId, startMs, now = Date.now(), opts = {}) {
   const task = await getTaskById(token, taskId);
-  if (!task || !task.hasEstimate) return null;
+  // opts.anyway: worked out without an estimate too (a stop-at limit needs the time).
+  if (!task || (!task.hasEstimate && !(opts && opts.anyway))) return null;
   const { start, end } = localDayBounds(now);
   const params = [
     ["start_date", String(start - 365 * 86400000)],
@@ -2738,8 +2771,9 @@ export async function fetchWeeklySummary({ token, teamId, userId, taskUrls = [],
       // By due date: the whole estimate on its due day. Spread: this day's share.
       const est = spread ? dayEstimateOf(t, ts, extendedMode, byDayTask) : (Number(t.time_estimate) || 0);
       const sp = dayTime.get(t.id) || 0;
-      dayEst += est;
-      dayRows.push({ id: t.id, name: t.name || "(untitled task)", url: taskUrlFor(t.id), estimateMs: est, totalEstimateMs: Number(t.time_estimate) || 0, dueDateMs: Number(t.due_date) || null, spentMs: sp, done: isTaskDone(t), doneAt: Number(t.date_done || t.date_closed) || 0, status: (t.status && t.status.status) || "", priority: cuPriorityName(t), type: "due", parentId: t.parent != null ? String(t.parent) : null, assignees: cuRowAssignees(t), container: taskContainer(t) });
+      const paused = isPausedTask(t);
+      if (!paused) dayEst += est;
+      dayRows.push({ paused, id: t.id, name: t.name || "(untitled task)", url: taskUrlFor(t.id), estimateMs: est, totalEstimateMs: Number(t.time_estimate) || 0, dueDateMs: Number(t.due_date) || null, spentMs: sp, done: isTaskDone(t), doneAt: Number(t.date_done || t.date_closed) || 0, status: (t.status && t.status.status) || "", priority: cuPriorityName(t), type: "due", parentId: t.parent != null ? String(t.parent) : null, assignees: cuRowAssignees(t), container: taskContainer(t) });
     }
     // Configured tasks active on this day (skip the extra and anything already
     // counted in the due list). The auto-detected "Extra(s) Task(s)" is matched
@@ -2973,9 +3007,11 @@ export async function fetchTodayEstimate({ token, teamId, userId, targetHours = 
     }
     if (t._spanning && !(est > 0)) continue; // no share today: not today's work
     const spent = entriesOk ? (todayByTask.get(t.id) || 0) : (Number(t.time_spent) || 0);
-    estimateMs += est;
+    const paused = isPausedTask(t);
+    if (!paused) estimateMs += est;
     spentMs += spent;
     tasks.push({
+      paused,
       id: t.id,
       name: t.name || "(untitled task)",
       estimateMs: est,
@@ -3049,9 +3085,11 @@ export async function fetchTodayEstimate({ token, teamId, userId, targetHours = 
         sEst = Number(s.time_estimate) || 0;
       }
       const sSpent = entriesOk ? (todayByTask.get(s.id) || 0) : (Number(s.time_spent) || 0);
-      estimateMs += sEst;
+      const sPaused = isPausedTask(s) || isPausedTask(t);
+      if (!sPaused) estimateMs += sEst;
       spentMs += sSpent;
       subRows.push({
+        paused: sPaused,
         id: s.id,
         name: s.name || "(untitled subtask)",
         estimateMs: sEst,
@@ -3352,10 +3390,12 @@ export async function fetchDateRangeEstimate({ token, teamId, userId, fromTs, to
     // When it's empty for a department/single-user scope (token can't read that
     // user's entries), we show 0m - never a misleading cumulative÷span estimate.
     let spentRow = spent;
-    estimateMs += est;
+    const paused = isPausedTask(t);
+    if (!paused) estimateMs += est;
     spentMs += spentRow;
     seen.add(t.id);
     tasks.push({
+      paused,
       id: t.id,
       name: t.name || "(untitled task)",
       estimateMs: est,

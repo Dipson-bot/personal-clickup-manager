@@ -19,11 +19,78 @@
   });
   const EXTRA_RE = /\bextra\s*\(?s?\)?\s*tasks?\b/i;
 
+  // ---------- stop / complete at a set time (autoStopTasks, enforced in the background) ----------
+  const fmtLimit = (ms) => { const m = Math.round((Number(ms) || 0) / 60000); const h = Math.floor(m / 60); return h ? h + "h" + (m % 60 ? " " + (m % 60) + "m" : "") : m + "m"; };
+  // "1h 20m", "1.5h", "80m", "80" (minutes), "1:20".
+  function parseLimit(s) {
+    s = String(s || "").toLowerCase();
+    const hm = s.match(/(\d+):(\d{1,2})/);
+    if (hm) return (Number(hm[1]) * 60 + Number(hm[2])) * 60000;
+    const h = s.match(/(\d+(?:\.\d+)?)\s*h/), m = s.match(/(\d+)\s*m(?!o)/);
+    if (h || m) return Math.round(((h ? Number(h[1]) * 60 : 0) + (m ? Number(m[1]) : 0)) * 60000);
+    const n = s.match(/^\s*(\d+)\s*$/);
+    return n ? Number(n[1]) * 60000 : 0;
+  }
+  async function stopAt(arg, action) {
+    const g = await chrome.storage.local.get(["autoStopTasks", "clickupState"]).catch(() => ({}));
+    const rules = { ...((g && g.autoStopTasks) || {}) };
+    const a = String(arg || "").trim().toLowerCase();
+    const run = g && g.clickupState && g.clickupState.running && g.clickupState.running.taskId ? g.clickupState.running : null;
+    if (a === "list") {
+      const all = Object.entries(rules);
+      if (!all.length) { line("no stop-at limits set", "mu"); return; }
+      for (const [, r] of all) line((r.action === "complete" ? "complete " : "stop ") + "\u201C" + (r.name || "?") + "\u201D at " + fmtLimit(r.ms) + (r.scope === "total" ? " in all" : " today") + (r.daily ? ", every day" + (r.firedDay ? " (done today)" : "") : ", once"), "hl");
+      line("/stopat off - the running task's one   /stopat clear - all of them", "mu");
+      return;
+    }
+    if (a === "clear") { await chrome.storage.local.set({ autoStopTasks: {} }); line("all stop-at limits cleared", "ok"); return; }
+    if (!run) { line("start the task first - the limit is for the task that's running", "e"); return; }
+    const id = String(run.taskId), name = run.taskName || "the running task";
+    if (a === "off") {
+      if (!rules[id]) { line("no limit on \u201C" + name + "\u201D", "mu"); return; }
+      delete rules[id]; await chrome.storage.local.set({ autoStopTasks: rules }); line("limit removed from \u201C" + name + "\u201D", "ok"); return;
+    }
+    const save = async (ms, daily, scope) => {
+      const cur = { ...(((await chrome.storage.local.get("autoStopTasks").catch(() => ({}))).autoStopTasks) || {}) };
+      cur[id] = { name, ms, scope, action, daily, firedDay: "" };
+      await chrome.storage.local.set({ autoStopTasks: cur });
+      send({ type: "TRACKER_PROGRESS" }).catch(() => {}); // work it out now (and set the alarm)
+      line((action === "complete" ? "\u201C" + name + "\u201D completes" : "the timer on \u201C" + name + "\u201D stops") + " when " + (scope === "total" ? "its time in all" : "today's time on it") + " reaches " + fmtLimit(ms) + (daily ? " - every day" : " - once") + ". Pauses and restarts are counted from ClickUp's own time.", "ok");
+    };
+    // Just the command: ask for the time (any time - 1h 10m, 1h 13m, 37m…), then once / every day.
+    if (!a) {
+      line((action === "complete" ? "complete" : "stop the timer on") + " \u201C" + name + "\u201D at what time? (e.g. 1h 10m, 45m, 1:13 - Enter on its own to cancel)", "hl");
+      let ms = 0;
+      setMode({
+        name: action === "complete" ? "doneat" : "stopat",
+        input: async (v) => {
+          const t = String(v || "").trim().toLowerCase();
+          if (!ms) {
+            if (!t) { line("cancelled", "mu"); setMode(null); return; }
+            const got = parseLimit(t);
+            if (!(got >= 60000) || got > 24 * 3600000) { line("didn't catch that - type a time like 1h 10m, 45m or 1:13", "e"); return; }
+            ms = got;
+            line("› " + fmtLimit(ms) + " - every day, or just once? (daily / once - Enter = once)", "hl");
+            return;
+          }
+          const daily = /^(d|daily|every ?day|y|yes)$/.test(t);
+          setMode(null);
+          await save(ms, daily, "today");
+        },
+      });
+      return;
+    }
+    const ms = parseLimit(a.replace(/\b(daily|every ?day|total|all|today)\b/g, " "));
+    if (!(ms >= 60000) || ms > 24 * 3600000) { line("say how long, e.g. " + (action === "complete" ? "/doneat" : "/stopat") + " 1h 10m - or just " + (action === "complete" ? "/doneat" : "/stopat") + " and it asks", "e"); return; }
+    await save(ms, /\b(daily|every ?day)\b/.test(a), /\b(total|all)\b/.test(a) ? "total" : "today");
+  }
+
   // ---------- marked rows ----------
-  let marked = {}, boxes = false, cfgIds = new Set(), queue = null, arBoxes = false, picks = { ids: [], names: {} };
+  let marked = {}, boxes = false, cfgIds = new Set(), queue = null, arBoxes = false, picks = { ids: [], names: {} }, stops = {};
   const asPick = (v) => ({ ids: Array.isArray(v && v.ids) ? v.ids.map(String) : [], names: (v && v.names) || {} });
-  const load = () => chrome.storage.local.get(["autoCompleteTasks", "acBoxes", "settings", "autoRunQueue", "arBoxes", "autoRunPick"]).then((g) => {
+  const load = () => chrome.storage.local.get(["autoCompleteTasks", "acBoxes", "settings", "autoRunQueue", "arBoxes", "autoRunPick", "autoStopTasks"]).then((g) => {
     marked = (g && g.autoCompleteTasks) || {};
+    stops = (g && g.autoStopTasks) || {};
     queue = (g && g.autoRunQueue) || null;
     boxes = !!(g && g.acBoxes);
     arBoxes = !!(g && g.arBoxes);
@@ -39,6 +106,7 @@
       if (ch.autoRunQueue) queue = ch.autoRunQueue.newValue || null;
       if (ch.arBoxes) arBoxes = !!ch.arBoxes.newValue;
       if (ch.autoRunPick) picks = asPick(ch.autoRunPick.newValue);
+      if (ch.autoStopTasks) { stops = ch.autoStopTasks.newValue || {}; paintBar(); }
       if (ch.autoCompleteTasks || ch.acBoxes || ch.autoRunQueue || ch.arBoxes || ch.autoRunPick) paintRows();
       if (ch.settings) load();
     });
@@ -148,6 +216,7 @@
     await hideBoxes();
     await clearPicks();
     await hideArBoxes();
+    await chrome.storage.local.set({ autoStopTasks: {} }); stops = {};
     setNote(""); // a message about something that is now off would only mislead
   }
   function activeItems() {
@@ -158,6 +227,8 @@
     if (n) out.push({ key: "marks", text: "⏱ " + n + " task" + (n === 1 ? "" : "s") + " complete at " + (n === 1 ? "its" : "their") + " estimate", btn: "Turn off", run: clearMarks, tip: Object.values(marked).map((m) => m.name).filter(Boolean).join("\n") });
     if (boxes) out.push({ key: "boxes", text: "☑ Tick boxes in the task list", btn: "Hide", run: hideBoxes, tip: "Tick a task to have it complete at its estimate" });
     if (arBoxes) out.push({ key: "arboxes", text: "① Numbered boxes in the task list", btn: "Hide", run: hideArBoxes, tip: "Click a task's box to put it in the run order, click it again to take it out" });
+    const ns = Object.keys(stops).length;
+    if (ns) out.push({ key: "stopat", text: "\u23F1 " + ns + " stop-at limit" + (ns === 1 ? "" : "s"), btn: "Turn off", run: async () => { await chrome.storage.local.set({ autoStopTasks: {} }); stops = {}; paintBar(); }, tip: Object.values(stops).map((r) => (r.action === "complete" ? "complete " : "stop ") + (r.name || "") + " at " + fmtLimit(r.ms) + (r.scope === "total" ? " in all" : " today") + (r.daily ? ", every day" : "")).join("\n") });
     if (note) out.push({ key: "note", text: note, btn: "", run: null, tip: "" });
     return out;
   }
@@ -292,6 +363,8 @@
     { name: "/autocomplete boxes", about: "a tick box on every task row to mark them right in the table  (/autocomplete boxes off to hide)" },
     { name: "/autorun", about: "run tasks one after another: each starts, completes at its estimate, then the next starts - while one runs, the tasks you pick go at its end  (/autorun list | stop | clear)" },
     { name: "/autorun boxes", about: "a numbered box on every task row: click them in the order you want the tasks to run, then Start  (/autorun boxes off to hide)" },
+    { name: "/stopat", about: "stop the running task's timer at any time you like: /stopat 1h 10m (or just /stopat and it asks)  - add daily = every day, total = all its time  (/stopat list | off | clear)" },
+    { name: "/doneat", about: "the same, but also mark the task complete: /doneat 1h 13m (or just /doneat and it asks)" },
     { name: "/refresh", about: "read everything from ClickUp again now" },
     { name: "/whoami", about: "who and where you are" },
     { name: "/active", about: "what's switched on, and how to switch each off" },
@@ -305,6 +378,7 @@
     { name: "/perf", about: "show or hide the Performance and Health columns in Admin › Team hub  (/perf on | off)", admin: true },
   ];
   async function run(v) {
+    v = v.replace(/^\/(stop|done)\s+at\b/i, "/$1at"); // "/stop at 1h 10m" works too
     const [cmd, ...rest] = v.split(/\s+/);
     const arg = rest.join(" ").toLowerCase();
     const c = cmd.toLowerCase();
@@ -329,7 +403,7 @@
     if (c === "/active") {
       const items = activeItems();
       if (!items.length) { line("nothing switched on", "mu"); return; }
-      const how = { queue: "/autorun stop", arpick: "/autorun clear  (or Start above the list to run them)", marks: "/autocomplete clear  (one: /autocomplete off <n> from /autocomplete list)", boxes: "/autocomplete boxes off", arboxes: "/autorun boxes off" };
+      const how = { stopat: "/stopat clear  (one: /stopat off while it runs)", queue: "/autorun stop", arpick: "/autorun clear  (or Start above the list to run them)", marks: "/autocomplete clear  (one: /autocomplete off <n> from /autocomplete list)", boxes: "/autocomplete boxes off", arboxes: "/autorun boxes off" };
       for (const it of items) line(how[it.key] ? it.text.padEnd(42) + "off: " + how[it.key] : it.text, how[it.key] ? "hl" : "mu");
       line("/off switches all of it off", "mu");
       return;
@@ -352,6 +426,7 @@
       return;
     }
     if (c === "/autocomplete") return autocomplete(arg);
+    if (c === "/stopat" || c === "/doneat") return stopAt(arg, c === "/doneat" ? "complete" : "stop");
     if (c === "/autorun") return autorun(arg);
     const r = await send({ type: "DEV_CMD", cmd: c.slice(1) }, 180000);
     if (!r || r.unknown) { line("Unknown command: " + cmd, "e"); return; }

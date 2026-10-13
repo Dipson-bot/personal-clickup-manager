@@ -1389,13 +1389,13 @@ function cuSplitByWeekOpt(sorted) {
       const mb = document.createElement("b");
       mb.textContent = new Date(Math.floor(curMonth / 12), curMonth % 12, 1).toLocaleDateString(undefined, { month: "long", year: "numeric" });
       const ms = document.createElement("span");
-      const mest = inMonth.reduce((a, t) => a + (Number(t.estimateMs) || 0), 0), mtrk = inMonth.reduce((a, t) => a + (Number(t.spentMs) || 0), 0);
+      const mest = inMonth.reduce((a, t) => a + cuEstOf(t), 0), mtrk = inMonth.reduce((a, t) => a + (Number(t.spentMs) || 0), 0);
       ms.textContent = " \u00b7 " + inMonth.length + " task" + (inMonth.length === 1 ? "" : "s") + " \u00b7 est " + fmtDurOpt(mest) + (mtrk > 0 ? " \u00b7 tracked " + fmtDurOpt(mtrk) : "");
       mh.append(mb, ms);
       if (typeof cuTabGroupBtn === "function") mh.appendChild(cuTabGroupBtn(mb.textContent, () => inMonth, "blue"));
       out.push({ _wkHead: mh });
     }
-    const est = rows.reduce((a, t) => a + (Number(t.estimateMs) || 0), 0), trk = rows.reduce((a, t) => a + (Number(t.spentMs) || 0), 0);
+    const est = rows.reduce((a, t) => a + cuEstOf(t), 0), trk = rows.reduce((a, t) => a + (Number(t.spentMs) || 0), 0);
     const h = document.createElement("div");
     h.className = "cu-wkgroup" + (k === thisWeek ? " now" : "");
     const t1 = document.createElement("b");
@@ -3108,6 +3108,28 @@ const optWeekUndone = new Set(); // batches already undone (no second Undo)
 let optWeekPending = [];
 const readWeekPending = () => chrome.storage.local.get("cuPendingMoves").then((g) => { optWeekPending = (g && g.cuPendingMoves && Array.isArray(g.cuPendingMoves.items)) ? g.cuPendingMoves.items : []; }).catch(() => {});
 readWeekPending().then(() => { if (optWeekPending.length && optClickup) renderOptionsWeekly(optClickup); });
+// This week's tracked number and bar going on with the running timer - only the
+// numbers: re-drawing the whole card every 30 s made the lists flicker.
+function cuWeekLiveNumbers() {
+  const cu = optClickup || {};
+  const w = cuWeekWithLive(cu.state && cu.state.weekly, cuLiveSinceRefresh(cu.state));
+  if (!w || !w.today || !w.friday) return;
+  const agg = cu.weeklyTo === "friday" ? w.friday : w.today;
+  const v = Number(agg.spentMs) || 0;
+  const el = $("optWeekTrk");
+  if (el) el.textContent = fmtDurOpt(v);
+  const wTarget = (Number(cu.state && cu.state.targetMs) || 0) * (Number(agg.count) || 0);
+  const f = $("optWeekTrkFill");
+  if (f && wTarget > 0) { f.style.width = Math.min(100, Math.round((v / wTarget) * 100)) + "%"; f.classList.toggle("met", v >= wTarget); }
+}
+// While a timer runs: Due today's tracked figure and This week go on with it.
+setInterval(() => {
+  try {
+    if (document.hidden) return;
+    if (cuLiveCardTick) cuLiveCardTick();
+    if (optClickup && optClickup.state && optClickup.state.running) cuWeekLiveNumbers();
+  } catch (e) {}
+}, 30000);
 chrome.storage.onChanged.addListener((ch, area) => { if (area === "local" && ch.cuPendingMoves) readWeekPending().then(() => { if (optClickup) renderOptionsWeekly(optClickup); }); });
 function cuWeekMovable(t, dayTs) {
   if (!t || t.local || t.done || t.type === "cfg" || t.extended || t.isExtra || /^extra tasks?\b/i.test(String(t.name || ""))) return false;
@@ -3219,6 +3241,10 @@ function cuWireWeekDrag(box, cu) {
   box.addEventListener("mousedown", (e) => {
     if (e.button !== 0 || !e.target.closest) return;
     if (e.target.closest("button, input, select, textarea, .pcm-chtools")) return;
+    // Inside a task's ▸ details (its description editor, notes, comments) a press
+    // places the cursor / selects text - it must never start a box selection
+    // (that blocked clicking inside the description: only the keyboard moved the cursor).
+    if (e.target.closest(".pcm-panel, [contenteditable], .md-area")) return;
     if (!(e.ctrlKey || e.metaKey) && e.target.closest("a")) return; // Ctrl + drag may start on a task's name
     const onRow = e.target.closest(".cu-task");
     const inList = e.target.closest(".cu-tasklist[data-wk-day]");
@@ -3374,10 +3400,42 @@ async function cuApplyStaged(ids) {
 // from the Tasks card's filter.
 let optWeekAssign = "all";
 try { chrome.storage.local.get("optWeekAssign").then((g) => { if (g && /^(all|me|shared)$/.test(g.optWeekAssign)) { optWeekAssign = g.optWeekAssign; if (optClickup) renderOptionsWeekly(optClickup); } }).catch(() => {}); } catch (e) {}
+// A row's estimate as it counts in a total: nothing for an unfinished task of a
+// paused client (Admin › Paused clients) - its tracked time still counts.
+function cuEstOf(t) {
+  if (!t) return 0;
+  if (!t.done && (t.paused || (window.PcmPaused && window.PcmPaused.pausedFor(t)))) return 0;
+  return Number(t.estimateMs) || 0;
+}
+// The running timer's minutes since the last ClickUp refresh. The totals from
+// ClickUp stop at the refresh (every ~5 minutes) but the timer doesn't, so the
+// Due today card and This week fell a few minutes behind the "50m today" pills.
+function cuLiveSinceRefresh(st) {
+  const r = st && st.running;
+  if (!r || !r.startMs) return 0;
+  const dayStart = new Date().setHours(0, 0, 0, 0);
+  return Math.max(0, Date.now() - Math.max(Number(r.startMs) || 0, Number(st.at) || 0, dayStart));
+}
+// This week with those minutes added to today (a copy - the state isn't changed).
+function cuWeekWithLive(w, live) {
+  if (!w || !(live > 0) || !w.today || !w.friday) return w;
+  const today = new Date().toDateString();
+  const add = (x) => (x ? { ...x, spentMs: (Number(x.spentMs) || 0) + live } : x);
+  return { ...w, today: add(w.today), friday: add(w.friday), perDay: Array.isArray(w.perDay) ? w.perDay.map((d) => (d && new Date(d.ts).toDateString() === today ? add(d) : d)) : w.perDay };
+}
+// Something being used right there (typing in any box, an open ▸ details panel,
+// a description editor, a confirm prompt): a timed re-draw would rebuild the list
+// under it - the editor lost its cursor every 30 s while a timer ran.
+function cuBusyHere(root) {
+  const a = document.activeElement;
+  if (a && a !== document.body && (a.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(a.tagName))) return true;
+  return !!(root && root.querySelector(".pcm-panel, .md-area, .cu-rowconfirm"));
+}
+let cuLiveCardTick = null; // repaints the Due today card's tracked figure
 function renderOptionsWeekly(cu) {
   if (cuEstEditingOpt) { cuRenderPendingOpt = true; return; }
   cu = cu || {};
-  const w = cu.state && cu.state.weekly;
+  const w = cuWeekWithLive(cu.state && cu.state.weekly, cuLiveSinceRefresh(cu.state));
   if (!cu.configured || !w || !w.today || !w.friday) {
     $("optWeekEst").textContent = "-";
     $("optWeekTrk").textContent = "-";
@@ -4296,14 +4354,14 @@ async function renderOptionsFilter() {
         shownDeadline = shownDeadline.filter(keep);
         shownTracked = shownTracked.filter(keep);
         // Headline totals follow the chosen client too.
-        estShown = shownTasks.reduce((x, t) => x + (Number(t.estimateMs) || 0), 0)
+        estShown = shownTasks.reduce((x, t) => x + cuEstOf(t), 0)
           + shownDeadline.reduce((x, t) => x + (Number(t.dayEstimateMs) || 0), 0);
         spentShown = [].concat(shownTasks, shownDeadline, shownTracked).reduce((x, t) => x + (Number(t.spentMs) || 0), 0);
       }
     }
     if (dueOnly && estShown == null) {
       // Totals follow the rows actually shown.
-      estShown = shownTasks.reduce((x, t) => x + (Number(t.estimateMs) || 0), 0)
+      estShown = shownTasks.reduce((x, t) => x + cuEstOf(t), 0)
         + shownDeadline.reduce((x, t) => x + (Number(t.dayEstimateMs) || 0), 0);
       spentShown = [].concat(shownTasks, shownDeadline, shownTracked).reduce((x, t) => x + (Number(t.spentMs) || 0), 0);
     }
@@ -6024,7 +6082,7 @@ function renderClickupPreviewBody(st) {
     viewTracked = viewTracked.filter(keepClient);
     if (viewTasks.length + viewDeadline.length + viewTracked.length < before) {
       clientShare = {
-        est: viewTasks.reduce((a, t) => a + (Number(t.estimateMs) || 0), 0)
+        est: viewTasks.reduce((a, t) => a + cuEstOf(t), 0)
           + viewDeadline.reduce((a, d) => a + (Number(d.dayEstimateMs) || 0), 0),
         spent: viewTasks.concat(viewDeadline, viewTracked).reduce((a, t) => a + (Number(t.spentMs) || 0), 0),
       };
@@ -6123,7 +6181,11 @@ function renderClickupPreviewBody(st) {
   }
   const trkVal = document.createElement("span");
   trkVal.className = "val";
-  trkVal.textContent = fmtDurOpt(spentTot) + (targetMs > 0 ? " of " + fmtDurOpt(targetMs) : "");
+  // Today's whole total (not narrowed by a client or a refine box): goes on with
+  // the running timer between refreshes, like the "today" pills.
+  const liveOn = view.scope === "today" && !refineOn && !clientsSel.length;
+  const trkShown = () => spentTot + (liveOn ? cuLiveSinceRefresh(st) : 0);
+  trkVal.textContent = fmtDurOpt(trkShown()) + (targetMs > 0 ? " of " + fmtDurOpt(targetMs) : "");
   trkLabel.appendChild(trkName);
   trkLabel.appendChild(trkVal);
   // Click either number: the tasks behind it and why the two differ.
@@ -6137,8 +6199,14 @@ function renderClickupPreviewBody(st) {
   trkBar.className = "cu-bar2 trk";
   const trkFill = document.createElement("div");
   trkFill.className = "cu-fill2 trk" + (spentTot >= targetMs && targetMs > 0 ? " met" : "");
-  const trkPct = targetMs > 0 ? Math.min(100, Math.round((spentTot / targetMs) * 100)) : 0;
+  const trkPct = targetMs > 0 ? Math.min(100, Math.round((trkShown() / targetMs) * 100)) : 0;
   trkFill.style.width = trkPct + "%";
+  cuLiveCardTick = liveOn ? () => {
+    if (!trkVal.isConnected) return;
+    const s = trkShown();
+    trkVal.textContent = fmtDurOpt(s) + (targetMs > 0 ? " of " + fmtDurOpt(targetMs) : "");
+    trkFill.style.width = (targetMs > 0 ? Math.min(100, Math.round((s / targetMs) * 100)) : 0) + "%";
+  } : null;
   // Today's share of the fill, drawn inside the bar. Only when today is part of
   // the bar's own total (a due-tomorrow or custom-range filter can be disjoint).
   if (todayTrkMs > 0 && todayTrkMs <= spentTot) {
@@ -6414,7 +6482,7 @@ function renderClickupPreviewBody(st) {
     const shownDl = viewDeadline.filter((t) => !t.error);
     const nShown = shownDl.length + viewTasks.length + viewTracked.length;
     if (nShown) {
-      const estAll = viewTasks.reduce((a, t) => a + (Number(t.estimateMs) || 0), 0) + shownDl.reduce((a, t) => a + (Number(t.dayEstimateMs) || 0), 0);
+      const estAll = viewTasks.reduce((a, t) => a + cuEstOf(t), 0) + shownDl.reduce((a, t) => a + (Number(t.dayEstimateMs) || 0), 0);
       const trkAll = [].concat(viewTasks, shownDl, viewTracked).reduce((a, t) => a + (Number(t.spentMs) || 0), 0);
       const noEst = viewTasks.filter((t) => !Number(t.estimateMs)).length + shownDl.filter((t) => !Number(t.dayEstimateMs)).length;
       const tot = document.createElement("div");
@@ -6455,7 +6523,7 @@ function renderClickupPreviewBody(st) {
       const t1 = viewTasks.filter((t) => clientOf(t) === c);
       const k1 = viewTracked.filter((t) => clientOf(t) === c);
       if (!d1.length && !t1.length && !k1.length) continue;
-      const est = t1.reduce((a, t) => a + (Number(t.estimateMs) || 0), 0)
+      const est = t1.reduce((a, t) => a + cuEstOf(t), 0)
         + d1.reduce((a, t) => a + (Number(t.dayEstimateMs) || 0), 0);
       const trk = t1.concat(d1, k1).reduce((a, t) => a + (Number(t.spentMs) || 0), 0);
       const head = document.createElement("div");
@@ -7379,7 +7447,7 @@ var insHydrated = null;
 function insHydrate() {
   if (!insHydrated) insHydrated = (typeof chrome !== "undefined" && chrome.storage ? chrome.storage.local.get(INS_STORE) : Promise.resolve({})).then(function (g) {
     var c = g && g[INS_STORE];
-    if (!insCache && c && Array.isArray(c.tasks)) insCache = { status: "ok", data: c.tasks, at: Number(c.at) || 0 };
+    if (!insCache && c && Array.isArray(c.tasks)) insCache = { status: "ok", data: c.tasks.filter(function (t) { return !(window.PcmPaused && window.PcmPaused.pausedFor(t)); }), at: Number(c.at) || 0 };
   }).catch(function () {});
   return insHydrated;
 }
@@ -7718,7 +7786,8 @@ function insFetchOpen(force) {
   return insFetchP = send({ type: "CLICKUP_OPEN_TASKS", force: !!force }, 30000).then(function (r) {
     insLoading = false;
     if (r && r.ok && r.data && Array.isArray(r.data.tasks)) {
-      insCache = { status: "ok", data: r.data.tasks, at: Date.now() };
+      // A paused client's tasks don't count here (Worth a look, health, Insights).
+      insCache = { status: "ok", data: r.data.tasks.filter(function (t) { return !(window.PcmPaused && window.PcmPaused.pausedFor(t)); }), at: Date.now() };
       try { var blob = { at: insCache.at, tasks: r.data.tasks }; if (JSON.stringify(blob).length < 3000000) chrome.storage.local.set({ [INS_STORE]: blob }); } catch (e) {}
     }
     // A failed refresh keeps showing the last good result (with its time) rather than an error.
@@ -8287,6 +8356,21 @@ function insOpenDrill(drill, client) {
 // manual reload. Debounced + focus-guarded so a background refresh never wipes
 // out text the user is actively typing.
 // -----------------------------------------------------------------------------
+// Someone is using the page right now: a drag (moving / reordering tasks), a
+// mouse button held, something clicked or typed in the last few seconds, an open
+// menu. Background redraws (new data from ClickUp, timers) wait until it's over,
+// so the lists never jump or flicker under the cursor.
+let pcmLastAct = 0, pcmPointerDown = false;
+for (const ev of ["pointerdown", "keydown", "dragstart", "dragover", "drop", "input", "wheel"]) document.addEventListener(ev, () => { pcmLastAct = Date.now(); }, { capture: true, passive: true });
+document.addEventListener("pointerdown", () => { pcmPointerDown = true; }, { capture: true, passive: true });
+for (const ev of ["pointerup", "pointercancel", "dragend"]) document.addEventListener(ev, () => { pcmPointerDown = false; pcmLastAct = Date.now(); }, { capture: true, passive: true });
+function cuUserBusy() {
+  if (pcmPointerDown || Date.now() - pcmLastAct < 4000) return true;
+  try { if (cuDraggingOpt || cuDragTasks || cuRoDrag) return true; } catch (e) {}
+  const a = document.activeElement;
+  if (a && a !== document.body && (a.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(a.tagName))) return true;
+  return !!document.querySelector(".cu-filter-menu:not([hidden]), .flt-people-menu:not([hidden]), .pcm-thm");
+}
 function _isEditingField() {
   const ae = document.activeElement;
   return !!(ae && (ae.tagName === "INPUT" || ae.tagName === "TEXTAREA" || ae.isContentEditable));
@@ -8312,7 +8396,7 @@ let _cuUiTimer = null;
 function scheduleClickupUiRefresh(delay) {
   clearTimeout(_cuUiTimer);
   _cuUiTimer = setTimeout(async () => {
-    if (_isEditingField()) { scheduleClickupUiRefresh(1500); return; }
+    if (_isEditingField() || cuUserBusy()) { scheduleClickupUiRefresh(1500); return; }
     try {
       const st = await send({ type: "GET_STATE" });
       if (st) {
@@ -8655,12 +8739,14 @@ function renderSiteMonitorStatus(cfg) {
     return;
   }
   // Background replies { ok, state } - read the state object, not the wrapper.
-  Promise.all([send({ type: "GET_SITE_MONITOR_STATE" }), chrome.storage.local.get("siteSnooze").catch(() => ({}))]).then(([resp, sg]) => {
+  Promise.all([send({ type: "GET_SITE_MONITOR_STATE" }), chrome.storage.local.get(["siteSnooze", "siteOff"]).catch(() => ({}))]).then(([resp, sg]) => {
     const state = resp && resp.state && typeof resp.state === "object" ? resp.state : {};
     const snooze = (sg && sg.siteSnooze) || {};
+    const offMap = (sg && sg.siteOff) || {};
     const rows = cfg.sites.map((s) => {
       const st = state[s.url] || { up: null, fails: 0, lastCheck: 0 };
-      const statusText = st.up === true ? "✅ Up" : st.up === false ? (st.blank || st.kind === "blank" ? "⚠️ Blank page" : st.kind === "5xx" ? "🔥 Server error" + (st.status ? " (HTTP " + st.status + ")" : "") : "🚨 Down") : "⚪ Not checked yet";
+      const isOff = !!offMap[s.url];
+      const statusText = isOff ? "\u23F9 Monitoring off for this site" : st.paused ? "\u23F8 Client paused - not checked" : st.up === true ? "✅ Up" : st.up === false ? (st.blank || st.kind === "blank" ? "⚠️ Blank page" : st.kind === "5xx" ? "🔥 Server error" + (st.status ? " (HTTP " + st.status + ")" : "") : "🚨 Down") : "⚪ Not checked yet";
       const lastCheckText = st.lastCheck ? new Date(st.lastCheck).toLocaleString() : "never";
       // The address opens the site (new tab).
       const link = /^https?:\/\//i.test(s.url) ? '<a class="sm-url" href="' + escapeHtml(s.url) + '" target="_blank" rel="noopener" title="Open the site">' + escapeHtml(s.url) + "</a>" : escapeHtml(s.url);
@@ -8673,7 +8759,8 @@ function renderSiteMonitorStatus(cfg) {
       const speed = st.up === true && st.lastMs ? " · " + (st.lastMs < 1000 ? st.lastMs + "ms" : (st.lastMs / 1000).toFixed(1) + "s") : "";
       const u = escapeHtml(s.url);
       return '<div class="imp-row" data-sm-row="' + u + '"><div class="imp-entry"><b>' + label + '</b><br><span class="hint">' + statusText + speed + " · last check: " + lastCheckText + (st.fails && st.up !== false ? " · " + st.fails + " failed check(s)" : "") + why + snoozeTxt + "</span></div>"
-        + '<div class="sm-acts"><button type="button" class="sm-check" data-sm-url="' + u + '" title="Check this site right now">Check</button>'
+        + '<div class="sm-acts"><label class="sm-on" title="Untick to stop checking this site (and its alerts) - whether or not the client is with us. Tick it again to start."><input type="checkbox" data-sm-on="' + u + '"' + (isOff ? "" : " checked") + " /> Monitor</label>"
+        + '<button type="button" class="sm-check" data-sm-url="' + u + '" title="Check this site right now"' + (isOff ? " disabled" : "") + ">Check</button>"
         + (snoozed
           ? '<button type="button" class="sm-act" data-sm-unsnooze="' + u + '" title="Alert me about this site again">Unsnooze</button>'
           : '<select class="sm-snooze" data-sm-snooze="' + u + '" title="Stop the alerts for this site for a while - it is still checked"><option value="">Snooze…</option><option value="1">1 hour</option><option value="4">4 hours</option><option value="tom">Until tomorrow 9 AM</option><option value="72">3 days</option><option value="168">1 week</option></select>')
@@ -8783,7 +8870,18 @@ async function getSiteMonitorConfigOpt() {
   const resp = await send({ type: "GET_SITE_MONITOR_CONFIG" }).catch(() => null);
   return (resp && resp.cfg && typeof resp.cfg === "object") ? resp.cfg : { sites: [], enabled: false };
 }
-if ($("siteMonitorStatus")) $("siteMonitorStatus").addEventListener("change", (e) => {
+if ($("siteMonitorStatus")) $("siteMonitorStatus").addEventListener("change", async (e) => {
+  // Monitor tick: this one site on or off (kept apart from the site list, so
+  // editing the list as text never loses it).
+  const on = e.target && e.target.closest && e.target.closest("[data-sm-on]");
+  if (on) {
+    const g = await chrome.storage.local.get("siteOff").catch(() => ({}));
+    const map = { ...((g && g.siteOff) || {}) };
+    if (on.checked) delete map[on.dataset.smOn]; else map[on.dataset.smOn] = Date.now();
+    await chrome.storage.local.set({ siteOff: map });
+    renderSiteMonitorStatus(await getSiteMonitorConfigOpt());
+    return;
+  }
   const sel = e.target && e.target.closest && e.target.closest("[data-sm-snooze]");
   if (!sel || !sel.value) return;
   const v = sel.value;
@@ -9426,7 +9524,7 @@ const ADMIN_FILES = [
   "manifest.json", "background.js", "popup.html", "popup.js", "options.html", "options.js", "phone-timer.js",
   "offscreen.html", "offscreen.js", "update.html", "update.js", "auto-update.html", "auto-update.js", "wrapup.html", "wrapup.js",
   "notify-menu.js", "export-tasks.js", "lib-zip.js", "lib-unzip.js", "lib-automation.js",
-  "lib-availability.js", "lib-clickup.js", "lib-crypto.js", "lib-tidy.js", "lib-drive.js", "find-many.js", "task-panel.js", "lib-updater.js", "offscreen-updater.js", "celebrate.js", "celebrate.html", "celebrate-window.js", "fx.js", "pcm-help.js", "tracker.html", "tracker.js", "bulk-edit.js", "pcm-search.js", "lib-taskfiles.js", "task-files.js", "reminders.js", "hub.js", "task-sort.js", "breakdown.js", "calendar.js", "notices.js", "insights-plus.js", "header-ui.js", "weather.js", "plan-apply.js", "task-notes.js", "md-notes.js", "mention.js", "long-list.js", "local-tasks.js", "ui-extras.js", "assignees.js", "add-time.js", "team-hub.gs", "vendor/pdf.min.js", "vendor/pdf.worker.min.js", "vendor/pdfjs-LICENSE.txt",
+  "lib-availability.js", "lib-clickup.js", "lib-crypto.js", "lib-tidy.js", "lib-drive.js", "find-many.js", "task-panel.js", "lib-updater.js", "offscreen-updater.js", "celebrate.js", "celebrate.html", "celebrate-window.js", "fx.js", "pcm-help.js", "tracker.html", "tracker.js", "bulk-edit.js", "pcm-search.js", "lib-taskfiles.js", "task-files.js", "reminders.js", "hub.js", "task-sort.js", "breakdown.js", "calendar.js", "notices.js", "insights-plus.js", "header-ui.js", "weather.js", "paused-clients.js", "plan-apply.js", "task-notes.js", "md-notes.js", "mention.js", "long-list.js", "local-tasks.js", "ui-extras.js", "assignees.js", "add-time.js", "team-hub.gs", "vendor/pdf.min.js", "vendor/pdf.worker.min.js", "vendor/pdfjs-LICENSE.txt",
   "icons/icon16.png", "icons/icon48.png", "icons/icon128.png", "icons/celebrate.png", "icons/sad.png",
   "sounds/notify.wav", "sounds/danger.mp3", "sounds/winner.wav",
   "README.md", "CHANGELOG.md",
@@ -9954,6 +10052,62 @@ if ($("floatNow")) {
   $("floatNow").onclick = () => window.PcmHelp && window.PcmHelp.openFloat();
 }
 
+// ---- Admin: paused clients (update-policy.json "pausedClients") ----
+// Their tasks are struck through for everyone (paused-clients.js); Resume undoes it.
+let admPaused = null;
+function admPauseRender() {
+  const box = $("admPauseList");
+  if (!box) return;
+  if (!admPaused) { box.textContent = "Loading…"; return; }
+  if (!admPaused.length) { box.textContent = "No paused clients - everyone's tasks show as usual."; return; }
+  box.innerHTML = admPaused.map((p, i) => '<div class="adm-pause-item"><span class="w">\u23F8 <b>' + escapeHtml(p.name) + "</b>" +
+    (p.since ? ' <span class="hint">since ' + escapeHtml(new Date(p.since + "T12:00:00").toLocaleDateString([], { month: "short", day: "numeric", year: "numeric" })) + "</span>" : "") +
+    (p.note ? ' <span class="hint">- ' + escapeHtml(p.note) + "</span>" : "") +
+    '</span><button type="button" data-adm-resume="' + i + '" title="They are back: show their tasks as usual again for everyone">Resume</button></div>').join("");
+}
+async function admPauseLoad() {
+  const r = await send({ type: "ADMIN_POLICY_GET" }, 20000).catch(() => null);
+  const raw = r && r.ok && r.policy && Array.isArray(r.policy.pausedClients) ? r.policy.pausedClients : null;
+  if (raw) admPaused = raw.slice();
+  else { const g = await chrome.storage.local.get("pausedClients").catch(() => ({})); admPaused = Array.isArray(g.pausedClients) ? g.pausedClients.slice() : []; }
+  admPauseRender();
+}
+async function admPausePublish(list, what) {
+  $("admPauseMsg").textContent = "Publishing…";
+  const r = await send({ type: "ADMIN_POLICY_SET", policy: { pausedClients: list } }, 30000).catch((e) => ({ ok: false, error: String(e && e.message ? e.message : e) }));
+  if (!r || !r.ok) { $("admPauseMsg").textContent = "Couldn't publish: " + ((r && r.error) || "no reply"); return false; }
+  admPaused = list.slice();
+  await chrome.storage.local.set({ pausedClients: list }).catch(() => {}); // this copy right away
+  admPauseRender();
+  $("admPauseMsg").textContent = what + " \u2713 Everyone has it within a few minutes.";
+  return true;
+}
+if ($("admPauseCard")) {
+  admPauseRender();
+  // The client box suggests every client in the workspace (and yours).
+  const fillNames = () => send({ type: "CLICKUP_CLIENT_NAMES" }, 30000).then((res) => {
+    const dl = $("admPauseNames");
+    if (dl && res && Array.isArray(res.names)) dl.innerHTML = res.names.map((n) => '<option value="' + escapeHtml(n) + '"></option>').join("");
+  }).catch(() => {});
+  $("admPauseName").addEventListener("focus", fillNames, { once: true });
+  $("admPauseAdd").onclick = async () => {
+    const name = $("admPauseName").value.trim(), note = $("admPauseNote").value.trim();
+    if (!name) { $("admPauseMsg").textContent = "Type the client's name first."; return; }
+    if (!admPaused) await admPauseLoad();
+    const k = window.PcmPaused ? window.PcmPaused.key(name) : name.toLowerCase();
+    if (admPaused.some((p) => (window.PcmPaused ? window.PcmPaused.key(p.name) : p.name.toLowerCase()) === k)) { $("admPauseMsg").textContent = name + " is already paused."; return; }
+    const today = new Date(); const ymd = today.getFullYear() + "-" + String(today.getMonth() + 1).padStart(2, "0") + "-" + String(today.getDate()).padStart(2, "0");
+    if (await admPausePublish(admPaused.concat({ name, since: ymd, note }), "Paused " + name)) { $("admPauseName").value = ""; $("admPauseNote").value = ""; }
+  };
+  $("admPauseList").addEventListener("click", async (e) => {
+    const b = e.target.closest("[data-adm-resume]");
+    if (!b || !admPaused) return;
+    const p = admPaused[Number(b.dataset.admResume)];
+    if (!p || !confirm("Resume " + p.name + "? Their tasks show as usual again for everyone.")) return;
+    await admPausePublish(admPaused.filter((x) => x !== p), "Resumed " + p.name);
+  });
+  admPauseLoad();
+}
 // ---- Admin: company calendar & events (update-policy.json "calendar") ----
 let admCal = null, admCalEdit = -1;
 const admCalDates = { from: 0, to: 0 };
@@ -10064,7 +10218,7 @@ if ($("admCalCard")) {
 // Where the timer shows (Floating window / Taskbar / Both / Neither) is picked once
 // and kept; the Dashboard card invites people to try the taskbar until they pick.
 const DESK_REL = "https://github.com/Dipson-bot/personal-clickup-manager/releases";
-const DESK_TAG = "desktop-v0.3.8";
+const DESK_TAG = "desktop-v0.3.9";
 let deskOs = "";
 async function deskPlatform() {
   if (deskOs) return deskOs;
@@ -10096,7 +10250,8 @@ async function deskDownload() {
   deskWatch();
   return os === "win"
     ? "Downloading… Open ClickUp-Tracker-Setup.exe when it finishes. If Windows says \"Windows protected your PC\", click More info › Run anyway (the app isn't from the Microsoft Store). It then appears on your taskbar and signs in by itself within a minute."
-    : "Downloading… Open the .dmg and drag ClickUp Tracker into Applications, then open it from there. The first time, Mac asks if you're sure: right-click it › Open (or System Settings › Privacy & Security › Open Anyway). It then shows in the menu bar and signs in by itself within a minute.";
+    : "Downloading… Open the .dmg and drag ClickUp Tracker into Applications, then open it from there. The first time, Mac asks if you're sure: right-click it › Open (or System Settings › Privacy & Security › Open Anyway). It then shows in the menu bar and signs in by itself within a minute." +
+      " If your Mac says the app \"is damaged and can't be opened\" (an older download), press Cancel, open Terminal and run:  xattr -cr \"/Applications/ClickUp Tracker.app\"  - then open it again.";
 }
 // After a download: look for the app every 10 s for 10 minutes so Settings and
 // the card flip to "running" as soon as it starts.
@@ -10378,3 +10533,39 @@ if ($("admSitesPublish")) $("admSitesPublish").onclick = async () => {
 })();
 
 if ($("cuSplitWeeksOpt")) $("cuSplitWeeksOpt").addEventListener("change", (e) => { cuSplitWeeks = !!e.target.checked; chrome.storage.local.set({ cuSplitWeeks }).catch(() => {}); optRepaintCuPreview(); });
+
+// Two columns of cards that keep even heights (General): the cards stay in their
+// reading order - the first ones on the left, the rest on the right - split where
+// the two sides come out closest, and again whenever a card grows or shrinks or
+// the window changes size. (One column on a narrow window: the same order.)
+(function balanceColumns() {
+  const sets = [...document.querySelectorAll(".two-col.auto-balance")].map((g) => {
+    const cols = [...g.children].filter((c) => c.classList.contains("col"));
+    return cols.length === 2 ? { g, cols, cards: cols.flatMap((c) => [...c.children]) } : null;
+  }).filter(Boolean);
+  if (!sets.length) return;
+  let t = 0;
+  function balance() {
+    for (const { g, cols, cards } of sets) {
+      if (!g.offsetParent) continue; // its section is not on screen
+      const gap = parseFloat(getComputedStyle(cols[0]).rowGap) || 20;
+      const h = cards.map((c) => (c.offsetParent ? c.offsetHeight + gap : 0));
+      const total = h.reduce((x, y) => x + y, 0);
+      let best = 0, bestDiff = Infinity, run = 0;
+      for (let k = 0; k <= cards.length; k++) {
+        const d = Math.abs(run - (total - run));
+        if (d < bestDiff) { bestDiff = d; best = k; }
+        run += h[k] || 0;
+      }
+      const want = (i) => (i < best ? cols[0] : cols[1]);
+      if (cards.every((c, i) => c.parentElement === want(i))) continue; // already balanced
+      cards.forEach((c, i) => want(i).appendChild(c)); // in order, so each column keeps it
+    }
+  }
+  const soon = () => { clearTimeout(t); t = setTimeout(balance, 120); };
+  try { const ro = new ResizeObserver(soon); for (const st of sets) st.cards.forEach((c) => ro.observe(c)); } catch (e) {}
+  window.addEventListener("resize", soon);
+  document.addEventListener("click", (e) => { if (e.target.closest && e.target.closest("#sideNav")) setTimeout(balance, 60); });
+  setTimeout(balance, 300);
+  window.pcmBalanceColumns = balance;
+})();

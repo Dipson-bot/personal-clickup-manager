@@ -140,6 +140,13 @@
   .row > div { flex: 1; }
   .checkbox { display: flex; align-items: center; gap: 8px; margin-top: 12px; font-size: 14px; }
   .checkbox input { width: auto; }
+  .sm-on { display: inline-flex; align-items: center; gap: 4px; font-size: 12px; font-weight: 600; margin: 0 4px 0 0; cursor: pointer; white-space: nowrap; }
+  .sm-on input { width: auto; margin: 0; }
+  .adm-pause-form { display: flex; flex-wrap: wrap; gap: 8px; }
+  .adm-pause-form input { flex: 1 1 200px; min-width: 0; width: auto; }
+  .adm-pause-item { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; padding: 6px 0; border-top: 1px solid var(--border); }
+  .adm-pause-item:first-child { border-top: 0; }
+  .adm-pause-item .w { flex: 1 1 220px; min-width: 0; color: var(--text); }
   /* A row with a dropdown (Size, Strip style…): wraps instead of squeezing its
      hint into a thin column when the page is zoomed in or narrow. */
   .checkbox:has(> select) { flex-wrap: wrap; row-gap: 4px; }
@@ -1215,6 +1222,10 @@
   .pcm-dash-strip .grow { margin-left: auto; display: flex; gap: 10px; align-items: center; }
   .pcm-dash-strip .pds-go { color: var(--indigo); font-size: 12px; text-decoration: none; font-weight: 700; background: none; border: 0; cursor: pointer; font-family: inherit; }
   .pcm-dash-strip .pds-go:hover { text-decoration: underline; }
+  /* Search, number, email and web-address boxes follow the theme too (they were
+     left out above, so they stayed browser-white in dark mode and on backgrounds). */
+  :where(input[type="search"], input[type="email"], input[type="url"], input[type="number"], input[type="date"], input[type="time"]) { background: var(--field, var(--card)); color: var(--text); border: 1px solid var(--border); border-radius: 8px; }
+  :where(input[type="search"])::placeholder { color: var(--muted); }
 </style>
 </head>
 <body class="tabbed">
@@ -2355,6 +2366,18 @@
         <span class="saved" id="admTokenMsg" style="display:none;"></span>
       </div>
     </div>
+    <div class="card" id="admPauseCard">
+      <h2>Paused clients</h2>
+      <p class="hint" style="margin:0 0 10px;line-height:1.55;">Clients who have stopped working with us for now. For <b>everyone</b>, their tasks are struck through with a <b>⏸ Client paused</b> pill in every list, and ▶ Start asks before tracking - so nobody tracks them by mistake. Nothing changes in ClickUp. When a client comes back, press <b>Resume</b> and their tasks are normal again.</p>
+      <div id="admPauseList" class="hint" style="margin:0 0 12px;"></div>
+      <div class="adm-pause-form">
+        <input type="text" id="admPauseName" list="admPauseNames" placeholder="Client (type to find, e.g. Acme Roofing)" autocomplete="off" />
+        <datalist id="admPauseNames"></datalist>
+        <input type="text" id="admPauseNote" maxlength="140" placeholder="Note (optional, e.g. on hold until January)" />
+        <button type="button" id="admPauseAdd" class="primary">Pause client</button>
+      </div>
+      <div class="hint" id="admPauseMsg" style="margin-top:6px;"></div>
+    </div>
     <div class="card" id="admCalCard">
       <h2>Company calendar &amp; events</h2>
       <p class="hint" style="margin:0 0 10px;line-height:1.55;">Holidays, work-from-home days and events (a program, a meeting, a notice) for <b>everyone</b>: they show in each person's calendar, and an event reminds everyone at the times you tick. Saved to the shared settings file, so every copy has it within a few minutes - no new version needed. Needs the GitHub token below.</p>
@@ -2406,7 +2429,7 @@
   </section>
 
   <section class="panel" data-panel="general">
-  <div class="two-col">
+  <div class="two-col auto-balance">
   <div class="col">
   <div class="card" id="versionCard">
     <h2>Version and updates</h2>
@@ -2600,6 +2623,19 @@
     </details>
   </div>
 
+  <div class="card" id="myPauseCard">
+    <h2>Paused clients</h2>
+    <p class="hint" style="margin:0 0 10px;line-height:1.55;">A client who has stopped working with us for now: their tasks are struck through with a <b>⏸ Paused</b> pill, ▶ Start asks before tracking, and their unfinished tasks are left out of your estimate totals. The team's list comes from the admin; you can resume any of them just for yourself, or pause a client yourself. (Clicking a ⏸ pill on a task also shows that client as usual again.)</p>
+    <div id="myPauseList" style="margin:0 0 12px;"></div>
+    <div class="adm-pause-form">
+      <input type="text" id="myPauseName" list="myPauseNames" placeholder="Client (type to find)" autocomplete="off" />
+      <datalist id="myPauseNames"></datalist>
+      <input type="text" id="myPauseNote" maxlength="140" placeholder="Note (optional)" />
+      <button type="button" id="myPauseAdd">Pause for me</button>
+    </div>
+    <div class="hint" id="myPauseMsg" style="margin-top:6px;"></div>
+  </div>
+
   <div class="card" id="appearanceCard">
     <h2>Appearance</h2>
     <p class="hint" style="margin:0 0 12px;line-height:1.5;">Light / dark and the ready-made palettes are in the <b>☀</b> button at the top of every page. Here you can make your own palette and choose the background: plain, Task weather (it follows your running task), or your own picture or video - and how solid the cards are over it.</p>
@@ -2741,6 +2777,7 @@
 <script src="reminders.js"></script>
 <script src="hub.js"></script>
 <script src="weather.js"></script>
+<script src="paused-clients.js"></script>
 <script src="header-ui.js"></script>
 </body>
 </html>
