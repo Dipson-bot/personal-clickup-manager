@@ -211,7 +211,7 @@ const fmtD = (ms) => { const m = Math.round(Math.max(0, ms) / 60000); const h = 
 function timeText() {
   const run = state && state.running, t = state && state.task;
   if (!run) return "";
-  const tracked = (t ? (t.totalClosedMs != null ? t.totalClosedMs : t.closedMs) + (Number(t.othersMs) || 0) : 0) + Math.max(0, Date.now() - run.startMs), est = t ? t.estimateMs : 0;
+  const tracked = (t ? (t.totalClosedMs != null ? t.totalClosedMs : t.closedMs) + (Number(t.othersMs) || 0) + (Number(t.subtasksMs) || 0) : 0) + Math.max(0, Date.now() - run.startMs), est = t ? t.estimateMs : 0;
   if (!est) return fmtD(tracked);
   return tracked - est >= 60000 ? "+" + fmtD(tracked - est) + " over" : fmtD(tracked) + " / " + fmtD(est);
 }
@@ -346,7 +346,16 @@ async function refresh() {
           // Time someone else tracked on it (e.g. before it was handed to you): the
           // task's total for everyone minus your own entries. It counts against the
           // estimate; your Today total stays your own time.
-          othersMs: task && totalMs != null && task.spentAllMs - totalMs >= 60000 ? task.spentAllMs - totalMs : 0,
+          // (Should ClickUp ever put the subtasks' time in the parent's total, it is
+          // taken out here so it isn't counted twice.)
+          othersMs: (() => {
+            if (!task || totalMs == null) return 0;
+            const subs = Number(task.subtasksMs) || 0;
+            const own = task.spentAllMs - (subs && task.spentAllMs >= totalMs + subs - 60000 ? subs : 0);
+            return own - totalMs >= 60000 ? own - totalMs : 0;
+          })(),
+          // Its subtasks' time, when its estimate covers them (clickup.js task()).
+          subtasksMs: (task && task.subtasksMs) || 0,
           dueDateMs: task && task.dueDateMs, startDateMs: task && task.startDateMs, status: task && task.status,
           isExtra: !!(extra.id && extra.id === run.taskId) || /\bextra(?:\(s\)|s)?\s+task(?:\(s\)|s)?\b/i.test(run.taskName || ""),
         } : null,

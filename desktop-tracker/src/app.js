@@ -170,10 +170,12 @@
     const todayTask = (t ? t.closedMs : 0) + (run ? Math.max(0, Date.now() - Math.max(run.startMs, dayStart.getTime())) : 0);
     // Someone else's time on the task counts against its estimate too.
     const oth = t ? Math.max(0, Number(t.othersMs) || 0) : 0;
-    const tracked = (t && t.totalClosedMs != null ? t.totalClosedMs + live : (t ? t.closedMs : 0) + live) + oth;
+    // ...and so does its subtasks' time, when the task's estimate covers them.
+    const subs = t ? Math.max(0, Number(t.subtasksMs) || 0) : 0;
+    const tracked = (t && t.totalClosedMs != null ? t.totalClosedMs + live : (t ? t.closedMs : 0) + live) + oth + subs;
     const est = t ? t.estimateMs : 0;
     // Tracked before today = every closed entry minus today's closed ones (and the others').
-    const share = todayShare(est, t && t.totalClosedMs != null ? Math.max(0, t.totalClosedMs + oth - (t.closedMs || 0)) : oth, t && t.dueDateMs);
+    const share = todayShare(est, t && t.totalClosedMs != null ? Math.max(0, t.totalClosedMs + oth + subs - (t.closedMs || 0)) : oth + subs, t && t.dueDateMs);
     const dp = share ? todayTask / share : null;
     const p = est > 0 ? tracked / est : null;
     const over = p != null && tracked - est >= 60000;
@@ -181,7 +183,7 @@
     const target = st && st.today ? st.today.targetMs : 0;
     return {
       p, over, tracked, est, todayMs: today, target, todayTask, share, dp,
-      overall: (est > 0 ? "Overall " + fmt(tracked) + " / " + fmt(est) + (over ? " \u00b7 +" + fmt(tracked - est) + " over" : "") : "Overall " + fmt(tracked)) + (oth ? " \u00b7 " + fmt(oth) + " by others" + (est > 0 && tracked < est ? ", " + fmt(est - tracked) + " left" : "") : ""),
+      overall: (est > 0 ? "Overall " + fmt(tracked) + " / " + fmt(est) + (over ? " \u00b7 +" + fmt(tracked - est) + " over" : "") : "Overall " + fmt(tracked)) + (subs ? " · " + fmt(subs) + " on its subtasks" : "") + (oth ?" \u00b7 " + fmt(oth) + " by others" + (est > 0 && tracked < est ? ", " + fmt(est - tracked) + " left" : "") : ""),
       time: p == null ? fmt(tracked) : over ? "+" + fmt(tracked - est) + " over" : fmt(tracked) + " / " + fmt(est),
       color: p == null ? "var(--blue)" : p > 1.07 ? "var(--red)" : p >= 0.8 ? "var(--green)" : "var(--blue)",
       width: p == null ? 100 : Math.min(100, p * 100),

@@ -65,8 +65,18 @@ class ClickUp {
   async task(id, force) {
     const hit = this.taskCache.get(String(id));
     if (!force && hit && Date.now() - hit.at < 120000) return hit.t;
-    const j = await this.req("/task/" + encodeURIComponent(id));
+    const j = await this.req("/task/" + encodeURIComponent(id) + "?include_subtasks=true");
+    // A parent whose estimate is for the whole job goes on from its subtasks'
+    // time (ClickUp keeps it on each subtask; the parent's own starts at 0) -
+    // only when its estimate is at least its subtasks' estimates together, the
+    // same rule as the extension (lib-clickup.js subtaskTimeFor).
+    const kids = (Array.isArray(j.subtasks) ? j.subtasks : []).filter((s) => s && String(s.id) !== String(j.id) && (s.parent == null || String(s.parent) === String(j.id)));
+    let subMs = 0, subEst = 0;
+    for (const s of kids) { subMs += Number(s.time_spent) || 0; subEst += Number(s.time_estimate) || 0; }
+    const est0 = Number(j.time_estimate) || 0;
+    const subtasksMs = subMs >= 60000 && est0 > 0 && est0 >= subEst ? subMs : 0;
     const t = {
+      subtasksMs,
       id: String(j.id), name: j.name || "(task)", url: j.url || "https://app.clickup.com/t/" + j.id,
       estimateMs: Number(j.time_estimate) || 0, status: (j.status && j.status.status) || "",
       spentAllMs: Number(j.time_spent) || 0, // everyone's time on it (the estimate is the task's)
