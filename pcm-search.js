@@ -55,21 +55,75 @@
     return settingsIdx;
   }
 
-  // ---------- tasks index (what's already loaded; no ClickUp request) ----------
+  // ---------- tasks index (what's already on this computer; no ClickUp request) ----------
+  // Every task of yours, whatever its status or dates: the dashboard's lists, the
+  // open tasks Insights keeps, and the ClickUp task index (IndexedDB
+  // "pcm-taskindex", built once by Explore › Find or from here) - your own
+  // assigned tasks from it, open or closed, dated or not, any list or department.
+  let ixMemo = null; // { key, rows }
+  function readTaskIndex(meta) {
+    const key = meta ? [meta.count, meta.lastSync, meta.read].join("|") : "";
+    if (ixMemo && ixMemo.key === key && key) return Promise.resolve(ixMemo.rows);
+    return new Promise((resolve) => {
+      let r;
+      try { r = indexedDB.open("pcm-taskindex", 1); } catch (e) { resolve([]); return; }
+      r.onupgradeneeded = () => { if (!r.result.objectStoreNames.contains("tasks")) r.result.createObjectStore("tasks", { keyPath: "id" }); };
+      r.onerror = () => resolve([]);
+      r.onsuccess = () => {
+        try {
+          const q = r.result.transaction("tasks").objectStore("tasks").getAll();
+          q.onsuccess = () => { ixMemo = { key, rows: q.result || [] }; resolve(ixMemo.rows); };
+          q.onerror = () => resolve([]);
+        } catch (e) { resolve([]); }
+      };
+    });
+  }
+  let ixMeta = null; // cuTaskIndex: { state, count, read, me, ... }
   async function taskIdx() {
-    let st = null;
-    try { st = (await chrome.storage.local.get("clickupState")).clickupState; } catch (e) {}
+    let g = {};
+    try { g = await chrome.storage.local.get(["clickupState", "insOpenCache", "cuTaskIndex"]); } catch (e) {}
+    const st = g.clickupState || null;
+    ixMeta = g.cuTaskIndex || null;
     const out = [];
     const seen = new Set();
-    const add = (arr) => {
+    const add = (arr, mine) => {
       for (const t of Array.isArray(arr) ? arr : []) {
         if (!t || !t.id || seen.has(String(t.id))) continue;
+        if (mine && !mine(t)) continue;
         seen.add(String(t.id));
-        out.push({ type: "task", text: t.name || "(task)", client: t.client || "", due: t.dueDateMs || null, url: t.url || "https://app.clickup.com/t/" + encodeURIComponent(t.id) });
+        out.push({ type: "task", text: t.name || "(task)", client: t.client || "", due: t.dueDateMs || null, status: t.status || "", done: !!t.done,
+          url: t.url || "https://app.clickup.com/t/" + encodeURIComponent(t.id) });
       }
     };
     if (st) for (const b of [st, st.todayFilter, st.thisWeek, st.nextWeek]) if (b) { add(b.tasks); add(b.deadlineTasks); add(b.trackedTasks); }
+    add(g.insOpenCache && g.insOpenCache.tasks);
+    if (ixMeta && (ixMeta.state === "ready" || ixMeta.read > 0)) {
+      const me = String(ixMeta.me || "");
+      const rows = await readTaskIndex(ixMeta);
+      // Yours: assigned to you. (The index holds every task you can see, anyone's.)
+      add(rows, me ? (t) => Array.isArray(t.assignees) && t.assignees.some((a) => String(a && a.id) === me) : null);
+    }
     return out;
+  }
+  // The index, kept fresh while searching (one "changed since" request at most
+  // every 5 minutes - the background decides), or built on request.
+  let ixAsked = 0;
+  function freshenIndex(build) {
+    if (!build && !(ixMeta && ixMeta.state === "ready")) return;
+    if (!build && Date.now() - ixAsked < 5 * 60000) return;
+    ixAsked = Date.now();
+    try { chrome.runtime.sendMessage({ type: "CLICKUP_TASK_INDEX" }, () => void chrome.runtime.lastError); } catch (e) {}
+  }
+  try {
+    chrome.storage.onChanged.addListener((ch, area) => {
+      if (area === "local" && ch.cuTaskIndex && back && input && input.value.trim()) { clearTimeout(ixRepaint); ixRepaint = setTimeout(search, 600); }
+    });
+  } catch (e) {}
+  let ixRepaint = 0;
+  // Best matches first (rank's order); among the top ones, open tasks before done
+  // ones, so last month's finished copy doesn't hide the one you're on.
+  function taskHits(list) {
+    return list.slice(0, 10).map((x, i) => ({ x, i })).sort((a, b) => (a.x.done ? 1 : 0) - (b.x.done ? 1 : 0) || a.i - b.i).map((r) => r.x);
   }
 
   // ---------- actions ----------
@@ -139,6 +193,15 @@
     { id: "reminder", title: "Set a reminder", tab: "reminders", card: "Reminders", here: true,
       keys: "remind alarm later tomorrow repeat daily weekly weekday duplicate copy clone check in check out rigo office attendance cup kitchen edit pause sound",
       a: "Click ⏰ next to the bell (or use the Reminders tab), write what it's about, pick a time and optionally repeat it. A task's details also have ⏰ Remind me. In the Reminders tab each reminder has Edit, Pause, Duplicate and Delete, and the card lets you pick its sound. \"Check in? Rigo\" (8:10 AM), \"Return your cup to the kitchen\" (12:00 PM) and \"Check out? Rigo\" (5:00 PM) on weekdays are there by default." },
+    { id: "remindertime", title: "Set the TIME on a reminder (the hour and minutes, not just the day)", tab: "reminders", card: "Reminders", here: true,
+      keys: "reminder time hour minute hh mm am pm set time cant change time impossible to set time time picker clock popup side panel no cursor cant click time stuck on 9 am 09:00 only lets me pick the day",
+      a: "Click the \"Remind me at\" box and the calendar opens with a time row along the bottom: an hour box, a minutes box, AM/PM, and one-tap 9:00 AM, 12:00 PM, 2:00 PM and 5:00 PM. Click the day you want first - it only moves the selection, nothing is saved yet - then set the time and press Set, which spells out what it will use (\"Set 16 Oct, 1:25 PM\"). Minutes go in fives; a time already set to something else (6:37 PM) is kept as it is. It works the same in the popup, the side panel and the options page, and on every other date-and-time box - how long a notice shows, a task's dates. Typing still works too if you prefer the keyboard." },
+    { id: "pickeddays", title: "Set one reminder for several days (tick them in the calendar)", tab: "reminders", card: "Reminders", here: true,
+      keys: "reminder several days multiple days pick days tick days checkbox ctrl click calendar dates 17 19 21 25 gatey nepali bs specific days custom days different days same time any month",
+      a: "Open a new reminder and click its date box. In the calendar every day has a small tick box in its corner: tick the days you want (or Ctrl+click them) - any month, in AD or BS (Nepali) view - and the line under the month lists them. Set the time once and press \"Set 4 days, 3:05 PM\". The repeat menu switches to \"On picked days\" by itself, and the reminder goes off on each of those days at that time, then moves to Past after the last one. Click the date box again to tick or untick days. For the same days EVERY month (the 17th and 25th of each month), pick \"Every month on set dates\" instead." },
+    { id: "repeatdates", title: "Repeat a reminder on set days of the month (the 17th, 19th, 21st, 25th)", tab: "reminders", card: "Reminders", here: true,
+      keys: "repeat custom dates days of the month monthly twice a month several days 17th 19th 21st 25th specific dates pick days invoice payday 1st 15th every month on the not weekly not daily 31st february skipped",
+      a: "In the repeat menu pick \"Every month on set dates\", and a month of days 1 to 31 appears under it - tap the ones you want (17, 19, 21, 25) and tap again to take one off. Under the days it reads back what you chose, \"Every month on the 17th, 19th, 21st and 25th.\", and your reminders list says \"17th, 19th, 21st and 25th of the month\" so you can see it at a glance. The time comes from the Remind me at box and is used on every one of those days. A month that has no such day is skipped, not moved: the 31st does nothing in February and goes off again on 31 March, and the card warns you when you pick a day past the 28th. Save won't let you leave the days empty, since that reminder could never go off. An admin sending a reminder to everyone can use it too - the days travel with it." },
     { id: "issue", title: "Report a problem or ask a question", tab: "hub", card: "Help & issues",
       keys: "problem bug error broken not working question support ask admin feedback idea",
       a: "Open Help & issues: search whether it's already reported (press Me too if so), otherwise post it with a screenshot. The admin replies there and you get notified." },
@@ -251,8 +314,8 @@
       keys: "holiday heads up reminder before dashain tihar office closed tasks due move dates notice",
       a: "From 2 PM on the last working day before an office holiday, a notice lists your tasks due while the office is closed so you can move them in time (or says nothing is due). Turn it off in ClickUp setup: Heads-up the working day before an office holiday." },
     { id: "export", title: "Export tasks or make a client report", tab: "dashboard",
-      keys: "client workbook rows tasks sheet department on-page technical development category preview columns week by week weekly blocks formatted wrap work file choose pick select untick exclude leave out skip some tasks checkbox export csv excel report download client report weekly work report plain language client ready sheet doc",
-      a: "For rows to paste into the client workbook (Date, Task, Task Info, Category, Assignee, Status, Work File, Task Description, Due Date, Priority - week by week), filter the list (client, this month…), open Export, tick Client workbook rows, untick the departments you don't want (e.g. keep only Technical; remembered per client), check the preview and choose Google Sheets or Excel - every sheet export comes out in Lexend, wrapped, with a blue header (white bold text) and clickable links. Each week's label is on its first row with a blank row between weeks; a subtask's row shows its task in Task and itself in Task Info. Untick Client work report so the built-in AI isn't used. To leave some tasks out, open Export: each task in the list gets a tick box before its ▶ - untick the ones to leave out (All / None in the menu); their subtasks go with them, and they stay unticked next time. On the Dashboard, the Tasks card has Export. For a report you can send a client, filter the list (client, due this week, and so on), tick Client work report, pick the client and the AI, then choose a format (Markdown, CSV, Excel, Google Sheets or Docs). Done tasks are written as done, the rest as planned work; read it before sending." },
+      keys: "client workbook rows tasks sheet department on-page technical development category preview columns week by week weekly blocks formatted wrap work file choose pick select untick exclude leave out skip some tasks checkbox export csv excel report download client report weekly work report plain language client ready sheet doc link links link 1 link columns empty columns useless columns five columns plain export task info",
+      a: "For rows to paste into the client workbook (Date, Task, Task Info, Category, Assignee, Status, Work File, Task Description, Due Date, Priority - week by week), filter the list (client, this month…), open Export, tick Client workbook rows, untick the departments you don't want (e.g. keep only Technical; remembered per client), check the preview and choose Google Sheets or Excel - every sheet export comes out in Lexend, wrapped, with a blue header (white bold text) and clickable links. Each week's label is on its first row with a blank row between weeks; a subtask's row shows its task in Task and itself in Task Info. Untick Client work report so the built-in AI isn't used. With nothing ticked at all you get the team's sheet: Date (Range), Task, Task Info, Category, Status and Work File, week by week. Work File holds Description: \"...\" and File: \"...\" - the task's own File: text, or your latest comment on the task when that is empty, so the proof screenshots you left in a comment end up there. Links stay clickable in Excel, Google Sheets and Drive. To leave some tasks out, open Export: each task in the list gets a tick box before its ▶ - untick the ones to leave out (All / None in the menu); their subtasks go with them, and they stay unticked next time. On the Dashboard, the Tasks card has Export. For a report you can send a client, filter the list (client, due this week, and so on), tick Client work report, pick the client and the AI, then choose a format (Markdown, CSV, Excel, Google Sheets or Docs). Done tasks are written as done, the rest as planned work; read it before sending." },
     { id: "filter", title: "Filter tasks by client, due next week and more", tab: "dashboard", here: true,
       keys: "filter client due next week this week previous week this month next month previous month last month start date both custom range show only hide",
       a: "Press Filter above the task list and tick what you want. Due: nothing ticked shows today; or This week, Next week, Previous week, This month, Next month, Previous month or a Custom range. Dates by picks which date counts - the due date, the start date, or both. Ranges are only loaded from ClickUp when you tick them." },
@@ -280,6 +343,12 @@
     { id: "blockedwhy", title: "Why is a task blocked / waiting?", tab: "insights", card: "Health",
       keys: "blocked waiting why reason held dependency teammate subtask schedule waiting on",
       a: "Insights › Health › Blocked / waiting labels each task: teammate (waiting on someone's subtask - whose, which, due when, late or not), subtasks (its own subtasks still open while it's overdue), schedule (subtasks due after it) or dependency (it waits on another task in ClickUp that is still open)." },
+    { id: "insdue", title: "Narrow the Insights lists by due date (December / January work)", tab: "insights", card: "Health",
+      keys: "due date filter insights health narrow lists overdue due today this week next week no due date by month december january dec jan order sort soonest first out of order wrong order jumbled not in order too many rows show all missing an estimate",
+      a: "Insights › Health: the due date menu next to the client one narrows every list at once - Overdue, Due today, Due this week, Due next week, No due date, or By month, which offers only the months your tasks are actually in (December 2026, January 2027…) and how many fall in each. It works together with the client menu and the search box, and the sections you have open stay open. Every list is in due date order, soonest first, with undated tasks last. Clear puts all three back." },
+    { id: "dupetasks", title: "Is this the same task twice? (duplicate tasks)", tab: "insights", card: "Health",
+      keys: "duplicate duplicates duplicated same task twice two copies copy repeated already did this did i do this have i seen this before same name twice two of the same not a duplicate dismiss ignore wasting time",
+      a: "A task sitting in your lists twice for the same client shows a ⧉ Duplicate chip next to its name - amber when the copies are on different days (the one nobody spots), red when both are due the same day. Hover it for how many copies there are, when each is due and where each sits (on its own, or under which parent task); click it to open the other copy so you can close whichever you don't need. Insights › Health › Possible duplicates lists every group, and Not a duplicate dismisses one for good - for the work that genuinely carries the same name every week. Never flagged: the same name for two different clients, a task and its own subtask of that name, the same step under two different parent tasks (a \"Live & Schema Placement\" for each blog page is two pages' work), a finished task, a paused client, or the weekly Extra Task(s). The chip sits right after the task name, so the Who, Client and Due columns stay in line." },
     { id: "plansearch", title: "Find a task in my week's plan (search, client, show more)", tab: "insights/plan",
       keys: "plan search filter client too many tasks long list show more find task overdue no estimate many",
       a: "Insights › Plan: the search box and client menu at the top narrow every list on the page (the totals stay the whole week's). Long lists show 10 tasks at a time - press Show 10 more for the next ones. Apply all sets estimates only for the tasks shown. Clear brings everything back." },
@@ -292,6 +361,9 @@
     { id: "tasknotes", title: "Keep personal notes on a task, or pin it to the top", tab: "dashboard", here: true,
       keys: "note notes task personal private remember pin pinned top keep track screenshot attach memo reminder not clickup paste format formatting claude chatgpt grok markdown table checklist tick checkbox tickbox bold italic toolbar edit formatted remind me alarm later",
       a: "Point at a task row: 📌 pins it to the top of the list, 📝 opens its details at My notes - write, paste screenshots (Ctrl+V), attach or drop files, edit or delete. Click a ☐ in a note to tick it (no Edit needed); Edit shows the note formatted with a toolbar (B, I, lists, ☐ box) and a Markdown switch. ⏰ Remind me on a note sets a reminder about it, linked to the task. Notes and pins stay in this extension and are never sent to ClickUp; the note text is backed up with Drive sync, attached files stay on this computer." },
+    { id: "findanytask", title: "Find any of my tasks by part of its name (done, undated, another department's)", tab: "dashboard", here: true,
+      keys: "find search task name part of the name can't find cannot find lost task old task completed done closed no due date undated another department assigned to me ctrl k search box any status any date",
+      a: "Press Ctrl+K and type any words from the task's name, in any order (\"gbp categories\", \"schema blog 7\"). The Tasks results cover every task assigned to you - to do, in progress or complete, with a due date or without one, in any list or department - and show its client, due date and status; Enter opens it in ClickUp. The first time, choose \"Search ALL your tasks\" at the bottom of the Tasks results: the extension reads your ClickUp tasks once (it says how far it has got and the results fill in as it goes), and after that it only picks up what changed." },
     { id: "asktasks", title: "Find tasks by asking in plain words (who, client, when, done or due)", tab: "dashboard", here: true,
       keys: "find search tasks completed last month previous week client person user teammate colleague someone else upcoming week due done finished show me what did yesterday last friday next tuesday since overdue quarter weekend recently",
       a: "Press Ctrl+K and type a sentence such as \"tasks I completed last month for Acme Dental\" or \"Sam's tasks due next week for Bright Roofing\". The first result says what it understood; press Enter to list the tasks (with estimate and tracked time). Remove a chip (✕) to widen it. Someone else's tasks need a workspace Admin token in ClickUp setup." },
@@ -310,6 +382,9 @@
     { id: "themes", title: "Change the theme or colours (light, dark, palettes)", tab: "dashboard", here: true,
       keys: "theme dark light mode colour color palette ocean forest rose lavender slate midnight pine plum mocha appearance",
       a: "Click the moon / sun button at the top: switch light or dark and pick a palette for each (Ocean, Forest, Rose, Lavender, Slate; Midnight, Pine, Plum, Mocha). The popup, side panel and dashboard follow." },
+    { id: "reviewperiod", title: "My rating for a 6-month or 1-year performance review", tab: "insights/performance", card: "Your rating",
+      keys: "performance review 6 months six months 1 year one year 12 months annual half yearly rating period appraisal evaluation not available yet dropdown",
+      a: "Insights \u203a Performance \u203a Your rating has a Period menu: This week, This month, Last 12 weeks, Last 6 months and Last 12 months. Picking 6 or 12 months reads that much of your history from ClickUp once (kept for a day) and rates the whole period the same way - time tracked, deadlines met, estimates held - with By client for that period too. If you have not been working here that long yet (your tracked time starts less than 6 or 12 months ago), it says \"Not available yet\" with the date your history starts, and opens once you have. The charts below always show the last 12 weeks." },
     { id: "performance", title: "See my performance: 7-hour days, deadlines met, workload", tab: "insights/performance",
       keys: "performance analytics stats graph chart deadlines met late on time 7 hours per day target days tracked per week workload overloaded estimate accuracy time by client history refresh reload update",
       a: "Insights › Performance (only you see it): a rating out of 100 in rings at the top - This week, This month or All (the 12 weeks kept) - from time tracked against your working days, deadlines met and estimates held, with a ring per client (click one for its tasks). Below: days you reached your daily target, average per day, deadlines met, how long tasks take against their estimates, tasks finished per week, workload ahead (overloaded over 110%), and where your time went per client - over the last 12 weeks. Click any number, bar or day to see the tasks and hours behind it." },
@@ -322,6 +397,12 @@
     { id: "tidyreminder", title: "Get a daily reminder of overdue, unestimated or blocked tasks", tab: "clickup", card: "Reminders",
       keys: "tidy needs tidying daily reminder summary overdue unestimated no estimate no due date blocked dependency resolved remind 2pm nudge notify",
       a: "In Options > ClickUp setup > Reminders, tick \"Daily 'needs tidying' summary at\" and pick the time (2:00 PM by default), the days (weekdays by default) and which of the four lists to mention - overdue, no estimate, no due date, blocked. \"Name up to\" caps how many tasks each line lists, and you can also be told when a dependency was resolved so a blocked task can be finished. It sends one short summary a day that stays on screen until you click or close it; clicking opens Insights with the lists it mentions opened, stays quiet when there's nothing to tidy, and can be switched off from the bell menu too. Use Preview now to see it before it arrives." },
+    { id: "calday", title: "I clicked a day in the calendar and my task list changed", tab: "dashboard", here: true,
+      keys: "calendar click day date filter changed task list tasks of that day back to my filter undo remove filter where did my tasks go oct 13",
+      a: "Clicking a day in the calendar lists that day's tasks: the extension takes you to the dashboard's task list (in the popup and side panel it scrolls to it), and a bar over the list says \"Showing Tue, Oct 13 (picked in the calendar)\". Press \u2715 Back to my filter on that bar to return to the filter you had before." },
+    { id: "rollup", title: "Why does a parent task show less time here than in ClickUp? (the ? next to its time)", tab: "dashboard", here: true,
+      keys: "parent task subtasks estimate tracked different from clickup 2h 30m rollup adds up includes subtasks question mark ? why less double counted totals",
+      a: "ClickUp adds a task's subtasks into its own estimate and tracked time: a 30m task with 1h and 30m subtasks reads 2h there. The extension lists those subtasks as rows of their own, so the parent counts only its own part (30m) - otherwise your day's estimate would count the subtasks twice. Click the ? next to the parent's time to see ClickUp's numbers, each subtask's share and this reasoning." },
     { id: "calendar", title: "Calendar with Nepali dates, holidays and work-from-home days", tab: "dashboard", here: true,
       keys: "calendar nepali date bikram sambat bs ad english month switch holiday dashain tihar festival ghatasthapana fulpati tika laxmi puja bhai tika kukur tihar janai purnima raksha bandhan wfh work from home office leave month due date deadline pick a date",
       a: "Click the date chip (dashboard: next to the status chips; popup and side panel: under the header). AD | BS under the month's name switches between English and Nepali months (remembered). Festival days (Ghatasthapana, Tika, Laxmi Puja, Bhai Tika…) are named on their day. It shows the month in English and Nepali dates, company holidays (red), work-from-home days (blue) and how many tasks are due each day. Click a day to list its tasks. Use Today or pick a date at the top to jump to any day; days with your reminders show a ⏰. The same calendar opens when you click a task's due date, so you can move a deadline onto a free day instead of guessing." },
@@ -403,9 +484,15 @@
     { id: "ar", title: "Log in to Agent Router accounts automatically every day", tab: "agent", card: "Your accounts",
       keys: "agent router login account daily credit retry retries stopped failed wrong password not logging in needs you next try tries again backoff flagged rejected",
       a: "Open Agent Router, add your accounts, and it logs them in once a day by itself. A login that fails is tried again later, waiting longer each time - an hour, then six, then a day, then three days at most - so repeated failed sign-ins cannot get the GitHub account flagged. The account says when the next try is due. When the saved sign-in itself is the problem (wrong password, a 2FA code GitHub will not accept, a missing or invalid TOTP secret) it stops trying on its own and says so, because no amount of retrying would help: fix the account in Manage and press Run, or log in yourself in the tab it left open and press \"I logged in\"." },
+    { id: "arbatch", title: "When does the Agent Router \"batch is open\" notification come?", tab: "agent", card: "Notifications",
+      keys: "agent router batch quota notification claude ready usable release window 7:45 4:45 beijing wrong time false fresh quota credit",
+      a: "Only inside a release window: Agent Router hands out Claude and GPT in two batches a day (10:00 and 19:00 Beijing time, 7:45 AM and 4:45 PM in Nepal; the notice shows your own time). Quota credited at another hour - whenever the daily login ran - waits and is announced at the next batch, so the notification never says Claude is ready when it is not. Turn it off with \"Notify me when a new Agent Router Claude/GPT quota batch opens\"." },
     { id: "heldcomment", title: "Send a comment automatically when I complete a task", tab: "dashboard", card: "Tasks",
       keys: "comment later send when complete completed done remind forget unsent draft comment pending waiting queue schedule comment auto send mention finish task",
       a: "Open the task's ▸ details, write the comment (an @name works) and press \"Send when I complete it\" instead of Comment. It waits there (amber box) with Send now, Edit and Delete. When you start the task you get a reminder that it's waiting; when you press Complete you're asked Send & complete / Complete without it / Cancel - or pick \"Send it automatically\" in its box and it's posted just before the task is completed. A comment you left unsent in ClickUp itself can't be seen by the extension: copy it into the task's comment box here once." },
+    { id: "sitestale", title: "Site monitor says \"Not checked for 4h 25m\" (or didn't warn me a site was down)", tab: "sites", card: "Site monitor",
+      keys: "site monitor stopped checking not checked for hours last check old stale no alert didn't notify missed outage monitor dead useless frozen last checked 12:59 behind out of date catch up stalled",
+      a: "A row in amber (\"⌛ Not checked for 4h 25m · was Up at 12:59 PM\") means exactly that: the status next to it is from the last real check, not from now, so the site could have gone down since. Opening Site monitor while it says that starts a fresh check on its own. It happens when Chrome was closed or the computer was asleep - nothing is checked then - and the extension catches up quietly on waking. If it had stopped while you were actually using the computer, you also get one \"Site monitor had stopped checking\" notification saying how long for, and it checks again straight away; you don't have to reload anything. Press \"Check all now\" any time you want an answer this second." },
     { id: "sitesnooze", title: "Stop alerts for one unstable site for a while", tab: "sites", card: "Site monitor",
       keys: "snooze mute pause silence site alerts notifications unstable flapping down up again one site temporarily stop annoying open site link url",
       a: "In Site monitor, each site has a Snooze… menu: 1 hour, 4 hours, until tomorrow 9 AM, 3 days or a week. The site is still checked and shown (\"🔕 alerts snoozed until …\"), it just doesn't notify you; Unsnooze brings the alerts back. Click a site's address to open it." },
@@ -1040,7 +1127,7 @@
       else if (e.key === "Escape") { e.preventDefault(); close(); }
     });
     input.focus();
-    search();
+    search().then(() => freshenIndex(false)).catch(() => {});
   }
   function close() { if (aiAbort) aiAbort.abort(); if (back) { back.remove(); back = null; } }
   async function search() {
@@ -1060,8 +1147,16 @@
       .filter((r) => !q || r.s >= minS).sort((a, b) => b.s - a.s).slice(0, max).map((r) => r.x);
     const guides = q ? rank(GUIDES, (x) => x.title, 3, guideMap, 35, 40) : []; // min 40: no loose letter matches on long titles
     const groups = q
-      ? [["How to", guides], ["Settings", rank(sets, (x) => x.text + " " + x.where, 8, itemMap, 45)], ["Tasks", rank(tasks, (x) => x.text + " " + x.client, 8)], ["Actions", rank(ACTIONS, (x) => x.text, 4, itemMap, 45)]]
+      ? [["How to", guides], ["Settings", rank(sets, (x) => x.text + " " + x.where, 8, itemMap, 45)], ["Tasks", taskHits(rank(tasks, (x) => x.text + " " + x.client, 40))], ["Actions", rank(ACTIONS, (x) => x.text, 4, itemMap, 45)]]
       : [["Actions", ACTIONS]];
+    // Your other tasks (any status, any dates) live in the task index: offer to
+    // read it once when it isn't there yet, and say how far it has got.
+    if (q && !(ixMeta && ixMeta.state === "ready")) {
+      const tg = groups.find((x) => x[0] === "Tasks");
+      const building = ixMeta && ixMeta.state === "building" && !ixMeta.error;
+      tg[1] = tg[1].concat([{ type: "ixbuild", text: building ? "⏳ Reading all your ClickUp tasks… " + Number(ixMeta.read || 0).toLocaleString() + " so far - results appear here as they come in"
+        : "🔎 Not here? Search ALL your tasks - any status, any date, done or not (reads them from ClickUp once)" }]);
+    }
     // Not it? Ask the AI (only when clicked).
     if (q.split(" ").length >= 3) groups.push([guides.length ? "Not it?" : "Ask", [{ type: "ai", text: "✨ Ask AI: “" + input.value.trim() + "”" }]]);
     // A question about tasks ("what I completed last month for Acme Dental") goes first.
@@ -1076,7 +1171,7 @@
       for (const it of list) {
         const idx = items.push(it) - 1;
         const where = it.type === "setting" ? it.where
-          : it.type === "task" ? [it.client, it.due ? new Date(it.due).toLocaleDateString([], { month: "short", day: "numeric" }) : ""].filter(Boolean).join(" · ")
+          : it.type === "task" ? [it.client, it.due ? new Date(it.due).toLocaleDateString([], { month: "short", day: "numeric", year: new Date(it.due).getFullYear() === new Date().getFullYear() ? undefined : "numeric" }) : "no date", it.status].filter(Boolean).join(" · ")
           : "";
         if (it.type === "guide") html += '<div class="pcs-it g" data-i="' + idx + '"><span class="t">' + esc(it.title) + '</span><div class="pcs-a">' + esc(it.a) + "</div></div>";
         else html += '<div class="pcs-it' + (it.type === "ai" ? " ai" : it.type === "smart" ? " smart" : "") + '" data-i="' + idx + '"><span class="t">' + esc(it.text) + '</span><span class="w">' + esc(where) + "</span></div>";
@@ -1098,6 +1193,7 @@
   function pick(it) {
     if (it.type === "ai") { askAI(input.value.trim()); return; }
     if (it.type === "smart") { runSmart(it.s); return; }
+    if (it.type === "ixbuild") { freshenIndex(true); ixMeta = { ...(ixMeta || {}), state: "building", read: (ixMeta && ixMeta.read) || 0, error: "" }; search(); return; }
     if (it.type === "guide") {
       const act = it.action && ACTIONS.find((a) => (it.action === "float" ? /Float/ : /wrap-up/).test(a.text));
       close();

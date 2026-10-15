@@ -177,6 +177,27 @@
   const isHoliday = (ts) => eventsOn(ts).some((e) => e.kind === "holiday");
   const isWfh = (ts) => eventsOn(ts).some((e) => e.kind === "wfh");
   const fmtShort = (ts) => new Date(ts).toLocaleDateString(undefined, { month: "short", day: "numeric" });
+  // ---- times, for the date+time fields (reminders, a notice's "until") ----
+  // These fields used to be impossible with a mouse: the calendar takes over
+  // every click on them (it has to, or the browser opens its own picker on top),
+  // so the hh:mm part never got a cursor and only the keyboard could reach it.
+  // The calendar now sets the time itself, with these as the plumbing.
+  const hhmmOf = (s) => {
+    const m = /(\d{1,2}):(\d{2})/.exec(String(s || ""));
+    if (!m) return "";
+    const h = Math.min(23, Math.max(0, +m[1])), mi = Math.min(59, Math.max(0, +m[2]));
+    return String(h).padStart(2, "0") + ":" + String(mi).padStart(2, "0");
+  };
+  const to12 = (hhmm) => {
+    const m = /(\d{1,2}):(\d{2})/.exec(String(hhmm || "")) || [0, "9", "00"];
+    const h = Math.min(23, Math.max(0, +m[1]));
+    return { h12: h % 12 === 0 ? 12 : h % 12, min: Math.min(59, Math.max(0, +m[2])), pm: h >= 12 };
+  };
+  const from12 = (h12, min, pm) => {
+    const h = (Math.min(12, Math.max(1, Number(h12) || 12)) % 12) + (pm ? 12 : 0);
+    return String(h).padStart(2, "0") + ":" + String(Math.min(59, Math.max(0, Number(min) || 0))).padStart(2, "0");
+  };
+  const fmtTime12 = (hhmm) => { const t = to12(hhmm); return t.h12 + ":" + String(t.min).padStart(2, "0") + " " + (t.pm ? "PM" : "AM"); };
   const icon = (kind) => kind === "holiday" ? "\uD83C\uDF89" : kind === "wfh" ? "\uD83C\uDFE0" : kind === "fest" ? "\uD83E\uDE94" : "\uD83D\uDCCC";
   // An event's time ("2:00 PM") after its title.
   const evTime = (e) => { if (!e || !e.time) return ""; const [h, m] = e.time.split(":").map(Number); return " \u00b7 " + new Date(2000, 0, 1, h, m).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" }); };
@@ -238,7 +259,12 @@
     .pcal-chip .bs { color: var(--muted); font-weight: 500; }
     .pcal-chip .ev { color: var(--indigo, #6366f1); font-weight: 600; }
     .pcal-line { margin: 0 0 8px; }
-    .pcal-pop { position: fixed; z-index: 2147483000; width: min(380px, calc(100vw - 16px)); background: var(--card); color: var(--text); border: 1px solid var(--border); border-radius: 12px; box-shadow: 0 16px 36px rgba(0,0,0,.3); padding: 12px; font-size: 12.5px; }
+    /* box-sizing matters: without it the padding and border below are ADDED to
+       the width, so "at most the viewport less 16px" came out 26px wider than
+       asked and hung off the right edge of the 360px popup. Tall months (plus
+       the time row) can still outgrow a short popup, so it scrolls rather than
+       running off the bottom - with the time row pinned, see .pcal-timew. */
+    .pcal-pop { position: fixed; z-index: 2147483000; box-sizing: border-box; width: min(380px, calc(100vw - 16px)); max-height: calc(100vh - 16px); overflow-y: auto; overscroll-behavior: contain; background: var(--card); color: var(--text); border: 1px solid var(--border); border-radius: 12px; box-shadow: 0 16px 36px rgba(0,0,0,.3); padding: 12px; font-size: 12.5px; }
     .pcal-head { display: flex; align-items: center; gap: 6px; margin-bottom: 8px; }
     .pcal-head .t { flex: 1; text-align: center; }
     .pcal-head .t b { display: block; font-size: 13.5px; }
@@ -256,6 +282,18 @@
     .pcal-wd { text-align: center; font-size: 10.5px; color: var(--muted); font-weight: 600; text-transform: uppercase; padding: 2px 0; }
     .pcal-day { position: relative; min-height: 42px; border-radius: 7px; border: 1px solid transparent; padding: 3px 4px; cursor: pointer; background: var(--bg2, rgba(127,127,127,.06)); text-align: left; font: inherit; color: var(--text); }
     .pcal-day:hover { border-color: var(--indigo, #6366f1); }
+    /* Several days at once (a reminder on picked days): a tick box in the corner
+       of every day; ticked days are outlined and their box filled. */
+    .pcal-day .tk { position: absolute; right: 3px; bottom: 3px; width: 13px; height: 13px; box-sizing: border-box; border-radius: 3px; border: 1.5px solid var(--muted, #888); background: var(--card, #fff); display: flex; align-items: center; justify-content: center; font-size: 10px; line-height: 1; color: #fff; }
+    /* With tick boxes the day is a little taller and the reminder clock sits
+       ABOVE the box, so the two never overlap. */
+    .pcal-day.mt { min-height: 54px; }
+    .pcal-day.mt .rm { bottom: 18px; }
+    .pcal-day.pick { border-color: var(--indigo, #6366f1); box-shadow: inset 0 0 0 2px var(--indigo, #6366f1); }
+    .pcal-day.pick .tk { background: var(--indigo, #6366f1); border-color: var(--indigo, #6366f1); }
+    .pcal-multi { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin: 6px 0 0; font-size: 11.5px; color: var(--muted); }
+    .pcal-multi b { color: var(--indigo, #6366f1); }
+    .pcal-multi button { font: inherit; font-size: 11px; padding: 2px 8px; border-radius: 999px; border: 1px solid var(--border); background: transparent; color: var(--muted); cursor: pointer; }
     .pcal-day.out { opacity: .38; }
     .pcal-day.we { background: rgba(220,38,38,.14); }
     .pcal-day.today { border-color: var(--indigo, #6366f1); box-shadow: inset 0 0 0 1px var(--indigo, #6366f1); }
@@ -310,6 +348,26 @@
     .pcal-ev { max-height: 190px; overflow: auto; }
     .pcal-day .fd { position: absolute; left: 5px; bottom: 4px; width: 6px; height: 6px; border-radius: 50%; background: #d97706; }
     .pcal-hint { color: var(--muted); font-size: 11px; margin-top: 6px; }
+    /* The time row for a date+time field. Selects and real buttons, big enough
+       to hit in the 360px popup - the thing the browser's hh:mm segments were
+       not, once the calendar had to swallow the click. */
+    .pcal-time { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; margin: 8px 0 0; padding-top: 8px; border-top: 1px solid var(--border); }
+    .pcal-time b { font-size: 11.5px; color: var(--muted); font-weight: 600; }
+    .pcal-time select { font: inherit; font-size: 12.5px; padding: 4px 6px; border-radius: 7px; border: 1px solid var(--border); background: var(--bg2, transparent); color: var(--text); cursor: pointer; }
+    .pcal-time button { font: inherit; font-size: 11.5px; padding: 4px 9px; border-radius: 7px; border: 1px solid var(--border); background: var(--bg2, transparent); color: var(--text); cursor: pointer; }
+    .pcal-time button:hover { border-color: var(--indigo, #6366f1); color: var(--indigo, #6366f1); }
+    .pcal-time .ampm { min-width: 44px; font-weight: 600; }
+    .pcal-time .set { margin-left: auto; border-color: var(--indigo, #6366f1); background: var(--indigo, #6366f1); color: #fff; font-weight: 600; }
+    .pcal-time .set:hover { color: #fff; filter: brightness(1.08); }
+    .pcal-quick { display: flex; gap: 5px; flex-wrap: wrap; margin: 6px 0 0; }
+    .pcal-quick button { font: inherit; font-size: 11px; padding: 3px 8px; border-radius: 999px; border: 1px solid var(--border); background: transparent; color: var(--muted); cursor: pointer; }
+    .pcal-quick button:hover, .pcal-quick button.on { border-color: var(--indigo, #6366f1); color: var(--indigo, #6366f1); }
+    /* In a short popup the month can outgrow the popover and it scrolls. The
+       time row must never be the part that scrolls away: Set is the only way to
+       commit a time, so it stays pinned to the bottom with the grid moving
+       under it. The negative bottom/margin reach under the popover's padding so
+       nothing shows through below it. */
+    .pcal-timew { position: sticky; bottom: -12px; margin-bottom: -12px; padding-bottom: 12px; background: var(--card); }
   `;
   document.head.appendChild(css);
 
@@ -324,11 +382,12 @@
     if (p && p.onClose) { try { p.onClose(); } catch (e) {} }
   };
   // A day (or "no due date") chosen while the calendar is being used to set a date.
+  // In time mode the chosen time rides along as the second argument.
   function choose(ms) {
     const p = picker;
     picker = null; // not a cancel: close() must not call onClose
     close();
-    if (p && p.onPick) { try { p.onPick(ms); } catch (e) {} }
+    if (p && p.onPick) { try { p.onPick(ms, p.time ? p.hhmm : undefined, p.multi && p.picks.size ? [...p.picks].sort() : undefined); } catch (e) {} }
   }
   document.addEventListener("click", (e) => {
     if (!pop || pop.contains(e.target)) return;
@@ -391,7 +450,9 @@
     // browser's own date box would open a second, plain calendar inside ours.
     const go = el("div", "pcal-go");
     if (picker) {
-      const quick = (lab, ts, tip) => { const b = el("button", "", lab); b.type = "button"; b.title = tip; b.onclick = (e) => { e.stopPropagation(); choose(ts); }; return b; };
+      // In time mode these pick the DAY and leave the time row open, same as a
+      // day in the grid - otherwise "Tomorrow" would commit 9:00 and close.
+      const quick = (lab, ts, tip) => { const b = el("button", "", lab); b.type = "button"; b.title = tip; b.onclick = (e) => { e.stopPropagation(); if (picker.time) { picker.sel = ymd(ts); goTo(picker.sel); return; } choose(ts); }; return b; };
       const t0 = new Date(); t0.setHours(0, 0, 0, 0);
       const t1 = new Date(t0); t1.setDate(t1.getDate() + 1);
       go.append(quick("Today", t0.getTime(), "Set the " + picker.what + " to today"), quick("Tomorrow", t1.getTime(), "Set the " + picker.what + " to tomorrow"));
@@ -401,7 +462,7 @@
         c.onclick = (e) => { e.stopPropagation(); choose(null); };
         go.appendChild(c);
       }
-      const now = el("span", "", picker.sel ? "now " + fmtShort(parseYmd(picker.sel)) : "no " + picker.what + " yet");
+      const now = el("span", "", picker.sel ? "now " + fmtShort(parseYmd(picker.sel)) + (picker.time ? ", " + fmtTime12(picker.hhmm) : "") : "no " + picker.what + " yet");
       now.style.cssText = "margin-left:auto;color:var(--muted);font-size:11.5px;white-space:nowrap";
       go.appendChild(now);
     } else {
@@ -429,7 +490,15 @@
       const weekend = d.getDay() === 0 || d.getDay() === 6;
       b.dataset.k = k;
       if (k === todayK) b.classList.add("today");
-      if (picker && picker.sel === k) b.classList.add("sel");
+      if (picker && picker.sel === k && !(picker.multi && picker.picks.size)) b.classList.add("sel");
+      if (picker && picker.multi) {
+        b.classList.add("mt");
+        const on = picker.picks.has(k);
+        if (on) b.classList.add("pick");
+        const tk = el("span", "tk", on ? "\u2713" : "");
+        tk.title = on ? "Untick this day" : "Tick this day too (several days)";
+        b.appendChild(tk);
+      }
       const evs = eventsOn(ts);
       if (evs.some((e) => e.kind === "holiday")) b.classList.add("hol");
       else if (weekend) b.classList.add("we");
@@ -453,13 +522,42 @@
         (fest ? "\n\uD83E\uDE94 " + fest[0] : "") +
         (evs.length ? "\n" + evs.map((e) => icon(e.kind) + " " + e.title + evTime(e) + (e.note ? " - " + e.note : "")).join("\n") : "") + (c && c.n ? "\n" + c.n + " task" + (c.n === 1 ? "" : "s") + " due" : "") +
         (rms.length ? "\n" + rms.map((r) => "\u23F0 " + r.time + "  " + r.text).join("\n") : "") +
-        (picker ? (picker.sel === k ? "\nThe " + picker.what + " now" : "\nClick to make this the " + picker.what) : "\nClick to list this day's tasks");
+        (picker && picker.multi ? (picker.picks.has(k) ? "\nTicked - click to untick" : picker.picks.size ? "\nClick to tick this day too" : "\nClick to use this day - or tick its box (or Ctrl+click) to pick several days") : picker ? (picker.sel === k ? "\nThe " + picker.what + " now" : picker.time ? "\nClick to use this day, then set the time below" : "\nClick to make this the " + picker.what) : "\nClick to list this day's tasks");
       b.onclick = picker
-        ? (e) => { e.stopPropagation(); choose(ts); }
+        ? (e) => {
+            e.stopPropagation();
+            // Several days: the tick box, Ctrl/Cmd+click, or any click once a day
+            // is ticked toggles that day. Ticks stay while moving between months.
+            if (picker.multi && (picker.picks.size || e.ctrlKey || e.metaKey || (e.target && e.target.closest && e.target.closest(".tk")))) {
+              if (!picker.picks.size && picker.sel && picker.sel !== k) picker.picks.add(picker.sel); // the day already chosen joins in
+              if (picker.picks.has(k)) picker.picks.delete(k); else picker.picks.add(k);
+              const first = [...picker.picks].sort()[0];
+              if (first) picker.sel = first;
+              paintMonth();
+              return;
+            }
+            // With a time to set as well, clicking a day only MOVES the
+            // selection: the time row stays open so the time can still be
+            // changed afterwards, and Set is what commits both.
+            if (picker.time) { picker.sel = k; goTo(k); return; }
+            choose(ts);
+          }
         : (e) => { e.stopPropagation(); close(); if (typeof window.pcmPickDay === "function") window.pcmPickDay(ts); };
       grid.appendChild(b);
     }
     pop.appendChild(grid);
+    if (picker && picker.multi) {
+      const ml = el("div", "pcal-multi");
+      const list = [...picker.picks].sort();
+      if (list.length) {
+        ml.append(el("b", "", list.length + " day" + (list.length === 1 ? "" : "s") + " ticked: "), list.map((k) => fmtShort(parseYmd(k))).join(", "));
+        const clr = el("button", "", "Clear ticks"); clr.type = "button";
+        clr.onclick = (e) => { e.stopPropagation(); picker.picks.clear(); paintMonth(); };
+        ml.appendChild(clr);
+      } else ml.textContent = "Several days? Tick their boxes (or Ctrl+click them) - any month, then set the time once.";
+      pop.appendChild(ml);
+    }
+    if (picker && picker.time) pop.appendChild(timeRow());
     const lg = el("div", "pcal-legend");
     lg.innerHTML = '<span>\u23F0 Reminder</span><span><i class="lg-we"></i>Weekend</span><span><i class="lg-hol"></i>Holiday</span><span><i class="lg-wfh"></i>Work from home</span><span><i style="background:#d97706;border-radius:50%"></i>Festival</span><span><i style="background:var(--indigo,#6366f1)"></i>Tasks due</span>';
     pop.appendChild(lg);
@@ -520,8 +618,59 @@
       pop.appendChild(ev);
     }
     pop.appendChild(el("div", "pcal-hint", picker
-      ? "Click a day to make it the " + picker.what + ". Red = holiday, blue = work from home, the number on a day is how many tasks are already due then. Esc keeps the date it has."
+      ? (picker.time
+        ? "Click a day, set the time below, then press Set. Red = holiday, blue = work from home, the number on a day is how many tasks are already due then. Esc keeps what it has."
+        : "Click a day to make it the " + picker.what + ". Red = holiday, blue = work from home, the number on a day is how many tasks are already due then. Esc keeps the date it has.")
       : "Task counts come from the weeks the extension has loaded (this week, next week and your filter)."));
+  }
+  // The time row, for a field that carries a time as well as a day. Plain
+  // selects and buttons: the point is that every part can be CLICKED, which the
+  // browser's own hh:mm segments cannot be once the calendar owns the click.
+  function timeRow() {
+    const wrap = el("div", "pcal-timew");
+    const box = el("div", "pcal-time");
+    const quick = el("div", "pcal-quick");
+    const t = to12(picker.hhmm);
+    box.appendChild(el("b", "", "Time"));
+    const hSel = el("select"); hSel.title = "Hour";
+    for (let h = 1; h <= 12; h++) { const o = el("option", "", String(h)); o.value = String(h); hSel.appendChild(o); }
+    hSel.value = String(t.h12);
+    const mSel = el("select"); mSel.title = "Minutes";
+    const mins = [];
+    for (let m = 0; m < 60; m += 5) mins.push(m);
+    if (!mins.includes(t.min)) mins.push(t.min); // an odd minute already set is kept, not rounded away
+    mins.sort((a, b) => a - b);
+    for (const m of mins) { const o = el("option", "", String(m).padStart(2, "0")); o.value = String(m); mSel.appendChild(o); }
+    mSel.value = String(t.min);
+    const ap = el("button", "ampm", t.pm ? "PM" : "AM"); ap.type = "button"; ap.title = "Switch between AM and PM";
+    const set = el("button", "set", "Set"); set.type = "button";
+    const sync = () => {
+      picker.hhmm = from12(hSel.value, mSel.value, ap.textContent === "PM");
+      const day = picker.sel ? parseYmd(picker.sel) : 0;
+      set.textContent = picker.multi && picker.picks.size > 1 ? "Set " + picker.picks.size + " days, " + fmtTime12(picker.hhmm) : "Set " + (day ? fmtShort(day) + ", " : "") + fmtTime12(picker.hhmm);
+      set.title = "Use this " + picker.what;
+      quick.querySelectorAll("button").forEach((q) => q.classList.toggle("on", q.dataset.t === picker.hhmm));
+    };
+    hSel.onchange = sync; mSel.onchange = sync;
+    hSel.onclick = (e) => e.stopPropagation();
+    mSel.onclick = (e) => e.stopPropagation();
+    ap.onclick = (e) => { e.stopPropagation(); ap.textContent = ap.textContent === "PM" ? "AM" : "PM"; sync(); };
+    set.onclick = (e) => { e.stopPropagation(); choose(picker.sel ? parseYmd(picker.sel) : Date.now()); };
+    box.append(hSel, el("span", "", ":"), mSel, ap, set);
+    for (const hhmm of ["09:00", "12:00", "14:00", "17:00"]) {
+      const q = el("button", "", fmtTime12(hhmm)); q.type = "button"; q.dataset.t = hhmm;
+      q.title = "Set the time to " + fmtTime12(hhmm);
+      q.onclick = (e) => {
+        e.stopPropagation();
+        const p = to12(hhmm);
+        hSel.value = String(p.h12); mSel.value = String(p.min); ap.textContent = p.pm ? "PM" : "AM";
+        sync();
+      };
+      quick.appendChild(q);
+    }
+    wrap.append(box, quick);
+    sync();
+    return wrap;
   }
   // Show the month of a date and point at that day.
   function goTo(k) {
@@ -536,6 +685,10 @@
     const w = pop.offsetWidth, h = pop.offsetHeight;
     let top = r.bottom + 6;
     if (top + h > window.innerHeight - 8) top = Math.max(8, r.top - h - 6);
+    // Neither below nor above fits in a short popup: sit it as low as it can go
+    // and let it scroll (max-height keeps h within the window), rather than
+    // leaving the bottom - the time row and Set - off the screen.
+    top = Math.min(top, Math.max(8, window.innerHeight - h - 8));
     pop.style.top = Math.round(top) + "px";
     pop.style.left = Math.round(Math.max(8, Math.min(window.innerWidth - w - 8, r.left))) + "px";
   }
@@ -563,11 +716,15 @@
   // The same calendar, used to SET a date instead of browsing it: the holidays,
   // the work-from-home days and how many tasks are already due on a day are all
   // in front of you, so a due date isn't a guess.
-  // opts: { value: ms (the date it has now), canClear, onPick(dayMs|null), onClose(), what ("due date" unless said: "start date"…) }
+  // opts: { value: ms (the date it has now), canClear, onPick(dayMs|null, hhmm?), onClose(), what ("due date" unless said: "start date"…),
+  //         time (the field carries a time too -> show the time row), timeValue ("HH:MM" it has now) }
   function pickDate(anchor, opts) {
     close(); // whatever was open is a cancel, and its onClose runs before ours is set
     const o = opts || {};
-    picker = { sel: o.value ? ymd(o.value) : "", canClear: !!o.canClear, what: String(o.what || "due date"), anchor, onPick: o.onPick, onClose: o.onClose };
+    picker = { sel: o.value ? ymd(o.value) : "", canClear: !!o.canClear, what: String(o.what || "due date"), anchor, onPick: o.onPick, onClose: o.onClose,
+      time: !!o.time, hhmm: hhmmOf(o.timeValue) || "09:00",
+      multi: !!o.multi, picks: new Set((Array.isArray(o.days) ? o.days : []).filter((k) => /^\d{4}-\d{2}-\d{2}$/.test(String(k)))) };
+    if (picker.picks.size) picker.sel = [...picker.picks].sort()[0];
     openAt(anchor, o.value || Date.now());
   }
 
@@ -631,11 +788,24 @@
       value: fieldDay(inp) || 0,
       canClear: !inp.required && !hidden,
       what: inp.dataset.pcalWhat || (withTime ? "day" : "date"),
-      onPick: (ms) => {
+      time: withTime,
+      timeValue: (/T(\d{1,2}:\d{2})/.exec(String(inp.value || "")) || [])[1] || "09:00",
+      // data-pcal-multi: several days may be ticked; they come back in
+      // data-pcal-days ("2026-10-17,2026-10-19"), the first one as the value.
+      multi: inp.dataset.pcalMulti === "1",
+      days: inp.dataset.pcalMulti === "1" && inp.dataset.pcalDays ? inp.dataset.pcalDays.split(",") : [],
+      onPick: (ms, hhmm, days) => {
+        if (inp.dataset.pcalMulti === "1") {
+          if (days && days.length > 1) { inp.dataset.pcalDays = days.join(","); ms = parseYmd(days[0]); }
+          else delete inp.dataset.pcalDays;
+        }
         let v = ms ? ymd(ms) : "";
         if (v && inp.min && v < String(inp.min).slice(0, 10)) return; // before the earliest allowed day
         if (v && inp.max && v > String(inp.max).slice(0, 10)) return;
-        if (v && withTime) v += "T" + ((/T(\d{2}:\d{2})/.exec(inp.value) || [])[1] || "09:00");
+        // The time comes from the calendar's own time row now. The old fallback
+        // (keep whatever was typed, else 9:00) stays for anything that opens the
+        // picker without one.
+        if (v && withTime) v += "T" + (hhmmOf(hhmm) || (/T(\d{1,2}:\d{2})/.exec(inp.value) || [])[1] || "09:00");
         inp.value = v;
         inp.dispatchEvent(new Event("input", { bubbles: true }));
         inp.dispatchEvent(new Event("change", { bubbles: true }));

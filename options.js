@@ -1795,6 +1795,8 @@ function markTrk(trk, t, spans) {
   // Red only when it really ran over: a task finished right on its estimate (a few
   // seconds past it) isn't over - 2 minutes of grace.
   if (est > 0 && spent > est + CU_OVER_GRACE_MS) trk.classList.add("over");
+  // A parent whose ClickUp estimate includes its subtasks counts only its own part.
+  if (t && t.rollupEstimateMs) trk.title = "In ClickUp this task's estimate is " + fmtDurOpt(t.rollupEstimateMs) + ", which includes " + fmtDurOpt(t.subtasksEstimateMs) + " for its subtasks. Those count on their own rows, so only its own " + fmtDurOpt(est) + " counts here (otherwise the day's estimate would count them twice).";
   const st = (optClickup && optClickup.state) || null;
   const run = st && st.running;
   const id = t && (t.id != null ? t.id : t.taskId);
@@ -2954,6 +2956,21 @@ function renderClickupSettings(cu) {
 // and badge follow), with a bar to go back to the previous filter.
 let cuChartPrev = null, cuChartDay = "", cuChartSrc = "chart";
 const cuYmd = (ts) => { const d = new Date(ts); return d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0") + "-" + String(d.getDate()).padStart(2, "0"); };
+// The week chart's bars: grown in once; on every later redraw (each background
+// refresh rebuilds the card) they keep their place, and a changed one glides to
+// its new height instead of dropping to nothing and growing back - that drop
+// was the dashboard's periodic flicker.
+const cuChartHeights = new Map(); // "ymd|e" / "ymd|t" -> the height last drawn
+function cuChartBar(bar, key, h) {
+  const was = cuChartHeights.get(key);
+  cuChartHeights.set(key, h);
+  if (was == null) { bar.style.height = h; return; } // first time: the grow-in animation
+  bar.style.animation = "none";
+  if (was === h) { bar.style.height = h; return; }
+  bar.style.height = was;
+  bar.style.transition = "height .5s cubic-bezier(.22,1,.36,1), transform .2s, filter .2s";
+  setTimeout(() => { bar.style.height = h; }, 30);
+}
 function cuShowChartDay(ts, src) {
   const ymd = cuYmd(ts);
   cuChartSrc = src || "chart";
@@ -2965,8 +2982,16 @@ function cuShowChartDay(ts, src) {
   document.querySelectorAll("#optWeekChart .wk-day").forEach((c) => c.classList.remove("sel"));
   cuApplyFilterSnapshot(snap); // saved, so the popup, side panel and badge follow too
   document.querySelectorAll("#optWeekChart .wk-day[data-ymd=\"" + ymd + "\"]").forEach((c) => c.classList.add("sel"));
-  const card = $("dashTasksCard");
-  if (card) card.scrollIntoView({ behavior: "smooth", block: "start" });
+  // From any tab (ClickUp setup, Reminders...): go to the dashboard, where the
+  // day's tasks and the "Back to my filter" bar are - the filter used to change
+  // out of sight.
+  if (typeof showOptTab === "function" && !document.querySelector('.panel[data-panel="dashboard"].on')) showOptTab("dashboard");
+  setTimeout(() => {
+    const card = $("dashTasksCard");
+    if (card) card.scrollIntoView({ behavior: "smooth", block: "start" });
+    const bar = $("cuChartDayBar");
+    if (bar) { bar.classList.remove("flash"); void bar.offsetWidth; bar.classList.add("flash"); }
+  }, 60);
 }
 function cuPaintChartBanner() {
   const card = $("dashTasksCard");
@@ -3056,12 +3081,12 @@ function renderWeekChartOpt(w, targetMs) {
     }
     const e = document.createElement("div");
     e.className = "wk-bar est";
-    e.style.height = pct(est);
     e.style.animationDelay = days.indexOf(d) * 70 + "ms"; // bars grow in one day after another
     const k = document.createElement("div");
     k.className = "wk-bar trk";
-    k.style.height = pct(trk);
     k.style.animationDelay = days.indexOf(d) * 70 + 90 + "ms";
+    cuChartBar(e, col.dataset.ymd + "|e", pct(est));
+    cuChartBar(k, col.dataset.ymd + "|t", pct(trk));
     bars.append(e, k);
     const lab = document.createElement("div");
     lab.className = "wk-lab";
@@ -5067,18 +5092,24 @@ const CU_TODAY_TIP = "Time you tracked today, across all your tasks. The bar sho
 // Today's estimate (the Due today total, counted by the same multi-day rule)
 // inside a wider date filter's Estimated bar - like the tracked "today" part.
 // Only when the filter's dates include today.
-const CU_TODAY_EST_TIP = "Today's estimate: what is due today (the Due today total). The bar shows this filter's own total; the light part of it is today's share.";
+const CU_TODAY_EST_TIP = "Today's estimate: what is due today (the Due today total). The bar shows this filter's own total; when these dates include today, the light part of it is today's share.";
 // The "… today" chips' breakdown: the state's own today bundle (due today,
 // the Extra Task share, and other tasks tracked today) - no ClickUp request.
 function cuTodayBd(st) {
   return () => ({ label: "today", estMs: Number(st && st.estimateMs) || 0, spentMs: Number(st && st.spentMs) || 0,
     tasks: (st && st.tasks) || [], cfg: (st && st.deadlineTasks) || [], other: (st && st.trackedTasks) || [], fmt: fmtDurOpt });
 }
+// Do the dates on screen include today? (Only then is part of the bar today.)
+function cuViewHasToday(st, view, f) {
+  const r = cuViewRange(st || {}, f), now = Date.now();
+  return !!(r && now >= r.fromTs && now <= r.toTs);
+}
 function cuTodayEstimate(st, view, f) {
   st = st || {}; view = view || {};
   if (!view.scope || view.scope === "today" || view.scope === "extended" || view.scope === "plan") return 0; // the bar IS today
-  const r = cuViewRange(st, f), now = Date.now();
-  if (!r || now < r.fromTs || now > r.toTs) return 0;
+  // Any other dates (this week, next week, a day picked in the calendar, a
+  // month...): today's own estimate beside them, the way the Tracked bar always
+  // says how much was tracked today - even when today isn't in those dates.
   return Math.max(0, Number(st.estimateMs) || 0);
 }
 function cuTodayTracked(st, view) {
@@ -5155,8 +5186,9 @@ function cuLoadRunPrior() {
     chrome.storage.local.get("runningProgress").then(({ runningProgress: rp }) => {
       cuRunPrior = rp && rp.taskId
         ? { key: String(rp.taskId) + ":" + String(rp.startMs || ""), ms: Math.max(0, Number(rp.closedMs) || 0), today: Math.max(0, Number(rp.closedTodayMs) || 0), est: Math.max(0, Number(rp.estimateMs) || 0),
-            oth: Math.max(0, Number(rp.othersMs) || 0), par: Array.isArray(rp.othersRunning) ? rp.othersRunning : [] }
-        : { key: "", ms: 0, today: 0, est: 0, oth: 0, par: [] };
+            oth: Math.max(0, Number(rp.othersMs) || 0), par: Array.isArray(rp.othersRunning) ? rp.othersRunning : [],
+            subs: Math.max(0, Number(rp.subtasksMs) || 0), subN: Math.max(0, Number(rp.subtaskCount) || 0) }
+        : { key: "", ms: 0, today: 0, est: 0, oth: 0, par: [], subs: 0, subN: 0 };
       if (cuNowTick) cuNowTick();
     }).catch(() => {});
   } catch (e) {}
@@ -5567,8 +5599,10 @@ function renderNowTracking() {
     const est = known ? cuRunPrior.est : 0;
     time.textContent = fmtDurOpt(prior + live) + (est > 0 ? " / " + fmtDurOpt(est) : "");
     const othMs = known ? cuRunPrior.oth : 0, par = known ? cuRunPrior.par : [];
-    const mineBefore = Math.max(0, prior - othMs);
-    sess.textContent = !known ? "adding earlier time…" : prior > 0 ? "(" + (othMs > 0 ? fmtDurOpt(othMs) + " others + " : "") + (mineBefore > 0 ? fmtDurOpt(mineBefore) + " before + " : "") + fmtDurOpt(live) + " now)" : "";
+    // A parent task carries on from its subtasks' time when its estimate covers them.
+    const subMs = known ? (cuRunPrior.subs || 0) : 0;
+    const mineBefore = Math.max(0, prior - othMs - subMs);
+    sess.textContent = !known ? "adding earlier time…" : prior > 0 ? "(" + (subMs > 0 ? fmtDurOpt(subMs) + " subtasks + " : "") + (othMs > 0 ? fmtDurOpt(othMs) + " others + " : "") + (mineBefore > 0 ? fmtDurOpt(mineBefore) + " before + " : "") + fmtDurOpt(live) + " now)" : "";
     const othBits = [];
     if (par.length) othBits.push("\u26A0 " + par.map((o) => o.name || "Someone").join(", ") + (par.length === 1 ? " is" : " are") + " tracking this task right now too");
     if (othMs > 0) othBits.push(fmtDurOpt(othMs) + " tracked by others before you" + (est > 0 ? (prior + live < est ? " \u00b7 " + fmtDurOpt(est - prior - live) + " left of " + fmtDurOpt(est) : " \u00b7 estimate used up") : ""));
@@ -5576,7 +5610,7 @@ function renderNowTracking() {
     oth.classList.toggle("warn", par.length > 0);
     oth.textContent = othBits.join(" \u00b7 ");
     oth.title = othMs > 0 ? "The estimate is for the whole task, so time someone else tracked on it counts too: " + fmtDurOpt(othMs) + " by others + " + fmtDurOpt(Math.max(0, prior - othMs)) + " earlier by you + " + fmtDurOpt(live) + " this timer. Your daily totals count only your own time." : "";
-    sess.title = !known ? "Looking up how much was tracked on this task before this timer" : prior > 0 ? "Tracked on this task before this timer: " + fmtDurOpt(prior) + " · this timer: " + fmtDurOpt(live) + " · total " + fmtDurOpt(prior + live) : "";
+    sess.title = !known ? "Looking up how much was tracked on this task before this timer" : prior > 0 ? (subMs > 0 ? "Includes " + fmtDurOpt(subMs) + " tracked on its " + (cuRunPrior.subN || "") + " subtask" + (cuRunPrior.subN === 1 ? "" : "s") + " - this task's estimate covers them, so the time goes on from there. " : "") + "Tracked on this task before this timer: " + fmtDurOpt(prior) + " · this timer: " + fmtDurOpt(live) + " · total " + fmtDurOpt(prior + live) : "";
     // Today's own share, when this task was also worked on an earlier day: the
     // big figure is everything ever tracked on it, which on a task that runs for
     // days (a weekly recurring one) is nothing like today's work.
@@ -6150,7 +6184,7 @@ function renderClickupPreviewBody(st) {
   estFill.className = "cu-fill2" + (met ? " met" : "");
   const estPct = targetMs > 0 ? Math.min(100, Math.round((estMs / targetMs) * 100)) : 0;
   estFill.style.width = estPct + "%";
-  if (todayEstMs > 0 && todayEstMs <= estMs) {
+  if (todayEstMs > 0 && todayEstMs <= estMs && cuViewHasToday(st, view, cuFilter)) {
     const seg = document.createElement("div");
     seg.className = "cu-today-seg";
     seg.style.width = Math.min(100, Math.round((todayEstMs / estMs) * 100)) + "%";
@@ -7448,6 +7482,9 @@ function insHydrate() {
   if (!insHydrated) insHydrated = (typeof chrome !== "undefined" && chrome.storage ? chrome.storage.local.get(INS_STORE) : Promise.resolve({})).then(function (g) {
     var c = g && g[INS_STORE];
     if (!insCache && c && Array.isArray(c.tasks)) insCache = { status: "ok", data: c.tasks.filter(function (t) { return !(window.PcmPaused && window.PcmPaused.pausedFor(t)); }), at: Number(c.at) || 0 };
+    // The duplicate check compares the WHOLE open list, including work due in
+    // another month - the copies are usually not on the same day.
+    if (c && Array.isArray(c.tasks) && window.PcmDupes) { try { window.PcmDupes.feed(c.tasks, Number(c.at) || 0); } catch (e) {} }
   }).catch(function () {});
   return insHydrated;
 }
@@ -7460,7 +7497,7 @@ insHydrate().then(function () {
 // Narrowing of the four detail lists (NOT of the KPIs or the By client table -
 // those always show the whole board). Kept outside the paint so a background
 // refresh can put the lists back exactly as the user left them.
-var insFilter = { client: "", q: "" };
+var insFilter = { client: "", q: "", due: "" };
 var insOpenDrills = Object.create(null); // drill id -> the user has it expanded
 var insPendingDrill = "";                // open + scroll to this list after the next paint
 // Opened from the "needs tidying" notification (options.html?drill=overdue,noest#insights):
@@ -7621,7 +7658,7 @@ function insBuildModel(rows, st) {
       kind = "schedule";
       reason = "Schedule: " + sb.later + " subtask" + (sb.later === 1 ? " is" : "s are") + " due after this task" + (sb.latestDueMs ? " (until " + insDateShort(sb.latestDueMs) + ")" : "");
     }
-    blockedList.push({ id: key, name: row ? row.name : "(task " + key + ")", url: row ? row.url : insTaskUrl(key), client: row ? row.client : "", reason: reason, kind: kind });
+    blockedList.push({ id: key, name: row ? row.name : "(task " + key + ")", url: row ? row.url : insTaskUrl(key), client: row ? row.client : "", due: row ? row.due : 0, reason: reason, kind: kind });
   }
   // A ClickUp dependency ("waiting on" another task) that is still open.
   var blockedIds = Object.create(null);
@@ -7631,10 +7668,24 @@ function insBuildModel(rows, st) {
     if (!dr || blockedIds[dr.id] || !Array.isArray(dr.dependsOn) || !dr.dependsOn.length) continue;
     var waitsOn = dr.dependsOn.map(function (x) { return byId[String(x)]; }).filter(Boolean);
     if (!waitsOn.length) continue;
-    blockedList.push({ id: dr.id, name: dr.name, url: dr.url, client: dr.client || "", kind: "dependency",
+    blockedList.push({ id: dr.id, name: dr.name, url: dr.url, client: dr.client || "", due: dr.due || 0, kind: "dependency",
       reason: "Waiting on another task (ClickUp dependency): “" + String(waitsOn[0].name || "").slice(0, 70) + "”, still open" + (waitsOn.length > 1 ? " + " + (waitsOn.length - 1) + " more" : "") });
   }
-  overdueList.sort(function (a, z) { return a.due - z.due; });
+  // Due date order, soonest first, with the dateless ones last. Only Overdue
+  // used to be sorted, so the other lists came out in whatever order ClickUp
+  // happened to return - Nov 30, Dec 7, Nov 30, Nov 23 - which reads as broken
+  // even when every row in it is right. 8.64e15 is the largest date a Date can
+  // hold; Infinity can't be used because Infinity - Infinity is NaN.
+  function byDue(a, z) {
+    return ((a.due || 8.64e15) - (z.due || 8.64e15)) || String(a.name || "").localeCompare(String(z.name || ""));
+  }
+  overdueList.sort(byDue);
+  noEstList.sort(byDue);
+  blockedList.sort(byDue);
+  // Nothing in this one has a due date to sort by, so group a client together.
+  noDueList.sort(function (a, z) {
+    return String(a.client || "").localeCompare(String(z.client || "")) || String(a.name || "").localeCompare(String(z.name || ""));
+  });
   // Per-client blocked count, so a By client row can jump into the Blocked /
   // waiting list for that client alone. Only rows that HAVE a client are
   // counted: a blocked task that isn't in the open list has no client known
@@ -7647,7 +7698,7 @@ function insBuildModel(rows, st) {
   clients.sort(function (a, z) { return (z.overdue - a.overdue) || (z.open - a.open); });
   return {
     k: { overdue: kOverdue, week: kWeek, noEst: kNoEst, noDue: kNoDue, blocked: blockedList.length, open: openTotal },
-    buckets: buckets, clients: clients, todayStart: todayStart,
+    buckets: buckets, clients: clients, todayStart: todayStart, twTo: twTo, nwTo: nwTo, byId: byId,
     overdueList: overdueList, noEstList: noEstList, noDueList: noDueList, blockedList: blockedList,
   };
 }
@@ -7788,6 +7839,9 @@ function insFetchOpen(force) {
     if (r && r.ok && r.data && Array.isArray(r.data.tasks)) {
       // A paused client's tasks don't count here (Worth a look, health, Insights).
       insCache = { status: "ok", data: r.data.tasks.filter(function (t) { return !(window.PcmPaused && window.PcmPaused.pausedFor(t)); }), at: Date.now() };
+      // Hand the unfiltered list to the duplicate check before the paint below,
+      // so Possible duplicates is filled on the very first draw.
+      if (window.PcmDupes) { try { window.PcmDupes.feed(r.data.tasks, insCache.at); } catch (e) {} }
       try { var blob = { at: insCache.at, tasks: r.data.tasks }; if (JSON.stringify(blob).length < 3000000) chrome.storage.local.set({ [INS_STORE]: blob }); } catch (e) {}
     }
     // A failed refresh keeps showing the last good result (with its time) rather than an error.
@@ -7827,9 +7881,24 @@ function insPaint(m, st, meta) {
   m.lateDone = insLateList || [];
   m.lateList = openLate.concat(m.lateDone);
   m.lateOpenN = openLate.length;
-  // Unread comments (task-notes.js reads what the background found).
+  // Unread comments (task-notes.js reads what the background found). The comment
+  // cache keeps a name, url and client but no due date, so the date comes from
+  // the open-task list - without it the due-date filter would hide every one.
   m.unreadList = (window.PcmComments ? window.PcmComments.unreadAll() : []).map(function (u) {
-    return { id: u.id, name: (u.task && u.task.name) || "(task " + u.id + ")", url: (u.task && u.task.url) || insTaskUrl(u.id), client: (u.task && u.task.client) || "", n: u.n, mention: u.mention, latest: u.latest };
+    var t = (m.byId && m.byId[String(u.id)]) || null;
+    return { id: u.id, name: (u.task && u.task.name) || (t && t.name) || "(task " + u.id + ")", url: (u.task && u.task.url) || insTaskUrl(u.id), client: (u.task && u.task.client) || (t && t.client) || "", due: t ? t.due : 0, n: u.n, mention: u.mention, latest: u.latest };
+  });
+  // The same job sitting in your lists twice (task-dupes.js, off the same open
+  // list this page already fetched - the copies are often in another month, so
+  // nothing on screen could have shown them side by side). One row per group,
+  // dated with the soonest copy, so the due-date filter finds it where you look.
+  m.dupeList = (window.PcmDupes ? window.PcmDupes.all() : []).map(function (g) {
+    var first = g.members[0] || {};
+    return { id: first.id, name: g.name, url: first.url, client: g.client, due: g.due,
+      n: g.members.length, sameDay: !!g.sameDay, key: g.key,
+      others: g.members.slice(1).map(function (mm) {
+        return (mm.due ? "due " + insDateShort(mm.due) : "no due date") + " · " + window.PcmDupes.whereOf(mm);
+      }) };
   });
   html += '<div class="page-h" style="display:flex;align-items:center;gap:10px;margin:0 0 4px;"><h2 style="margin:0;font-size:18px;">Insights</h2></div>';
   html += '<p class="ins-sub">A weekly health check of everything assigned to you — the things that are easy to miss until it’s too late. Every number is a shortcut into the details, including the ones in the By client table.</p>';
@@ -7959,8 +8028,19 @@ function insFilterBar(m) {
     c = sorted[i];
     opts += '<option value="' + insEsc(c.name) + '">' + insEsc(c.name) + " (" + c.open + ")</option>";
   }
-  return '<div class="ins-filter" id="insFilterBar"><span class="f-lab">Narrow the lists below</span>' +
+  return '<div class="ins-filter" id="insFilterBar" data-today="' + (Number(m.todayStart) || 0) +
+    '" data-twto="' + (Number(m.twTo) || 0) + '" data-nwto="' + (Number(m.nwTo) || 0) + '">' +
+    '<span class="f-lab">Narrow the lists below</span>' +
     '<select id="insFClient" class="f-sel" aria-label="Show one client only">' + opts + "</select>" +
+    '<select id="insFDue" class="f-sel" aria-label="Show one due date range only">' +
+    '<option value="">Any due date</option>' +
+    '<option value="over">Overdue</option>' +
+    '<option value="today">Due today</option>' +
+    '<option value="tw">Due this week</option>' +
+    '<option value="nw">Due next week</option>' +
+    '<optgroup label="By month" id="insFDueMonths" hidden></optgroup>' +
+    '<option value="none">No due date</option>' +
+    "</select>" +
     '<input id="insFQ" class="f-q" type="search" placeholder="Search a task name, client or reason…" aria-label="Search the lists below">' +
     '<span class="f-stat" id="insFStat"></span>' +
     '<button type="button" class="lnk" id="insFClear" hidden>Clear</button></div>';
@@ -7975,6 +8055,15 @@ function insDrillsHtml(m) {
     return { badge: r.mention ? '<span class="badge red">@ you</span>' : '<span class="badge amber">💬 ' + r.n + "</span>",
       plain: (r.latest ? r.latest.who + ": " + r.latest.text : "") + (r.n > 1 ? " (+" + (r.n - 1) + " more)" : ""), action: "Mark read", act: "seen" };
   });
+  // Possible duplicates: the point is to stop you wondering whether you already
+  // did it. "Not a duplicate" dismisses a group for good (work that genuinely
+  // carries one name), so the list can't cry wolf twice about the same pair.
+  var dupOut = insDrill("dupe", "Possible duplicates", m.dupeList || [], function (r) {
+    return { badge: r.sameDay
+        ? '<span class="badge red" title="Both copies are due the same day">same day</span>'
+        : '<span class="badge amber" title="The copies are on different days - easy to miss">' + r.n + " copies</span>",
+      plain: "also " + (r.others || []).join(" · and "), action: "Not a duplicate", act: "dupok" };
+  });
   // fmt returns `plain`: the sub-line as RAW text. insDrill escapes it once for
   // display and lower-cases it into the search haystack, so searching matches
   // what the eye reads ("waiting on", a date, a client) and nothing is
@@ -7987,6 +8076,7 @@ function insDrillsHtml(m) {
   });
   out += cmtOut;
   out += lateOut;
+  out += dupOut;
   out += insDrill("blocked", "Blocked / waiting", m.blockedList, function (r) {
     var lab = { teammate: "teammate", subtasks: "subtasks", schedule: "schedule", dependency: "dependency" }[r.kind] || "held";
     return { badge: '<span class="badge red" title="Why it\'s blocked">' + lab + "</span>", plain: r.reason, action: "Open" };
@@ -8033,6 +8123,71 @@ function insRowMatches(rowClient, hay, client, q) {
   if (q && String(hay || "").indexOf(q) < 0) return false;
   return true;
 }
+// The same for the due-date menu, ANDed with the rule above. A month is matched
+// by its own year-month key rather than a timestamp range, so a task due at
+// 11pm on the 31st can't fall into the next month.
+function insMonthKey(ms) {
+  var n = Number(ms) || 0;
+  if (n <= 0) return "";
+  var d = new Date(n);
+  return d.getFullYear() + "-" + ("0" + (d.getMonth() + 1)).slice(-2);
+}
+function insMonthLabel(key) {
+  var p = String(key).split("-");
+  try {
+    return new Date(Number(p[0]), Number(p[1]) - 1, 1).toLocaleDateString(undefined, { month: "long", year: "numeric" });
+  } catch (e) { return String(key); }
+}
+// Only the months the listed tasks are actually in, oldest first, each with how
+// many rows are in it - a board with December and January work needs those two
+// names in the menu and nothing else.
+function insDueMonthOpts(dues) {
+  var n = Object.create(null), keys = [], i, k;
+  for (i = 0; i < (dues || []).length; i++) {
+    k = insMonthKey(dues[i]);
+    if (!k) continue;
+    if (!n[k]) { n[k] = 0; keys.push(k); }
+    n[k]++;
+  }
+  keys.sort();
+  var out = "";
+  for (i = 0; i < keys.length; i++) {
+    out += '<option value="m:' + keys[i] + '">' + insEsc(insMonthLabel(keys[i])) + " (" + n[keys[i]] + ")</option>";
+  }
+  return out;
+}
+function insDueMatches(rowDue, sel, b) {
+  if (!sel) return true;
+  var due = Number(rowDue) || 0;
+  if (sel === "none") return due <= 0;
+  if (!due) return false; // every other choice is about a real date
+  if (sel === "over") return due < b.todayStart;
+  if (sel === "today") return due >= b.todayStart && due < b.todayStart + 86400000;
+  if (sel === "tw") return due >= b.todayStart && due <= b.twTo;
+  if (sel === "nw") return due > b.twTo && due <= b.nwTo;
+  if (sel.slice(0, 2) === "m:") return insMonthKey(due) === sel.slice(2);
+  return true;
+}
+// This week / next week are the dashboard's own week ends, stamped on the bar
+// when it was painted, so the menu can never disagree with the KPIs above it.
+function insDueBounds(bar) {
+  var g = function (a) { return Number(bar && bar.getAttribute ? bar.getAttribute(a) : 0) || 0; };
+  var b = { todayStart: g("data-today"), twTo: g("data-twto"), nwTo: g("data-nwto") };
+  if (!b.todayStart || !b.twTo) return insWeekBounds(null);
+  return b;
+}
+// The month options are filled in from the rows that were just painted (every
+// list, including Deadlines missed and Unread comments), so the menu offers
+// exactly the months it can actually show.
+function insFillDueMonths(view) {
+  var grp = view && view.querySelector ? view.querySelector("#insFDueMonths") : null;
+  if (!grp) return;
+  var rows = view.querySelectorAll(".trow[data-due]"), dues = [], i;
+  for (i = 0; i < rows.length; i++) dues.push(Number(rows[i].getAttribute("data-due")) || 0);
+  var html = insDueMonthOpts(dues);
+  grp.innerHTML = html;
+  grp.hidden = !html;
+}
 // Narrow the lists IN PLACE - no repaint, so typing never loses focus and the
 // sections the user opened stay open. The KPIs and the By client table are left
 // alone on purpose: they're the whole-board picture the filter is read against.
@@ -8050,14 +8205,17 @@ if (typeof document !== "undefined") document.addEventListener("click", function
 function insApplyFilter() {
   var view = document.getElementById("insView");
   if (!view) return;
+  var bar = document.getElementById("insFilterBar");
   var client = insFilter.client || "", q = (insFilter.q || "").trim().toLowerCase();
-  var active = !!(client || q), hitAll = 0, totalAll = 0;
+  var due = insFilter.due || "", bounds = insDueBounds(bar);
+  var active = !!(client || q || due), hitAll = 0, totalAll = 0;
   view.querySelectorAll("details.ins-det").forEach(function (d) {
     var rows = d.querySelectorAll(".trow"), hit = 0, i, r;
     var cap = insDrillOpen[d.getAttribute("data-drill")] ? Infinity : INS_DRILL_CAP;
     for (i = 0; i < rows.length; i++) {
       r = rows[i];
-      if (insRowMatches(r.getAttribute("data-client"), r.getAttribute("data-hay"), client, q)) {
+      if (insRowMatches(r.getAttribute("data-client"), r.getAttribute("data-hay"), client, q) &&
+          insDueMatches(r.getAttribute("data-due"), due, bounds)) {
         hit++;
         r.style.display = hit > cap ? "none" : "";
       } else r.style.display = "none";
@@ -8079,18 +8237,23 @@ function insApplyFilter() {
     var none = d.querySelector("[data-none]");
     if (none) none.hidden = !(active && total > 0 && hit === 0);
   });
-  var bar = document.getElementById("insFilterBar");
   if (bar) bar.classList.toggle("on", active);
   var stat = document.getElementById("insFStat");
   if (stat) stat.textContent = active ? hitAll + " of " + totalAll + " listed row" + (totalAll === 1 ? "" : "s") + " match" : "";
   var clr = document.getElementById("insFClear");
   if (clr) clr.hidden = !active;
 }
-function insSetFilter(client, q) {
+function insSetFilter(client, q, due) {
   insFilter.client = client || "";
   insFilter.q = q || "";
+  insFilter.due = due || "";
   var sel = document.getElementById("insFClient");
   if (sel) sel.value = insFilter.client;
+  var dsel = document.getElementById("insFDue");
+  if (dsel) {
+    dsel.value = insFilter.due;
+    if (dsel.value !== insFilter.due) insFilter.due = ""; // that month is no longer in the data
+  }
   var box = document.getElementById("insFQ");
   if (box) box.value = insFilter.q;
   insApplyFilter();
@@ -8126,8 +8289,17 @@ function insWire(view) {
     box.value = insFilter.q;
     box.oninput = function () { insFilter.q = box.value || ""; insApplyFilter(); };
   }
+  // Fill the months FIRST: restoring a month the data no longer has would
+  // otherwise leave the menu on "Any due date" while the filter still held it.
+  insFillDueMonths(view);
+  var dsel = document.getElementById("insFDue");
+  if (dsel) {
+    dsel.value = insFilter.due;
+    if (dsel.value !== insFilter.due) insFilter.due = "";
+    dsel.onchange = function () { insFilter.due = dsel.value || ""; insApplyFilter(); };
+  }
   var clr = document.getElementById("insFClear");
-  if (clr) clr.onclick = function () { insSetFilter("", ""); };
+  if (clr) clr.onclick = function () { insSetFilter("", "", ""); };
   view.querySelectorAll(".ins-act").forEach(function (b) { b.onclick = function (e) { e.preventDefault(); insRowAction(b); }; });
   insApplyFilter();
   if (insPendingDrill) { var p = insPendingDrill; insPendingDrill = ""; insOpenDrill(p, ""); }
@@ -8170,6 +8342,16 @@ function insRowAction(btn) {
   if (btn.getAttribute("data-act") === "seen") {
     row._busy = true;
     (window.PcmComments ? window.PcmComments.markRead(id) : Promise.resolve()).then(function () { insRowDone(row, "marked read"); });
+    return;
+  }
+  if (btn.getAttribute("data-act") === "dupok") {
+    // The group is found back from the task id, so the key never has to live in
+    // the markup. Dismissed for good: recurring work that really does carry one
+    // name shouldn't be queried every week.
+    var g = window.PcmDupes ? window.PcmDupes.of({ id: id }) : null;
+    if (!g) { insRowDone(row, "no longer listed"); return; }
+    row._busy = true;
+    window.PcmDupes.ignore(g.key).then(function () { insRowDone(row, "not a duplicate - won't be listed again"); });
     return;
   }
   if (btn.getAttribute("data-act") === "est") {
@@ -8727,6 +8909,23 @@ function renderDetectedSites(clients) {
   };
 }
 
+// A check older than this (2.5x the 5-minute period) means the monitor hasn't
+// looked lately, so the row has to say so instead of repeating a stale green
+// tick - that is how a site could be down for hours with every row reading "Up".
+const SM_STALE_MS = 12.5 * 60 * 1000;
+// "4h 25m" / "12 minutes" - matches siteGapLabel in background.js.
+function smGap(ms) {
+  const m = Math.max(0, Math.round(ms / 60000));
+  if (m < 60) return m + (m === 1 ? " minute" : " minutes");
+  const h = Math.floor(m / 60), r = m % 60;
+  return h + "h" + (r ? " " + r + "m" : "");
+}
+function smAgo(ms) { return ms < 45000 ? "just now" : smGap(ms) + " ago"; }
+function smClock(ts) { return new Date(ts).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" }); }
+// Opening the section while it is stale kicks a check, at most once a minute so
+// re-renders can't pile runs on top of each other.
+let smKickedAt = 0;
+
 function renderSiteMonitorStatus(cfg) {
   const el = $("siteMonitorStatus");
   if (!el) return;
@@ -8743,11 +8942,27 @@ function renderSiteMonitorStatus(cfg) {
     const state = resp && resp.state && typeof resp.state === "object" ? resp.state : {};
     const snooze = (sg && sg.siteSnooze) || {};
     const offMap = (sg && sg.siteOff) || {};
+    const nowTs = Date.now();
+    // Newest check across the sites actually being watched (a paused client or
+    // a site with Monitor off is meant to have an old time, so it never counts).
+    let newest = 0;
+    for (const s of cfg.sites) {
+      if (!s || !s.url || offMap[s.url] || (state[s.url] || {}).paused) continue;
+      newest = Math.max(newest, Number((state[s.url] || {}).lastCheck) || 0);
+    }
+    const allStale = newest > 0 && nowTs - newest > SM_STALE_MS;
     const rows = cfg.sites.map((s) => {
       const st = state[s.url] || { up: null, fails: 0, lastCheck: 0 };
       const isOff = !!offMap[s.url];
-      const statusText = isOff ? "\u23F9 Monitoring off for this site" : st.paused ? "\u23F8 Client paused - not checked" : st.up === true ? "✅ Up" : st.up === false ? (st.blank || st.kind === "blank" ? "⚠️ Blank page" : st.kind === "5xx" ? "🔥 Server error" + (st.status ? " (HTTP " + st.status + ")" : "") : "🚨 Down") : "⚪ Not checked yet";
-      const lastCheckText = st.lastCheck ? new Date(st.lastCheck).toLocaleString() : "never";
+      // Watched, checked before, but not lately: say so, in amber, instead of
+      // repeating the last known answer as if it were current.
+      const stale = !isOff && !st.paused && st.lastCheck > 0 && nowTs - st.lastCheck > SM_STALE_MS;
+      const was = st.up === true ? "Up" : st.up === false ? "down" : "not checked";
+      const statusText = isOff ? "\u23F9 Monitoring off for this site" : st.paused ? "\u23F8 Client paused - not checked"
+        : stale ? '<span class="sm-stale">\u231B Not checked for ' + smGap(nowTs - st.lastCheck) + "</span> \u00B7 was " + was + " at " + smClock(st.lastCheck)
+        : st.up === true ? "✅ Up" : st.up === false ? (st.blank || st.kind === "blank" ? "⚠️ Blank page" : st.kind === "5xx" ? "🔥 Server error" + (st.status ? " (HTTP " + st.status + ")" : "") : "🚨 Down") : "⚪ Not checked yet";
+      // A stale row already names its own gap and time, so it does not repeat it.
+      const lastCheckText = !st.lastCheck ? "never" : stale ? new Date(st.lastCheck).toLocaleString() : smAgo(nowTs - st.lastCheck) + " (" + new Date(st.lastCheck).toLocaleString() + ")";
       // The address opens the site (new tab).
       const link = /^https?:\/\//i.test(s.url) ? '<a class="sm-url" href="' + escapeHtml(s.url) + '" target="_blank" rel="noopener" title="Open the site">' + escapeHtml(s.url) + "</a>" : escapeHtml(s.url);
       const label = s.name && s.name !== s.url ? escapeHtml(s.name) + ' <span class="hint">' + link + "</span>" : link;
@@ -8756,7 +8971,7 @@ function renderSiteMonitorStatus(cfg) {
       const snoozeTxt = snoozed ? ' · <span class="sm-snoozed">🔕 alerts snoozed until ' + escapeHtml(new Date(until).toLocaleString([], { weekday: "short", month: "short", day: "numeric", hour: "numeric", minute: "2-digit" })) + "</span>" : "";
       const why = st.lastError ? ' · <span class="sm-err">' + escapeHtml(st.lastError) + "</span>"
         : st.blocked ? ' · <span class="sm-err" title="The site is up, but its security is blocking or challenging this computer (it fetches the page every few minutes, which can look like a bot). No alarm is raised for this. If it keeps happening, ask whoever manages the site to allow this office\'s IP.">' + escapeHtml(st.blocked) + " (site is up - not an outage)</span>" : "";
-      const speed = st.up === true && st.lastMs ? " · " + (st.lastMs < 1000 ? st.lastMs + "ms" : (st.lastMs / 1000).toFixed(1) + "s") : "";
+      const speed = !stale && st.up === true && st.lastMs ? " · " + (st.lastMs < 1000 ? st.lastMs + "ms" : (st.lastMs / 1000).toFixed(1) + "s") : "";
       const u = escapeHtml(s.url);
       return '<div class="imp-row" data-sm-row="' + u + '"><div class="imp-entry"><b>' + label + '</b><br><span class="hint">' + statusText + speed + " · last check: " + lastCheckText + (st.fails && st.up !== false ? " · " + st.fails + " failed check(s)" : "") + why + snoozeTxt + "</span></div>"
         + '<div class="sm-acts"><label class="sm-on" title="Untick to stop checking this site (and its alerts) - whether or not the client is with us. Tick it again to start."><input type="checkbox" data-sm-on="' + u + '"' + (isOff ? "" : " checked") + " /> Monitor</label>"
@@ -8767,8 +8982,18 @@ function renderSiteMonitorStatus(cfg) {
         + '<button type="button" class="sm-act" data-sm-edit="' + u + '" title="Change the client name or website">Edit</button>'
         + '<button type="button" class="sm-act sm-del" data-sm-del="' + u + '" title="Stop monitoring this site">Delete</button></div></div>';
     }).join("");
-    el.innerHTML = '<div class="sm-headrow"><div class="cu-subhead">Current status</div><button type="button" class="sm-act" data-sm-add="1">+ Add site</button></div><div id="smBlankLine" class="hint"></div><div id="smAddSlot"></div>' + rows;
+    // Said once at the top too, so it cannot be missed in a long list.
+    const banner = allStale
+      ? '<p class="hint sm-stale-banner">\u231B Nothing has been checked for ' + smGap(nowTs - newest) + ' (last check ' + escapeHtml(new Date(newest).toLocaleString()) + '). The statuses below are from then, not now, so a site could have gone down since. Checking again now.</p>'
+      : "";
+    el.innerHTML = '<div class="sm-headrow"><div class="cu-subhead">Current status</div><button type="button" class="sm-act" data-sm-add="1">+ Add site</button></div>' + banner + '<div id="smBlankLine" class="hint"></div><div id="smAddSlot"></div>' + rows;
     smPaintBlankLine(cfg.sites);
+    // Stale and the user is looking at it: catch up, then redraw with the real
+    // answer. Throttled so a re-render cannot pile runs on top of each other.
+    if (allStale && Date.now() - smKickedAt > 60000) {
+      smKickedAt = Date.now();
+      send({ type: "SITE_MONITOR_CHECK_NOW" }).then(async () => { renderSiteMonitorStatus(await getSiteMonitorConfigOpt()); }).catch(() => {});
+    }
   }).catch(() => {
     el.innerHTML = '<p class="hint">Could not fetch state.</p>';
   });
@@ -9070,12 +9295,14 @@ setInterval(() => { if (!document.hidden) syncClickupRunning(); }, 60000);
 // ---------- Sidebar navigation (tabbed layout) ----------
 // One section visible at a time; the choice is remembered (per browser) and can
 // be deep-linked with #dashboard / #clickup / #agent / #sites / #general.
-const OPT_TABS = ["dashboard", "insights", "clickup", "agent", "sites", "hub", "reminders", "files", "bulk", "admin", "general"];
+const OPT_TABS = ["dashboard", "insights", "clickup", "agent", "sites", "hub", "reminders", "files", "bulk", "admin", "general", "automation"];
 function showOptTab(name) {
   // "insights/plan" = the Insights tab on its Plan sub-tab (links, notifications).
   const subM = /^insights\/(health|plan|performance)$/.exec(String(name || ""));
   if (subM) { insSetSub(subM[1]); name = "insights"; }
   if (!OPT_TABS.includes(name)) name = "dashboard";
+  // The Automation tab exists only once /automation has shown it (automation.js).
+  if (name === "automation" && !document.querySelector('#sideNav [data-tab="automation"]')) name = "dashboard";
   document.querySelectorAll("#sideNav [data-tab]").forEach((b) => b.classList.toggle("on", b.dataset.tab === name));
   document.querySelectorAll(".panel[data-panel]").forEach((p) => p.classList.toggle("on", p.dataset.panel === name));
   try { renderDashStrip(); } catch (e) {}
@@ -9524,7 +9751,7 @@ const ADMIN_FILES = [
   "manifest.json", "background.js", "popup.html", "popup.js", "options.html", "options.js", "phone-timer.js",
   "offscreen.html", "offscreen.js", "update.html", "update.js", "auto-update.html", "auto-update.js", "wrapup.html", "wrapup.js",
   "notify-menu.js", "export-tasks.js", "lib-zip.js", "lib-unzip.js", "lib-automation.js",
-  "lib-availability.js", "lib-clickup.js", "lib-crypto.js", "lib-tidy.js", "lib-drive.js", "find-many.js", "task-panel.js", "lib-updater.js", "offscreen-updater.js", "celebrate.js", "celebrate.html", "celebrate-window.js", "fx.js", "pcm-help.js", "tracker.html", "tracker.js", "bulk-edit.js", "pcm-search.js", "lib-taskfiles.js", "task-files.js", "reminders.js", "hub.js", "task-sort.js", "breakdown.js", "calendar.js", "notices.js", "insights-plus.js", "header-ui.js", "weather.js", "paused-clients.js", "plan-apply.js", "task-notes.js", "md-notes.js", "mention.js", "long-list.js", "local-tasks.js", "ui-extras.js", "assignees.js", "add-time.js", "team-hub.gs", "vendor/pdf.min.js", "vendor/pdf.worker.min.js", "vendor/pdfjs-LICENSE.txt",
+  "lib-availability.js", "lib-clickup.js", "lib-crypto.js", "lib-tidy.js", "lib-drive.js", "find-many.js", "automation.js", "task-panel.js", "lib-updater.js", "offscreen-updater.js", "celebrate.js", "celebrate.html", "celebrate-window.js", "fx.js", "pcm-help.js", "tracker.html", "tracker.js", "bulk-edit.js", "pcm-search.js", "lib-taskfiles.js", "task-files.js", "reminders.js", "hub.js", "task-sort.js", "breakdown.js", "calendar.js", "notices.js", "insights-plus.js", "header-ui.js", "weather.js", "paused-clients.js", "plan-apply.js", "task-notes.js", "task-dupes.js", "rollup-help.js", "md-notes.js", "mention.js", "long-list.js", "local-tasks.js", "ui-extras.js", "assignees.js", "add-time.js", "team-hub.gs", "vendor/pdf.min.js", "vendor/pdf.worker.min.js", "vendor/pdfjs-LICENSE.txt",
   "icons/icon16.png", "icons/icon48.png", "icons/icon128.png", "icons/celebrate.png", "icons/sad.png",
   "sounds/notify.wav", "sounds/danger.mp3", "sounds/winner.wav",
   "README.md", "CHANGELOG.md",
@@ -10318,6 +10545,11 @@ if ($("deskTry")) {
 }
 if ($("timerPlace")) {
   chrome.storage.local.get("settings").then((g) => { $("timerPlace").value = (g.settings && g.settings.timerPlace) || "float"; }).catch(() => {});
+  chrome.storage.onChanged.addListener((ch, area) => {
+    if (area !== "local" || !ch.settings || !ch.settings.newValue || document.activeElement === $("timerPlace")) return;
+    const v = ch.settings.newValue.timerPlace || "float";
+    if ($("timerPlace").value !== v) $("timerPlace").value = v;
+  });
   $("timerPlace").onchange = async () => {
     await send({ type: "SET_SETTINGS", patch: { timerPlace: $("timerPlace").value, timerPlaceChosen: true } }).catch(() => {});
     renderDeskTry();
@@ -10340,7 +10572,14 @@ async function deskGetClick(btn, out) {
   let m = "";
   try { m = await deskDownload(); } finally { btn.disabled = false; btn.textContent = was; }
   deskSay(out, m);
-  if (m && !deskNotYet(m) && $("timerPlace")) $("timerPlace").value = "taskbar";
+  // Downloading the app means the taskbar: SAVE it, not just show it. Only
+  // changing the dropdown on screen left the setting on "floating window", and
+  // the floating window kept opening beside the taskbar timer.
+  if (m && !deskNotYet(m) && $("timerPlace")) {
+    $("timerPlace").value = "taskbar";
+    await send({ type: "SET_SETTINGS", patch: { timerPlace: "taskbar", timerPlaceChosen: true } }).catch(() => {});
+    deskRefresh();
+  }
   return m;
 }
 if ($("deskGet")) $("deskGet").onclick = () => deskGetClick($("deskGet"), $("deskStatus"));

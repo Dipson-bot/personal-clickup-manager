@@ -719,3 +719,72 @@
   setTimeout(() => mo.disconnect(), 8000);
   document.addEventListener("DOMContentLoaded", () => { apply(); hookTheme(); });
 })();
+
+// "Loading…", "Syncing…", "Refreshing…" messages that can't be missed. They used
+// to be plain grey text: after a click (a day in the calendar) the list read
+// "Loading tasks for these dates…" so quietly that people thought nothing was
+// happening and left. Any such message - a line of its own - becomes a tinted box
+// with a spinner; a label that merely ends in "(loading…)" gets a spinner pill.
+// Buttons, inputs and menus are left alone (they say "Moving…" in their own way).
+(() => {
+  "use strict";
+  const MSG_RE = /^(loading|syncing|refreshing|reading|saving|fetching|indexing|building|checking|asking|waiting for|updating|looking|working out|getting|downloading)\b[^\n]{0,140}(…|\.\.\.)\s*$/i;
+  const TAIL_RE = /\((loading|refreshing|syncing)…\)\s*$|· (refreshing|syncing|loading)…\s*$/i;
+  const css = document.createElement("style");
+  css.textContent = `
+    .pcm-busy { display: flex !important; align-items: center; gap: 9px; width: fit-content; max-width: 100%; box-sizing: border-box; margin: 6px 0; padding: 8px 14px !important; border-radius: 9px; background: rgba(99, 102, 241, .12); border: 1px solid rgba(99, 102, 241, .45); color: var(--indigo, #4f46e5) !important; font-weight: 600 !important; font-size: 13px; animation: pcmBusyPulse 1.6s ease-in-out infinite; }
+    .pcm-busy::before, .pcm-busy-tail::after { content: ""; flex: none; width: 12px; height: 12px; border: 2px solid currentColor; border-right-color: transparent; border-radius: 50%; animation: pcmBusySpin .7s linear infinite; }
+    .pcm-busy-tail { color: var(--indigo, #4f46e5) !important; font-weight: 600; }
+    .pcm-busy-tail::after { display: inline-block; width: 9px; height: 9px; margin-left: 6px; vertical-align: -1px; }
+    .ins-empty.pcm-busy, .dash-empty.pcm-busy { margin: 10px auto; }
+    @keyframes pcmBusySpin { to { transform: rotate(360deg); } }
+    @keyframes pcmBusyPulse { 0%, 100% { box-shadow: 0 0 0 0 rgba(99, 102, 241, .0); } 50% { box-shadow: 0 0 0 4px rgba(99, 102, 241, .18); } }
+    @media (prefers-reduced-motion: reduce) { .pcm-busy { animation: none; } .pcm-busy::before, .pcm-busy-tail::after { animation-duration: 2s; } }
+  `;
+  (document.head || document.documentElement).appendChild(css);
+  const SKIP = "button, input, select, option, textarea, a, label, .xt, .au-term, .cu-rollpop, [contenteditable=true], .pcs-box, .cu-task, header, .header, .chips, .status-chips, .drivesync, .drivesync-row, [class*=chip], [class*=dot]";
+  // A line of its own: it spans (nearly) the width it has, i.e. it is not one
+  // label among others in a row - those keep their own look.
+  function wideLine(el) {
+    const p = el.parentElement;
+    if (!p) return false;
+    // Measured only before the box is on: the box itself is fit-content, so
+    // measuring it again would take it off, widen the line, put it back on... -
+    // a flicker of its own.
+    if (!el.classList.contains("pcm-busy")) {
+      const pw = p.clientWidth || 0, w = el.getBoundingClientRect().width || 0;
+      if (pw && w < pw * 0.6) return false;
+    }
+    const pd = getComputedStyle(p).display;
+    if (/flex|grid/.test(pd) && [...p.children].filter((c) => c !== el && c.offsetParent !== null).length) return false;
+    return true;
+  }
+  function check(el) {
+    if (!el || el.nodeType !== 1 || !el.isConnected) return;
+    if (el.closest(SKIP)) { el.classList.remove("pcm-busy", "pcm-busy-tail"); return; }
+    // Only a line of its own: no element children (a spinner span is fine).
+    const kids = [...el.children].filter((c) => !c.classList.contains("cu-spin") && !c.classList.contains("cu-spinner"));
+    const t = kids.length ? "" : (el.textContent || "").trim();
+    const big = !!t && MSG_RE.test(t) && /^(DIV|P)$/.test(el.tagName) && el.offsetParent !== null && wideLine(el);
+    const tail = !big && !!t && TAIL_RE.test(t);
+    if (el.classList.contains("pcm-busy") !== big) el.classList.toggle("pcm-busy", big);
+    if (el.classList.contains("pcm-busy-tail") !== tail) el.classList.toggle("pcm-busy-tail", tail);
+  }
+  const scan = (root) => {
+    if (!root || root.nodeType !== 1) return;
+    check(root);
+    root.querySelectorAll("div, p, span, small, em, li, td").forEach(check);
+  };
+  let todo = new Set(), timer = 0;
+  const flush = () => { timer = 0; const list = [...todo]; todo = new Set(); for (const n of list) scan(n); };
+  new MutationObserver((recs) => {
+    for (const r of recs) {
+      const n = r.type === "characterData" ? r.target.parentElement : r.target;
+      if (n && n.nodeType === 1) todo.add(n);
+      for (const a of r.addedNodes || []) if (a.nodeType === 1) todo.add(a);
+    }
+    if (!timer) timer = setTimeout(flush, 60);
+  }).observe(document.documentElement, { childList: true, subtree: true, characterData: true });
+  const first = () => scan(document.body);
+  if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", first); else first();
+})();

@@ -844,6 +844,8 @@ function markTrk(trk, t, spans) {
   const est = Number(t && (t.estimateMs != null ? t.estimateMs : t.dayEstimateMs)) || 0;
   // Red only when it really ran over (2 minutes of grace past the estimate).
   if (est > 0 && spent > est + CU_OVER_GRACE_MS) trk.classList.add("over");
+  // A parent whose ClickUp estimate includes its subtasks counts only its own part.
+  if (t && t.rollupEstimateMs) trk.title = "In ClickUp this task's estimate is " + fmtDur(t.rollupEstimateMs) + ", which includes " + fmtDur(t.subtasksEstimateMs) + " for its subtasks. Those count on their own rows, so only its own " + fmtDur(est) + " counts here (otherwise the day's estimate would count them twice).";
   const st = (state && state.clickup && state.clickup.state) || null;
   const run = st && st.running;
   const id = t && (t.id != null ? t.id : t.taskId);
@@ -2510,13 +2512,17 @@ const CU_TODAY_TIP = "Time you tracked today, across all your tasks. The bar sho
 // Today's estimate (the Due today total, counted by the same multi-day rule)
 // inside a wider date filter's Estimated bar - like the tracked "today" part.
 // Only when the filter's dates include today.
-const CU_TODAY_EST_TIP = "Today's estimate: what is due today (the Due today total). The bar shows this filter's own total; the light part of it is today's share.";
+const CU_TODAY_EST_TIP = "Today's estimate: what is due today (the Due today total). The bar shows this filter's own total; when these dates include today, the light part of it is today's share.";
 function cuTodayEstimate(st, view, f) {
   st = st || {}; view = view || {};
   if (!view.scope || view.scope === "today" || view.scope === "extended" || view.scope === "plan") return 0; // the bar IS today
-  const r = cuViewRange(st, f), now = Date.now();
-  if (!r || now < r.fromTs || now > r.toTs) return 0;
+  // Any other dates: today's own estimate beside them, like Tracked's chip.
   return Math.max(0, Number(st.estimateMs) || 0);
+}
+// Do the dates on screen include today? (Only then is part of the bar today.)
+function cuViewHasToday(st, view, f) {
+  const r = cuViewRange(st || {}, f), now = Date.now();
+  return !!(r && now >= r.fromTs && now <= r.toTs);
 }
 function cuTodayTracked(st, view) {
   st = st || {}; view = view || {};
@@ -2592,8 +2598,9 @@ function cuLoadRunPrior() {
     chrome.storage.local.get("runningProgress").then(({ runningProgress: rp }) => {
       cuRunPrior = rp && rp.taskId
         ? { key: String(rp.taskId) + ":" + String(rp.startMs || ""), ms: Math.max(0, Number(rp.closedMs) || 0), today: Math.max(0, Number(rp.closedTodayMs) || 0), est: Math.max(0, Number(rp.estimateMs) || 0),
-            oth: Math.max(0, Number(rp.othersMs) || 0), par: Array.isArray(rp.othersRunning) ? rp.othersRunning : [] }
-        : { key: "", ms: 0, today: 0, est: 0, oth: 0, par: [] };
+            oth: Math.max(0, Number(rp.othersMs) || 0), par: Array.isArray(rp.othersRunning) ? rp.othersRunning : [],
+            subs: Math.max(0, Number(rp.subtasksMs) || 0), subN: Math.max(0, Number(rp.subtaskCount) || 0) }
+        : { key: "", ms: 0, today: 0, est: 0, oth: 0, par: [], subs: 0, subN: 0 };
       if (cuNowTick) cuNowTick();
     }).catch(() => {});
   } catch (e) {}
@@ -3079,6 +3086,7 @@ function cuSetupDrag(container) {
 
 function renderClickup() {
   if (cuEstEditing || cuDragging) { cuRenderPending = true; return; }
+  try { cuPaintDayBar(); } catch (e) {}
   const cu = state.clickup || {};
   const statsCard = $("statsCard");
   const filterCard = $("filterCard");
@@ -3131,7 +3139,7 @@ function renderClickup() {
     estChip.title = CU_TODAY_EST_TIP;
   }
   fill.innerHTML = "";
-  if (todayEstMs > 0 && todayEstMs <= estMs) {
+  if (todayEstMs > 0 && todayEstMs <= estMs && cuViewHasToday(st, view, cuFilter)) {
     const seg = document.createElement("div");
     seg.className = "cu-today-seg";
     seg.style.width = Math.min(100, Math.round((todayEstMs / estMs) * 100)) + "%";
@@ -3348,8 +3356,10 @@ function renderNowTracking() {
     const est = known ? cuRunPrior.est : 0;
     time.textContent = fmtDur(prior + live) + (est > 0 ? " / " + fmtDur(est) : "");
     const othMs = known ? cuRunPrior.oth : 0, par = known ? cuRunPrior.par : [];
-    const mineBefore = Math.max(0, prior - othMs);
-    sess.textContent = !known ? "adding earlier time…" : prior > 0 ? "(" + (othMs > 0 ? fmtDur(othMs) + " others + " : "") + (mineBefore > 0 ? fmtDur(mineBefore) + " before + " : "") + fmtDur(live) + " now)" : "";
+    // A parent task carries on from its subtasks' time when its estimate covers them.
+    const subMs = known ? (cuRunPrior.subs || 0) : 0;
+    const mineBefore = Math.max(0, prior - othMs - subMs);
+    sess.textContent = !known ? "adding earlier time…" : prior > 0 ? "(" + (subMs > 0 ? fmtDur(subMs) + " subtasks + " : "") + (othMs > 0 ? fmtDur(othMs) + " others + " : "") + (mineBefore > 0 ? fmtDur(mineBefore) + " before + " : "") + fmtDur(live) + " now)" : "";
     const othBits = [];
     if (par.length) othBits.push("\u26A0 " + par.map((o) => o.name || "Someone").join(", ") + (par.length === 1 ? " is" : " are") + " tracking this task right now too");
     if (othMs > 0) othBits.push(fmtDur(othMs) + " tracked by others before you" + (est > 0 ? (prior + live < est ? " \u00b7 " + fmtDur(est - prior - live) + " left of " + fmtDur(est) : " \u00b7 estimate used up") : ""));
@@ -3357,7 +3367,7 @@ function renderNowTracking() {
     oth.classList.toggle("warn", par.length > 0);
     oth.textContent = othBits.join(" \u00b7 ");
     oth.title = othMs > 0 ? "The estimate is for the whole task, so time someone else tracked on it counts too: " + fmtDur(othMs) + " by others + " + fmtDur(Math.max(0, prior - othMs)) + " earlier by you + " + fmtDur(live) + " this timer. Your daily totals count only your own time." : "";
-    sess.title = !known ? "Looking up how much was tracked on this task before this timer" : prior > 0 ? "Tracked on this task before this timer: " + fmtDur(prior) + " · this timer: " + fmtDur(live) + " · total " + fmtDur(prior + live) : "";
+    sess.title = !known ? "Looking up how much was tracked on this task before this timer" : prior > 0 ? (subMs > 0 ? "Includes " + fmtDur(subMs) + " tracked on its " + (cuRunPrior.subN || "") + " subtask" + (cuRunPrior.subN === 1 ? "" : "s") + " - this task's estimate covers them, so the time goes on from there. " : "") + "Tracked on this task before this timer: " + fmtDur(prior) + " · this timer: " + fmtDur(live) + " · total " + fmtDur(prior + live) : "";
     // Today's own share, when this task was also worked on an earlier day: the
     // big figure is everything ever tracked on it, which on a task that runs for
     // days (a weekly recurring one) is nothing like today's work.
@@ -4129,14 +4139,39 @@ function cuClearAllFilters() {
 const CU_FILTER_EXTRAS = ["statuses", "priorities", "clients", "customFrom", "customTo", "dateBasis"];
 // Calendar (calendar.js): clicking a day lists that day's tasks (saved like any
 // filter, so the dashboard and badge follow).
+// The filter you had before is kept, and a bar over the list says which day is
+// showing with "Back to my filter" - the list is scrolled into view, so a click
+// on a day never changes the list out of sight.
+let cuDayPrev = null, cuDayYmd = "";
 window.pcmPickDay = (ts) => {
   const d = new Date(ts);
   const k = d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0") + "-" + String(d.getDate()).padStart(2, "0");
+  if (!cuDayPrev) cuDayPrev = cuSnapshotFilter();
   const s = cuSnapshotFilter();
   for (const f of [...CU_DATE_KEYS, "deadlineCrossed"]) s[f] = false;
   s.dueCustom = true; s.customFrom = k; s.customTo = k;
+  cuDayYmd = k;
   cuApplyFilterSnapshot(s);
+  setTimeout(() => {
+    const bar = $("cuDayBar") || $("cuTaskList");
+    if (bar) bar.scrollIntoView({ behavior: "smooth", block: "start" });
+  }, 80);
 };
+function cuPaintDayBar() {
+  const list = $("cuTaskList");
+  let bar = $("cuDayBar");
+  const active = !!cuDayPrev && cuFilter.dueCustom && cuFilter.customFrom === cuDayYmd && (cuFilter.customTo || cuDayYmd) === cuDayYmd;
+  if (!active || !list) { if (bar) bar.remove(); if (!active) { cuDayPrev = null; cuDayYmd = ""; } return; }
+  if (!bar) { bar = document.createElement("div"); bar.id = "cuDayBar"; bar.className = "cu-chartday"; }
+  if (bar.nextSibling !== list) list.parentNode.insertBefore(bar, list);
+  bar.textContent = "";
+  bar.append("\uD83D\uDCC5 Showing " + new Date(cuDayYmd + "T12:00:00").toLocaleDateString(undefined, { weekday: "short", month: "short", day: "numeric" }) + " (picked in the calendar)");
+  const back = document.createElement("button");
+  back.type = "button";
+  back.textContent = "\u2715 Back to my filter";
+  back.onclick = () => { const prev = cuDayPrev; cuDayPrev = null; cuDayYmd = ""; if (prev) cuApplyFilterSnapshot(prev); };
+  bar.appendChild(back);
+}
 function cuSnapshotFilter() {
   const out = { mode: cuFilterSingle ? "single" : "multi" };
   for (const k of CU_FILTER_KEYS) out[k] = !!cuFilter[k];

@@ -27,7 +27,7 @@ import {
   linkifySheet,
 } from "./lib-drive.js";
 import { runAllAccounts, runAccountLogin, readAgentRouterLogin, URLS, GITHUB_KEEP_COOKIES } from "./lib-automation.js";
-import { getTaskCommentsLite, getTaskTimeEntries, deleteTimeEntry, getUserGroups, getUser, verifyToken, getTeams, fetchTodayEstimate, fetchWeeklySummary, fetchDateRangeEstimate, createTaskCache, fetchTeamMembers, fetchWorkspaceTags, cuTagNames, fmtDuration, findExtraTaskByName, parseTaskIdFromUrl, getCurrentTimeEntry, getRunningTaskProgress, startTimer, stopTimer, getTaskById, setTaskStatus, setTaskDates, taskUrlFor, clientLabelFromContainer, resolveSpaceNamesFor, taskContainer, cuPriorityName, isTaskDone, getSubtasksOfParent, getTaskTree, getTaskDetail, updateTimeEntry, setTaskDueDate, clearTaskTreeCache, listWorkspaceClients, cuRowAssignees, fetchDoneBetween, fetchDoneLite, fetchTrackedHistory, getTaskPanel, addTaskComment, postTaskComment, setTaskDescription, getTaskCommentLinks, createTask, removeTaskAssignee, postAssignedComment, addTimeEntry, weeklyWithToday, listClientFieldOptions, listReachableClients, bgToken, patientToken, cuRawFetch, getRelatedTasks, slimIndexTask, fetchTeamTasksPage, listAllLists, setPausedClients } from "./lib-clickup.js";
+import { getLatestCommentBy, getTaskCommentsLite, getTaskTimeEntries, deleteTimeEntry, getUserGroups, getUser, verifyToken, getTeams, fetchTodayEstimate, fetchWeeklySummary, fetchDateRangeEstimate, createTaskCache, fetchTeamMembers, fetchWorkspaceTags, cuTagNames, fmtDuration, findExtraTaskByName, parseTaskIdFromUrl, getCurrentTimeEntry, getRunningTaskProgress, startTimer, stopTimer, getTaskById, setTaskStatus, setTaskDates, taskUrlFor, clientLabelFromContainer, resolveSpaceNamesFor, taskContainer, cuPriorityName, isTaskDone, getSubtasksOfParent, getTaskTree, getTaskDetail, updateTimeEntry, setTaskDueDate, clearTaskTreeCache, listWorkspaceClients, cuRowAssignees, fetchDoneBetween, fetchDoneLite, fetchTrackedHistory, getTaskPanel, addTaskComment, postTaskComment, setTaskDescription, getTaskCommentLinks, createTask, removeTaskAssignee, postAssignedComment, addTimeEntry, weeklyWithToday, listClientFieldOptions, listReachableClients, bgToken, patientToken, cuRawFetch, getRelatedTasks, slimIndexTask, fetchTeamTasksPage, listAllLists, setPausedClients } from "./lib-clickup.js";
 import { resolveRelayKey, pickProbeModel, probeRelay } from "./lib-availability.js";
 import { tidyCollect, tidyLines, tidyResolved, tidyDayOk, tidyUrgent, tidyDateShort } from "./lib-tidy.js";
 
@@ -58,6 +58,9 @@ const SITE_MONITOR_PROBE_TIMEOUT_MS = 8000; // "is this PC online" probes
 // a fail from just before the PC slept + the first check after waking is not
 // an outage. Anything older than this resets the count.
 const SITE_MONITOR_STALE_MS = 15 * 60000;
+// The same alert for the same site inside this window is a duplicate, not news
+// (two runs that overlapped, or an alarm Chrome replayed on waking).
+const SITE_NOTE_REPEAT_MS = 10 * 60000;
 // Known-good addresses used to tell "the site is down" from "this PC is
 // offline" (Chrome up before Wi-Fi / VPN, DNS hiccup). Only probed when a
 // site check failed, so a quiet run costs nothing extra.
@@ -280,6 +283,9 @@ function syncTaskIndex(opts = {}) {
       m = { v: 1, teamId: String(cfg.teamId), level, state: "building", page: 0, read: 0, count: 0, lastSync: 0, startedAt: Date.now() };
       await save(m);
     }
+    // Whose index it is: Ctrl+K search keeps the tasks assigned to you from it.
+    const me = cfg.userId != null ? String(cfg.userId) : "";
+    if (m.me !== me) { m = { ...m, me }; await save(m); }
     try {
       if (m.state === "building") {
         // Carries on from the page reached (a restarted service worker resumes).
@@ -399,10 +405,34 @@ async function remList() {
   const { reminders } = await chrome.storage.local.get("reminders");
   return Array.isArray(reminders) ? reminders.filter((r) => !(r && REM_RETIRED.has(r.id))) : [];
 }
+// Days of the month an "On set dates" reminder goes off ([17, 19, 21, 25]).
+const remDates = (list) => [...new Set((Array.isArray(list) ? list : []).map((n) => Math.round(Number(n))).filter((n) => n >= 1 && n <= 31))].sort((a, b) => a - b);
+// "On picked days": the calendar days ticked for it ["2026-10-17", ...].
+const remDays = (list) => [...new Set((Array.isArray(list) ? list : []).map(String).filter((k) => /^\d{4}-\d{2}-\d{2}$/.test(k)))].sort();
+// The next picked day after `now`, at the reminder's time of day - 0 when none is left.
+function remNextDay(at, days, now) {
+  const t = new Date(Number(at) || now);
+  for (const k of remDays(days)) {
+    const [y, m, d] = k.split("-").map(Number);
+    const ts = new Date(y, m - 1, d, t.getHours(), t.getMinutes(), 0, 0).getTime();
+    if (ts > now) return ts;
+  }
+  return 0;
+}
 // Next time a repeating reminder is due, after `now` (local time kept).
-function remNext(at, repeat, now) {
+function remNext(at, repeat, now, dates) {
   const t = new Date(at);
   let guard = 0;
+  if (repeat === "dates") {
+    const days = remDates(dates);
+    // A month without that day (the 31st of February) is skipped, not moved -
+    // walking a day at a time, so the longest wait is Jan 31 -> Mar 31. With no
+    // days at all it falls through to daily rather than never firing again.
+    if (days.length) {
+      do { t.setDate(t.getDate() + 1); } while ((t.getTime() <= now || !days.includes(t.getDate())) && ++guard < 800);
+      return t.getTime();
+    }
+  }
   do {
     t.setDate(t.getDate() + (repeat === "weekly" ? 7 : 1));
     if (repeat === "weekdays") while (t.getDay() === 0 || t.getDay() === 6) t.setDate(t.getDate() + 1);
@@ -442,22 +472,32 @@ function remNextWeekdayAt(h, m, now = Date.now()) {
   return d.getTime();
 }
 // ---- Reminders the admin sends to everyone (update-policy.json "teamReminders") ----
-// [{ id, text, h, m, repeat: daily|weekdays|weekly, dow, sound, v, force, removed }]
+// [{ id, text, h, m, repeat: daily|weekdays|weekly|dates, dow, dates, sound, v, force, removed }]
 // Each copy updates its reminder with that id (or adds it). Someone who changed
 // or deleted it themselves keeps their choice - unless the admin ticked "also
 // for people who changed it" (force). teamRemApplied { id: { v, sig } } remembers
 // what was last set here, which is how a personal change is recognised.
 function normTeamRems(list) {
-  return (Array.isArray(list) ? list : []).filter((t) => t && /^[\w-]{3,60}$/.test(String(t.id || ""))).map((t) => ({
-    id: String(t.id), text: String(t.text || "").trim().slice(0, 300),
-    h: Math.max(0, Math.min(23, Number(t.h) || 0)), m: Math.max(0, Math.min(59, Number(t.m) || 0)),
-    repeat: ["daily", "weekdays", "weekly"].includes(t.repeat) ? t.repeat : "weekdays",
-    dow: Math.max(0, Math.min(6, Number(t.dow) || 0)), sound: ["normal", "danger", "winner"].includes(t.sound) ? t.sound : "normal",
-    v: Number(t.v) || 0, force: !!t.force, removed: !!t.removed,
-  })).filter((t) => t.removed || t.text);
+  return (Array.isArray(list) ? list : []).filter((t) => t && /^[\w-]{3,60}$/.test(String(t.id || ""))).map((t) => {
+    const dates = remDates(t.dates);
+    const days = remDays(t.days);
+    const repeat = ["daily", "weekdays", "weekly", "dates", "days"].includes(t.repeat) ? t.repeat : "weekdays";
+    return {
+      id: String(t.id), text: String(t.text || "").trim().slice(0, 300),
+      h: Math.max(0, Math.min(23, Number(t.h) || 0)), m: Math.max(0, Math.min(59, Number(t.m) || 0)),
+      // "On set dates" with no dates could never fire: treat it as weekdays
+      // rather than hand everyone a reminder that sits there doing nothing.
+      repeat: (repeat === "dates" && !dates.length) || (repeat === "days" && !days.length) ? "weekdays" : repeat,
+      dates, days,
+      dow: Math.max(0, Math.min(6, Number(t.dow) || 0)), sound: ["normal", "danger", "winner"].includes(t.sound) ? t.sound : "normal",
+      v: Number(t.v) || 0, force: !!t.force, removed: !!t.removed,
+    };
+  }).filter((t) => t.removed || t.text);
 }
 const remHm = (at) => { const d = new Date(Number(at) || 0); return String(d.getHours()).padStart(2, "0") + ":" + String(d.getMinutes()).padStart(2, "0"); };
-const remSig = (r) => String((r && r.text) || "").trim() + "|" + remHm(r && r.at) + "|" + String((r && r.repeat) || "");
+// The fingerprint that says whether this person has changed the reminder since
+// the admin last set it - so the set of dates has to count as part of it.
+const remSig = (r) => String((r && r.text) || "").trim() + "|" + remHm(r && r.at) + "|" + String((r && r.repeat) || "") + (r && r.repeat === "dates" ? "|" + remDates(r.dates).join(",") : "") + (r && r.repeat === "days" ? "|" + remDays(r.days).join(",") : "");
 function remDefaultSig(id) {
   const d = REM_DEFAULTS.find((x) => x.id === id);
   return d ? d.text + "|" + String(d.h).padStart(2, "0") + ":" + String(d.m).padStart(2, "0") + "|weekdays" : "";
@@ -465,6 +505,14 @@ function remDefaultSig(id) {
 function teamRemNextAt(t, now = Date.now()) {
   if (t.repeat === "weekdays") return remNextWeekdayAt(t.h, t.m, now);
   const d = new Date(now); d.setHours(t.h, t.m, 0, 0);
+  // Picked days: the next one still ahead (none left: the last one, already past).
+  if (t.repeat === "days") { const days = remDays(t.days); const nx = remNextDay(d.getTime(), days, now); if (nx) return nx; if (days.length) { const [y, m, dd] = days[days.length - 1].split("-").map(Number); return new Date(y, m - 1, dd, t.h, t.m).getTime(); } }
+  if (t.repeat === "dates") {
+    // Days of the month: the first one still ahead. A month without that day is
+    // skipped, so a 31st-only reminder waits for the next 31-day month.
+    const days = remDates(t.dates);
+    if (days.length) { let guard = 0; while ((d.getTime() <= now || !days.includes(d.getDate())) && ++guard < 800) d.setDate(d.getDate() + 1); return d.getTime(); }
+  }
   if (t.repeat === "weekly") { while (d.getDay() !== t.dow || d.getTime() <= now) d.setDate(d.getDate() + 1); }
   else while (d.getTime() <= now) d.setDate(d.getDate() + 1);
   return d.getTime();
@@ -491,13 +539,13 @@ async function applyTeamReminders(policy) {
     const base = a ? a.sig : remDefaultSig(t.id);
     if (r) {
       if (!t.force && base && remSig(r) !== base) { applied[t.id] = { v: t.v, sig: base }; continue; } // changed by this person: kept
-      Object.assign(r, { text: t.text, repeat: t.repeat, sound: t.sound, at: teamRemNextAt(t), active: true, done: false });
+      Object.assign(r, { text: t.text, repeat: t.repeat, dates: t.dates, days: t.days, sound: t.sound, at: teamRemNextAt(t), active: t.repeat !== "days" || teamRemNextAt(t) > Date.now(), done: false });
       applied[t.id] = { v: t.v, sig: remSig(r) };
       changed = true;
     } else {
       // Not here: deleted by this person (it was handed out before) unless forced.
       if (!t.force && (a || seeded.has(t.id))) { applied[t.id] = { v: t.v, sig: a ? a.sig : "" }; continue; }
-      const nr = { id: t.id, text: t.text, at: teamRemNextAt(t), repeat: t.repeat, sound: t.sound, taskId: "", taskName: "", taskUrl: "", files: [], active: true, createdAt: Date.now(), team: true };
+      const nr = { id: t.id, text: t.text, at: teamRemNextAt(t), repeat: t.repeat, dates: t.dates, days: t.days, sound: t.sound, taskId: "", taskName: "", taskUrl: "", files: [], active: true, createdAt: Date.now(), team: true };
       rems.push(nr);
       applied[t.id] = { v: t.v, sig: remSig(nr) };
       changed = true;
@@ -619,8 +667,9 @@ function fireDueReminders() {
         shown++;
       }
       r.firedAt = now;
-      if (r.repeat === "daily" || r.repeat === "weekdays" || r.repeat === "weekly") r.at = remNext(Number(r.at), r.repeat, now);
-      else r.active = false; // one-time: moves to "Past" in the list
+      if (r.repeat === "daily" || r.repeat === "weekdays" || r.repeat === "weekly" || r.repeat === "dates") r.at = remNext(Number(r.at), r.repeat, now, r.dates);
+      else if (r.repeat === "days" && remNextDay(r.at, r.days, now)) r.at = remNextDay(r.at, r.days, now); // the next picked day
+      else r.active = false; // one-time (or the last picked day): moves to "Past" in the list
       changed = true;
     }
     if (changed) await chrome.storage.local.set({ reminders: list });
@@ -1096,7 +1145,7 @@ function siteDecide(prevIn, result, o) {
 // user's own connection can't mark a site down. opts.url limits it to one site.
 const sleepMs = (ms) => new Promise((r) => setTimeout(r, ms));
 
-async function checkSites(opts = {}) {
+async function checkSitesImpl(opts = {}) {
   const cfg = await getSiteMonitorConfig();
   if (!cfg || !Array.isArray(cfg.sites) || cfg.sites.length === 0) return { checked: 0 };
   if (!cfg.enabled && !opts.manual) return { checked: 0 };
@@ -1116,17 +1165,76 @@ async function checkSites(opts = {}) {
   for (const s of cfg.sites) if (s && s.url && siteOff[s.url]) state[s.url] = { ...(state[s.url] || { up: null, fails: 0, lastCheck: 0 }), off: true };
   for (const s of cfg.sites) if (s && s.url && !siteOff[s.url] && state[s.url] && state[s.url].off) { const { off, ...rest } = state[s.url]; state[s.url] = rest; }
   const sites = cfg.sites.filter((s) => s && s.url && (!opts.url || s.url === opts.url) && !isPausedSite(s) && !siteOff[s.url]);
-  // 1) One check per site (30s timeout), a few sites at a time.
+  // Persist on EVERY run (not only when a status flips) so the "last check" time
+  // stays current - AND in stages, not once at the end. A run that fails waits
+  // up to a minute in sleeps and retries below; if the worker is stopped in the
+  // middle of that, or anything throws, a single save at the end lost every
+  // result and the alert, and "last check" froze hours back while every row
+  // still read "Up". That is a monitor that has gone blind without saying so.
+  const saveState = async () => { try { await chrome.storage.local.set({ siteMonitorState: state }); } catch (e) {} };
+  // mapLimit turns a check that threw into null. Reading .ok straight off that
+  // threw a TypeError and took the whole run with it - one odd site stopped the
+  // monitor for good, until the next reload.
   const results = new Map();
+  const res = (s) => results.get(s && s.url) || { ok: false, status: 0, error: "The check didn't finish" };
+  let localProblem = false;
+  // Each site is decided once (done), and a site that throws on the way can't
+  // stop the others or lose what the run already learned.
+  const done = new Set();
+  const decide = async (list) => {
+    for (const site of list) {
+      const key = site.url;
+      if (!key || done.has(key)) continue;
+      done.add(key);
+      try {
+        const prev = state[key] || { up: null, fails: 0, lastCheck: 0, lastDownNotified: 0 };
+        const result = res(site);
+        if (localProblem && !result.ok && !result.read) {
+          // Leave up/fails untouched; just note why nothing was decided.
+          prev.lastCheck = now;
+          prev.lastError = "Couldn't check: this computer looked offline";
+          prev.skippedAt = now;
+          state[key] = prev;
+          continue;
+        }
+        const d = siteDecide(prev, result, { manual: !!opts.manual, now, name: site.name || site.url, failuresNeeded: SITE_MONITOR_FAILURES, staleMs: SITE_MONITOR_STALE_MS });
+        // Carried over by siteDecide's copy of prev: when this site was last
+        // told about, and what for. Read before it is overwritten below.
+        const toldBefore = d.prev.lastNote || null;
+        state[key] = d.prev;
+        // Snoozed in Site monitor (an unstable site that keeps alerting): still
+        // checked and shown, just no alerts until the snooze ends.
+        const snoozed = Number(siteSnooze[key]) > now;
+        // The same alert for the same site, again, within minutes, is never
+        // news - it is a duplicate run or a replayed alarm. The id has no
+        // timestamp in it either, so a card that does slip through REPLACES the
+        // old one in the tray instead of stacking another copy on top.
+        const repeat = !!d.note && !!toldBefore && toldBefore.kind === d.note.kind && now - (Number(toldBefore.at) || 0) < SITE_NOTE_REPEAT_MS;
+        if (d.note && !snoozed && !repeat) {
+          // Written down BEFORE it is sent, so a worker that dies here can't
+          // come back and announce the same thing all over again.
+          d.prev.lastNote = { kind: d.note.kind, at: now };
+          await saveState();
+          // Guarded: a notification that fails is not a reason to throw away the
+          // results of the run (it used to be sent before the only save).
+          await notify("site-" + d.note.kind + "-" + key, d.note.title, d.note.message, d.note.sound, chrome.runtime.getURL("options.html#sites"),
+            { priority: 2, requireInteraction: d.note.kind !== "up" }).catch((e) => diagLog("sites", e));
+        }
+      } catch (e) { diagLog("sites", "deciding " + key + ": " + ((e && e.message) || e)); }
+    }
+    await saveState();
+  };
+  // 1) One check per site (30s timeout), a few sites at a time.
   const first = await mapLimit(sites, SITE_MONITOR_PARALLEL, (s) => checkOneSite(s.url));
   sites.forEach((s, i) => results.set(s.url, first[i]));
-  let failed = sites.filter((s) => !results.get(s.url).ok);
+  let failed = sites.filter((s) => !res(s).ok);
+  // Sites that answered are settled: decide and save them now, before the waits.
+  await decide(sites.filter((s) => res(s).ok));
   // 2) Anything failed: is it us? Offline, or half the list failing in the same
   //    minute, is this PC's connection - never a client outage. Don't count it.
   // A site that answered with a broken page (read: true) reached us fine, so it
   // never counts towards "is it this PC's connection".
-  let localProblem = false;
-  const unreachable = failed.filter((s) => !results.get(s.url).read);
+  const unreachable = failed.filter((s) => !res(s).read);
   if (unreachable.length) {
     if (!(await internetReachable())) localProblem = true;
     else if (unreachable.length >= 2 && unreachable.length * 2 >= sites.length) localProblem = true;
@@ -1137,37 +1245,123 @@ async function checkSites(opts = {}) {
     await sleepMs(SITE_MONITOR_RETRY_GAP_MS);
     const retried = await mapLimit(failed, SITE_MONITOR_PARALLEL, (s) => checkOneSite(s.url));
     failed.forEach((s, i) => results.set(s.url, retried[i]));
-    failed = failed.filter((s) => !results.get(s.url).ok);
+    failed = failed.filter((s) => !res(s).ok);
   }
-  for (const site of sites) {
-    const key = site.url;
-    const prev = state[key] || { up: null, fails: 0, lastCheck: 0, lastDownNotified: 0 };
-    const result = results.get(key);
-    if (localProblem && !result.ok && !result.read) {
-      // Leave up/fails untouched; just note why nothing was decided.
-      prev.lastCheck = now;
-      prev.lastError = "Couldn't check: this computer looked offline";
-      prev.skippedAt = now;
-      state[key] = prev;
-      continue;
+  await decide(sites);
+  // What the last run did, so the page and Copy diagnostics can tell "checked,
+  // all fine" from "hasn't run for hours".
+  try { await chrome.storage.local.set({ siteMonitorRun: { at: Date.now(), startedAt: now, checked: sites.length, ms: Date.now() - now, manual: !!opts.manual } }); } catch (e) {}
+  const all = sites.map((s) => res(s));
+  return { checked: sites.length, up: all.filter((r) => r.ok).length,
+    down: localProblem ? 0 : all.filter((r) => !r.ok).length, offline: localProblem };
+}
+
+// Only ONE check runs at a time. Opening a laptop delivers every alarm Chrome
+// missed at nearly the same moment (the 5-minute site alarm, the 1-minute
+// backstop, and the options page asking for a check as it opens), and each run
+// started by reading its own copy of siteMonitorState from before any of them
+// saved. So each one saw the same sites as still down and each announced
+// "Back up" - four sites came back and the user got a dozen notifications.
+// Same single-flight shape as clickupRefreshInFlight: a second caller joins the
+// run already in progress instead of starting a parallel one.
+let siteCheckInFlight = null;
+// A module variable is lost when MV3 restarts the worker mid-run, so the lease
+// is also kept in storage. Honoured for 3 minutes - longer than the worst run
+// (two 20s waits plus retries) - and only for automatic runs: a check the user
+// asked for always goes ahead. The 1-minute backstop means a lock left behind
+// by a killed worker costs one cycle, not the day.
+const SITE_LOCK_MS = 3 * 60 * 1000;
+function startSiteCheck(opts) {
+  const run = (async () => {
+    // Read inside the run, where an await is harmless. Doing it before the
+    // claim below is what broke the first attempt at this fix.
+    if (!opts.manual) {
+      const held = (await chrome.storage.local.get("siteMonitorLock").catch(() => ({}))).siteMonitorLock;
+      if (held && Date.now() - (Number(held.at) || 0) < SITE_LOCK_MS) return { checked: 0, busy: true };
     }
-    const d = siteDecide(prev, result, { manual: !!opts.manual, now, name: site.name || site.url, failuresNeeded: SITE_MONITOR_FAILURES, staleMs: SITE_MONITOR_STALE_MS });
-    state[key] = d.prev;
-    // Snoozed in Site monitor (an unstable site that keeps alerting): still
-    // checked and shown, just no alerts until the snooze ends.
-    const snoozed = Number(siteSnooze[key]) > now;
-    if (d.note && !snoozed) {
-      await notify("site-" + d.note.kind + "-" + now + "-" + key, d.note.title, d.note.message, d.note.sound, chrome.runtime.getURL("options.html#sites"),
-        { priority: 2, requireInteraction: d.note.kind !== "up" });
-    }
+    await chrome.storage.local.set({ siteMonitorLock: { at: Date.now() } }).catch(() => {});
+    try { return await checkSitesImpl(opts); }
+    finally { await chrome.storage.local.remove("siteMonitorLock").catch(() => {}); }
+  })().finally(() => { if (siteCheckInFlight === run) siteCheckInFlight = null; });
+  siteCheckInFlight = run;
+  return run;
+}
+// Deliberately NOT async: the check and the claim inside startSiteCheck have to
+// happen in ONE uninterrupted turn. With an await between them - reading the
+// storage lease, as this first did - all three callers woken by the same laptop
+// lid see a null siteCheckInFlight, all yield on that read, and all three go on
+// to start a run anyway. The guard reads as if it works and never fires.
+function checkSites(opts = {}) {
+  if (!siteCheckInFlight) return startSiteCheck(opts);
+  // A run is already going: join it instead of starting a second one. If it
+  // turns out to have stood down for a lease another worker left behind, a check
+  // the user actually asked for still goes ahead on its own.
+  if (!opts.manual) return siteCheckInFlight;
+  return siteCheckInFlight.then((r) => (r && r.busy ? startSiteCheck(opts) : r));
+}
+
+// How long without a check before the monitor counts as stalled: 2.5x the
+// 5-minute period, so one late alarm or one slow run isn't mistaken for a stop.
+const SITE_MONITOR_STALL_MS = Math.round(2.5 * SITE_MONITOR_PERIOD_MIN * 60 * 1000);
+const SITE_MONITOR_STALL_RETRY_MS = 5 * 60 * 1000; // at most one catch-up run per 5 min
+const SITE_MONITOR_STALL_TELL_MS = 30 * 60 * 1000; // past half an hour, say it out loud
+// "4h 25m" / "12 minutes" - for telling the user how long the gap was.
+function siteGapLabel(ms) {
+  const m = Math.max(0, Math.round(ms / 60000));
+  if (m < 60) return m + (m === 1 ? " minute" : " minutes");
+  const h = Math.floor(m / 60), r = m % 60;
+  return h + "h" + (r ? " " + r + "m" : "");
+}
+
+// Site monitor safety net, run from the 1-minute alarm next to the other
+// backstops. Chrome does drop alarms (a crashed worker, a long sleep, a profile
+// reload), and before this a run that died left every row reading "Up" with the
+// clock frozen hours back - the monitor was blind and said nothing. So: re-arm
+// the alarm if it went missing, and if nothing has been checked for a while,
+// check now and tell the user once.
+async function siteMonitorBackstop() {
+  const cfg = await getSiteMonitorConfig().catch(() => null);
+  if (!cfg || !cfg.enabled || !Array.isArray(cfg.sites) || !cfg.sites.length) return;
+  const now = Date.now();
+  // Re-arm a dropped alarm. ensureAlarm is a no-op when the period already
+  // matches, so this only does anything when Chrome really lost it.
+  const alarm = await chrome.alarms.get(SITE_MONITOR_ALARM).catch(() => null);
+  if (!alarm) await ensureAlarm(SITE_MONITOR_ALARM, { periodInMinutes: SITE_MONITOR_PERIOD_MIN });
+  const store = await chrome.storage.local.get(["siteMonitorState", "siteOff", "siteMonitorWatch"]).catch(() => ({}));
+  const state = store.siteMonitorState || {};
+  const siteOff = store.siteOff || {};
+  const watch = store.siteMonitorWatch || {};
+  // This minute's heartbeat. A gap here means Chrome was closed or the PC was
+  // asleep, which is the one case where a missed check is nobody's fault - so
+  // catch up quietly then, and only call it a stall when we were awake for it.
+  const tickAt = Number(watch.tickAt) || 0;
+  const wasAwake = tickAt > 0 && now - tickAt < 3 * 60 * 1000;
+  const keep = (extra) => chrome.storage.local.set({ siteMonitorWatch: { ...watch, tickAt: now, ...extra } }).catch(() => {});
+  // Only the sites actually being monitored: a paused client or a site with its
+  // Monitor tick off is meant to have an old timestamp and never counts.
+  const watched = cfg.sites.filter((s) => s && s.url && !isPausedSite(s) && !siteOff[s.url]);
+  let newest = 0;
+  for (const s of watched) newest = Math.max(newest, Number((state[s.url] || {}).lastCheck) || 0);
+  // Nothing watched, or nothing ever checked (just set up): leave it to the alarm.
+  if (!watched.length || !newest) { await keep({}); return; }
+  const stale = now - newest;
+  if (stale < SITE_MONITOR_STALL_MS) { await keep({ since: 0, toldAt: 0, triedAt: Number(watch.triedAt) || 0 }); return; }
+  // One catch-up at a time: a run with a failing site takes about a minute, and
+  // this is called every minute.
+  if (now - (Number(watch.triedAt) || 0) < SITE_MONITOR_STALL_RETRY_MS) { await keep({}); return; }
+  const since = Number(watch.since) || newest;
+  let toldAt = Number(watch.toldAt) || 0;
+  if (wasAwake && stale >= SITE_MONITOR_STALL_TELL_MS && !toldAt) toldAt = now;
+  await keep({ triedAt: now, since, toldAt });
+  // Said once per episode (toldAt), and never for a shut-down or sleeping PC.
+  if (toldAt === now) {
+    await notify("site-stalled-" + newest, "Site monitor had stopped checking",
+      "Nothing was checked for " + siteGapLabel(stale) + " (last check " +
+        new Date(newest).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" }) +
+        "). Checking " + watched.length + (watched.length === 1 ? " site" : " sites") + " now.",
+      "normal", chrome.runtime.getURL("options.html#sites"), { priority: 2 }).catch((e) => diagLog("sites", e));
   }
-  // Persist on EVERY run (not only when a status flips) so the "last check" time
-  // stays current. Previously a steadily-up site never re-saved its lastCheck, so
-  // the options page froze at the last status change and looked like it had stopped.
-  await chrome.storage.local.set({ siteMonitorState: state });
-  const res = sites.map((s) => results.get(s.url) || {});
-  return { checked: sites.length, up: res.filter((r) => r.ok).length,
-    down: localProblem ? 0 : res.filter((r) => !r.ok).length, offline: localProblem };
+  await checkSites().catch((e) => diagLog("sites", "backstop: " + ((e && e.message) || e)));
 }
 
 // ---------- existing alarm constants ----------
@@ -1330,19 +1524,26 @@ let openTasksCache = null; // Bulk edit "Any date" (CLICKUP_OPEN_TASKS)
 const PERF_WEEKS = 12;
 const PERF_TTL_MS = 6 * 3600000;
 let perfBuild = null;
-async function getPerfHistory(force) {
+// weeks: how far back (12 by default; 27 = six months, 53 = a year, asked for
+// only when a 6-month / 1-year review period is picked). A longer history, once
+// read, is kept and refreshed at that length - at most once a day.
+const PERF_MAX_WEEKS = 53;
+async function getPerfHistory(force, weeks) {
+  const want = Math.max(PERF_WEEKS, Math.min(PERF_MAX_WEEKS, Number(weeks) || PERF_WEEKS));
   const { perfHistory } = await chrome.storage.local.get("perfHistory");
   const cfg = await getClickupConfig().catch(() => null);
   if (!cfg || !cfg.token || !cfg.teamId || cfg.userId == null) return { ok: false, reason: "not-configured", data: perfHistory || null };
   // v2 adds per-day task hours + names (the clickable charts); an older copy is still shown until rebuilt.
   const mine = perfHistory && String(perfHistory.userId) === String(cfg.userId) ? perfHistory : null;
-  const fresh = mine && mine.v === 2 && Date.now() - (mine.at || 0) < (force ? 10 * 60000 : PERF_TTL_MS);
+  const span = Math.max(want, (mine && Number(mine.weeks)) || PERF_WEEKS);
+  const ttl = span > PERF_WEEKS ? 24 * 3600000 : PERF_TTL_MS;
+  const fresh = mine && mine.v === 2 && (Number(mine.weeks) || PERF_WEEKS) >= want && Date.now() - (mine.at || 0) < (force ? 10 * 60000 : ttl);
   if (fresh) return { ok: true, data: mine };
   const cst = await getClickupState().catch(() => null);
   if (cst && cst.rateLimitedUntil > Date.now()) return { ok: true, data: mine, busy: true };
   if (!perfBuild) perfBuild = (async () => {
     const now = new Date();
-    const mon = new Date(now); mon.setHours(0, 0, 0, 0); mon.setDate(mon.getDate() - ((mon.getDay() + 6) % 7) - 7 * (PERF_WEEKS - 1));
+    const mon = new Date(now); mon.setHours(0, 0, 0, 0); mon.setDate(mon.getDate() - ((mon.getDay() + 6) % 7) - 7 * (span - 1));
     const fromTs = mon.getTime(), toTs = Date.now();
     const hist = await fetchTrackedHistory(cfg.token, cfg.teamId, fromTs, toTs, cfg.userId);
     const days = {}, taskMs = {};
@@ -1353,7 +1554,11 @@ async function getPerfHistory(force) {
     await annotateClients(cfg.token, holder, settings.cuClientLevel || "auto").catch(() => {});
     const slim = (holder.tasks || done).map((t) => ({ id: t.id, name: t.name, url: t.url, parentId: t.parentId, client: t.client || "",
       dueDateMs: t.dueDateMs, doneAt: t.doneAt, estimateMs: t.estimateMs, spentMs: t.spentMs }));
-    const data = { v: 2, at: Date.now(), userId: String(cfg.userId), fromTs, toTs, weeks: PERF_WEEKS, days, taskMs, byDay: hist.byDay, names: hist.names, done: slim };
+    // The first day with tracked time: how long you have been working here, as far
+    // as this history can tell (a 6-month review needs 6 months of it).
+    const tracked = Object.keys(days).map(Number).filter((d) => days[d] > 0);
+    const firstDay = tracked.length ? Math.min(...tracked) : 0;
+    const data = { v: 2, at: Date.now(), userId: String(cfg.userId), fromTs, toTs, weeks: span, firstDay, days, taskMs, byDay: hist.byDay, names: hist.names, done: slim };
     await chrome.storage.local.set({ perfHistory: data });
     return data;
   })().finally(() => { perfBuild = null; });
@@ -1572,6 +1777,38 @@ function cuScopeToken(cfg, myId, assignee) {
   return cuScopeKey(me, assignee) !== me && admin ? admin : String((cfg && cfg.token) || "");
 }
 let doneTodayCache = null; // wrap-up's "closed today" list, kept one minute
+// Every task you closed today, with its client and the links in its description:
+// { ok, tasks } or { ok: false, reason | error }. maxAgeMs: how old a kept copy may be.
+async function getDoneToday(force, maxAgeMs = 60000) {
+  const cfg = await getClickupConfig();
+  if (!cfg || !cfg.token || !cfg.teamId || cfg.userId == null) return { ok: false, reason: "not-configured" };
+  const from = new Date().setHours(0, 0, 0, 0);
+  if (!force && doneTodayCache && doneTodayCache.day === from && Date.now() - doneTodayCache.at < maxAgeMs) return { ok: true, tasks: doneTodayCache.tasks };
+  try {
+    const rows = await fetchDoneBetween(cfg.token, cfg.teamId, cfg.userId, from, Date.now());
+    // Some subtasks come back without their description: read those one by one
+    // (capped; one 429 waits and retries once) so their links aren't lost.
+    for (const r of rows.filter((x) => x.needDetail).slice(0, 60)) {
+      try {
+        let d;
+        try { d = await getTaskDetail(cfg.token, r.id); } catch (e) {
+          if (!e || e.status !== 429) throw e;
+          await new Promise((z) => setTimeout(z, Math.min(8000, Number(e.retryAfterMs) || 3000)));
+          d = await getTaskDetail(cfg.token, r.id);
+        }
+        r.links = d.links || [];
+      } catch (e) {}
+    }
+    const settings = await getSettings();
+    await annotateClients(cfg.token, { tasks: rows }, settings.cuClientLevel || "auto");
+    const tasks = rows.map((r) => ({ id: r.id, name: r.name, url: r.url, parentId: r.parentId, client: r.client || "", links: r.links || [], doneAt: r.doneAt }));
+    doneTodayCache = { day: from, at: Date.now(), tasks };
+    return { ok: true, tasks };
+  } catch (e) {
+    return { ok: false, error: String(e && e.message ? e.message : e) };
+  }
+}
+
 // Someone was taken off a task: drop them from that task's rows in everything
 // already saved (dashboard state + filter / overdue / open-task caches), so the
 // lists show it at once with NO ClickUp calls - instead of throwing the caches
@@ -2159,12 +2396,26 @@ async function refreshArCredit(accountId, balance, settings) {
   return { credited: false, delta, lastCreditAt: rec.lastCreditAt || null };
 }
 
-// Emit the ONE desktop notification per fresh credit. A credit is "un-notified"
-// when lastCreditAt > notifiedAt in the credits record. At most one notification
-// fires per sweep — collapses all un-notified credits into a single toast.
-async function maybeNotifyQuotaCredit() {
+// Emit the ONE desktop notification per fresh credit, and ONLY while one of
+// Agent Router's quota batches is actually open.
+//
+// The gate is the whole point. This notification means "you can use Claude now",
+// and Agent Router only releases Claude/GPT in two fixed batches (10:00 / 19:00
+// Beijing by default, auto-synced by syncArScheduleFromPage). The account's daily
+// quota CREDIT is a different event: it lands whenever the daily auto-login
+// happens to run. Because this function was also called from the 5-minute
+// balance poll, a credit detected at 8:31 PM announced "a fresh batch just
+// opened" - which was simply false, and is the bug the owner reported.
+//
+// Off-window the credit is left PENDING (notified is deliberately NOT stamped),
+// so it is announced at the next real batch instead of being dropped. One toast
+// per credit either way, never more often than before, and never a false claim.
+// Returns why it stayed quiet, so dev-tools/t_ar_batch.js can read the decision.
+async function maybeNotifyQuotaCredit(nowMs = Date.now()) {
   const settings = await getSettings();
-  if (settings.arQuotaNotify === false) return;
+  if (settings.arQuotaNotify === false) return { notified: false, why: "turned-off" };
+  const win = arBatchWindow(settings.arQuotaTimes, nowMs);
+  if (!win.open) return { notified: false, why: "outside-batch-window" };
   const credits = await getCredits();
   const accounts = (await getAccounts()).filter(a => effectiveMode(a, settings) !== "off");
   let anyNew = false;
@@ -2173,17 +2424,29 @@ async function maybeNotifyQuotaCredit() {
     if (!r || !r.lastCreditAt) continue;
     if (r.lastCreditAt > (r.notified || 0)) { anyNew = true; break; }
   }
-  if (!anyNew) return;
+  if (!anyNew) return { notified: false, why: "no-fresh-credit" };
+  // The batch time in the reader's OWN clock - the schedule is Beijing, the
+  // person reading the toast is not. The id must keep its ar-quota- prefix:
+  // that is what routes a click to Agent Router in notifications.onClicked.
+  const when = new Date(win.at).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
   await notify(
-    "ar-quota-credit-" + Date.now(),
-    "Agent Router - quota batch released 🚀",
-    "A fresh Claude/GPT batch just opened up on Agent Router. Click to jump in before it runs out."
+    "ar-quota-credit-" + nowMs,
+    "Agent Router - the " + when + " batch is open 🚀",
+    "Claude and GPT are usable now, and your fresh quota is in. Click to jump in before it runs out."
   );
+  // Stamp with the SAME clock the decision used, and never behind the credit
+  // being acknowledged. Reading Date.now() here instead let the stamp land
+  // EARLIER than lastCreditAt whenever the clock had moved backwards - a laptop
+  // waking with a stale clock, which is exactly what caused the wake-up
+  // notification burst - and then lastCreditAt > notified was still true, so the
+  // very same credit was announced again on the next poll. Caught by
+  // dev-tools/t_ar_batch.js.
   for (const a of accounts) {
     const r = credits[a.id];
-    if (r && r.lastCreditAt > (r.notified || 0)) r.notified = Date.now();
+    if (r && r.lastCreditAt > (r.notified || 0)) r.notified = Math.max(nowMs, r.lastCreditAt);
   }
   await setCredits(credits);
+  return { notified: true, why: "batch-open", at: win.at, hhmm: win.hhmm };
 }
 
 // Anchor the account's earning checkpoint to the detected credit time. Used by
@@ -2264,9 +2527,10 @@ async function pollBalancesInBackground() {
         // Network/auth hiccup for one account shouldn't stop the rest.
       }
     }
-    // Emit ONE desktop notification if any account received a fresh credit.
-    // Checked every poll (not just on new credits) so a credit first detected
-    // elsewhere - e.g. a manual balance refresh - is notified on the next poll.
+    // Announce a fresh credit if (and only if) a quota batch is open right now -
+    // the poll runs every 5 minutes, so this is also the catch-up path when the
+    // batch alarm was missed or Agent Router credited a little late. Off-window
+    // it is a no-op and the credit waits for the next batch.
     await maybeNotifyQuotaCredit();
     // Nudge any open popup to repaint with the fresh balances.
     chrome.runtime.sendMessage({ type: "BALANCES_UPDATED" }).catch(() => {});
@@ -2419,7 +2683,7 @@ async function pushAllToDrive(tok, accounts) {
 // Each key carries its own "last changed" stamp (extrasStamps) so the newest copy
 // wins per key: a fresh install adopts the Drive copy, while a newer local edit is
 // never overwritten by an older remote one.
-const EXTRA_KEYS = ["siteMonitorConfig", "theme", "cuFilter", "cuFilterMode", "cuFilterDefault", "customSounds", "cuManualOrder", "siteDirSeen", "reminders", "clientNotes", "taskNotes", "taskPins", "planOverrides", "localTasks"];
+const EXTRA_KEYS = ["siteMonitorConfig", "theme", "cuFilter", "cuFilterMode", "cuFilterDefault", "customSounds", "cuManualOrder", "siteDirSeen", "reminders", "clientNotes", "taskNotes", "taskPins", "planOverrides", "localTasks", "cuDupesOk"];
 const EXTRAS_MAX_SOUNDS = 1500000; // skip very large custom-sound files in the Drive copy
 async function collectExtras() {
   const got = await chrome.storage.local.get([...EXTRA_KEYS, "extrasStamps"]);
@@ -4981,6 +5245,17 @@ async function maybeAutoStop(cfg, entry, progress, key, today) {
     return false;
   }
 }
+// How long before the estimate "almost up" comes: the setting (10 minutes), but
+// never more than a quarter of the task's estimate - a 7m task warns 2 minutes
+// before, 16m 4 minutes, 33m 8 minutes - and none for a task of 3 minutes or less
+// (only "reached"). Without this a short task (5m, 7m) said "almost up" the
+// moment it was started.
+function nearLeadMs(settings, estimateMs) {
+  const set = Math.max(1, Number(settings && settings.clickupRunningThresholdMin) || 10) * 60000;
+  const est = Number(estimateMs) || 0;
+  if (est <= 3 * 60000) return 0;
+  return Math.max(60000, Math.min(set, Math.round((est * 0.25) / 60000) * 60000));
+}
 async function scheduleEstimateAlarms(entry, progress, settings, seenNear, seenMet) {
   await chrome.alarms.clear(EST_ALARM_NEAR).catch(() => {});
   await chrome.alarms.clear(EST_ALARM_MET).catch(() => {});
@@ -4995,9 +5270,9 @@ async function scheduleEstimateAlarms(entry, progress, settings, seenNear, seenM
   if (!entry || !progress || !(progress.estimateMs > 0) || (!notifyOn && !autoOn)) return;
   const now = Date.now();
   const crossAt = now + (progress.estimateMs - progress.trackedMs) + 3000; // a few seconds late, so ClickUp agrees it's crossed
-  const thresholdMs = Math.max(1, Number(settings.clickupRunningThresholdMin) || 10) * 60000;
+  const thresholdMs = nearLeadMs(settings, progress.estimateMs);
   const nearAt = crossAt - thresholdMs;
-  if (notifyOn && !seenNear && nearAt > now + 5000) chrome.alarms.create(EST_ALARM_NEAR, { when: nearAt });
+  if (notifyOn && !seenNear && thresholdMs > 0 && nearAt > now + 5000) chrome.alarms.create(EST_ALARM_NEAR, { when: nearAt });
   if (!seenMet && crossAt > now + 5000) chrome.alarms.create(EST_ALARM_MET, { when: crossAt });
   // Already over (or about to be): the repeating reminder runs from the crossing on.
   const every = Number(settings.clickupOverRepeatMin);
@@ -5027,6 +5302,20 @@ async function notifyParallelTracking(entry, progress) {
   await notify("parallel-" + entry.taskId + "-" + Date.now(), "\u26A0 " + names + (fresh.length === 1 ? " is" : " are") + " tracking this task too",
     "\u201C" + name + "\u201D - " + names + " started a timer on it" + (fresh[0].startMs ? " at " + new Date(fresh[0].startMs).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" }) : "") + ", so its estimate is being used by both of you. Check with them before going on.",
     "danger", taskUrlFor(entry.taskId));
+}
+// Is a timer running, and is it the one we know? One small request. A new timer
+// (started in ClickUp or the taskbar app, or restarted after a pause) gets its
+// earlier time worked out and its "almost up" / "reached" alarms set at once.
+async function syncRunningTimer(cfg) {
+  const running = await getCurrentTimeEntry(cfg.token, cfg.teamId).catch(() => undefined);
+  if (running === undefined) return { running: null, changed: false }; // couldn't ask: change nothing
+  const prev = (await getClickupState()) || {};
+  const keyOf = (x) => (x ? String(x.taskId || "") + ":" + String(x.startMs || "") : "");
+  const changed = keyOf(prev.running) !== keyOf(running);
+  if (changed) await setClickupState({ ...prev, running: running || null });
+  if (changed && running) maybeNotifyRunningTask(cfg).catch(() => {});
+  if (changed && !running) { await chrome.storage.local.set({ runningProgress: null }).catch(() => {}); await scheduleEstimateAlarms(null).catch(() => {}); }
+  return { running: running || null, changed };
 }
 async function maybeNotifyRunningTask(cfg) {
   if (!cfg || !cfg.token || !cfg.teamId) return;
@@ -5064,6 +5353,9 @@ async function maybeNotifyRunningTask(cfg) {
     // anyone tracking it at this very moment.
     othersMs: progress ? Math.max(0, Number(progress.othersMs) || 0) : 0,
     othersRunning: progress && Array.isArray(progress.othersRunning) ? progress.othersRunning : [],
+    // Part of closedMs tracked on its subtasks (a parent whose estimate covers them).
+    subtasksMs: progress ? Math.max(0, Number(progress.subtasksMs) || 0) : 0,
+    subtaskCount: progress ? Math.max(0, Number(progress.subtaskCount) || 0) : 0,
     // Its dates: the strip shows today's time against the task's share for a day.
     startDateMs: (progress && progress.startDateMs) || null, dueDateMs: (progress && progress.dueDateMs) || null,
     at: Date.now(),
@@ -5074,13 +5366,17 @@ async function maybeNotifyRunningTask(cfg) {
   const runningMet = (seen.runningMet && typeof seen.runningMet === "object") ? seen.runningMet : {};
   const today = todayString();
   const key = String(entry.taskId);
-  await scheduleEstimateAlarms(entry, progress, settings, runningNear[key] === today, runningMet[key] === today).catch(() => {});
+  // "Almost up" / "reached" are said once per task AND estimate: raising the
+  // estimate after the alert (10m -> 30m) gets its own alerts for the new one
+  // (it used to be once per task per day, so the raised estimate never alerted).
+  const stamp = today + "|" + Math.round((Number(progress && progress.estimateMs) || 0) / 60000);
+  await scheduleEstimateAlarms(entry, progress, settings, runningNear[key] === stamp, runningMet[key] === stamp).catch(() => {});
   // A task marked to complete itself (autoCompleteTasks, chosen per task): when
   // the running task's tracked time reaches its estimate, stop the timer and mark
   // it complete. Never the Extra Task or a configured recurring / multi-day task
   // (daily buckets). A task shared with others can be marked - the person chose it.
   const { autoCompleteTasks: acMarked } = await chrome.storage.local.get("autoCompleteTasks").catch(() => ({}));
-  if (acMarked && acMarked[key] && progress && progress.estimateMs > 0 && progress.trackedMs >= progress.estimateMs && runningMet[key] !== today) {
+  if (acMarked && acMarked[key] && progress && progress.estimateMs > 0 && progress.trackedMs >= progress.estimateMs && runningMet[key] !== stamp) {
     const name0 = progress.taskName || entry.taskName || "this task";
     const configured = (Array.isArray(settings.clickupDeadlineTaskUrls) ? settings.clickupDeadlineTaskUrls : []).some((u) => parseTaskIdFromUrl(u) === key);
     const isExtra = /\bextra\s*\(?s?\)?\s*tasks?\b/i.test(name0);
@@ -5099,7 +5395,7 @@ async function maybeNotifyRunningTask(cfg) {
         const st = (await getClickupState().catch(() => null)) || {};
         if (String(st.activeTaskId || "") === key) await setClickupState({ ...st, activeTaskId: null });
         const left = { ...acMarked }; delete left[key]; // done: no longer marked
-        await chrome.storage.local.set({ runningProgress: null, autoCompleteTasks: left, clickupNotified: { ...seen, runningMet: { ...runningMet, [key]: today } } });
+        await chrome.storage.local.set({ runningProgress: null, autoCompleteTasks: left, clickupNotified: { ...seen, runningMet: { ...runningMet, [key]: stamp } } });
         await scheduleEstimateAlarms(null);
         await advanceAutoRun(cfg, key);
         await notify("clickup-autocomplete-" + Date.now(), "Completed automatically ✓",
@@ -5118,7 +5414,7 @@ async function maybeNotifyRunningTask(cfg) {
   if (await maybeAutoStop(cfg, entry, progress, key, today).catch(() => false)) return;
   if (settings.clickupRunningNotify === false) return;
   if (!progress || !(progress.estimateMs > 0)) return; // task has no estimate set - nothing to compare against
-  const thresholdMs = Math.max(1, Number(settings.clickupRunningThresholdMin) || 10) * 60000;
+  const thresholdMs = nearLeadMs(settings, progress.estimateMs);
   const remainingMs = progress.estimateMs - progress.trackedMs;
   const name = progress.taskName || entry.taskName || "this task";
   if (remainingMs <= 0) {
@@ -5128,13 +5424,13 @@ async function maybeNotifyRunningTask(cfg) {
     const repeatMin = Number.isFinite(every) ? every : 15;
     const overMsNow = progress.trackedMs - progress.estimateMs;
     const runningOver = (seen.runningOver && typeof seen.runningOver === "object") ? seen.runningOver : {};
-    if (runningMet[key] === today && repeatMin > 0 && overMsNow >= 60000 && Date.now() - (Number(runningOver[key]) || 0) >= (repeatMin - 0.5) * 60000) {
+    if (runningMet[key] === stamp && repeatMin > 0 && overMsNow >= 60000 && Date.now() - (Number(runningOver[key]) || 0) >= (repeatMin - 0.5) * 60000) {
       await notify("clickup-running-over-" + Date.now(), "Still running - " + fmtDuration(overMsNow) + " over the estimate ⚠️",
         "\"" + name + "\" has " + fmtDuration(progress.trackedMs) + " tracked against a " + fmtDuration(progress.estimateMs) + " estimate. Stop the timer, complete the task, or raise its estimate.",
         "danger", taskUrlFor(entry.taskId));
       await chrome.storage.local.set({ clickupNotified: { ...seen, runningOver: { ...runningOver, [key]: Date.now() } } });
     }
-    if (runningMet[key] !== today) {
+    if (runningMet[key] !== stamp) {
       // Tracked time has crossed the task's OWN estimate - alert with the
       // urgent "danger" sound so the user notices even if they miss the toast.
       const overMs = progress.trackedMs - progress.estimateMs;
@@ -5148,10 +5444,10 @@ async function maybeNotifyRunningTask(cfg) {
         "danger",
         taskUrl
       );
-      await chrome.storage.local.set({ clickupNotified: { ...seen, runningMet: { ...runningMet, [key]: today }, runningOver: { ...runningOver, [key]: Date.now() } } });
+      await chrome.storage.local.set({ clickupNotified: { ...seen, runningMet: { ...runningMet, [key]: stamp }, runningOver: { ...runningOver, [key]: Date.now() } } });
     }
-  } else if (remainingMs <= thresholdMs) {
-    if (runningNear[key] !== today) {
+  } else if (thresholdMs > 0 && remainingMs <= thresholdMs) {
+    if (runningNear[key] !== stamp) {
       // Tracked time is about to reach the task's own estimate - warn with the
       // urgent alarm so the user wraps up in time (not just after crossing).
       const taskUrl = taskUrlFor(entry.taskId);
@@ -5159,7 +5455,7 @@ async function maybeNotifyRunningTask(cfg) {
         "\"" + name + "\" has " + fmtDuration(remainingMs) + " left of its " + fmtDuration(progress.estimateMs) + " estimate - wrap up soon.",
         "danger",
         taskUrl);
-      await chrome.storage.local.set({ clickupNotified: { ...seen, runningNear: { ...runningNear, [key]: today } } });
+      await chrome.storage.local.set({ clickupNotified: { ...seen, runningNear: { ...runningNear, [key]: stamp } } });
     }
   }
 }
@@ -6453,11 +6749,14 @@ async function installId() {
   if (!id) { id = crypto.randomUUID().replace(/-/g, ""); await chrome.storage.local.set({ installId: id }); }
   return id;
 }
+const HUB_PROFILE_MS = 3 * 3600000;
 async function hubProfile(force) {
   const cfg = await getClickupConfig().catch(() => null);
   if (!cfg || !cfg.token) return null;
   let c = cfg;
-  if (force || !cfg.profileAt || Date.now() - cfg.profileAt > 7 * 86400000) {
+  // Your ClickUp name and picture, re-read every 3 hours (one small request): it
+  // was once a week, so a new profile picture took up to 7 days to reach the Team hub.
+  if (force || !cfg.profileAt || Date.now() - cfg.profileAt > HUB_PROFILE_MS) {
     try {
       const u = await getUser(cfg.token);
       c = await setClickupConfig({ username: u.username || cfg.username || "", avatar: u.profilePicture || "", color: u.color || "", initials: u.initials || "", profileAt: Date.now() });
@@ -6498,7 +6797,7 @@ function perfScores(perf, targetMs, now = Date.now()) {
   };
   const late4 = done.filter((t) => t.doneAt >= today - 28 * DAY && Number(t.dueDateMs) > 0 && lateDays(t) >= 1).length;
   const fin4 = done.filter((t) => t.doneAt >= today - 28 * DAY).length;
-  return { w: score(mon), m: score(monthStart), a: score(Number(perf.fromTs) || today), late4, fin4 };
+  return { w: score(mon), m: score(monthStart), a: score(Math.max(Number(perf.fromTs) || today, mon - 7 * 11 * DAY)), late4, fin4 };
 }
 async function teamSummary() {
   const { teamSummaryCache } = await chrome.storage.local.get("teamSummaryCache");
@@ -7529,6 +7828,39 @@ function nextBeijingTimeUTC(hhmm, fromMs = Date.now()) {
   return target;
 }
 
+// How long after a release minute "a fresh batch just opened" is still true.
+// Generous on purpose: the service worker can be asleep at the exact minute,
+// Chrome throttles alarms, and Agent Router sometimes credits a few minutes
+// late - the 5-minute balance poll then catches up inside this window. Short
+// enough that a quota credit landing in the evening is nowhere near it.
+const AR_BATCH_GRACE_MS = 45 * 60 * 1000;
+// ...and a small lead, because an alarm that fires a few seconds EARLY would
+// otherwise find only yesterday's release and stay silent for the whole day -
+// a silent miss is worse than a toast one minute early.
+const AR_BATCH_LEAD_MS = 2 * 60 * 1000;
+
+// Is one of the scheduled batches open right now? times are Beijing "HH:MM"
+// strings (settings.arQuotaTimes, auto-synced from Agent Router's own notice).
+// nextBeijingTimeUTC returns the NEXT occurrence, so today's release is either
+// that or that minus a day depending on which side of it we are - both are
+// checked, and the window is open while the release is at most graceMs old (or
+// AR_BATCH_LEAD_MS away). Pure, so dev-tools/t_ar_batch.js can drive any clock.
+function arBatchWindow(times, nowMs = Date.now(), graceMs = AR_BATCH_GRACE_MS) {
+  const list = Array.isArray(times) && times.length ? times : AR_QUOTA_DEFAULT_TIMES;
+  const DAY = 24 * 60 * 60 * 1000;
+  let best = null;
+  for (const hhmm of list) {
+    const next = nextBeijingTimeUTC(hhmm, nowMs);
+    if (!next) continue; // an empty or malformed "(none)" row in Options
+    for (const at of [next - DAY, next]) {
+      const ageMs = nowMs - at;
+      if (ageMs < -AR_BATCH_LEAD_MS || ageMs > graceMs) continue;
+      if (!best || Math.abs(ageMs) < Math.abs(best.ageMs)) best = { open: true, at, hhmm, ageMs };
+    }
+  }
+  return best || { open: false, at: 0, hhmm: "", ageMs: Infinity };
+}
+
 // (Re)schedule the Agent Router quota-batch alarms from current settings.
 // Safe to call anytime settings change - clears old alarms first so a changed
 // time or a disabled toggle takes effect immediately instead of waiting for
@@ -7552,7 +7884,9 @@ async function notifyAgentRouterQuota() {
   const settings = await getSettings();
   if (settings.arQuotaNotify === false) return;
   // At the batch minute: run a fresh balance poll (detection runs inside it)
-  // then emit the ONE notification if a new credit was found.
+  // then emit the ONE notification if a new credit is waiting to be announced.
+  // This is the path the notification is MEANT to come from - the alarm fires at
+  // the release minute, so arBatchWindow is open and the claim is true.
   await pollBalancesInBackground().catch(() => {});
   await maybeNotifyQuotaCredit();
 }
@@ -7687,10 +8021,24 @@ chrome.alarms.onAlarm.addListener(async (alarm) => {
     await hubPollNudges().catch(() => {});
     await sendScheduledDrafts().catch((e) => diagLog("drafts", String(e && e.message ? e.message : e)));
     await deskLink(false).catch(() => {});
+    // A timer started or stopped somewhere else (ClickUp, the taskbar app) while
+    // no extension page is open: noticed within a minute, so its alerts are set
+    // on time (the 5-minute refresh alone could make them up to 5 minutes late).
+    // Not while ClickUp is rate-limiting us, or the screen is locked.
+    try {
+      const cfg0 = await getClickupConfig().catch(() => null);
+      const st0 = (await getClickupState().catch(() => null)) || {};
+      const idle = await chrome.idle.queryState(300).catch(() => "active");
+      if (cfg0 && cfg0.token && cfg0.teamId && !(st0.rateLimitedUntil > Date.now()) && idle !== "locked") await syncRunningTimer(cfg0);
+    } catch (e) {}
     // Floating tracker: a timer that is running but was never floated (started
     // before a reload, or between refreshes) is noticed within a minute. Storage
     // reads only unless it acts; not awaited (it waits a few seconds first).
     getClickupState().then((st) => maybeAutoFloat(st)).catch(() => {});
+    // Backstop for the site monitor (dropped alarm / a run that died): re-arms
+    // the alarm and catches up if nothing has been checked for ~12 min. Storage
+    // reads only unless it has to act.
+    await siteMonitorBackstop().catch((e) => diagLog("sites", "backstop: " + ((e && e.message) || e)));
   } else if (alarm.name === CLICKUP_ALARM) {
     refreshClickup({ viaAlarm: true }).then(() => scanComments()).catch(() => {});
   } else if (alarm.name === EST_ALARM_NEAR || alarm.name === EST_ALARM_MET || alarm.name === EST_ALARM_OVER || alarm.name === STOPAT_ALARM) {
@@ -7709,7 +8057,9 @@ chrome.alarms.onAlarm.addListener(async (alarm) => {
   } else if (alarm.name === SITE_MONITOR_ALARM) {
     // Awaited so the worker stays alive through the fetches + the state write -
     // fire-and-forget risks suspension before checkSites persists its results.
-    await checkSites().catch(() => {});
+    // Logged, never swallowed: a silent .catch(() => {}) here is how the monitor
+    // could stop for hours with nothing in Copy diagnostics to say why.
+    await checkSites().catch((e) => diagLog("sites", "alarm: " + ((e && e.message) || e)));
   } else if (alarm.name === WRAPUP_ALARM) {
     await onWrapUpAlarm().catch(() => {});
   } else if (alarm.name.startsWith(REM_PREFIX)) {
@@ -7896,7 +8246,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         break;
       }
       case "PERF_HISTORY": {
-        try { sendResponse(await getPerfHistory(!!msg.force)); }
+        try { sendResponse(await getPerfHistory(!!msg.force, msg.weeks)); }
         catch (e) { sendResponse({ ok: false, error: String(e && e.message ? e.message : e) }); }
         break;
       }
@@ -8048,7 +8398,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
           const summary = await checkSites({ manual: true, url: msg.url || "" });
           const state = (await chrome.storage.local.get("siteMonitorState"))["siteMonitorState"] || {};
           sendResponse({ ok: true, summary, state });
-        } catch (e) { sendResponse({ ok: false, reason: String(e && e.message ? e.message : e) }); }
+        } catch (e) { diagLog("sites", "check now: " + ((e && e.message) || e)); sendResponse({ ok: false, reason: String(e && e.message ? e.message : e) }); }
         break;
       }
       case "GET_SITE_MONITOR_STATE": {
@@ -8753,14 +9103,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         const cfg = await getClickupConfig();
         if (!cfg || !cfg.token || !cfg.teamId) { sendResponse({ ok: false, reason: "not-configured" }); break; }
         try {
-          const running = await getCurrentTimeEntry(cfg.token, cfg.teamId).catch(() => null);
-          const prev = (await getClickupState()) || {};
-          const keyOf = (x) => (x ? String(x.taskId || "") + ":" + String(x.startMs || "") : "");
-          const changed = keyOf(prev.running) !== keyOf(running);
-          if (changed) await setClickupState({ ...prev, running: running || null });
-          // A new timer (started in ClickUp, or restarted after a pause): work out
-          // the task's earlier time now, so "Tracking now" shows the total.
-          if (changed && running) maybeNotifyRunningTask(cfg).catch(() => {});
+          const { running, changed } = await syncRunningTimer(cfg);
           sendResponse({ ok: true, running: running || null, changed });
         } catch (e) {
           sendResponse({ ok: false, error: String(e && e.message ? e.message : e) });
@@ -9448,6 +9791,26 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         sendResponse({ ok: true, subtasks, parents, details, missed, parentNames });
         break;
       }
+      case "CLICKUP_EXPORT_MY_COMMENTS": {
+        // Plain sheet export: your latest comment on each task (for Work File's
+        // File: when the task's own File: "..." is empty). One request per task,
+        // one retry after a rate limit; unreadable ones are left out.
+        const cfg = await getClickupConfig();
+        if (!cfg || !cfg.token) { sendResponse({ ok: false, reason: "not-configured" }); break; }
+        const ids = [...new Set((Array.isArray(msg.taskIds) ? msg.taskIds : []).map(String))].slice(0, 250);
+        const texts = {};
+        for (const id of ids) {
+          try { texts[id] = await getLatestCommentBy(cfg.token, id, cfg.userId); }
+          catch (e) {
+            if (e && e.status === 429) {
+              await new Promise((r) => setTimeout(r, Math.min(8000, Number(e.retryAfterMs) || 3000)));
+              try { texts[id] = await getLatestCommentBy(cfg.token, id, cfg.userId); } catch (e2) {}
+            }
+          }
+        }
+        sendResponse({ ok: true, texts });
+        break;
+      }
       case "CLICKUP_EXPORT_COMMENT_LINKS": {
         // Client report: the links in each task's comments (one request per task,
         // one retry after a rate limit). A task whose comments can't be read is
@@ -9801,7 +10164,11 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
           const at = new Date(Number(r.at) || Date.now());
           const v = Date.now();
           const entry = msg.remove ? { id, removed: true, v } : { id, text: String(r.text || "").trim().slice(0, 300), h: at.getHours(), m: at.getMinutes(),
-            repeat: ["daily", "weekdays", "weekly"].includes(r.repeat) ? r.repeat : "weekdays", dow: at.getDay(), sound: r.sound || "normal", v, force: !!msg.force };
+            // "On set dates" has to survive the trip, or sending out a reminder
+            // set for the 17th and 25th would quietly become "weekdays" for
+            // everyone. normTeamRems drops it back to weekdays only if the days
+            // are missing.
+            repeat: ["daily", "weekdays", "weekly", "dates", "days"].includes(r.repeat) ? r.repeat : "weekdays", dates: remDates(r.dates), days: remDays(r.days), dow: at.getDay(), sound: r.sound || "normal", v, force: !!msg.force };
           const list = normTeamRems(base.teamReminders).filter((t) => t.id !== id);
           list.push(entry);
           const next = normalizeUpdatePolicy({ ...(cur.data || UPDATE_POLICY_DEFAULTS), teamReminders: list });
@@ -10282,35 +10649,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         // Wrap-up page's Daily Tasks Update: every task you closed today, in every
         // project, with its client and the links in its description. Asked when the
         // page opens / Refresh is pressed (kept a minute), never on a timer.
-        const cfg = await getClickupConfig();
-        if (!cfg || !cfg.token || !cfg.teamId || cfg.userId == null) { sendResponse({ ok: false, reason: "not-configured" }); break; }
-        const from = new Date().setHours(0, 0, 0, 0);
-        if (!msg.force && doneTodayCache && doneTodayCache.day === from && Date.now() - doneTodayCache.at < 60000) {
-          sendResponse({ ok: true, tasks: doneTodayCache.tasks }); break;
-        }
-        try {
-          const rows = await fetchDoneBetween(cfg.token, cfg.teamId, cfg.userId, from, Date.now());
-          // Some subtasks come back without their description: read those one by one
-          // (capped; one 429 waits and retries once) so their links aren't lost.
-          for (const r of rows.filter((x) => x.needDetail).slice(0, 60)) {
-            try {
-              let d;
-              try { d = await getTaskDetail(cfg.token, r.id); } catch (e) {
-                if (!e || e.status !== 429) throw e;
-                await new Promise((z) => setTimeout(z, Math.min(8000, Number(e.retryAfterMs) || 3000)));
-                d = await getTaskDetail(cfg.token, r.id);
-              }
-              r.links = d.links || [];
-            } catch (e) {}
-          }
-          const settings = await getSettings();
-          await annotateClients(cfg.token, { tasks: rows }, settings.cuClientLevel || "auto");
-          const tasks = rows.map((r) => ({ id: r.id, name: r.name, url: r.url, parentId: r.parentId, client: r.client || "", links: r.links || [], doneAt: r.doneAt }));
-          doneTodayCache = { day: from, at: Date.now(), tasks };
-          sendResponse({ ok: true, tasks });
-        } catch (e) {
-          sendResponse({ ok: false, error: String(e && e.message ? e.message : e) });
-        }
+        sendResponse(await getDoneToday(!!msg.force));
         break;
       }
       case "CLICKUP_OVERDUE": {

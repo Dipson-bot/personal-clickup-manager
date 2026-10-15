@@ -167,6 +167,8 @@
   #insPlusView .ip-rper { display: inline-flex; border: 1px solid var(--border); border-radius: 999px; overflow: hidden; }
   #insPlusView .ip-rper button { font: inherit; font-size: 12px; border: 0; background: none; color: var(--muted); padding: 5px 12px; cursor: pointer; }
   #insPlusView .ip-rper button.on { background: var(--indigo); color: #fff; }
+  #insPlusView .ip-rper-sel { display: inline-flex; align-items: center; gap: 8px; margin: 0; font-size: 12.5px; font-weight: 600; color: var(--muted); }
+  #insPlusView .ip-rper-sel select { width: auto; font: inherit; font-size: 13px; font-weight: 600; color: var(--text); padding: 5px 10px; border-radius: 8px; border: 1px solid var(--border); background: var(--card); cursor: pointer; }
   #insPlusView .ip-rmain { display: flex; gap: 22px; align-items: center; flex-wrap: wrap; }
   #insPlusView .ip-rbig { display: flex; flex-direction: column; align-items: center; gap: 4px; flex: none; }
   #insPlusView .ip-rcap { font-weight: 700; font-size: 13px; }
@@ -211,12 +213,18 @@
   // older version without the per-day details). The background checks its own
   // freshness, the ClickUp back-off and runs one build at a time; once a minute
   // at most from here.
-  function maybeRefreshPerf(force) {
-    const stale = !perf || perf.v !== 2 || Date.now() - (perf.at || 0) > 6 * H;
-    if (!force && !stale) return Promise.resolve();
-    if (Date.now() - perfAsked < 60000) return Promise.resolve();
+  // weeks: a longer history for a 6-month / 1-year review (the background keeps it).
+  let perfLong = 0; // weeks asked for, while that read is under way
+  function maybeRefreshPerf(force, weeks) {
+    const longer = Number(weeks) > ((perf && perf.weeks) || 12);
+    const stale = !perf || perf.v !== 2 || Date.now() - (perf.at || 0) > ((perf && perf.weeks > 12) ? 24 : 6) * H;
+    if (!force && !stale && !longer) return Promise.resolve();
+    if (!longer && Date.now() - perfAsked < 60000) return Promise.resolve();
+    if (longer && perfLong >= weeks) return Promise.resolve();
     perfAsked = Date.now();
-    return send({ type: "PERF_HISTORY", force: !!force }, 90000).then((r) => {
+    if (longer) perfLong = weeks;
+    return send({ type: "PERF_HISTORY", force: !!force, weeks: weeks || 0 }, 180000).then((r) => {
+      perfLong = 0;
       if (r && r.data) perf = r.data;
       perfErr = r && !r.ok ? (r.error || r.reason || "") : (r && r.error) || "";
       repaint();
@@ -668,9 +676,19 @@
 
   // ---------- Performance ----------
   let drill = null; // { card, kind, key } - which detail list is open
-  // Rating rings: which period (this week / this month / everything kept).
+  // Rating rings: which period. The company reviews performance every 6 months
+  // or every year, so those two are here too (read from ClickUp when picked).
+  const RING_P = { week: "This week", month: "This month", all: "Last 12 weeks", m6: "Last 6 months", y1: "Last 12 months" };
+  const RING_WEEKS = { m6: 27, y1: 53 };
   let ringP = "week";
-  try { const v = localStorage.getItem("pcmRingP"); if (v === "week" || v === "month" || v === "all") ringP = v; } catch (e) {}
+  try { const v = localStorage.getItem("pcmRingP"); if (RING_P[v]) ringP = v; } catch (e) {}
+  // Where a period starts (6 / 12 months back from today; "all" = the last 12 weeks).
+  function periodFrom(p, today, thisMon) {
+    if (p === "week") return thisMon;
+    if (p === "month") return new Date(new Date(today).getFullYear(), new Date(today).getMonth(), 1).getTime();
+    if (p === "m6" || p === "y1") { const d = new Date(today); d.setMonth(d.getMonth() - (p === "m6" ? 6 : 12)); return dayStart(d.getTime()); }
+    return addDays(thisMon, -7 * 11);
+  }
   const ringColor = (s) => s == null ? "var(--muted)" : s >= 80 ? "var(--green)" : s >= 60 ? "var(--amber)" : "var(--red)";
   function ringSvg(score, size, stroke) {
     const r = (size - stroke) / 2, c = 2 * Math.PI * r, p = score == null ? 0 : Math.max(0, Math.min(100, score)) / 100;
@@ -745,12 +763,12 @@
   }
   function renderPerf(el) {
     const head = '<div class="ip-head"><h2>Performance</h2></div>' +
-      '<p class="ip-sub">Your tracked time, deadlines and workload over the last ' + ((perf && perf.weeks) || 12) + " weeks. Weekends and company holidays don't count against you. Click any number, bar or day to see what's behind it. Your overall score and Health counts are shared with your admin.</p>";
+      '<p class="ip-sub">Your tracked time, deadlines and workload over the last 12 weeks (your rating can also look back 6 or 12 months, for a review).' + " Weekends and company holidays don't count against you. Click any number, bar or day to see what's behind it. Your overall score and Health counts are shared with your admin.</p>";
     if (!perf) { el.innerHTML = head + '<div class="ip-empty">' + (perfErr ? "Couldn't read your history: " + esc(perfErr) : "Reading your last 12 weeks from ClickUp (first time only, one short read)…") + "</div>"; wire(el); return; }
     const tMs = targetMs(), today = dayStart(Date.now());
     const weeks = [];
-    const firstMon = monday(perf.fromTs);
-    for (let w = 0; w < (perf.weeks || 12); w++) {
+    const firstMon = Math.max(monday(perf.fromTs), addDays(monday(Date.now()), -7 * 11));
+    for (let w = 0; w < 12; w++) {
       const mon = addDays(firstMon, 7 * w);
       if (mon > today) break;
       const days = [0, 1, 2, 3, 4].map((i) => addDays(mon, i));
@@ -795,7 +813,16 @@
     const needNew = '<p class="ip-meta">Task-level details arrive with the next history refresh (a few seconds).</p>';
 
     // ---- Rating rings ----
-    const pFrom = ringP === "week" ? thisMon : ringP === "month" ? new Date(new Date(today).getFullYear(), new Date(today).getMonth(), 1).getTime() : dayStart(perf.fromTs);
+    const pFrom = Math.max(periodFrom(ringP, today, thisMon), dayStart(perf.fromTs));
+    // 6 months / 1 year: the history has to reach back that far (read once when
+    // picked), and you have to have been here that long - someone 4 months in
+    // gets no 6-month review, they get told when it opens.
+    const wantFrom = periodFrom(ringP, today, thisMon);
+    const longP = !!RING_WEEKS[ringP];
+    const covered = !longP || dayStart(perf.fromTs) <= wantFrom + 7 * DAY;
+    if (longP && !covered) maybeRefreshPerf(false, RING_WEEKS[ringP]);
+    const firstDay = Number(perf.firstDay) || 0;
+    const tooNew = longP && covered && (!firstDay || firstDay > wantFrom + 14 * DAY);
     const pDays = [];
     for (let d = pFrom; d <= today; d = addDays(d, 1)) pDays.push(d);
     const pWork = pDays.filter((d) => isWorkday(d) && d < today);
@@ -804,7 +831,7 @@
     const pDated = pDone.filter((t) => t.dueDateMs > 0);
     const pAcc = pDone.filter((t) => t.estimateMs > 0 && t.spentMs > 0);
     const R = ratingParts({ tracked: pTracked, target: pWork.length * tMs, dated: pDated, acc: pAcc, late });
-    const pLabel = { week: "This week", month: "This month", all: "All (" + ((perf && perf.weeks) || 12) + " weeks kept)" };
+    const pLabel = RING_P;
     // By client: deadlines + estimates on what was finished, and the time tracked in the period.
     const cMs = new Map();
     if (hasDetail) for (const d of pDays) { const m = (perf.byDay && (perf.byDay[d] || perf.byDay[String(d)])) || {}; for (const [id, ms] of Object.entries(m)) { const c = clientOf.get(String(id)) || "Other"; cMs.set(c, (cMs.get(c) || 0) + Number(ms || 0)); } }
@@ -814,8 +841,17 @@
       const r = ratingParts({ tracked: 0, target: 0, dated: cd.filter((t) => t.dueDateMs > 0), acc: cd.filter((t) => t.estimateMs > 0 && t.spentMs > 0), late });
       return { c, ms: cMs.get(c) || 0, n: cd.length, score: r.overall, parts: r.parts };
     }).sort((a, b) => b.ms - a.ms || b.n - a.n).slice(0, 12);
-    let rg = '<div class="ip-card ip-rating"><div class="ip-rhead"><h3>Your rating</h3><div class="ip-rper">' +
-      ["week", "month", "all"].map((p) => '<button type="button" data-ring-p="' + p + '" class="' + (ringP === p ? "on" : "") + '">' + esc(pLabel[p]) + "</button>").join("") + "</div></div>";
+    let rg = '<div class="ip-card ip-rating"><div class="ip-rhead"><h3>Your rating</h3><label class="ip-rper-sel">Period <select data-ring-sel="1" aria-label="Rating period">' +
+      Object.keys(pLabel).map((p) => '<option value="' + p + '"' + (ringP === p ? " selected" : "") + ">" + esc(pLabel[p]) + "</option>").join("") + "</select></label></div>";
+    if (longP && (!covered || tooNew)) {
+      const months = ringP === "m6" ? 6 : 12;
+      const since = firstDay ? new Date(firstDay).toLocaleDateString(undefined, { month: "long", day: "numeric", year: "numeric" }) : "";
+      const have = firstDay ? Math.max(0, Math.round((today - firstDay) / (30.44 * DAY))) : 0;
+      rg += !covered
+        ? '<div class="ip-empty">Reading your last ' + months + " months from ClickUp (one longer read, kept for a day)…</div>"
+        : '<div class="ip-empty"><b>Not available yet.</b> ' + (since ? "Your tracked time starts on " + esc(since) + " - about " + have + " month" + (have === 1 ? "" : "s") + " ago" : "There is no tracked time in the last " + months + " months") + ". The " + months + "-month review opens once you have " + months + " months of work here.</div>";
+      rg += "</div>";
+    } else {
     rg += '<div class="ip-rmain"><div class="ip-rbig">' + ringSvg(R.overall, 132, 13) + '<div class="ip-rcap">' + (R.overall == null ? "Not enough data yet" : R.overall >= 85 ? "Excellent" : R.overall >= 70 ? "Good" : R.overall >= 55 ? "Fair" : "Needs attention") + "</div></div>" +
       '<div class="ip-rparts">' + (R.parts.length ? R.parts.map((p) => '<div class="ip-rpart"><div class="t"><b>' + esc(p.label) + '</b><span class="sc" style="color:' + ringColor(p.s) + '">' + Math.round(p.s) + '</span></div><div class="tr"><i style="width:' + Math.max(2, Math.round(p.s)) + "%;background:" + ringColor(p.s) + '"></i></div><small>' + esc(p.sub) + " · counts " + p.w + "%</small></div>").join("") : '<p class="ip-meta">Nothing to rate in this period yet' + (ringP === "week" ? " - the week has just started." : ".") + "</p>") + "</div></div>";
     rg += '<p class="hint" style="margin:10px 0 0">Out of 100: time tracked against your ' + fmt(tMs) + " working days (40%), deadlines met on the tasks you finished - a day late counts much less than a week late (35%) - and how close tasks came to their estimate (25%). Overdue tasks still open don't lower it: a big pile of work isn't held against you, only how the finished work went. Weekends and company holidays never count.</p>";
@@ -826,6 +862,7 @@
         '<p class="hint" style="margin:8px 0 0">Each client\'s ring: deadlines met and estimates held on the tasks you finished for them in this period ("—" = none finished yet).</p>';
     }
     rg += "</div>";
+    }
 
     const kpi = (id, n, l, s, cls) => '<button type="button" class="ip-kpi' + (drill && drill.card === "kpi" && drill.key === id ? " on" : "") + '" data-card="kpi" data-kind="kpi" data-key="' + id + '"><div class="n"' + (cls ? ' style="color:var(--' + (cls === "good" ? "green" : cls === "bad" ? "red" : "amber") + ')"' : "") + ">" + esc(n) + '</div><div class="l">' + esc(l) + "</div>" + (s ? '<div class="s">' + esc(s) + "</div>" : "") + '<div class="go">Details →</div></button>';
     const rDays = recent.length, rOn = onT(recent);
@@ -938,7 +975,7 @@
     h += '<p class="ip-meta">History updated ' + ago(perf.at) + " (refreshes by itself every few hours)." + (perfErr ? " Last refresh failed: " + esc(perfErr) : "") + "</p>";
     el.innerHTML = h;
     wire(el);
-    el.querySelectorAll("[data-ring-p]").forEach((b) => { b.onclick = () => { ringP = b.getAttribute("data-ring-p"); try { localStorage.setItem("pcmRingP", ringP); } catch (e) {} repaint(); }; });
+    el.querySelectorAll("[data-ring-sel]").forEach((s) => { s.onchange = () => { ringP = RING_P[s.value] ? s.value : "week"; try { localStorage.setItem("pcmRingP", ringP); } catch (e) {} repaint(); }; });
     // Bring an opened detail into view (it sits under the thing that was clicked).
     if (drill && drill.scroll) { drill.scroll = false; const box = el.querySelector(".ip-drill"); if (box) try { box.scrollIntoView({ block: "nearest", behavior: "smooth" }); } catch (e) {} }
   }

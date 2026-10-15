@@ -336,12 +336,24 @@
     box.innerHTML = '<div class="xt"><div class="xt-out"></div><div class="xt-in"><span>›</span><input spellcheck="false" autocomplete="off" /></div></div>';
     document.body.appendChild(box);
     out = box.querySelector(".xt-out"); inp = box.querySelector("input"); promptEl = box.querySelector(".xt-in span");
-    inp.addEventListener("keydown", onKey);
+    const ctx = { out, inp, promptEl };
+    inp.addEventListener("keydown", (e) => { use(ctx); onKey(e); });
     inp.focus();
     send({ type: "DEV_CMD", cmd: "whoami" }, 8000).then((r) => { admin = !!(r && r.admin); });
   }
   function closeConsole() { if (box) { box.remove(); box = null; mode = null; } }
-  function setMode(m) { mode = m; promptEl.textContent = m ? m.name + " ›" : "›"; }
+  // Which console the next lines go to (the floating one, or the Automation tab's).
+  function use(ctx) { out = ctx.out; inp = ctx.inp; promptEl = ctx.promptEl; }
+  function setMode(m) { mode = m; if (promptEl) promptEl.textContent = m ? m.name + " ›" : "›"; }
+  // Closes on Esc wherever the focus is, and on a click outside it.
+  document.addEventListener("keydown", (e) => {
+    if (e.key === "Escape" && box && !(inp && e.target === inp)) { e.preventDefault(); closeConsole(); }
+  }, true);
+  document.addEventListener("mousedown", (e) => {
+    if (!box) return;
+    const panel = box.querySelector(".xt");
+    if (panel && !panel.contains(e.target)) closeConsole();
+  }, true);
   async function onKey(e) {
     if (e.key === "Escape") { e.preventDefault(); e.stopPropagation(); if (mode) { setMode(null); line("cancelled", "mu"); } else closeConsole(); return; }
     if (e.key === "ArrowUp" && hist.length) { e.preventDefault(); hi = Math.min(hist.length - 1, hi + 1); inp.value = hist[hist.length - 1 - hi]; return; }
@@ -363,8 +375,10 @@
     { name: "/autocomplete boxes", about: "a tick box on every task row to mark them right in the table  (/autocomplete boxes off to hide)" },
     { name: "/autorun", about: "run tasks one after another: each starts, completes at its estimate, then the next starts - while one runs, the tasks you pick go at its end  (/autorun list | stop | clear)" },
     { name: "/autorun boxes", about: "a numbered box on every task row: click them in the order you want the tasks to run, then Start  (/autorun boxes off to hide)" },
-    { name: "/stopat", about: "stop the running task's timer at any time you like: /stopat 1h 10m (or just /stopat and it asks)  - add daily = every day, total = all its time  (/stopat list | off | clear)" },
-    { name: "/doneat", about: "the same, but also mark the task complete: /doneat 1h 13m (or just /doneat and it asks)" },
+    { name: "/stopat", about: "stop the running task's timer at the time you choose: /stopat <your time> (or just /stopat and it asks)  - add daily = every day, total = all its time  (/stopat list | off | clear)" },
+    { name: "/doneat", about: "the same, but also mark the task complete: /doneat <your time> (or just /doneat and it asks)" },
+    { name: "/completeat", about: "the same as /doneat: stop the timer AND mark the task complete at that time - /completeat <your time> (or just /completeat and it asks)" },
+    { name: "/automation", about: "show the Automation tab (every command here, with buttons) - /automation off hides it again" },
     { name: "/refresh", about: "read everything from ClickUp again now" },
     { name: "/whoami", about: "who and where you are" },
     { name: "/active", about: "what's switched on, and how to switch each off" },
@@ -378,7 +392,7 @@
     { name: "/perf", about: "show or hide the Performance and Health columns in Admin › Team hub  (/perf on | off)", admin: true },
   ];
   async function run(v) {
-    v = v.replace(/^\/(stop|done)\s+at\b/i, "/$1at"); // "/stop at 1h 10m" works too
+    v = v.replace(/^\/(stop|done|complete)\s+at\b/i, "/$1at"); // "/stop at 1h 10m" works too
     const [cmd, ...rest] = v.split(/\s+/);
     const arg = rest.join(" ").toLowerCase();
     const c = cmd.toLowerCase();
@@ -409,6 +423,15 @@
       return;
     }
     if (c === "/off") { await allOff(); line("everything switched off", "ok"); return; }
+    if (c === "/automation") {
+      const on = !(arg === "off" || arg === "hide");
+      await chrome.storage.local.set({ automationTab: on });
+      if (!on) { line("Automation tab hidden (/automation shows it again) - what is switched on there keeps running", "ok"); return; }
+      line("Automation tab shown - opening it", "ok");
+      if (document.getElementById("sideNav")) { setTimeout(() => { location.hash = "#automation"; }, 150); }
+      else { try { chrome.tabs.create({ url: chrome.runtime.getURL("options.html#automation") }); } catch (e) {} }
+      return;
+    }
     if (c === "/roles") {
       const g = await chrome.storage.local.get("settings").catch(() => ({}));
       const shown = !(g && g.settings && g.settings.hubRoleCol === false);
@@ -426,7 +449,7 @@
       return;
     }
     if (c === "/autocomplete") return autocomplete(arg);
-    if (c === "/stopat" || c === "/doneat") return stopAt(arg, c === "/doneat" ? "complete" : "stop");
+    if (c === "/stopat" || c === "/doneat" || c === "/completeat") return stopAt(arg, c === "/stopat" ? "stop" : "complete");
     if (c === "/autorun") return autorun(arg);
     const r = await send({ type: "DEV_CMD", cmd: c.slice(1) }, 180000);
     if (!r || r.unknown) { line("Unknown command: " + cmd, "e"); return; }
@@ -628,4 +651,21 @@
   document.addEventListener("keydown", (e) => {
     if (e.ctrlKey && e.shiftKey && !e.altKey && e.code === "Backquote") { e.preventDefault(); if (box) closeConsole(); else openConsole(); }
   }, true);
+
+  // For the Automation tab: the same commands, typed or clicked there, with
+  // their answers in its own box; and what is switched on, with its buttons.
+  window.PcmConsole = {
+    commands: () => COMMANDS.filter((x) => !x.admin || admin),
+    attach(outEl, inpEl, promptSpan) {
+      const ctx = { out: outEl, inp: inpEl, promptEl: promptSpan };
+      inpEl.addEventListener("keydown", (e) => { use(ctx); onKey(e); });
+      send({ type: "DEV_CMD", cmd: "whoami" }, 8000).then((r) => { admin = !!(r && r.admin); });
+      return {
+        run: async (v) => { use(ctx); line("› " + v, "cmd"); hist.push(v); await run(v); },
+        clear: () => { outEl.textContent = ""; },
+      };
+    },
+    active: () => activeItems().filter((i) => i.btn),
+    allOff,
+  };
 })();

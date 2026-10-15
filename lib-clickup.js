@@ -934,6 +934,21 @@ export async function getTaskCommentsLite(token, taskId) {
     };
   }).filter((c) => c.at > 0);
 }
+// Your own latest comment on a task, as text with its links written out - the
+// export's Work File "File:" when the task's File: "..." field is empty (that
+// is where the closing comment with the proof screenshots goes).
+export async function getLatestCommentBy(token, taskId, userId) {
+  const cj = await cuFetch(token, "/task/" + encodeURIComponent(String(taskId)) + "/comment");
+  const mine = (Array.isArray(cj && cj.comments) ? cj.comments : [])
+    .filter((c) => c && (!userId || String(c.user && c.user.id) === String(userId)))
+    .sort((a, b) => (Number(b.date) || 0) - (Number(a.date) || 0));
+  const c = mine[0];
+  if (!c) return "";
+  let text = String(c.comment_text || commentText(c) || "").replace(/\r/g, "").trim();
+  const links = (Array.isArray(c.comment) ? c.comment : []).map((p) => p && p.attributes && p.attributes.link).filter((u) => u && text.indexOf(u) < 0);
+  if (links.length) text += (text ? "\n" : "") + [...new Set(links)].join("\n");
+  return text.slice(0, 4000);
+}
 export async function getTaskCommentLinks(token, taskId) {
   const cj = await cuFetch(token, "/task/" + encodeURIComponent(String(taskId)) + "/comment");
   const parts = [];
@@ -2054,6 +2069,20 @@ export async function stopTimer(token, teamId) {
 // also ask for the other assignees' entries (works for workspace admins) to see
 // anyone tracking it RIGHT NOW - othersRefused comes back when ClickUp says no,
 // so the caller can stop asking for a while.
+// The subtasks' tracked time a parent's estimate covers: { ms, count } - zero
+// when it has none, when none of them has time yet, or when the parent's own
+// estimate is smaller than its subtasks' estimates together (then it is the
+// estimate of the parent's own part, and the subtasks carry theirs).
+export async function subtaskTimeFor(token, taskId, parentEstimateMs) {
+  let subs = [];
+  try { subs = (await getTaskTree(token, taskId, null)).subtasks || []; }
+  catch (e) { if (e && e.status === 429) throw e; return { ms: 0, count: 0 }; }
+  let ms = 0, est = 0;
+  for (const t of subs) { ms += Number(t && t.time_spent) || 0; est += Number(t && t.time_estimate) || 0; }
+  if (!(ms >= 60000)) return { ms: 0, count: 0 };
+  if (!(Number(parentEstimateMs) > 0) || Number(parentEstimateMs) < est) return { ms: 0, count: 0 };
+  return { ms, count: subs.length };
+}
 export async function getRunningTaskProgress(token, teamId, taskId, startMs, now = Date.now(), opts = {}) {
   const task = await getTaskById(token, taskId);
   // opts.anyway: worked out without an estimate too (a stop-at limit needs the time).
@@ -2110,9 +2139,20 @@ export async function getRunningTaskProgress(token, teamId, taskId, startMs, now
   const liveMs = Math.max(0, now - startMs);
   // Everyone's total on the task minus ours = the others' (also catches someone
   // who tracked and was then taken off the task, whose entries we can't list).
-  let othersMs = Math.max(othersClosedMs, (Number(task.spentMs) || 0) - closedMs);
+  // A parent task: its subtasks' time, when the parent's estimate is for the
+  // whole job. ClickUp keeps each subtask's time on the subtask (the parent's own
+  // "Track time" starts at 0), so a 2h parent whose subtasks already took 30m and
+  // 1h read "3m / 2h" instead of "1h 33m / 2h". Counted only when the parent's
+  // estimate is at least what its subtasks are estimated at together - a parent
+  // estimated for its own part only (30m, subtasks 1h 30m on top) keeps its own
+  // time, or it would read as hours over. One cached request (getTaskTree).
+  const sub = await subtaskTimeFor(token, taskId, task.estimateMs);
+  // If ClickUp ever does put the subtasks' time into the parent's time_spent,
+  // take it out there so it isn't counted twice (as "others" AND as subtasks).
+  const spentOwn = (Number(task.spentMs) || 0) - (sub.ms && (Number(task.spentMs) || 0) >= closedMs + sub.ms - 60000 ? sub.ms : 0);
+  let othersMs = Math.max(othersClosedMs, spentOwn - closedMs);
   if (othersMs < 60000) othersMs = 0;
-  return { estimateMs: task.estimateMs, trackedMs: closedMs + othersMs + liveMs, myTrackedMs: closedMs + liveMs, othersMs, othersRunning, othersRefused, closedTodayMs, taskName: task.name || "", startDateMs: task.startDateMs || null, dueDateMs: task.dueDateMs || null };
+  return { estimateMs: task.estimateMs, trackedMs: closedMs + othersMs + sub.ms + liveMs, subtasksMs: sub.ms, subtaskCount: sub.count, myTrackedMs: closedMs + liveMs, othersMs, othersRunning, othersRefused, closedTodayMs, taskName: task.name || "", startDateMs: task.startDateMs || null, dueDateMs: task.dueDateMs || null };
 }
 
 // ---------- time entries (today-only tracked time) ----------
@@ -2773,7 +2813,7 @@ export async function fetchWeeklySummary({ token, teamId, userId, taskUrls = [],
       const sp = dayTime.get(t.id) || 0;
       const paused = isPausedTask(t);
       if (!paused) dayEst += est;
-      dayRows.push({ paused, id: t.id, name: t.name || "(untitled task)", url: taskUrlFor(t.id), estimateMs: est, totalEstimateMs: Number(t.time_estimate) || 0, dueDateMs: Number(t.due_date) || null, spentMs: sp, done: isTaskDone(t), doneAt: Number(t.date_done || t.date_closed) || 0, status: (t.status && t.status.status) || "", priority: cuPriorityName(t), type: "due", parentId: t.parent != null ? String(t.parent) : null, assignees: cuRowAssignees(t), container: taskContainer(t) });
+      dayRows.push({ paused, id: t.id, name: t.name || "(untitled task)", url: taskUrlFor(t.id), estimateMs: est, totalEstimateMs: Number(t.time_estimate) || 0, totalSpentMs: Number(t.time_spent) || 0, dueDateMs: Number(t.due_date) || null, spentMs: sp, done: isTaskDone(t), doneAt: Number(t.date_done || t.date_closed) || 0, status: (t.status && t.status.status) || "", priority: cuPriorityName(t), type: "due", parentId: t.parent != null ? String(t.parent) : null, assignees: cuRowAssignees(t), container: taskContainer(t) });
     }
     // Configured tasks active on this day (skip the extra and anything already
     // counted in the due list). The auto-detected "Extra(s) Task(s)" is matched
@@ -2816,6 +2856,13 @@ export async function fetchWeeklySummary({ token, teamId, userId, taskUrls = [],
     perDay.push({ ts, estimateMs: dayEst, spentMs: daySpent, tasks: dayRows, trackedTasks });
   }
 
+  // A parent's estimate that includes its subtasks: own part only, looking for
+  // its subtasks across the whole week (they can be due on another day).
+  {
+    const pool = [];
+    for (const p of perDay) for (const t of p.tasks) if (t && t.type === "due") pool.push(t);
+    for (const p of perDay) p.estimateMs -= ownShareOfParents(p.tasks.filter((t) => t && t.type === "due"), pool);
+  }
   // "Extra(s) Task(s)" - rendered exactly ONCE per day, after perDay is complete.
   // Source of the per-day estimate: the local due-day occurrence (best - reflects
   // the current week) or, if no occurrence is due-today, the configured extra's
@@ -2929,6 +2976,52 @@ export function cuRowAssignees(t) {
   }));
 }
 
+// A parent task's estimate in ClickUp includes its subtasks' (ClickUp adds them
+// up: a 30m parent with 1h + 30m subtasks reads 2h). When those subtasks are
+// listed too, each with its own estimate, the day counted that 1h 30m twice -
+// "8h 24m estimated" for 6h 54m of work, and the parent read "30m / 2h". So a
+// parent whose estimate is at least its listed subtasks' together counts only
+// its own part (2h - 1h 30m = 30m); its subtasks count on their own rows. A
+// parent estimated for its own part only (smaller than its subtasks') is left
+// as it is. rows: the rows to correct; pool: every row the subtasks may be in
+// (a whole week, so a subtask due another day is still seen). Returns how much
+// came off the counted (not paused) estimate of the rows.
+export function ownShareOfParents(rows, pool) {
+  const all = Array.isArray(pool) ? pool : rows;
+  const kids = new Map(); // parent id -> its listed subtasks
+  const seenKid = new Set();
+  for (const c of all) {
+    if (!c || c.parentId == null || c.id == null || seenKid.has(String(c.id))) continue;
+    seenKid.add(String(c.id));
+    const k = String(c.parentId);
+    if (!kids.has(k)) kids.set(k, []);
+    kids.get(k).push(c);
+  }
+  const estOf = (c) => Number(c.totalEstimateMs != null ? c.totalEstimateMs : c.estimateMs) || 0;
+  const spentOf = (c) => Number(c.totalSpentMs != null ? c.totalSpentMs : c.spentMs) || 0;
+  let off = 0;
+  for (const p of Array.isArray(rows) ? rows : []) {
+    if (!p || p.id == null || p.rollupEstimateMs) continue;
+    const subs = kids.get(String(p.id)) || [];
+    const subEst = subs.reduce((a, c) => a + estOf(c), 0);
+    const whole = Number(p.totalEstimateMs != null ? p.totalEstimateMs : p.estimateMs) || 0;
+    if (!(subEst > 0) || !(whole > 0) || whole < subEst) continue;
+    const own = whole - subEst;
+    const est = Number(p.estimateMs) || 0;
+    // est can be a share of the whole (a task spread over its days): keep the share.
+    const next = est === whole ? own : Math.round((est * own) / whole);
+    if (!p.paused) off += est - next;
+    p.estimateMs = next;
+    p.rollupEstimateMs = whole;
+    p.subtasksEstimateMs = subEst;
+    // For the "?" next to its time (rollup-help.js): what ClickUp shows, and why.
+    p.subtasksSpentMs = subs.reduce((a, c) => a + spentOf(c), 0);
+    p.ownSpentAllMs = spentOf(p);
+    p.subtasksList = subs.slice(0, 12).map((c) => ({ id: String(c.id), url: c.url || taskUrlFor(c.id), name: String(c.name || ""), estimateMs: estOf(c), spentMs: spentOf(c), done: !!c.done }));
+    p.selfUrl = p.url || taskUrlFor(p.id);
+  }
+  return off;
+}
 export async function fetchTodayEstimate({ token, teamId, userId, targetHours = 7, deadlineTaskUrls = [], now = Date.now(), extendedMode = "days", taskCache, spread = false }) {
   const rawTasks = await getTasksDueToday(token, teamId, userId, now);
   // Spread mode: started multi-day tasks due LATER count today's share too. They
@@ -3095,6 +3188,7 @@ export async function fetchTodayEstimate({ token, teamId, userId, targetHours = 
         estimateMs: sEst,
         totalEstimateMs: Number(s.time_estimate) || 0,
         spentMs: sSpent,
+        totalSpentMs: Number(s.time_spent) || 0,
         spentToday: entriesOk,
         status: (s.status && s.status.status) || "",
         priority: cuPriorityName(s),
@@ -3116,6 +3210,8 @@ export async function fetchTodayEstimate({ token, teamId, userId, targetHours = 
       tasks.splice(at + 1, 0, ...subRows);
     }
   }
+
+  estimateMs -= ownShareOfParents(tasks);
 
   // Fetch the configured (deadline / extended / extra) tasks and add their
   // per-day estimate to the daily total. These are fetched BY URL and may be a
@@ -3421,6 +3517,8 @@ export async function fetchDateRangeEstimate({ token, teamId, userId, fromTs, to
       url: taskUrlFor(t.id),
     });
   }
+
+  estimateMs -= ownShareOfParents(tasks);
 
   // 2) Configured (by-URL) tasks - include their per-day estimate for EACH
   //    weekday in the range, accumulated. This covers "Extra(s) Task(s)" and

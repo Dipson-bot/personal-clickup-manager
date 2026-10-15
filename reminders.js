@@ -37,13 +37,43 @@
   const pad = (n) => String(n).padStart(2, "0");
   const toLocalInput = (ms) => { const d = new Date(ms); return d.getFullYear() + "-" + pad(d.getMonth() + 1) + "-" + pad(d.getDate()) + "T" + pad(d.getHours()) + ":" + pad(d.getMinutes()); };
   const fromLocalInput = (v) => { const t = new Date(v).getTime(); return Number.isFinite(t) ? t : 0; };
-  const REPEAT = { none: "Once", daily: "Every day", weekdays: "Weekdays", weekly: "Every week" };
+  const REPEAT = { none: "Once", days: "On picked days", daily: "Every day", weekdays: "Weekdays", weekly: "Every week", dates: "Every month on set dates" };
   // Each reminder's own sound (the check in / check out ones default to Alarm).
   const SOUNDS = { normal: "Normal chime", danger: "Alarm", winner: "Celebration", none: "Silent" };
+  // "On set dates": days of the month the reminder goes off, kept as
+  // r.dates = [17, 19, 21, 25]. A month without that day (the 31st of
+  // February) is SKIPPED rather than moved to the 28th, so the date picked is
+  // the date you get - the form says so when a day over 28 is picked.
+  const normDates = (list) => [...new Set((Array.isArray(list) ? list : []).map((n) => Math.round(Number(n))).filter((n) => n >= 1 && n <= 31))].sort((a, b) => a - b);
+  const ord = (n) => n + (n % 100 >= 11 && n % 100 <= 13 ? "th" : ["th", "st", "nd", "rd"][n % 10] || "th");
+  const joinAnd = (a) => (a.length < 2 ? a[0] || "" : a.slice(0, -1).join(", ") + " and " + a[a.length - 1]);
+  const datesLabel = (list) => joinAnd(normDates(list).map(ord));
+  // "On picked days": the calendar days ticked in the reminder's calendar, kept
+  // as r.days = ["2026-10-17", "2026-10-19", ...] - any month, AD or BS. It goes
+  // off on each at the time set, then moves to Past after the last one.
+  const normDays = (list) => [...new Set((Array.isArray(list) ? list : []).map(String).filter((k) => /^\d{4}-\d{2}-\d{2}$/.test(k)))].sort();
+  const dayAt = (k, at) => { const [y, m, d] = k.split("-").map(Number); const t = new Date(Number(at) || Date.now()); return new Date(y, m - 1, d, t.getHours(), t.getMinutes(), 0, 0).getTime(); };
+  const daysLabel = (list) => {
+    const ks = normDays(list);
+    const y0 = new Date().getFullYear();
+    return joinAnd(ks.map((k) => { const [y, m, d] = k.split("-").map(Number); return new Date(y, m - 1, d).toLocaleDateString(undefined, { month: "short", day: "numeric", ...(y !== y0 ? { year: "numeric" } : {}) }); }));
+  };
   // Next time after now for a repeating reminder (same time of day).
-  function nextAt(at, repeat) {
+  function nextAt(at, repeat, dates, days) {
+    if (repeat === "days") {
+      // The first picked day still ahead; none left = the time it had (it's done).
+      const next = normDays(days).map((k) => dayAt(k, at)).find((t) => t > Date.now());
+      return next || Number(at) || Date.now();
+    }
     const d = new Date(Number(at) || Date.now());
     let guard = 0;
+    if (repeat === "dates") {
+      const days = normDates(dates);
+      // No days picked can't happen from the form; if it somehow does, leave the
+      // time alone rather than spin.
+      if (days.length) while ((d.getTime() <= Date.now() || !days.includes(d.getDate())) && ++guard < 800) d.setDate(d.getDate() + 1);
+      return d.getTime();
+    }
     while ((d.getTime() <= Date.now() || (repeat === "weekdays" && (d.getDay() === 0 || d.getDay() === 6))) && ++guard < 800) d.setDate(d.getDate() + (repeat === "weekly" ? 7 : 1));
     return d.getTime();
   }
@@ -115,7 +145,7 @@
   css.textContent = `
     .rm-btn { border: none; background: none; cursor: pointer; font-size: 14px; padding: 2px 4px; line-height: 1; color: var(--text); position: relative; }
     .rm-btn .rm-n { position: absolute; top: -4px; right: -5px; min-width: 14px; height: 14px; padding: 0 3px; box-sizing: border-box; border-radius: 99px; background: var(--indigo); color: #fff; font: 700 9px/14px sans-serif; text-align: center; }
-    .rm-pop { position: fixed; z-index: 1001; width: 300px; max-width: calc(100vw - 16px); background: var(--card); color: var(--text); border: 1px solid var(--border); border-radius: 10px; box-shadow: 0 12px 28px rgba(0,0,0,.2); padding: 10px; font-size: 12.5px; }
+    .rm-pop { position: fixed; z-index: 1001; box-sizing: border-box; width: 300px; max-width: calc(100vw - 16px); max-height: calc(100vh - 16px); overflow-y: auto; overscroll-behavior: contain; background: var(--card); color: var(--text); border: 1px solid var(--border); border-radius: 10px; box-shadow: 0 12px 28px rgba(0,0,0,.2); padding: 10px; font-size: 12.5px; }
     .rm-pop h4 { margin: 0 0 8px; font-size: 12px; text-transform: uppercase; letter-spacing: .04em; color: var(--muted); display: flex; align-items: center; gap: 6px; }
     .rm-pop h4 a { margin-left: auto; text-transform: none; letter-spacing: 0; font-weight: 500; color: var(--indigo); cursor: pointer; font-size: 11.5px; }
     .rm-form { display: flex; flex-direction: column; gap: 7px; }
@@ -126,6 +156,15 @@
     .rm-chip.on { border-color: var(--indigo); color: var(--indigo); background: rgba(99,102,241,.12); }
     .rm-row2 { display: flex; gap: 6px; }
     .rm-row2 > * { flex: 1; }
+    /* "On set dates": the days of the month, 7 across so it reads like a month
+       and still fits the 300px card. The [hidden] rule needs to be here and not
+       left to the browser: a class with display: grid beats the plain [hidden]. */
+    .rm-dates { display: grid; gap: 5px; }
+    .rm-dates[hidden] { display: none; }
+    .rm-dgrid { display: grid; grid-template-columns: repeat(7, 1fr); gap: 4px; }
+    .rm-dcell { font: inherit; font-size: 11.5px; padding: 5px 0; min-height: 26px; border-radius: 6px; border: 1px solid var(--border); background: var(--bg2); color: var(--text); cursor: pointer; }
+    .rm-dcell.on { border-color: var(--indigo); background: var(--indigo); color: #fff; font-weight: 700; }
+    .rm-dnote { font-size: 11.5px; color: var(--muted); }
     .rm-task { display: flex; align-items: center; gap: 6px; font-size: 11.5px; color: var(--muted); }
     .rm-task b { color: var(--text); font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
     .rm-task button { border: 0; background: none; color: var(--muted); cursor: pointer; padding: 0 2px; }
@@ -262,6 +301,14 @@
     const chips = el("div", "rm-chips");
     const dt = el("input");
     dt.type = "datetime-local";
+    // Named so the calendar says "reminder time", and required so it doesn't
+    // offer "No reminder time" - a reminder without one isn't a reminder.
+    dt.required = true;
+    dt.dataset.pcalWhat = "reminder time";
+    dt.title = "When to remind you - click to pick the day and the time (tick several days in the calendar for a reminder on each)";
+    // The calendar lets several days be ticked here; they come back in data-pcal-days.
+    dt.dataset.pcalMulti = "1";
+    if (opts && opts.repeat === "days" && normDays(opts.days).length) dt.dataset.pcalDays = normDays(opts.days).join(",");
     const def = new Date(Date.now() + 60 * 60000); def.setMinutes(Math.ceil(def.getMinutes() / 5) * 5, 0, 0);
     dt.value = toLocalInput(opts && Number(opts.at) > 0 ? Number(opts.at) : def.getTime());
     const quick = [["Now", () => Date.now()], ["In 15 min", () => Date.now() + 15 * 60000], ["In 1 hour", () => Date.now() + 60 * 60000], ["Tomorrow 9:00", () => at9(1)], ["Monday 9:00", () => at9(0, 1)]];
@@ -271,6 +318,14 @@
       chips.appendChild(c);
     }
     dt.oninput = () => chips.querySelectorAll(".rm-chip").forEach((x) => x.classList.remove("on"));
+    // Several days ticked in the calendar = "On picked days"; one day again = once.
+    const pickedDays = () => normDays(String(dt.dataset.pcalDays || "").split(","));
+    dt.addEventListener("change", () => {
+      const ks = pickedDays();
+      if (ks.length > 1) rep.value = "days";
+      else if (rep.value === "days") rep.value = "none";
+      paintDates();
+    });
     f.appendChild(chips);
     const row2 = el("div", "rm-row2");
     const rep = el("select");
@@ -279,6 +334,44 @@
     if (opts && opts.repeat && REPEAT[opts.repeat]) rep.value = opts.repeat;
     row2.append(dt, rep);
     f.appendChild(row2);
+
+    // "On set dates" - which days of the month. Hidden until that repeat is
+    // picked, so the card stays the size it was for everyone else.
+    let dates = normDates(opts && opts.dates);
+    const datesBox = el("div", "rm-dates");
+    const datesGrid = el("div", "rm-dgrid");
+    const datesNote = el("div", "rm-dnote");
+    const daysNote = el("div", "rm-dnote");
+    const paintDates = () => {
+      const ks = pickedDays();
+      daysNote.hidden = rep.value !== "days";
+      daysNote.textContent = ks.length > 1
+        ? "On " + daysLabel(ks) + " at " + new Date(fromLocalInput(dt.value) || Date.now()).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" }) + ". Click the date box to tick or untick days."
+        : "Click the date box and tick the days in the calendar (any month) - or Ctrl+click them - then set the time once.";
+      datesBox.hidden = rep.value !== "dates";
+      for (const b of datesGrid.children) b.classList.toggle("on", dates.includes(Number(b.dataset.d)));
+      const short = dates.some((n) => n > 28);
+      datesNote.textContent = !dates.length
+        ? "Pick the days of the month it should go off - e.g. the 17th, 19th, 21st and 25th."
+        : "Every month on the " + datesLabel(dates) + (short ? ". A month without that day is skipped." : ".");
+    };
+    for (let n = 1; n <= 31; n++) {
+      const b = el("button", "rm-dcell", String(n));
+      b.type = "button";
+      b.dataset.d = String(n);
+      b.title = "The " + ord(n) + " of every month";
+      b.onclick = () => { dates = dates.includes(n) ? dates.filter((x) => x !== n) : normDates([...dates, n]); paintDates(); };
+      datesGrid.appendChild(b);
+    }
+    datesBox.append(datesGrid, datesNote);
+    f.appendChild(datesBox);
+    f.appendChild(daysNote);
+    // Picking the mode brings the grid into view: in the 360px popup the card
+    // scrolls, and the grid sits below the fold - having to hunt for it is the
+    // same complaint all over again. Only on a change, so opening an existing
+    // "On set dates" reminder for editing doesn't jump away from its text.
+    rep.onchange = () => { paintDates(); if (rep.value === "dates") { try { datesBox.scrollIntoView({ block: "nearest" }); } catch (e) {} } if (rep.value === "days" && pickedDays().length < 2) { try { dt.showPicker(); } catch (e) {} } };
+    paintDates();
     const row3 = el("div", "rm-row2");
     const snd = el("select");
     for (const [v, l] of Object.entries(SOUNDS)) { const o = el("option", "", "\uD83D\uDD14 " + l); o.value = v; snd.appendChild(o); }
@@ -341,6 +434,20 @@
       if (!at) { say("Pick a date and time.", true); return; }
       // "Weekdays" never starts on a weekend: move to the next Monday, same time.
       if (rep.value === "weekdays") { const d = new Date(at); while (d.getDay() === 0 || d.getDay() === 6) d.setDate(d.getDate() + 1); at = d.getTime(); }
+      // "On set dates" starts on the first day picked, at the time picked - so
+      // the day in the box doesn't have to be one of them.
+      if (rep.value === "dates") {
+        if (!dates.length) { say("Pick the days of the month it should go off.", true); return; }
+        at = nextAt(at, "dates", dates);
+      }
+      // "On picked days": the first ticked day still ahead, at the time set.
+      const days = rep.value === "days" ? pickedDays() : [];
+      if (rep.value === "days") {
+        if (days.length < 1) { say("Click the date box and tick the days it should go off.", true); return; }
+        const next = days.map((k) => dayAt(k, at)).find((t) => t > Date.now() - 90000);
+        if (!next) { say("All the days ticked have passed - tick later ones.", true); return; }
+        at = next;
+      }
       if (at < Date.now() - 90000 && rep.value === "none") { say("That time has passed - pick a later one.", true); return; }
       const list = await getAll();
       const editing = opts && opts.editId ? list.find((x) => x && x.id === opts.editId) : null;
@@ -351,7 +458,7 @@
         catch (err) { save.disabled = false; say("Couldn't save the files (is the disk full?).", true); return; }
         save.disabled = false;
       }
-      const rec = { text: words.slice(0, MAX_TEXT), at, repeat: rep.value, sound: snd.value, taskId: task ? task.id : "", taskName: task ? task.name : "", taskUrl: task ? task.url : "", ...(opts && opts.noteId ? { noteId: String(opts.noteId) } : {}), files: pending.map((p) => ({ id: p.id, name: p.name, type: p.type, size: p.size })), active: true, forMe: meCb.checked, to };
+      const rec = { text: words.slice(0, MAX_TEXT), at, repeat: rep.value, dates: rep.value === "dates" ? dates : [], days, sound: snd.value, taskId: task ? task.id : "", taskName: task ? task.name : "", taskUrl: task ? task.url : "", ...(opts && opts.noteId ? { noteId: String(opts.noteId) } : {}), files: pending.map((p) => ({ id: p.id, name: p.name, type: p.type, size: p.size })), active: true, forMe: meCb.checked, to };
       if (editing) {
         // Edit: same reminder, new details (a paused one stays paused).
         const oldFiles = editing.files || [];
@@ -375,8 +482,12 @@
   }
 
   // ---------- quick-add card ----------
-  let pop = null;
-  function closePop() { if (pop) { pop.remove(); pop = null; } }
+  let pop = null, popRo = null, popPlace = null;
+  function closePop() {
+    if (popRo) { try { popRo.disconnect(); } catch (e) {} popRo = null; }
+    if (popPlace) { removeEventListener("resize", popPlace); popPlace = null; }
+    if (pop) { pop.remove(); pop = null; }
+  }
   function open(opts, anchor) {
     closePop();
     pop = el("div", "rm-pop");
@@ -385,17 +496,35 @@
     const all = el("a", "", "All reminders");
     all.onclick = () => { closePop(); openList(); };
     h.appendChild(all);
-    pop.append(h, buildForm(opts || {}, () => setTimeout(closePop, 900)));
+    // "Saved" stays up for a moment, then the card goes - but only if it is
+    // still THIS card. Saving and then going straight to Edit used to have the
+    // old card's timer close the new one in their face.
+    const mine = pop;
+    pop.append(h, buildForm(opts || {}, () => setTimeout(() => { if (pop === mine) closePop(); }, 900)));
     document.body.appendChild(pop);
     const r = anchor && anchor.getBoundingClientRect ? anchor.getBoundingClientRect() : null;
     const w = Math.min(300, window.innerWidth - 16);
-    if (r && r.width) {
-      pop.style.top = Math.round(Math.min(r.bottom + 6, window.innerHeight - pop.offsetHeight - 8)) + "px";
-      pop.style.left = Math.round(Math.max(8, Math.min(window.innerWidth - w - 8, r.right - w))) + "px";
-    } else {
-      pop.style.top = Math.round(Math.max(8, (window.innerHeight - pop.offsetHeight) / 3)) + "px";
-      pop.style.left = Math.round((window.innerWidth - w) / 2) + "px";
-    }
+    // The card grows while it's being filled in - "On set dates" adds a month of
+    // days, files add chips, people add names - so where it sits is worked out
+    // again on every size change instead of once when it opens. Placed once, a
+    // card that grew ran off the bottom of a 600px popup and took Save with it.
+    // max-height on .rm-pop keeps it scrollable rather than clipped, and the
+    // top >= 8 clamp keeps the text box on screen.
+    const place = () => {
+      if (!pop) return;
+      const ph = pop.offsetHeight;
+      pop.style.left = Math.round(r && r.width ? Math.max(8, Math.min(window.innerWidth - w - 8, r.right - w)) : (window.innerWidth - w) / 2) + "px";
+      pop.style.top = Math.round(r && r.width
+        ? Math.max(8, Math.min(r.bottom + 6, window.innerHeight - ph - 8))
+        : Math.max(8, (window.innerHeight - ph) / 3)) + "px";
+    };
+    place();
+    // Only the top and left are touched, so this can't feed itself. Both the
+    // observer and the resize listener are dropped in closePop, or an old
+    // card's listener would go on moving the next one.
+    popPlace = place;
+    try { popRo = new ResizeObserver(place); popRo.observe(pop); } catch (e) {}
+    addEventListener("resize", place, { passive: true });
   }
   function openList() {
     if (document.querySelector('.panel[data-panel="reminders"]') && typeof window.showOptTab === "function") { window.showOptTab("reminders"); return; }
@@ -462,7 +591,7 @@
         const sub = el("div", "rm-sub");
         if (Array.isArray(r.to) && r.to.length) sub.appendChild(el("span", "rm-to", "\u2192 " + (r.forMe === false ? "" : "you, ") + r.to.map((p) => p.name).join(", ")));
         sub.appendChild(el("span", "", (isPast ? (r.done ? "Done · " : "Shown · ") : "") + whenLabel(isPast ? (r.firedAt || r.at) : r.at)));
-        if (r.repeat && r.repeat !== "none") sub.appendChild(el("span", "", "↻ " + (REPEAT[r.repeat] || r.repeat)));
+        if (r.repeat && r.repeat !== "none") sub.appendChild(el("span", "", "↻ " + (r.repeat === "dates" ? datesLabel(r.dates) + " of the month" : r.repeat === "days" ? daysLabel(r.days) : (REPEAT[r.repeat] || r.repeat))));
         if (r.sound && r.sound !== "normal") sub.appendChild(el("span", "", "\uD83D\uDD14 " + (SOUNDS[r.sound] || r.sound)));
         if (r.paused && !isPast) { sub.appendChild(el("span", "rm-paused", "\u23F8 Paused")); it.classList.add("paused"); }
         if (r.taskName) {
@@ -495,7 +624,7 @@
             if (d.getTime() < Date.now() + 60000) d.setDate(d.getDate() + 1);
             at = d.getTime();
           }
-          open({ title: "⏰ Copy of reminder", text: r.text, at, repeat: r.repeat, sound: r.sound,
+          open({ title: "⏰ Copy of reminder", text: r.text, at, repeat: r.repeat, dates: r.dates, days: r.days, sound: r.sound,
             task: r.taskId ? { id: r.taskId, name: r.taskName, url: r.taskUrl } : null,
             files: Array.isArray(r.files) ? r.files : [] }, dup);
         };
@@ -506,7 +635,7 @@
         edit.title = "Change the text, time, repeat, sound or files";
         edit.onclick = (e) => {
           e.stopPropagation();
-          open({ title: "\u270E Edit reminder", editId: r.id, text: r.text, at: r.at, repeat: r.repeat, sound: r.sound,
+          open({ title: "\u270E Edit reminder", editId: r.id, text: r.text, at: r.at, repeat: r.repeat, dates: r.dates, days: r.days, sound: r.sound,
             task: r.taskId ? { id: r.taskId, name: r.taskName, url: r.taskUrl } : null,
             files: Array.isArray(r.files) ? r.files : [], forMe: r.forMe !== false, to: Array.isArray(r.to) ? r.to : [] }, edit);
         };
@@ -519,7 +648,7 @@
           if (!x) return;
           x.paused = !x.paused;
           // Resuming a repeating one that was due while paused: its next time.
-          if (!x.paused && Number(x.at) <= Date.now() && x.repeat && x.repeat !== "none") x.at = nextAt(x.at, x.repeat);
+          if (!x.paused && Number(x.at) <= Date.now() && x.repeat && x.repeat !== "none") x.at = nextAt(x.at, x.repeat, x.dates, x.days);
           await setAll(all);
         };
         const acts = el("div", "rm-acts");
@@ -585,11 +714,11 @@
 
   // Add a reminder straight away (e.g. "Remind me at…" while saving a client
   // note). files = metadata of files already in the store (they're shared).
-  async function addReminder({ text, at, repeat, files, task }) {
+  async function addReminder({ text, at, repeat, dates, files, task }) {
     const when = Number(at);
     if (!String(text || "").trim() || !(when > Date.now() - 30000)) throw new Error("Pick a time that hasn't passed.");
     const list = await getAll();
-    list.push({ id: uid(), text: String(text).trim().slice(0, MAX_TEXT), at: when, repeat: repeat || "none",
+    list.push({ id: uid(), text: String(text).trim().slice(0, MAX_TEXT), at: when, repeat: repeat || "none", dates: normDates(dates),
       taskId: task ? String(task.id) : "", taskName: task ? String(task.name || "") : "", taskUrl: task ? String(task.url || "") : "",
       files: (files || []).map((f) => ({ id: f.id, name: f.name, type: f.type, size: f.size })), active: true, createdAt: Date.now() });
     await setAll(list);

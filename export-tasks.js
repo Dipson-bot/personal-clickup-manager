@@ -2,9 +2,10 @@
 // Exports exactly the rows a page hands over (so it follows whatever filters are
 // on screen) as CSV, Excel, Markdown, Google Sheets or Google Docs.
 //
-// Fixed layout, matching the team sheet: main / sub task | Task | Task info |
-// Status | Week. "Task info" is the ClickUp description with its planning
-// boilerplate stripped (see cleanInfo), keeping the instructions and the WHY.
+// Fixed layout, matching the team's sheet: Date (Range) | Task | Task Info |
+// Category | Status | Work File (Description: "..." and File: "..."), week by
+// week. "Task Info" is the task's Task Info / Task Description field, else its
+// description with the planning boilerplate stripped (see cleanInfo).
 // Google Docs gets headings + bullets instead of a grid.
 // No AI by default - this reformats data the extension already holds. The Client
 // report can optionally have each line rewritten in plain language by AI (PcmAI).
@@ -144,50 +145,88 @@
   }
   // Fixed layout, as the team's sheet uses it.
   // rows: [{ name, isSubtask, info, status, done, dueDateMs, links }]
-  // Links from each task's description follow as Link 1, Link 2 ... - one address
-  // per cell, so every one is clickable in Sheets and Excel.
-  const MAX_LINK_COLS = 20;
-  const linksOf = (t) => (Array.isArray(t && t.links) ? t.links : []).slice(0, MAX_LINK_COLS);
-  function toMatrix(rows) {
-    const n = rows.reduce((m, t) => Math.max(m, linksOf(t).length), 0);
-    const head = ["", "Task", "Task info", "Status", "Week"];
-    for (let i = 1; i <= n; i++) head.push("Link " + i);
-    const out = [head];
-    for (const t of rows) {
-      const l = linksOf(t);
-      const row = [
-        t.isSubtask ? "sub task" : "main",
-        t.name || "",
-        cleanInfo(t.info),
-        t.status || (t.done ? "complete" : ""),
-        weekLabel(t.dueDateMs),
-      ];
-      for (let i = 0; i < n; i++) row.push(l[i] || "");
-      out.push(row);
+  // The links live in the Task info cell, because that is where the task's
+  // description already put them. There used to be Link 1 ... Link 20 columns
+  // as well, repeating the same addresses in twenty mostly-empty columns, and
+  // the owner asked for them gone. cleanInfo keeps a link that arrives as
+  // prose or behind a lower-case label (File: "...", Pre File:, Checklist
+  // File:) but drops an ALL-CAPS labelled line whole (WORK FILE: ..., PROOF:
+  // ...), so any address it dropped is added back at the end of the cell -
+  // removing the columns then loses nothing. Measured in t_export_sheet.js.
+  const MAX_LINKS = 20;
+  const linksOf = (t) => (Array.isArray(t && t.links) ? t.links : []).slice(0, MAX_LINKS);
+  function infoCell(t) {
+    const info = cleanInfo(t && t.info);
+    const extra = linksOf(t).filter((u) => u && info.indexOf(u) < 0);
+    return extra.length ? (info ? info + "\n" : "") + extra.join("\n") : info;
+  }
+  // The team's sheet (the plain export, without Client work report / Client
+  // workbook rows ticked): the week's dates on its first row, a blank row between
+  // weeks. comments: { taskId: your latest comment } for File: when the task's
+  // own File: "..." is empty.
+  const SHEET_COLS = ["Date (Range)", "Task", "Task Info", "Category", "Status", "Work File"];
+  const SHEET_WIDTHS = [16, 34, 44, 13, 12, 56];
+  // The description without its quoted blocks (they have their own places).
+  const BLOCK_RE = /(^|\n)[ \t*_>-]*(Pre Description|Description|Checklist File|Pre File|File|Task Info|Task Description)\s*:\s*[*_]*\s*"[\s\S]*?"[*_ \t]*(?=\r?\n|$)/gi;
+  function taskInfoOf(t) {
+    const own = ctField(t.info, "Task Info") || ctField(t.info, "Task Description");
+    if (own) return own;
+    const info = String(t.info || "");
+    const rest = cleanInfo(info.replace(BLOCK_RE, "$1"));
+    // A link the cleaner dropped (an ALL-CAPS line: WORK FILE:, PROOF:) is added back -
+    // unless it sits in a quoted block, which has its own column (Work File).
+    const blocks = (info.match(BLOCK_RE) || []).join("\n");
+    const extra = linksOf(t).filter((u) => u && rest.indexOf(u) < 0 && blocks.indexOf(u) < 0);
+    return extra.length ? (rest ? rest + "\n" : "") + extra.join("\n") : rest;
+  }
+  function workFileOf(t, comments) {
+    const note = ctField(t.info, "Description");
+    const file = ctField(t.info, "File") || String((comments && comments[String(t.id)]) || "").trim();
+    return ctQ("Description", note) + "\n\n" + ctQ("File", file);
+  }
+  const needsComment = (t) => !ctField(t && t.info, "File");
+  function toMatrix(rows, comments) {
+    const out = [SHEET_COLS.slice()];
+    const order = (rows || []).map((t, i) => ({ t, i, w: ctWeek(t) })).sort((a, b) => (a.w.key - b.w.key) || a.i - b.i);
+    let wk = null;
+    for (const { t, w } of order) {
+      const first = w.key !== wk;
+      if (first && wk !== null) out.push(SHEET_COLS.map(() => ""));
+      wk = w.key;
+      out.push([
+        first ? w.label : "",
+        crStripCode(t.name || ""),
+        taskInfoOf(t),
+        ctCategory(t, null) || "",
+        crDone(t) ? "Complete" : String(t.status || "to do").replace(/\b\w/g, (c) => c.toUpperCase()),
+        workFileOf(t, comments),
+      ]);
     }
     return out;
   }
-  // "Click Here 1  Click Here 2" links, for the Docs / Excel / Markdown exports.
+  // "Click Here 1  Click Here 2" links, for the Docs and Markdown exports (the
+  // spreadsheet ones carry their addresses inside the Task info cell).
   const linkLabel = (i, total) => "Click Here" + (total > 1 ? " " + (i + 1) : "");
   const linksHtml = (t) => linksOf(t).map((u, i, a) => '<a href="' + esc(u) + '">' + linkLabel(i, a.length) + "</a>").join(" &nbsp;");
   const linksMd = (t) => linksOf(t).map((u, i, a) => "[" + linkLabel(i, a.length) + "](" + u + ")").join("  ");
   const toCsv = (m) => m.map((r) => r.map(csvCell).join(",")).join("\r\n");
+  // An address inside a cell becomes a real link, so Excel and Drive keep it
+  // clickable now that the links are in Task info instead of their own columns.
+  // esc() runs first, so a & in the address is already &amp; - which is what
+  // belongs in an href - and the match stops at the < of a <br>.
+  const cellHtml = (s) => esc(s).replace(/\n/g, "<br>")
+    .replace(/https?:\/\/[^\s<>"']+/g, (u) => '<a href="' + u + '">' + u + "</a>");
   // HTML table: Excel opens it, and Google Drive converts it keeping the bold.
   function toHtml(m, title) {
     const rows = m.map((r, i) => {
       if (!i) return "<tr>" + r.map((c) => '<td style="background:#4a86e8;color:#ffffff;font-weight:bold">' + esc(c) + "</td>").join("") + "</tr>";
-      const main = r[0] === "main";
-      const a = '<td style="font-style:italic;vertical-align:bottom">' + esc(r[0]) + "</td>";
-      const b = '<td style="vertical-align:bottom' + (main ? ";font-weight:bold" : "") + '">' + esc(r[1]).replace(/\n/g, "<br>") + "</td>";
-      const rest = r.slice(2).map((c, j) => (j + 2 >= 5 && /^https?:\/\//.test(c)
-        ? '<td style="vertical-align:top"><a href="' + esc(c) + '">Click Here ' + (j - 2) + "</a></td>"
-        : '<td style="vertical-align:top">' + esc(c) + "</td>")).join("");
-      return "<tr>" + a + b + rest + "</tr>";
+      return "<tr>" + r.map((c, j) => '<td style="vertical-align:top' + (j === 0 && c ? ";font-weight:bold" : "") + '">' + cellHtml(c) + "</td>").join("") + "</tr>";
     }).join("");
     return '<html><head><meta charset="utf-8"><title>' + esc(title) + "</title></head><body>" +
-      '<table border="1" cellspacing="0" cellpadding="4"><colgroup><col style="width:90px"><col style="width:640px"></colgroup>' +
-      rows + "</table></body></html>";
+      '<table border="1" cellspacing="0" cellpadding="4">' + rows + "</table></body></html>";
   }
+  // The sheet's widths, and each week's dates in bold.
+  const sheetOpts = (m) => ({ widths: SHEET_WIDTHS, boldCells: new Set(m.map((r, i) => (i && r[0] ? i + ",0" : "")).filter(Boolean)) });
   // Google Docs export: headings and bullets rather than a grid.
   function toDocHtml(rows, title) {
     const parts = ['<html><head><meta charset="utf-8"><title>' + esc(title) + "</title></head><body>"];
@@ -2017,11 +2056,22 @@
           if (item) item.blur();
           return;
         }
-        const m = toMatrix(rows);
+        // File: "" left empty in the task: your latest comment on it fills it in
+        // (spreadsheets only; Docs and Markdown keep their own layout).
+        let comments = {};
+        const sheetKind = kind === "csv" || kind === "xls" || kind === "sheets";
+        const ask = sheetKind ? rows.filter(needsComment).map((t) => String(t.id)) : [];
+        if (ask.length) {
+          note("Reading your comments on " + ask.length + " task" + (ask.length === 1 ? "" : "s") + " for Work File\u2026");
+          let r = null;
+          try { r = await chrome.runtime.sendMessage({ type: "CLICKUP_EXPORT_MY_COMMENTS", taskIds: ask }); } catch (e) { r = null; }
+          comments = (r && r.ok && r.texts) || {};
+        }
+        const m = toMatrix(rows, comments);
         const title = d.title || "tasks";
         const file = safeName(title) + "_" + new Date().toISOString().slice(0, 10);
         if (kind === "csv") { save(file + ".csv", "text/csv;charset=utf-8", "﻿" + toCsv(m)); note("Saved " + file + ".csv"); }
-        else if (kind === "xls") saveXlsx(save, note, file, m, {}, toHtml(m, title), "");
+        else if (kind === "xls") saveXlsx(save, note, file, m, sheetOpts(m), toHtml(m, title), "");
         else if (kind === "md") {
           const text = toMarkdown(rows, title);
           save(file + ".md", "text/markdown;charset=utf-8", text);
@@ -2034,7 +2084,7 @@
             type: "EXPORT_TO_GOOGLE", kind, name: file, share: share.checked,
             html: docLook(toDocHtml(rows, title)), // Docs: headings + bullets, in the team's look
             csv: toCsv(m), // Sheets: Drive only converts csv/xls into a spreadsheet
-            xlsx: await xlsxFor(kind, m, {}), // …and the formatted .xlsx, used when there
+            xlsx: await xlsxFor(kind, m, sheetOpts(m)), // …and the formatted .xlsx, used when there
           });
           if (!res || !res.ok) throw new Error((res && (res.error || res.reason)) || "Google export failed");
           note("Opening…" + linkNote(res));
