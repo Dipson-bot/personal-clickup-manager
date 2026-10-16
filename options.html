@@ -897,6 +897,8 @@
      on different days - the case nobody spots - red when they collide on one. */
   .cu-task .cu-dup { display: inline-flex; align-items: center; gap: 3px; flex: 0 0 auto; font-size: 11px; font-weight: 700; padding: 1px 7px; border-radius: 999px; cursor: pointer; white-space: nowrap; box-sizing: border-box; color: var(--amber); background: rgba(217, 119, 6, 0.14); }
   .cu-task .cu-dup.same { color: var(--red); background: rgba(220, 38, 38, 0.14); }
+  .cu-task .cu-dup .dl { display: none; } /* "⧉" only - "Duplicate" and the copies are in its hover */
+  .cu-task .cu-dup { padding: 1px 6px; }
   .cu-task.cu-done .cu-dup { display: none; }
   .cu-tasklist .cu-task .estpairs { min-width: 7em; justify-content: flex-end; gap: 3px; }
   .cu-tasklist .cu-task .est { min-width: 0; order: 3; }
@@ -2218,6 +2220,10 @@
           /* A row whose last check is old: amber, never a green tick. A stale
              "Up" is the monitor saying nothing when it should say "I'm blind". */
           #siteMonitorStatus .sm-stale { color: var(--amber, #d97706); font-weight: 600; }
+          #siteMonitorStatus .sm-checking { color: var(--indigo, #4f46e5); font-weight: 600; display: inline-flex; align-items: center; gap: 6px; }
+          #siteMonitorStatus .sm-spin { display: inline-block; width: 10px; height: 10px; border: 2px solid currentColor; border-right-color: transparent; border-radius: 50%; animation: cu-spin .7s linear infinite; vertical-align: -1px; flex: none; }
+          #siteMonitorStatus .sm-checking-banner { display: flex; align-items: center; gap: 8px; padding: 8px 12px !important; margin: 10px 0 0; border-radius: 8px; border: 1px solid var(--indigo, #4f46e5); background: rgba(79,70,229,.10); color: var(--text) !important; font-weight: 600; line-height: 1.5; }
+          #siteMonitorStatus .sm-checking-banner .sm-spin { color: var(--indigo, #4f46e5); }
           #siteMonitorStatus .sm-stale-banner { display: block; padding: 8px 12px !important; margin: 10px 0 0; border-radius: 8px; border: 1px solid var(--amber, #d97706); background: rgba(217,119,6,.12); color: var(--text) !important; font-weight: 600; line-height: 1.5; }
         </style>
       </div>
@@ -2773,7 +2779,10 @@
 <script src="rollup-help.js"></script>
 <script src="local-tasks.js"></script>
 <script src="ui-extras.js"></script>
+<script src="simple-view.js"></script>
+<script src="lib-rules.js"></script>
 <script src="automation.js"></script>
+<script src="nav-badges.js"></script>
 <script src="celebrate.js"></script>
 <script src="pcm-help.js"></script>
 <script src="pcm-search.js"></script>

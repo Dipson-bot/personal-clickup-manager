@@ -91,7 +91,7 @@
         if (!t || !t.id || seen.has(String(t.id))) continue;
         if (mine && !mine(t)) continue;
         seen.add(String(t.id));
-        out.push({ type: "task", text: t.name || "(task)", client: t.client || "", due: t.dueDateMs || null, status: t.status || "", done: !!t.done,
+        out.push({ type: "task", id: String(t.id), text: t.name || "(task)", client: t.client || "", due: t.dueDateMs || null, status: t.status || "", done: !!t.done,
           url: t.url || "https://app.clickup.com/t/" + encodeURIComponent(t.id) });
       }
     };
@@ -346,6 +346,21 @@
     { id: "insdue", title: "Narrow the Insights lists by due date (December / January work)", tab: "insights", card: "Health",
       keys: "due date filter insights health narrow lists overdue due today this week next week no due date by month december january dec jan order sort soonest first out of order wrong order jumbled not in order too many rows show all missing an estimate",
       a: "Insights › Health: the due date menu next to the client one narrows every list at once - Overdue, Due today, Due this week, Due next week, No due date, or By month, which offers only the months your tasks are actually in (December 2026, January 2027…) and how many fall in each. It works together with the client menu and the search box, and the sections you have open stay open. Every list is in due date order, soonest first, with undated tasks last. Clear puts all three back." },
+    { id: "setstatus", title: "Change a task's status (roadblock, in progress, review...)", tab: "dashboard", here: true,
+      keys: "status change roadblock blocked on hold review in progress to do set mark stuck halt stopped red",
+      a: "Open the task's details (the ▸ at the start of its row) and click its status at the top - pick the new one from the list and it is saved in ClickUp. A task that is stopped (roadblock, blocked, on hold, waiting) shows a red ⛔ chip on its row. For many tasks at once use Bulk edit." },
+    { id: "holidaydue", title: "Move tasks that are due on a holiday (Dashain, Tihar)", tab: "insights", to: 'details[data-drill="holiday"]',
+      keys: "holiday dashain tihar festival leave due date move push shift next week office closed",
+      a: "Insights > Health lists every open task of yours that is due on an office holiday (from the company calendar), each with the same weekday of the next working week - Oct 19 becomes Oct 26. Press Move to ... on a task to move just that one; nothing moves by itself. The calendar (the date at the top) shows how many tasks are due on each day, in any month." },
+    { id: "simpleview", title: "Make the extension look simpler (less text and buttons)", tab: "general", to: "#simpleViewOn",
+      keys: "simple view simpler clean less text clutter cluttered busy congested minimal intimidating hide hints plain easy",
+      a: "Press the ≡ button at the top of the page (next to light / dark), or tick Simple view in General > Appearance. It hides the explanation text, summary lines, the setup and status strips and extra controls, and a task's details show only Details, Comments and My notes. Nothing is switched off - press it again for the full view. It is remembered on every page (dashboard, popup and side panel)." },
+    { id: "navcounts", title: "What the red numbers in the sidebar mean (and how to clear them)", tab: "dashboard", to: "#sideNav",
+      keys: "badge count number red sidebar new unseen unread notification missed down archived mention reply reminder agent router",
+      a: "A red number on a section means something new happened there that you haven't looked at yet: a client site went down (Site monitor), a task was archived in ClickUp or someone @mentioned you (Insights), Agent Router accounts need you, the admin replied in Help & issues, or a reminder went off while you were away. Hover it to see what, click the section to go straight to it (highlighted). It clears once that section has been open for a couple of seconds." },
+    { id: "archived", title: "A task disappeared from my list - was it archived? Who archived it?", tab: "insights", card: "Health",
+      keys: "archived archive task disappeared gone missing vanished not showing who archived unarchive restore subtasks weekly production schedule hidden",
+      a: "A task archived in ClickUp no longer shows in any list here, so the extension tells you: a notification (“📦 Archived in ClickUp: ...”, one per parent when its subtasks went with it) and the Insights › Health list Archived recently, with when it was archived and its parent. Who archived it isn't something ClickUp shares with other apps: click the task name, and in ClickUp open the Activity icon (the small zigzag line beside the comments) - the last lines say “[name] archived this task”. Unarchive (in the list, or at the top of the task in ClickUp) brings it back, subtasks and all, and it reappears in your lists on the next refresh." },
     { id: "dupetasks", title: "Is this the same task twice? (duplicate tasks)", tab: "insights", card: "Health",
       keys: "duplicate duplicates duplicated same task twice two copies copy repeated already did this did i do this have i seen this before same name twice two of the same not a duplicate dismiss ignore wasting time",
       a: "A task sitting in your lists twice for the same client shows a ⧉ Duplicate chip next to its name - amber when the copies are on different days (the one nobody spots), red when both are due the same day. Hover it for how many copies there are, when each is due and where each sits (on its own, or under which parent task); click it to open the other copy so you can close whichever you don't need. Insights › Health › Possible duplicates lists every group, and Not a duplicate dismisses one for good - for the work that genuinely carries the same name every week. Never flagged: the same name for two different clients, a task and its own subtask of that name, the same step under two different parent tasks (a \"Live & Schema Placement\" for each blog page is two pages' work), a finished task, a paused client, or the weekly Extra Task(s). The chip sits right after the task name, so the Who, Client and Due columns stay in line." },
@@ -400,6 +415,9 @@
     { id: "calday", title: "I clicked a day in the calendar and my task list changed", tab: "dashboard", here: true,
       keys: "calendar click day date filter changed task list tasks of that day back to my filter undo remove filter where did my tasks go oct 13",
       a: "Clicking a day in the calendar lists that day's tasks: the extension takes you to the dashboard's task list (in the popup and side panel it scrolls to it), and a bar over the list says \"Showing Tue, Oct 13 (picked in the calendar)\". Press \u2715 Back to my filter on that bar to return to the filter you had before." },
+    { id: "colwidth", title: "Make a task list column wider (Task, Time, Client, Who, Due)", tab: "dashboard", here: true,
+      keys: "column width wider narrower resize drag cut off truncated hidden text task column name time column client column who due see whole text can not read cut",
+      a: "Point at the column headings above a task list: a thin line shows at the edge of Who, Client and Due (their right edge) and of Time (its LEFT edge, because Time is the last column). The line between Task and Who sets the Task column: drag it right for a wider Task column, left for a narrower one. Drag it to make that column wider or narrower - drag Time's line to the left to widen it so nothing is cut off. Double-click a line to put that column back to its normal width. Widths are remembered, separately for the dashboard and for the popup and side panel." },
     { id: "rollup", title: "Why does a parent task show less time here than in ClickUp? (the ? next to its time)", tab: "dashboard", here: true,
       keys: "parent task subtasks estimate tracked different from clickup 2h 30m rollup adds up includes subtasks question mark ? why less double counted totals",
       a: "ClickUp adds a task's subtasks into its own estimate and tracked time: a 30m task with 1h and 30m subtasks reads 2h there. The extension lists those subtasks as rows of their own, so the parent counts only its own part (30m) - otherwise your day's estimate would count the subtasks twice. Click the ? next to the parent's time to see ClickUp's numbers, each subtask's share and this reasoning." },
@@ -582,20 +600,48 @@
   // Open a tab and point at a card by its title (from the popup: via ?find=).
   // Exact spot for a How-to entry (options page). Entries not listed here find
   // the best-matching control in their tab by their own words (locate()).
+  const D = '.panel[data-panel="dashboard"] ', DR = D + "#dashTasks .cu-task ";
   const GUIDE_TO = {
     overest: "#cuRunningNotify", idle: "#cuIdleNotify", target: "#cuTarget",
     extraclose: "#cuExtraAutoClose", tidyreminder: "#cuTidyNotify", update: "#autoUpdate", multiday: "#optWeekMode",
     addclient: "#tfAddClient", newtask: "#ltBox .lt-new", filter: "#optCuFilterBtn", export: "#optCuExportBtn",
     shortcuts: "#shortcutsCard", dept: "#deptCard", diag: "#diagCopy", sites: "#siteMonitorUrls",
     tasksearch: "#dashSearch", donehistory: "#dashDoneCard", fromteammates: "#nudgeList",
+    // Things done on a task row: the first task in the dashboard list (several
+    // choices = first one on the page wins).
+    createdby: DR + ".cu-who", unassign: DR + ".cu-who", nudge: DR + ".cu-who", "remind-others": DR + ".cu-who",
+    notesend: DR + ".tn-note", tasknotes: DR + ".tn-note", "full-task-name": DR + ".nm",
+    explain: DR + ".pcm-chev", "copy-for-ai": DR + ".pcm-chev", "ai-proof": DR + ".pcm-chev", desc: DR + ".pcm-chev",
+    "copy-text": DR + ".pcm-chev", formatcomment: DR + ".pcm-chev", mention: DR + ".pcm-chev", "related-tasks": DR + ".pcm-chev",
+    "task-family": DR + ".pcm-chev", estimate: DR + ".est", duedate: DR + ".cu-due", start: DR + ".cu-actions",
+    heldcomment: DR + ".cu-iconbtn.done", rollup: [DR + ".cu-rollq", DR + ".estpairs"],
+    sort: D + ".pcs-sorthead", "sort-columns": D + ".pcs-sorthead", colwidth: D + ".pcs-sorthead",
+    "find-many": "#optFindText", findanytask: "#optFindText", "explore-filter": "#exFilterBtn",
+    chartday: "#optWeekChart", calday: "#pcmCalChip", calendar: "#pcmCalChip", extraweek: "#cuExtraWeek",
+    themes: "#themeToggle", theme: "#themeToggle",
+    latefinished: 'details[data-drill="late"]', unreadcomments: 'details[data-drill="unread"]',
+    archived: 'details[data-drill="archived"]', holidaydue: 'details[data-drill="holiday"]', dupetasks: 'details[data-drill="dupe"]', blockedwhy: 'details[data-drill="blocked"]',
+    insdue: "#insFDue", notices: "#hubNotices", teamusers: "#hubAdminCard", "mac-damaged": "#floatCard", taskbar: "#floatCard",
+    "site-monitor-off": ["[data-sm-row]", "#siteMonitorStatus"], sitesnooze: ["[data-sm-row]", "#siteMonitorStatus"],
+    blankpage: ["#smBlankLine", "#siteMonitorStatus"], sitestale: "#siteMonitorStatus", sitedownme: "#siteMonitorStatus",
+    "day-off-due": "#cuTidyNotify", asktasks: "#dashTasksCard", insights: "#insSubNav",
   };
+  // Insights lists live on its Health sub-tab: switch there before looking.
+  const GUIDE_SUB = { holidaydue: "health", latefinished: "health", unreadcomments: "health", archived: "health", dupetasks: "health", blockedwhy: "health", insdue: "health" };
   const GSTOP = new Set("task tasks with when your that this from what into them their each have about change make show turn more then also only just like does need want".split(" "));
   const wordsOf = (t) => (String(t || "").toLowerCase().match(/[a-z0-9]{4,}/g) || []).filter((w) => !GSTOP.has(w));
   // The control in the tab that best matches a How-to entry's title (and keys).
   function locate(g) {
     if (!isOptions) return null;
     const sel = g.to || GUIDE_TO[g.id];
-    if (sel) { const el = document.querySelector(sel); if (el) return el; }
+    if (GUIDE_SUB[g.id] && typeof window.insSetSub === "function" && !(document.querySelector([].concat(sel)[0]) || {}).offsetParent) { try { window.insSetSub(GUIDE_SUB[g.id]); } catch (e) {} }
+    const tabPanel = document.querySelector('.panel[data-panel="' + String(g.tab).split("/")[0] + '"]');
+    for (const one of sel ? [].concat(sel) : []) {
+      // only in the guide's own section (two entries can share an id)
+      const all = [...document.querySelectorAll(one)].filter((x) => !tabPanel || tabPanel.contains(x) || !x.closest(".panel[data-panel]"));
+      const el = all.find((x) => x.offsetParent) || all[0];
+      if (el) return el;
+    }
     // "insights/plan" -> the Insights section (its sub-tab is drawn inside it).
     const panel = document.querySelector('.panel[data-panel="' + String(g.tab).split("/")[0] + '"]');
     if (!panel) return null;
@@ -624,8 +670,11 @@
     const tryIt = () => {
       const el = locate(g);
       if (el && (el.offsetParent || el.closest("details:not([open])") || ++n > 12)) { flash(el, g.title); return; }
-      if (++n <= 14) setTimeout(tryIt, 150);
-      else window.scrollTo({ top: 0 });
+      if (++n <= 20) setTimeout(tryIt, 150);
+      else { // never the page top: the section itself, highlighted
+        const p = document.querySelector('.panel[data-panel="' + String(g.tab).split("/")[0] + '"] .card');
+        if (p) flash(p, g.title); else window.scrollTo({ top: 0 });
+      }
     };
     setTimeout(tryIt, 60);
   }
@@ -638,10 +687,73 @@
       flash(h ? h.closest(".card") || h : null);
     }, 80);
   }
+  // A setting found again by its section and its words at the moment it's
+  // picked: a section that redraws itself (Insights' lists, Site monitor) has
+  // new elements by then, and the one remembered when the search was built is
+  // gone - that's why some results went nowhere. Counts like "(7)" are ignored.
+  const normT = (s) => String(s || "").replace(/\(\d+\)/g, "").replace(/\s+/g, " ").trim().toLowerCase();
+  function findSetting(tab, text) {
+    const panel = document.querySelector('.panel[data-panel="' + tab + '"]');
+    if (!panel) return null;
+    const want = normT(text);
+    let loose = null;
+    for (const el of panel.querySelectorAll("h2, h3, label, .set-line > span.grow, summary, .card .cu-subhead")) {
+      const t = normT(textOf(el));
+      if (t === want) return el;
+      if (!loose && want.length > 6 && (t.startsWith(want) || want.startsWith(t) && t.length > 6)) loose = el;
+    }
+    return loose;
+  }
+  // Open the tab, then wait (up to ~3 s) for the spot to be drawn, then show it.
+  function goSetting(tab, text, el0) {
+    if (location.hash !== "#" + tab) location.hash = "#" + tab;
+    let n = 0;
+    const tryIt = () => {
+      const el = (el0 && el0.isConnected && el0.offsetParent) ? el0 : findSetting(tab, text);
+      if (el && (el.offsetParent || el.closest("details") || n > 8)) { flash(el, text); return; }
+      if (++n <= 16) setTimeout(tryIt, 180);
+      else { const p = document.querySelector('.panel[data-panel="' + tab + '"] .card'); if (p) flash(p, text); else window.scrollTo({ top: 0 }); }
+    };
+    setTimeout(tryIt, 60);
+  }
+  // A task: its row on this page (the dashboard's lists, the popup's list),
+  // scrolled to and highlighted - ClickUp only when it isn't listed here.
+  function taskRow(id) {
+    const rows = [...document.querySelectorAll(".cu-task")].filter((r) => r._cuTask && String(r._cuTask.id != null ? r._cuTask.id : r._cuTask.taskId) === String(id));
+    return rows.find((r) => r.offsetParent && r.closest('.panel[data-panel="dashboard"], #cuTaskList, body:not(:has(.panel))')) ||
+      rows.find((r) => r.closest('.panel[data-panel="dashboard"]')) || rows[0] || null;
+  }
+  function goTask(it) {
+    const row = it.id ? taskRow(it.id) : null;
+    if (!row) { chrome.tabs.create({ url: it.url }).catch(() => {}); return; }
+    const inPanel = row.closest(".panel[data-panel]");
+    if (inPanel && location.hash !== "#" + inPanel.dataset.panel) location.hash = "#" + inPanel.dataset.panel;
+    setTimeout(() => {
+      const r = row.isConnected ? row : taskRow(it.id);
+      if (r && r.offsetParent) flash(r, it.text + " - open it with \u25B8, or the name to open it in ClickUp");
+      else chrome.tabs.create({ url: it.url }).catch(() => {});
+    }, 120);
+  }
+  // Something inside a folded card ("▸ Show") or a closed dropdown (the Filter
+  // menu): unfold / open it, so the highlight lands on something you can see.
+  function reveal(el) {
+    for (let p = el.parentElement; p && p !== document.body; p = p.parentElement) {
+      if (p.classList.contains("collapsed") && p.id) {
+        const b = document.querySelector('[data-optcolltarget="' + p.id + '"]');
+        if (b) b.click();
+        if (p.classList.contains("collapsed")) p.classList.remove("collapsed");
+      } else if (p.hidden && p.id && /Menu$/.test(p.id)) {
+        const b = document.getElementById(p.id.replace(/Menu$/, "Btn"));
+        if (b) b.click();
+        if (p.hidden) p.hidden = false;
+      }
+    }
+  }
   function flash(el, label) {
     if (!el) return;
     // A closed "More" / Advanced section: open it first.
     for (let d = el.closest("details"); d; d = d.parentElement && d.parentElement.closest("details")) d.open = true;
+    reveal(el);
     const target = el.closest(".set-line, .checkbox, .tf-addc, .wk-mode") || (el.matches("input, select, textarea, button") ? el.parentElement || el : el);
     target.scrollIntoView({ block: "center", behavior: "smooth" });
     target.classList.add("pcm-flash", "pcs-here");
@@ -1111,6 +1223,7 @@
   let back = null, input = null, resBox = null, items = [], sel = 0;
   async function open() {
     if (back) { input.focus(); return; }
+    if (isOptions) settingsIdx = null; // fresh: Insights' lists, Site monitor rows... change
     back = document.createElement("div");
     back.className = "pcs-back";
     back.innerHTML = '<div class="pcs-box" role="dialog" aria-label="Search"><div class="pcs-in"><span aria-hidden="true">🔍</span>' +
@@ -1123,7 +1236,18 @@
     input.addEventListener("keydown", (e) => {
       if (e.key === "ArrowDown") { e.preventDefault(); sel = Math.min(items.length - 1, sel + 1); paintSel(); }
       else if (e.key === "ArrowUp") { e.preventDefault(); sel = Math.max(0, sel - 1); paintSel(); }
-      else if (e.key === "Enter") { e.preventDefault(); if (items[sel]) pick(items[sel]); }
+      else if (e.key === "Enter") {
+        e.preventDefault();
+        // A sentence or a question (5+ words, or ending in "?") and nothing picked
+        // with the arrows: the AI finds it and takes you there. A "find my tasks"
+        // sentence still runs the task search, which it is built for.
+        const q = input.value.trim();
+        const long = q.split(/\s+/).filter(Boolean).length >= 5 || /\?\s*$/.test(q);
+        // (a pasted task name that matches a result as typed still opens that result)
+        const exact = items[0] && items[0].text && compact(items[0].text).includes(compact(q));
+        if (long && sel === 0 && !exact && !(items[0] && items[0].type === "smart")) { askAI(q, true); return; }
+        if (items[sel]) pick(items[sel]);
+      }
       else if (e.key === "Escape") { e.preventDefault(); close(); }
     });
     input.focus();
@@ -1204,11 +1328,10 @@
     }
     close();
     if (it.type === "action") { it.run(); return; }
-    if (it.type === "task") { chrome.tabs.create({ url: it.url }).catch(() => {}); return; }
+    if (it.type === "task") { goTask(it); return; }
     if (!isOptions) { chrome.tabs.create({ url: optUrl(it.section ? "" : it.text, it.tab) }); window.close(); return; }
-    location.hash = "#" + it.tab;
-    if (it.section) window.scrollTo({ top: 0 });
-    else setTimeout(() => flash(it.el, it.text), 80);
+    if (it.section) { location.hash = "#" + it.tab; window.scrollTo({ top: 0 }); return; }
+    goSetting(it.tab, it.text, it.el);
   }
 
   // Opened from the popup with ?guide= (a How-to entry) or ?find= (a setting):
@@ -1222,7 +1345,7 @@
     const find = new URLSearchParams(location.search).get("find");
     if (find) setTimeout(async () => {
       const hit = (await settings()).find((s) => s.text === find);
-      if (hit) flash(hit.el);
+      if (hit) goSetting(hit.tab, hit.text, hit.el);
       history.replaceState(null, "", location.pathname + location.hash);
     }, 600);
   }
@@ -1230,6 +1353,7 @@
   document.addEventListener("keydown", (e) => {
     if ((e.ctrlKey || e.metaKey) && !e.shiftKey && !e.altKey && e.key.toLowerCase() === "k") { e.preventDefault(); open(); }
   });
+  window.PcmSearch = { open, flash };
 
   // Entry points: top of the options sidebar, and an icon in the popup header.
   const mac = /Mac/i.test(navigator.platform);
@@ -1262,7 +1386,8 @@
   // the same consent as "Explain this task"). It only gets the question and the
   // list of answer titles, and must reply with ids from that list.
   let aiAbort = null;
-  async function askAI(question) {
+  let guideDf = null;
+  async function askAI(question, autoGo) {
     const box = document.createElement("div");
     box.className = "pcs-ai";
     resBox.prepend(box);
@@ -1281,10 +1406,30 @@
     if (aiAbort) aiAbort.abort();
     aiAbort = new AbortController();
     const stopT = setTimeout(() => aiAbort && aiAbort.abort(), 30000);
-    const ids = GUIDES.map((g) => g.id);
+    // Your tasks that match the words best are offered too, so "where's the GA4
+    // alert task for that client" can land on the task itself.
+    let taskCands = [];
+    try {
+      const qn = norm(question);
+      taskCands = (await taskIdx()).map((t) => ({ t, s: Math.max(score(t.text + " " + t.client, qn), nlScore(toks(qn), tokMap([[t.text, 3], [t.client, 1]]))) }))
+        .filter((x) => x.s >= 35).sort((a, b) => b.s - a.s).slice(0, 8).map((x) => x.t);
+    } catch (e) {}
+    // Only the closest ~25 How-to entries go to the AI: all of them is more than
+    // Chrome's built-in AI takes in one go ("The input is too large").
+    const qts = toks(question);
+    // Rare words count more ("archived" says more than "task").
+    if (!guideDf) { guideDf = new Map(); for (const g of GUIDES) for (const t of guideMap(g).keys()) guideDf.set(t, (guideDf.get(t) || 0) + 1); }
+    const idf = (t) => Math.log((GUIDES.length + 1) / (1 + (guideDf.get(t) || 0)));
+    const gRank = GUIDES.map((g) => { const m = guideMap(g); return { g, s: qts.reduce((a, t) => a + tokHit(t, m) * idf(t), 0) * 10 + nlScore(qts, m) / 10 }; })
+      .sort((a, b) => b.s - a.s);
+    const gCands = gRank.slice(0, 25).map((x) => x.g);
+    // If the AI can't answer: the closest match by its words.
+    const closest = taskCands[0] && !(gRank[0] && gRank[0].s >= 120) ? taskCands[0] : gRank[0] && gRank[0].s > 0 ? gRank[0].g : null;
+    const ids = gCands.map((g) => g.id).concat(taskCands.map((t, i) => "task" + (i + 1)));
     const system = "You match a user's question to the features of a Chrome extension for ClickUp time tracking. " +
       "Reply ONLY with JSON like {\"ids\":[\"id1\"]}: up to 2 ids from the list, best first. If nothing in the list fits, reply {\"ids\":[]}. Never invent ids.";
-    const prompt = "Question: " + question.slice(0, 300) + "\n\nFeatures (id: what it does):\n" + GUIDES.map((g) => g.id + ": " + g.title).join("\n");
+    const prompt = "Question: " + question.slice(0, 300) + "\n\nFeatures (id: what it does):\n" + gCands.map((g) => g.id + ": " + g.title).join("\n") +
+      (taskCands.length ? "\n\nThe person's own tasks (id: task name - client) - pick one of these when the question is about finding a particular task:\n" + taskCands.map((t, i) => "task" + (i + 1) + ": " + t.text + (t.client ? " - " + t.client : "")).join("\n") : "");
     let picked = [];
     try {
       const text = await window.PcmAI.generate(system, prompt, { signal: aiAbort.signal,
@@ -1292,10 +1437,15 @@
       let got = [];
       try { const j = JSON.parse((String(text).match(/\{[\s\S]*\}/) || ["{}"])[0]); got = Array.isArray(j.ids) ? j.ids : []; } catch (e) {}
       if (!got.length) got = ids.filter((id) => new RegExp("\\b" + id + "\\b").test(String(text)));
-      picked = [...new Set(got.map(String))].map((id) => GUIDES.find((g) => g.id === id)).filter(Boolean).slice(0, 2);
+      picked = [...new Set(got.map(String))].map((id) => /^task\d+$/.test(id) ? taskCands[Number(id.slice(4)) - 1] || null : GUIDES.find((g) => g.id === id)).filter(Boolean).slice(0, 2);
     } catch (e) {
       if (!back) return;
-      say("The AI couldn't answer (" + esc((e && e.message) || e) + "). Try other words, or ask in Help &amp; issues.");
+      const nm = closest ? (closest.type === "task" ? "Task: " + closest.text : closest.title) : "";
+      say("The AI couldn't answer (" + esc((e && e.message) || e) + ")." + (closest
+        ? (autoGo ? " Taking you to the closest match: <b>" + esc(nm) + "</b>…" : ' Closest match: <button type="button" class="pcs-b pri" data-cl>' + esc(nm) + "</button>")
+        : " Try other words, or ask in Help &amp; issues."));
+      const cl = box.querySelector("[data-cl]"); if (cl) cl.onclick = () => pick(closest);
+      if (autoGo && closest) setTimeout(() => { if (back) pick(closest); }, 1200);
       return;
     } finally { clearTimeout(stopT); aiAbort = null; }
     if (!back) return;
@@ -1305,9 +1455,11 @@
       box.querySelector("[data-hub]").onclick = () => pick(GUIDES.find((g) => g.id === "issue"));
       return;
     }
-    say("<div class=\"pcs-sm\">✨ Best match</div>" + picked.map((g, i) =>
-      '<div class="pcs-aig"><b>' + esc(g.title) + '</b><div class="pcs-a">' + esc(g.a) + '</div><button type="button" class="pcs-b pri" data-g="' + i + '">Go there</button></div>').join(""));
+    say("<div class=\"pcs-sm\">✨ Best match" + (autoGo ? " - taking you there\u2026" : "") + "</div>" + picked.map((g, i) =>
+      '<div class="pcs-aig"><b>' + esc(g.type === "task" ? "Task: " + g.text : g.title) + '</b><div class="pcs-a">' + esc(g.type === "task" ? [g.client, g.status].filter(Boolean).join(" \u00b7 ") : g.a) + '</div><button type="button" class="pcs-b pri" data-g="' + i + '">Go there</button></div>').join(""));
     box.querySelectorAll("[data-g]").forEach((b) => { b.onclick = () => pick(picked[Number(b.dataset.g)]); });
+    // Enter on a question: straight to the best match after a moment to read it.
+    if (autoGo) setTimeout(() => { if (back && picked[0]) pick(picked[0]); }, 900);
   }
-  window.PcmSearch = { open, _parse: parseSmart, _label: smartLabel };
+  window.PcmSearch = { open, flash, _parse: parseSmart, _label: smartLabel, _guides: GUIDES, _locate: locate };
 })();

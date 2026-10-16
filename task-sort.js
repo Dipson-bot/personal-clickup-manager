@@ -30,8 +30,14 @@
     { key: "who", label: "Who", short: "👤", shortBelow: 34, sel: ".cu-who", tip: "Sort by who else is on the task (tasks only you are on first)", resize: true, min: 20, max: 140 },
     { key: "client", label: "Client", sel: ".cu-client", tip: "Sort by client", resize: true, min: 50, max: 280 },
     { key: "due", label: "Due", sel: ".cu-due", tip: "Sort by due date", resize: true, min: 36, max: 130 },
-    { key: "time", label: "Time", sel: ".estpairs", tip: "Sort by time tracked (then estimate)" },
+    { key: "time", label: "Time", sel: ".estpairs", tip: "Sort by time tracked (then estimate)", resize: true, min: 60, max: 420, edge: "left" },
   ];
+  // The drag handles: each resizable column's edge, plus the line between Task and
+  // Who. Task fills whatever the other columns leave, so that line moves by
+  // resizing Who from its left: drag right = Task wider, left = Task narrower.
+  const GRIPS = COLS.filter((c) => c.resize).map((c) => ({ id: c.key, col: c, edge: c.edge || "right",
+    tip: "Drag to make the " + c.label.toLowerCase() + " column wider or narrower. Double-click: normal width." }))
+    .concat([{ id: "task", col: COLS[1], edge: "left", tip: "Drag to make the task column wider (right) or narrower (left). Double-click: normal width." }]);
   // Column widths the user dragged, per page (the popup is narrower than the
   // dashboard), applied to every row through CSS variables.
   const WKEY = "pcm.taskColW." + (/popup/.test(location.pathname) ? "popup" : "options");
@@ -39,7 +45,7 @@
   try { widths = JSON.parse(localStorage.getItem(WKEY) || "{}") || {}; } catch (e) {}
   function applyWidths() {
     const root = document.documentElement;
-    for (const k of ["who", "client", "due"]) {
+    for (const k of ["who", "client", "due", "time"]) {
       const w = Number(widths[k]);
       root.classList.toggle("pcs-w-" + k, w > 0);
       if (w > 0) root.style.setProperty("--pcs-w-" + k, w + "px"); else root.style.removeProperty("--pcs-w-" + k);
@@ -99,6 +105,7 @@
     html.pcs-w-who .cu-task .cu-who { width: var(--pcs-w-who) !important; overflow: hidden; }
     html.pcs-w-client .cu-task .cu-client { width: var(--pcs-w-client) !important; }
     html.pcs-w-due .cu-task .cu-due { width: var(--pcs-w-due) !important; }
+    html.pcs-w-time .cu-task .estpairs { width: var(--pcs-w-time) !important; min-width: var(--pcs-w-time) !important; max-width: none !important; }
   `;
   document.head.appendChild(css);
 
@@ -152,10 +159,9 @@
       if (!btn.hidden) spots.push({ btn, col, left: r.left - hb.left, right: r.right - hb.left });
       // A very narrow column (the popup's assignee avatars) gets a short label.
       btn._narrow = !!(col.short && r && r.width && r.width < col.shortBelow);
-      const grip = head.querySelector('.pcs-grip[data-key="' + col.key + '"]');
-      if (grip) {
+      for (const grip of head.querySelectorAll('.pcs-grip[data-col="' + col.key + '"]')) {
         grip.hidden = btn.hidden;
-        const gl = btn.hidden ? "" : Math.round(r.right - hb.left - 4) + "px";
+        const gl = btn.hidden ? "" : Math.round((grip.dataset.edge === "left" ? r.left - 6 : r.right) - hb.left - 4) + "px";
         if (grip.style.left !== gl) grip.style.left = gl;
       }
     }
@@ -213,22 +219,32 @@
     back.hidden = true;
     back.onclick = (e) => { e.stopPropagation(); sorts.delete(sortKey(list)); refreshAll(); };
     head.appendChild(back);
-    for (const col of COLS) {
-      if (!col.resize) continue;
+    for (const gs of GRIPS) {
+      const col = gs.col;
       const g = document.createElement("span");
       g.className = "pcs-grip";
-      g.dataset.key = col.key;
-      g.title = "Drag to make the " + col.label.toLowerCase() + " column wider or narrower. Double-click: normal width.";
+      g.dataset.key = gs.id;
+      g.dataset.col = col.key;
+      g.dataset.edge = gs.edge;
+      g.title = gs.tip;
       g.addEventListener("pointerdown", (e) => {
         if (e.button !== 0) return;
         e.preventDefault(); e.stopPropagation();
         const cell = list.querySelector(".cu-task " + col.sel);
         const start = cell ? cell.getBoundingClientRect().width : Number(widths[col.key]) || 60;
+        // Widening a column takes room from the task names: never more than the
+        // tightest row can give (a row with chips), or its cells would be pushed
+        // right, out of line with the rows above and below.
+        let room = Infinity;
+        for (const nm of list.querySelectorAll(".cu-task .nm")) { const w = nm.getBoundingClientRect().width; if (w) room = Math.min(room, w - 56); }
+        const maxW = Math.min(col.max, start + Math.max(0, room === Infinity ? col.max : room));
         const x0 = e.clientX;
         g.classList.add("drag");
         try { g.setPointerCapture(e.pointerId); } catch (e2) {}
         const move = (ev) => {
-          widths[col.key] = Math.round(Math.max(col.min, Math.min(col.max, start + ev.clientX - x0)));
+          // A left-edge grip (Time, and Task|Who): dragging left widens that column.
+          const dx = gs.edge === "left" ? x0 - ev.clientX : ev.clientX - x0;
+          widths[col.key] = Math.round(Math.max(col.min, Math.min(maxW, start + dx)));
           applyWidths();
           refreshAll();
         };

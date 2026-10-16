@@ -786,7 +786,11 @@
       chip(hh.od || 0, "overdue", true); chip(hh.ne || 0, "no est", true); chip(hh.bl || 0, "blocked", true);
       if (p && p.late4) chip(p.late4, "late", true);
       chl.title = (hh.open || 0) + " open tasks · " + (hh.od || 0) + " overdue · " + (hh.ne || 0) + " without an estimate · " + (hh.nd || 0) + " without a due date · " + (hh.bl || 0) + " blocked / waiting" + (p ? " · " + (p.late4 || 0) + " finished late (4 weeks)" : "") + (sm.at ? "\nAs of " + new Date(sm.at).toLocaleString() : "");
-    } else { chl.appendChild(el("span", "hint", "-")); }
+    } else {
+      chl.appendChild(el("span", "hint", "-"));
+      chl.title = sm ? "Their copy couldn't read their open tasks from ClickUp at the last check-in (ClickUp busy or offline) - it tries again within about 20 minutes once they're on v4.2.6."
+        : "Not reported yet - it comes with their next check-in.";
+    }
     tr.appendChild(chl);
     const cv = el("td", "", u.version ? "v" + u.version : "-"); if (u.version && cmpV(u.version, VERSION) < 0) cv.style.color = "#b45309";
     if (u.lastSeen) cv.title = "Reported " + ago(u.lastSeen) + " (" + new Date(u.lastSeen).toLocaleString() + ")";

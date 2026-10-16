@@ -1883,6 +1883,34 @@ export async function getUserGroups(token, teamId) {
     fromClickUp: true,
   })).sort((a, b) => a.name.localeCompare(b.name));
 }
+// Tasks assigned to me that are ARCHIVED in ClickUp, changed after sinceMs -
+// newest first, a few pages at most. ClickUp's API says that a task is archived
+// and when it last changed (date_updated - the archive is that change), but not
+// WHO archived it: that is only in the task's Activity in ClickUp itself.
+export async function fetchArchivedMine(token, teamId, userId, sinceMs) {
+  const out = [];
+  for (let page = 0; page < 3; page++) {
+    const params = [["page", String(page)], ["archived", "true"], ["include_closed", "true"], ["subtasks", "true"],
+      ["assignees[]", String(userId)], ["order_by", "updated"], ["reverse", "true"]];
+    if (sinceMs) params.push(["date_updated_gt", String(Math.floor(sinceMs))]);
+    const j = await cuFetch(token, "/team/" + encodeURIComponent(teamId) + "/task", params);
+    const tasks = j && Array.isArray(j.tasks) ? j.tasks : [];
+    for (const t of tasks) {
+      if (!t || !t.archived) continue; // only the archived ones, whatever the filter returns
+      const ctr = taskContainer(t);
+      out.push({ id: String(t.id), name: t.name || "(untitled task)", url: t.url || taskUrlFor(t.id),
+        parentId: t.parent != null ? String(t.parent) : "", client: ctr.listName || "", container: ctr,
+        archivedAt: Number(t.date_updated) || Date.now(), dueDateMs: t.due_date ? Number(t.due_date) : 0,
+        status: (t.status && t.status.status) || "", done: isTaskDone(t) });
+    }
+    if (tasks.length < 100 || (j && j.last_page)) break;
+  }
+  return out;
+}
+// Bring an archived task back (ClickUp: update the task with archived false).
+export async function unarchiveTask(token, taskId) {
+  return cuPut(token, "/task/" + encodeURIComponent(String(taskId)), { archived: false });
+}
 export async function getTaskById(token, taskId) {
   const j = await cuFetch(token, "/task/" + encodeURIComponent(taskId));
   const t = j && j.task ? j.task : j;

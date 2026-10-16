@@ -249,7 +249,25 @@
     const add = (list) => { for (const t of Array.isArray(list) ? list : []) { if (!t || !t.dueDateMs || seen.has(String(t.id))) continue; seen.add(String(t.id)); const k = ymd(t.dueDateMs); const c = out.get(k) || { n: 0, open: 0 }; c.n++; if (!t.done) c.open++; out.set(k, c); } };
     const st = state || {};
     for (const b of [st, st.todayFilter, st.tomorrow, st.thisWeek, st.nextWeek, st.custom]) if (b) add(b.tasks);
+    add(openAll && openAll.tasks); // all my open tasks, any date - later weeks and months too
     return out;
+  }
+  // All my open tasks with their due dates (the list Insights uses, kept in
+  // insOpenCache): read when the calendar opens, asked for again when it is
+  // more than 2 hours old - ClickUp is read at most once per open (3-min cache).
+  let openAll = null, openAsked = 0;
+  async function freshOpen() {
+    if (openAll && Date.now() - (Number(openAll.at) || 0) < 2 * 3600000) return;
+    if (Date.now() - openAsked < 10 * 60000) return;
+    openAsked = Date.now();
+    try {
+      const r = await chrome.runtime.sendMessage({ type: "CLICKUP_OPEN_TASKS" });
+      if (r && r.ok && r.data && Array.isArray(r.data.tasks)) {
+        openAll = { at: Date.now(), tasks: r.data.tasks };
+        try { const blob = { at: openAll.at, tasks: r.data.tasks }; if (JSON.stringify(blob).length < 3000000) await chrome.storage.local.set({ insOpenCache: blob }); } catch (e) {}
+        if (pop) paintMonth();
+      }
+    } catch (e) {}
   }
 
   const css = document.createElement("style");
@@ -621,7 +639,7 @@
       ? (picker.time
         ? "Click a day, set the time below, then press Set. Red = holiday, blue = work from home, the number on a day is how many tasks are already due then. Esc keeps what it has."
         : "Click a day to make it the " + picker.what + ". Red = holiday, blue = work from home, the number on a day is how many tasks are already due then. Esc keeps the date it has.")
-      : "Task counts come from the weeks the extension has loaded (this week, next week and your filter)."));
+      : "Task counts: all your open tasks, any month (and the done ones in the weeks loaded)."));
   }
   // The time row, for a field that carries a time as well as a day. Plain
   // selects and buttons: the point is that every part can be CLICKED, which the
@@ -702,7 +720,7 @@
     paintMonth();
     place(anchor);
   }
-  function open(anchor) { close(); openAt(anchor, Date.now()); }
+  function open(anchor) { close(); openAt(anchor, Date.now()); freshOpen(); }
   // It's fixed on the screen, so it follows what it was opened from while the
   // page scrolls, and gets out of the way if that is redrawn away under it
   // (the task lists refresh on their own).
@@ -751,7 +769,8 @@
   }
   async function load() {
     try {
-      const g = await chrome.storage.local.get(["companyCalendar", "clickupState", "reminders"]);
+      const g = await chrome.storage.local.get(["companyCalendar", "clickupState", "reminders", "insOpenCache"]);
+      openAll = g.insOpenCache && Array.isArray(g.insOpenCache.tasks) ? g.insOpenCache : openAll;
       company = Array.isArray(g.companyCalendar) ? g.companyCalendar : [];
       reminders = Array.isArray(g.reminders) ? g.reminders : [];
       state = g.clickupState || null;
@@ -759,7 +778,7 @@
     paintChip();
     if (pop) paintMonth();
   }
-  try { chrome.storage.onChanged.addListener((ch, area) => { if (area === "local" && (ch.companyCalendar || ch.clickupState || ch.reminders)) load(); }); } catch (e) {}
+  try { chrome.storage.onChanged.addListener((ch, area) => { if (area === "local" && (ch.companyCalendar || ch.clickupState || ch.reminders || ch.insOpenCache)) load(); }); } catch (e) {}
   try { chrome.storage.onChanged.addListener((ch, area) => { if (area === "local" && ch.calMode && (ch.calMode.newValue === "bs" || ch.calMode.newValue === "ad")) calMode = ch.calMode.newValue; }); } catch (e) {}
   setInterval(paintChip, 60000); // the date rolls over at midnight
   if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", load); else load();

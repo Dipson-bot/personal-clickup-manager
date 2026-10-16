@@ -21,10 +21,41 @@
   .pcm-panel a { color: var(--indigo); word-break: break-all; }
   .pcm-sec-h { font-size: 10px; font-weight: 700; letter-spacing: .06em; text-transform: uppercase; color: var(--muted); margin-bottom: 4px; display: flex; align-items: center; gap: 8px; }
   .pcm-sec-h .pcm-sp { flex: 1; }
-  .pcm-title { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 10px; margin: 0 0 6px; }
-  .pcm-title .t { font-size: 13.5px; font-weight: 700; color: var(--text); line-height: 1.35; overflow-wrap: anywhere; user-select: text; cursor: text; }
-  .pcm-meta { display: flex; flex-wrap: wrap; gap: 6px 12px; color: var(--muted); font-size: 11px; align-items: center; }
+  .pcm-title { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 10px; margin: 0; }
+  .pcm-title .t { font-size: 14.5px; font-weight: 700; color: var(--text); line-height: 1.35; overflow-wrap: anywhere; user-select: text; cursor: text; }
+  .pcm-meta { display: flex; flex-wrap: wrap; gap: 6px; color: var(--muted); font-size: 11px; align-items: center; }
   .pcm-meta b { color: var(--text); font-weight: 600; }
+  .pcm-mchip { display: inline-flex; align-items: center; gap: 4px; padding: 2px 9px; border-radius: 999px; border: 1px solid var(--border); background: var(--card); font-size: 11px; color: var(--muted); }
+  .pcm-mchip b { color: var(--text); font-weight: 600; }
+  .pcm-meta-acts { display: inline-flex; flex-wrap: wrap; gap: 4px 12px; margin-left: auto; align-items: center; }
+  /* Status at a glance: red = stop (roadblock, blocked, on hold, waiting...), amber = review, blue = in progress, green = done. */
+  .pcm-st { display: inline-flex; align-items: center; gap: 3px; padding: 2px 9px; border-radius: 999px; border: 1px solid var(--border); background: var(--card); font-size: 11px; font-weight: 700; text-transform: capitalize; color: var(--muted); white-space: nowrap; }
+  .pcm-st.t-bad, .pcm-fam-st.t-bad, .pcm-fam-chip.t-bad { background: #dc2626; border-color: #dc2626; color: #fff; }
+  .pcm-st.t-rev, .pcm-fam-st.t-rev, .pcm-fam-chip.t-rev { background: rgba(217,119,6,.14); border-color: rgba(217,119,6,.6); color: #b45309; }
+  .pcm-st.t-work, .pcm-fam-st.t-work, .pcm-fam-chip.t-work { background: rgba(37,99,235,.12); border-color: rgba(37,99,235,.5); color: #2563eb; }
+  .pcm-st.t-ok, .pcm-fam-st.t-ok, .pcm-fam-chip.t-ok { background: rgba(22,163,74,.12); border-color: rgba(22,163,74,.5); color: #16a34a; }
+  .pcm-stop { display: flex; align-items: flex-start; gap: 8px; padding: 8px 12px; border-radius: 8px; background: rgba(220,38,38,.1); border: 1px solid rgba(220,38,38,.45); color: #b91c1c; font-size: 12.5px; font-weight: 600; line-height: 1.45; }
+  .pcm-stop span { font-weight: 400; color: var(--text); }
+  /* A stopped task (roadblock, blocked, on hold...) says so on its row, in red. */
+  .cu-task .nmwrap > .cu-stopst { flex: 0 1 auto; min-width: 0; overflow: hidden; white-space: nowrap; font-size: 10px; font-weight: 700; padding: 1px 7px; border-radius: 999px; background: #dc2626; color: #fff; text-transform: capitalize; cursor: help; }
+  .pcm-st-btn { cursor: pointer; }
+  .pcm-st-btn::after { content: " \u25BE"; font-size: 9px; opacity: .7; }
+  .pcm-st-menu { position: fixed; z-index: 2147483000; min-width: 170px; max-height: 300px; overflow: auto; padding: 4px; border-radius: 10px; border: 1px solid var(--border); background: var(--card, #fff); box-shadow: 0 10px 28px rgba(0,0,0,.22); font-size: 12px; }
+  .pcm-st-menu button { display: flex; width: 100%; align-items: center; gap: 6px; padding: 5px 8px; border: 0; border-radius: 6px; background: none; color: var(--text); font: inherit; text-align: left; cursor: pointer; text-transform: capitalize; }
+  .pcm-st-menu button:hover { background: var(--bg2, rgba(127,127,127,.1)); }
+  .pcm-st-menu .msg { padding: 5px 8px; color: var(--muted); font-size: 11px; }
+  /* One section at a time instead of one long page: Details / AI / My notes / Comments / Time. */
+  .pcm-tabs { display: flex; flex-wrap: wrap; gap: 2px; border-bottom: 1px solid var(--border); margin: 2px 0 0; }
+  .pcm-tabs button { font: inherit; font-size: 12px; font-weight: 600; padding: 6px 12px; border: 0; border-bottom: 2px solid transparent; margin-bottom: -1px; background: none; color: var(--muted); cursor: pointer; border-radius: 6px 6px 0 0; }
+  .pcm-tabs button:hover { color: var(--text); background: rgba(127,127,127,.08); }
+  .pcm-tabs button.on { color: var(--indigo); border-bottom-color: var(--indigo); }
+  .pcm-tabs .n { display: inline-block; min-width: 16px; margin-left: 4px; padding: 0 5px; border-radius: 999px; background: rgba(99,102,241,.15); color: var(--indigo); font-size: 10.5px; line-height: 16px; text-align: center; }
+  .pcm-pane[hidden] { display: none !important; }
+  .pcm-pane { display: flex; flex-direction: column; gap: 10px; }
+  html.pcm-simple .pcm-tabs button[data-pt="ai"], html.pcm-simple .pcm-tabs button[data-pt="time"] { display: none; }
+  .pcm-desc.pcm-clamp { max-height: 9.5em; overflow: hidden; -webkit-mask-image: linear-gradient(#000 70%, transparent); mask-image: linear-gradient(#000 70%, transparent); }
+  .pcm-desc.pcm-open { max-height: none; }
+  .pcm-more { align-self: flex-start; background: none; border: 0; padding: 0; color: var(--indigo); font: inherit; font-size: 11.5px; font-weight: 600; cursor: pointer; }
   .pcm-desc { white-space: pre-wrap; line-height: 1.5; max-height: 220px; overflow: auto; padding-right: 4px; }
   .pcm-edit { font: inherit; font-size: 11.5px; font-weight: 600; letter-spacing: 0; text-transform: none; padding: 2px 10px; border-radius: 999px; border: 1px solid var(--indigo); background: rgba(99,102,241,.12); color: var(--indigo); cursor: pointer; }
   .pcm-edit:hover { background: var(--indigo); color: #fff; }
@@ -34,14 +65,14 @@
   .pcm-files { display: flex; flex-wrap: wrap; gap: 6px; }
   .pcm-file { font-size: 11px; padding: 2px 8px; border: 1px solid var(--border); border-radius: 10px; background: var(--card); text-decoration: none; max-width: 240px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; word-break: normal !important; }
   .pcm-te { margin: 4px 0 8px; display: grid; gap: 4px; }
-  .pcm-family { margin: 2px 0 10px; padding: 6px 10px; border-radius: 8px; background: var(--bg2, rgba(127,127,127,.06)); font-size: 12px; display: grid; gap: 4px; }
-  .pcm-fam-line { display: flex; flex-wrap: wrap; align-items: baseline; gap: 6px; }
+  .pcm-family { margin: 0; padding: 8px 12px; border-radius: 8px; border: 1px solid var(--border); background: var(--card); font-size: 12px; display: grid; gap: 6px; }
+  .pcm-fam-line { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 8px; }
   .pcm-fam-k { color: var(--muted); font-weight: 600; }
   .pcm-fam-solo { color: var(--muted); }
   .pcm-fam-list { display: grid; gap: 2px; margin-left: 14px; max-height: 180px; overflow: auto; }
-  .pcm-fam-sub { display: flex; align-items: baseline; gap: 6px; }
+  .pcm-fam-sub { display: flex; align-items: center; gap: 6px; padding: 2px 0; }
   .pcm-fam-n { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .pcm-fam-st { flex: none; font-size: 10.5px; padding: 0 6px; border-radius: 999px; border: 1px solid var(--border); color: var(--muted); }
+  .pcm-fam-st { flex: none; font-size: 10.5px; font-weight: 700; padding: 1px 7px; border-radius: 999px; border: 1px solid var(--border); color: var(--muted); text-transform: capitalize; }
   .pcm-fam-st.done { color: var(--green, #16a34a); border-color: currentColor; }
   .pcm-fam-acts { display: inline-flex; gap: 8px; flex: none; }
   .pcm-fam-back { margin: 0 0 6px; }
@@ -1547,6 +1578,81 @@
     };
   }
 
+  // A status's tone, so a stopper is seen before anything is read: red for
+  // roadblock / blocked / on hold / waiting / pending, amber for review / QA,
+  // blue for in progress, green for done. Anything else (to do, open) stays grey.
+  const escT = (x) => String(x == null ? "" : x).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+  function stTone(status, done) {
+    const x = String(status || "").toLowerCase();
+    if (done || /\b(complete|completed|done|closed|approved|resolved|published|live)\b/.test(x)) return "t-ok";
+    if (/road\s*-?block|block|on hold|\bhold\b|stuck|waiting|pending|cancel|reject|halt|paused|issue/.test(x)) return "t-bad";
+    if (/review|\bqa\b|test|check|approval|feedback/.test(x)) return "t-rev";
+    if (/progress|doing|working|active|started|wip/.test(x)) return "t-work";
+    return "";
+  }
+  const stChip = (status, done, cls) => {
+    const tone = stTone(status, done);
+    const c = el("span", (cls || "pcm-st") + (tone ? " " + tone : ""), (tone === "t-bad" ? "\u26D4 " : "") + (status || (done ? "done" : "open")));
+    if (tone === "t-bad") c.title = "Stopped in ClickUp (" + status + ") - check before working on it";
+    return c;
+  };
+
+  // Change one task's status from its details: the statuses seen on your tasks
+  // (plus the usual ones). The same change Bulk edit makes, for this task only.
+  let stMenu = null;
+  const closeStMenu = () => { if (stMenu) { stMenu.remove(); stMenu = null; } };
+  document.addEventListener("mousedown", (e) => { if (stMenu && !stMenu.contains(e.target)) closeStMenu(); }, true);
+  document.addEventListener("keydown", (e) => { if (e.key === "Escape") closeStMenu(); }, true);
+  async function statusMenu(anchor, p, d) {
+    closeStMenu();
+    const seen = new Set();
+    try {
+      const g = await chrome.storage.local.get(["clickupState", "insOpenCache"]);
+      const st = g.clickupState || {};
+      for (const b of [st, st.todayFilter, st.tomorrow, st.thisWeek, st.nextWeek, st.custom, g.insOpenCache]) for (const t of (b && b.tasks) || []) if (t && t.status) seen.add(String(t.status).trim().toLowerCase());
+    } catch (e) {}
+    for (const s of ["to do", "in progress", "roadblock", "review", "complete"]) seen.add(s);
+    const cur = String(d.status || "").trim().toLowerCase();
+    seen.delete(cur);
+    stMenu = el("div", "pcm-st-menu");
+    for (const s of [...seen].sort((a, b) => (stTone(a) === "t-ok") - (stTone(b) === "t-ok") || a.localeCompare(b))) {
+      const b = el("button");
+      b.type = "button";
+      b.appendChild(stChip(s, false));
+      b.onclick = async (e) => {
+        e.stopPropagation();
+        stMenu.textContent = "";
+        stMenu.appendChild(el("div", "msg", "Saving \u201C" + s + "\u201D to ClickUp\u2026"));
+        const r = await send({ type: "CLICKUP_BULK_ONE", taskId: String(d.id), change: { kind: "status", value: s } }, 30000).catch(() => null);
+        if (r && r.ok) { closeStMenu(); load(p, d.id, true); try { chrome.runtime.sendMessage({ type: "CLICKUP_REFRESH" }, () => void chrome.runtime.lastError); } catch (x) {} return; }
+        stMenu.textContent = "";
+        stMenu.appendChild(el("div", "msg", "Couldn't change it: " + ((r && r.error) || "no answer") + (/status/i.test((r && r.error) || "") ? " (this task's list may not have that status)" : "")));
+      };
+      stMenu.appendChild(b);
+    }
+    document.body.appendChild(stMenu);
+    const r = anchor.getBoundingClientRect();
+    stMenu.style.left = Math.max(8, Math.min(window.innerWidth - stMenu.offsetWidth - 8, r.left)) + "px";
+    stMenu.style.top = (r.bottom + 4 + stMenu.offsetHeight > window.innerHeight ? Math.max(8, r.top - stMenu.offsetHeight - 4) : r.bottom + 4) + "px";
+  }
+  // The row: a stopped task shows a red chip right after its name.
+  function markStopped() {
+    for (const row of document.querySelectorAll(".cu-task")) {
+      const t = row._cuTask, wrap = row.querySelector(".nmwrap");
+      if (!wrap) continue;
+      let c = wrap.querySelector(".cu-stopst");
+      const bad = !!(t && !t.done && t.status && stTone(t.status) === "t-bad");
+      if (!bad) { if (c) c.remove(); continue; }
+      const txt = "\u26D4 " + String(t.status).toLowerCase();
+      if (!c) { c = el("span", "cu-stopst"); const nm = wrap.querySelector(".nm"); if (nm) nm.after(c); else wrap.appendChild(c); }
+      if (c.textContent !== txt) c.textContent = txt;
+      c.title = "Stopped in ClickUp (" + t.status + ") - check before working on it. Change it in the task's details (\u25B8, click its status).";
+    }
+  }
+  let msT = 0;
+  new MutationObserver(() => { if (!msT) msT = setTimeout(() => { msT = 0; markStopped(); }, 120); }).observe(document.documentElement, { childList: true, subtree: true });
+  setTimeout(markStopped, 300);
+
   // ---------- the panel ----------
   // Where this task sits: subtask of… / parent of N subtasks / independent - with
   // Open here (this dropdown shows that task, ← Back returns) and ClickUp ↗.
@@ -1561,7 +1667,7 @@
       if (safeUrl(url)) span.appendChild(link(url, "ClickUp \u2197"));
       return span;
     };
-    const st = (s, done) => el("span", "pcm-fam-st" + (done ? " done" : ""), done ? "\u2713 " + (s || "done") : s || "open");
+    const st = (s, done) => { const c = stChip(s, done, "pcm-fam-st" + (done ? " done" : "")); if (done) c.textContent = "\u2713 " + (s || "done"); return c; };
     // Who it's on and when it's due (from what the details already loaded - no extra request).
     const whoDue = (who, due, done) => {
       const bits = el("span", "pcm-fam-wd");
@@ -1640,7 +1746,7 @@
         av.title = "Assigned to " + people.map((p2) => p2.username).join(", ");
         facts.appendChild(av);
       } else facts.appendChild(el("span", "pcm-fam-chip", "unassigned"));
-      if (d.status) facts.appendChild(el("span", "pcm-fam-chip", d.status));
+      if (d.status) facts.appendChild(stChip(d.status, false, "pcm-fam-chip"));
       if (Number(d.dueDateMs) > 0) {
         const late = !/^(complete|done|closed)$/i.test(d.status || "") && new Date(Number(d.dueDateMs)).setHours(0, 0, 0, 0) < new Date().setHours(0, 0, 0, 0);
         facts.appendChild(el("span", "pcm-fam-chip due" + (late ? " late" : ""), "Due " + fmtDay(Number(d.dueDateMs))));
@@ -1659,37 +1765,52 @@
     // business name in the ma…"), here it can be read whole and copied.
     if (d.name) {
       const tl = el("div", "pcm-title");
-      tl.appendChild(el("span", "t", d.name));
-      const cp = el("button", "pcm-link", "⧉ Copy");
-      cp.type = "button";
-      cp.title = "Copy the task name";
-      cp.onclick = async (e) => {
-        e.stopPropagation();
-        try { await navigator.clipboard.writeText(d.name); cp.textContent = "Copied ✓"; }
-        catch (x) { cp.textContent = "Couldn't copy"; }
-        setTimeout(() => { cp.textContent = "⧉ Copy"; }, 1500);
-      };
-      tl.appendChild(cp);
+      tl.appendChild(el("span", "t", d.name)); // selectable, to copy it by hand
       p.appendChild(tl);
     }
     const meta = el("div", "pcm-meta");
-    if (d.status) { const s = el("span"); s.append("Status "); s.appendChild(el("b", "", d.status)); meta.appendChild(s); }
-    if (d.dueDateMs) { const s = el("span"); s.append("Due "); s.appendChild(el("b", "", fmtDay(d.dueDateMs))); meta.appendChild(s); }
-    if (d.estimateMs) { const s = el("span"); s.append("Estimate "); s.appendChild(el("b", "", fmtDur(d.estimateMs))); meta.appendChild(s); }
-    if (safeUrl(d.url)) meta.appendChild(link(d.url, "Open in ClickUp ↗"));
+    if (d.status) {
+      const sc = stChip(d.status, false);
+      sc.classList.add("pcm-st-btn");
+      sc.setAttribute("role", "button");
+      sc.tabIndex = 0;
+      sc.title = (sc.title ? sc.title + "\n" : "") + "Click to change this task's status";
+      sc.onclick = (e) => { e.stopPropagation(); statusMenu(sc, p, d); };
+      meta.appendChild(sc);
+    }
+    const mchip = (k, v) => { const c = el("span", "pcm-mchip"); c.append(k + " "); c.appendChild(el("b", "", v)); return c; };
+    if (d.dueDateMs) meta.appendChild(mchip("Due", fmtDay(d.dueDateMs)));
+    if (d.estimateMs) meta.appendChild(mchip("Estimate", fmtDur(d.estimateMs)));
+    const macts = el("span", "pcm-meta-acts");
+    if (safeUrl(d.url)) macts.appendChild(link(d.url, "Open in ClickUp ↗"));
     const refresh = el("button", "pcm-link", "↻ Refresh");
     refresh.type = "button";
     refresh.onclick = () => load(p, d.id, true);
-    meta.appendChild(refresh);
+    macts.appendChild(refresh);
+    meta.appendChild(macts);
     if (window.PcmReminders) {
       const rem = el("button", "pcm-link", "⏰ Remind me");
       rem.type = "button";
       rem.title = "Set a reminder about this task";
       rem.onclick = (e) => { e.stopPropagation(); window.PcmReminders.open({ task: { id: d.id, name: d.name, url: d.url }, people: d.assigneePeople || [] }, rem); };
-      meta.appendChild(rem);
+      macts.appendChild(rem);
     }
     p.appendChild(meta);
-    p.appendChild(buildFamily(p, d));
+    // Something stops this task (itself, its parent, or a task it waits on, in a
+    // red status): said first, in red, so nobody reads on and starts it.
+    const stops = [];
+    if (stTone(d.status) === "t-bad") stops.push("This task is <b>" + escT(d.status) + "</b> in ClickUp");
+    const parT = (d.related || []).find((x) => x.kind === "parent");
+    if (parT && !parT.done && stTone(parT.status) === "t-bad") stops.push("Its parent task is <b>" + escT(parT.status) + "</b>: " + escT(parT.name || ""));
+    for (const x of (d.related || []).filter((r) => r.kind === "waits" && !r.done)) stops.push("It waits on a task that isn't done" + (x.status ? " (<b>" + escT(x.status) + "</b>)" : "") + ": " + escT(x.name || ""));
+    if (stops.length) {
+      const w = el("div", "pcm-stop");
+      w.innerHTML = "\u26D4 <div>" + stops.slice(0, 3).join("<br>") + "<br><span>Check before you start it.</span></div>";
+      p.appendChild(w);
+    }
+    const fam = buildFamily(p, d);
+    if (!fam.querySelector(".pcm-fam-solo")) p.appendChild(fam);
+    const firstPane = p.childNodes.length; // everything after this goes into the tabs
 
     const ds = el("div");
     buildDescription(ds, d);
@@ -1719,13 +1840,15 @@
       p.appendChild(fs);
     }
 
+    const detEnd = p.childNodes.length; // description, client notes, attachments = Details
     const ai = el("div");
     ai.appendChild(el("div", "pcm-sec-h", "Ask AI"));
     buildAi(ai, d);
     p.appendChild(ai);
 
     // My notes + pin (task-notes.js): personal, never sent to ClickUp.
-    if (window.PcmTaskNotes) { const tn = el("div"); p.appendChild(tn); window.PcmTaskNotes.renderPanel(tn, d); }
+    let tn = null;
+    if (window.PcmTaskNotes) { tn = el("div"); p.appendChild(tn); window.PcmTaskNotes.renderPanel(tn, d); }
 
     // Your tracked time on this task: each entry, to fix or delete a wrong one.
     const te = el("div");
@@ -1738,6 +1861,54 @@
     cs.appendChild(h);
     buildComments(cs, d);
     p.appendChild(cs);
+    tabify(p, d, [...p.childNodes].slice(firstPane, detEnd), ai, tn, te, cs);
+  }
+  // The sections below the task's summary as tabs, one shown at a time (the last
+  // one picked is remembered). Simple view (simple-view.js) leaves out AI and Time.
+  function tabify(p, d, det, ai, tn, te, cs) {
+    const panes = [["det", "Details", det], ["ai", "\u2728 AI", [ai]], ["notes", "My notes", tn ? [tn] : []], ["cmt", "Comments", [cs]], ["time", "Time", [te]]]
+      .filter((x) => x[2].length);
+    const bar = el("div", "pcm-tabs");
+    bar.setAttribute("role", "tablist");
+    const wraps = {};
+    for (const [k, , nodes] of panes) {
+      const w = el("div", "pcm-pane");
+      w.dataset.pt = k;
+      for (const n of nodes) w.appendChild(n);
+      wraps[k] = w;
+    }
+    const nC = (d.comments || []).length;
+    for (const [k, label] of panes) {
+      const b = el("button", "", label);
+      b.type = "button";
+      b.dataset.pt = k;
+      b.setAttribute("role", "tab");
+      if (k === "cmt" && nC) b.appendChild(el("span", "n", String(nC)));
+      b.onclick = (e) => { e.stopPropagation(); show(k, true); };
+      bar.appendChild(b);
+    }
+    p.appendChild(bar);
+    for (const [k] of panes) p.appendChild(wraps[k]);
+    function show(k, remember) {
+      const simple = document.documentElement.classList.contains("pcm-simple");
+      if (!wraps[k] || (simple && (k === "ai" || k === "time"))) k = "det";
+      for (const b of bar.children) b.classList.toggle("on", b.dataset.pt === k);
+      for (const key in wraps) wraps[key].hidden = key !== k;
+      if (remember) { try { localStorage.setItem("pcmPanelTab", k); } catch (e) {} }
+    }
+    let k0 = "det";
+    try { k0 = localStorage.getItem("pcmPanelTab") || "det"; } catch (e) {}
+    show(k0, false);
+    // A long description: about six lines, then "Show more".
+    const desc = wraps.det && wraps.det.querySelector(".pcm-desc");
+    if (desc) requestAnimationFrame(() => {
+      if (desc.scrollHeight < 170) return;
+      desc.classList.add("pcm-clamp");
+      const more = el("button", "pcm-more", "Show more \u25BE");
+      more.type = "button";
+      more.onclick = (e) => { e.stopPropagation(); const c = desc.classList.toggle("pcm-clamp"); desc.classList.toggle("pcm-open", !c); more.textContent = c ? "Show more \u25BE" : "Show less \u25B4"; };
+      desc.after(more);
+    });
   }
 
   // Which saved client a loaded task is, its remembered audit and the client notes.

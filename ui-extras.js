@@ -115,6 +115,10 @@
   // a configured recurring task, a draft or an expected review.
   const canMark = (t) => !!(t && t.id != null && !t.done && !t.local && !/^rev-/.test(String(t.id)) && t.type !== "cfg" && t.type !== "extra" && !("dayEstimateMs" in t) &&
     Number(t.totalEstimateMs || t.estimateMs) > 0 && !EXTRA_RE.test(t.name || "") && !cfgIds.has(String(t.id)));
+  // Boxes go on every task that could be marked once it has an estimate: one
+  // without an estimate gets a dimmed box that says so, instead of no box.
+  const canBox = (t) => !!t && canMark({ ...t, totalEstimateMs: 1 });
+  const noEst = (t) => !(Number(t && (t.totalEstimateMs || t.estimateMs)) > 0);
   async function toggleMark(t, on) {
     const g = await chrome.storage.local.get("autoCompleteTasks").catch(() => ({}));
     const next = { ...((g && g.autoCompleteTasks) || {}) };
@@ -123,8 +127,56 @@
     await chrome.storage.local.set({ autoCompleteTasks: next });
     paintRows();
   }
+  // ---------- "Tracking now": auto-complete the task that's running ----------
+  // For whoever has the Automation tab on: a switch next to Float / Stop, so the
+  // task already tracking can be set to complete itself at its estimate (the
+  // background's autoCompleteTasks check runs on every progress tick).
+  let autoTab = false;
+  function paintNow() {
+    const box = document.getElementById("cuNow");
+    if (!box) return;
+    const stop = box.querySelector(".cu-now-stop");
+    let b = box.querySelector(".xa-now");
+    const id = String(box.dataset.key || "").split(":")[0];
+    if (!autoTab || !stop || !id || box.hidden) { if (b) b.remove(); return; }
+    if (!b) {
+      b = document.createElement("button");
+      b.type = "button";
+      b.className = "xa-now";
+      const at = box.querySelector(".pcm-float");
+      (at && at.parentNode === stop.parentNode ? at : stop).before(b);
+      b.onclick = async (e) => {
+        e.stopPropagation();
+        const nm = (box.querySelector(".cu-now-name") || {}).textContent || "";
+        await toggleMark({ id: b.dataset.id, name: nm }, !marked[b.dataset.id]);
+        paintNow();
+      };
+    }
+    b.dataset.id = id;
+    const on = !!marked[id];
+    const txt = on ? "⏱ Auto-complete on" : "⏱ Auto-complete";
+    if (b.textContent !== txt) b.textContent = txt; // (only on change: the observer below sees our own edits)
+    b.classList.toggle("on", on);
+    b.title = on ? "Completes itself when its tracked time reaches its estimate - click to turn off"
+      : "Click so that when this task's tracked time reaches its estimate, the timer stops and the task is marked complete";
+  }
+  chrome.storage.local.get("automationTab").then((g) => { autoTab = !!(g && g.automationTab); paintNow(); paintDrop(); paintBar(); }).catch(() => {});
+  try {
+    chrome.storage.onChanged.addListener((ch, area) => {
+      if (area !== "local") return;
+      if (ch.automationTab) autoTab = !!ch.automationTab.newValue;
+      if (ch.automationTab || ch.autoCompleteTasks) { paintNow(); paintDrop(); paintBar(); }
+    });
+  } catch (e) {}
+  const nowBox = document.getElementById("cuNow");
+  if (nowBox) new MutationObserver(() => { if (!nowBox.querySelector(".xa-now") || nowBox.hidden) paintNow(); })
+    .observe(nowBox, { childList: true, subtree: true, attributes: true, attributeFilter: ["hidden", "data-key"] });
+
   const css = document.createElement("style");
   css.textContent = `
+  .xa-now { flex: none; font: inherit; font-size: 11.5px; padding: 3px 8px; border-radius: 7px; border: 1px solid var(--border); background: var(--card, transparent); color: var(--text); cursor: pointer; white-space: nowrap; }
+  .xa-now:hover { border-color: #8b5cf6; color: #7c3aed; }
+  .xa-now.on { border-color: #8b5cf6; background: rgba(139,92,246,.12); color: #7c3aed; font-weight: 700; }
   .cu-task.ac-on { box-shadow: inset 3px 0 0 #8b5cf6; background: rgba(139,92,246,.07); }
   .xa-bar { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; margin: 6px 0; padding: 6px 10px; border: 1px solid rgba(139,92,246,.35); border-radius: 9px; background: rgba(139,92,246,.07); font-size: 11.5px; }
   .xa-bar .xa-l { font-weight: 700; color: #7c3aed; }
@@ -134,11 +186,21 @@
   .xa-bar .xa-all { margin-left: auto; }
   .ac-box { flex: none; width: 15px; height: 15px; margin: 0 6px 0 0; accent-color: #8b5cf6; cursor: pointer; }
   .ar-box { flex: none; display: inline-flex; align-items: center; justify-content: center; width: 17px; height: 17px; margin: 0 6px 0 0; padding: 0; border: 1.5px solid #8b5cf6; border-radius: 5px; background: transparent; color: #7c3aed; font: inherit; font-size: 10px; font-weight: 800; line-height: 1; cursor: pointer; }
-  .ar-box:hover { background: rgba(139,92,246,.18); }
+  .ar-box:hover:not(:disabled) { background: rgba(139,92,246,.18); }
+  .ar-box:disabled, .ac-box:disabled { opacity: .35; cursor: not-allowed; }
+  .xa-drop { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 8px; margin: 6px 0; font-size: 11.5px; color: var(--muted); }
+  .xa-drop .xa-z { flex: 1 1 180px; display: flex; align-items: center; justify-content: center; gap: 6px; min-height: 30px; padding: 4px 10px; border: 1.5px dashed rgba(139,92,246,.45); border-radius: 9px; color: #7c3aed; font-weight: 600; text-align: center; transition: background .12s, border-color .12s; }
+  .xa-drop.dragging .xa-z { background: rgba(139,92,246,.06); border-color: #8b5cf6; }
+  .xa-drop .xa-z.over { background: rgba(139,92,246,.18); border-style: solid; }
+  .xa-drop .xa-z small { font-weight: 400; color: var(--muted); }
+  .xa-drop[hidden] { display: none; }
   .ar-box.on { background: #8b5cf6; color: #fff; }
   .xa-bar .xa-note { color: #7c3aed; font-weight: 600; }
   .ac-q { flex: none; font-size: 10px; font-weight: 700; padding: 1px 7px; border-radius: 999px; background: #8b5cf6; color: #fff; white-space: nowrap; }
-  .ac-chip { flex: none; font-size: 10px; font-weight: 700; padding: 1px 7px; border-radius: 999px; background: rgba(139,92,246,.15); color: #7c3aed; white-space: nowrap; }
+  .ac-q.wait { background: rgba(139,92,246,.15); color: #7c3aed; }
+  /* On a tight row the chips give way (clipped) before any column moves: Who, Client, Due and Time stay in line with the other rows. */
+  .cu-task .nmwrap > .ac-q, .cu-task .nmwrap > .ac-chip, .cu-task .nmwrap > .cu-dup { flex: 0 1 auto !important; min-width: 0; overflow: hidden; text-overflow: clip; }
+  .ac-chip { flex: none; font-size: 10px; font-weight: 700; padding: 1px 5px; border-radius: 999px; background: rgba(139,92,246,.15); color: #7c3aed; white-space: nowrap; }
   .xt-back { position: fixed; inset: auto 0 0 0; z-index: 2147482500; display: flex; justify-content: center; padding: 0 12px 12px; pointer-events: none; }
   .xt { pointer-events: auto; width: min(760px, 100%); height: min(340px, 60vh); background: #0d1117; color: #c9d1d9; border: 1px solid #30363d; border-radius: 10px; box-shadow: 0 18px 44px rgba(0,0,0,.45); display: flex; flex-direction: column; font: 12.5px/1.5 ui-monospace, SFMono-Regular, Consolas, monospace; }
   .xt-out { flex: 1; overflow: auto; padding: 10px 12px 4px; white-space: pre-wrap; word-break: break-word; }
@@ -185,6 +247,26 @@
     await savePicks(ids, names);
   }
   async function clearPicks() { await savePicks([], {}); }
+  // A queue running: the boxes show and change the tasks still waiting in it (the
+  // running one is never touched). Click a waiting task to take it out (the rest
+  // renumber), any other task to add it at the end - so the order is changed by
+  // taking a task out and clicking it back in.
+  const qRunning = () => !!(queue && Array.isArray(queue.ids) && queue.ids.length);
+  async function toggleQueued(t) {
+    if (!t || t.id == null || !qRunning()) return;
+    const id = String(t.id);
+    if (String(queue.ids[0]) === id) return;
+    const waiting = queue.ids.slice(1).map(String);
+    const i = waiting.indexOf(id);
+    if (i >= 0) waiting.splice(i, 1);
+    else if (waiting.length >= AR_MAX - 1) { setNote(AR_MAX + " tasks is the most one run can hold"); return; }
+    else waiting.push(id);
+    // Shown at once; the background's answer (storage) confirms it.
+    queue = { ...queue, ids: [queue.ids[0]].concat(waiting), total: (Number(queue.total) || queue.ids.length) - queue.ids.length + 1 + waiting.length };
+    paintRows();
+    const r = await send({ type: "DEV_CMD", cmd: "autorun-set-waiting", waiting, names: { [id]: t.name || "" } }, 15000);
+    if (!r || !r.ok) setNote("couldn't change the queue: " + ((r && r.error) || "no answer from the extension"));
+  }
   async function hideArBoxes() { await chrome.storage.local.set({ arBoxes: false }); arBoxes = false; paintRows(); }
   // Returns a message to show, or "" when the run started. The background does
   // not refuse a second queue, so the check for one already running is here.
@@ -198,16 +280,14 @@
       const a = await send({ type: "DEV_CMD", cmd: "autorun-add", ids, names: picks.names }, 15000);
       if (!a || !a.ok) return "couldn't add: " + ((a && a.error) || "no answer from the extension");
       picks = { ids: [], names: {} };
-      arBoxes = false;
-      await chrome.storage.local.set({ autoRunPick: picks, arBoxes: false });
+      await chrome.storage.local.set({ autoRunPick: picks }); // the boxes stay on until /autorun boxes off
       return "added " + a.added + " to the running queue - now " + a.done + " of " + a.total + " done";
     }
     const r = await send({ type: "DEV_CMD", cmd: "autorun-start", ids, names: picks.names }, 30000);
     if (!r || !r.ok) return "couldn't start: " + ((r && r.error) || "no answer from the extension");
     // The queue owns the order now, and shows it on the rows itself.
     picks = { ids: [], names: {} };
-    arBoxes = false;
-    await chrome.storage.local.set({ autoRunPick: picks, arBoxes: false });
+    await chrome.storage.local.set({ autoRunPick: picks }); // the boxes stay on until /autorun boxes off
     return "";
   }
   async function allOff() {
@@ -219,16 +299,42 @@
     await chrome.storage.local.set({ autoStopTasks: {} }); stops = {};
     setNote(""); // a message about something that is now off would only mislead
   }
+  // Which task's timer runs now (clickupState): when it isn't the queue's current
+  // task for 20 s (an emergency task, or the timer stopped) the queue says it waits.
+  let runId = "", qOffSince = 0;
+  const readRun = (st) => { runId = st && st.running && st.running.taskId ? String(st.running.taskId) : ""; };
+  chrome.storage.local.get("clickupState").then((g) => { readRun(g && g.clickupState); paintBar(); }).catch(() => {});
+  try { chrome.storage.onChanged.addListener((ch, area) => { if (area === "local" && ch.clickupState) { readRun(ch.clickupState.newValue); paintBar(); } }); } catch (e) {}
+  setInterval(() => { if (queue && queue.ids && queue.ids.length) paintBar(); }, 10000);
+  function queueWaiting() {
+    if (!(queue && Array.isArray(queue.ids) && queue.ids.length)) { qOffSince = 0; return false; }
+    const cur = String(queue.current || queue.ids[0]);
+    if (runId === cur) { qOffSince = 0; return false; }
+    if (!qOffSince) { qOffSince = Date.now(); setTimeout(paintBar, 20500); } // flips right when the 20 s are up
+    return Date.now() - qOffSince >= 20000;
+  }
   function activeItems() {
     const out = [];
     const n = Object.keys(marked).length;
-    if (queue && Array.isArray(queue.ids) && queue.ids.length) out.push({ key: "queue", text: "▶ Queue " + (queue.total - queue.ids.length + 1) + " of " + queue.total + " running" + (queue.paused ? " (paused)" : ""), btn: "Stop", run: stopQueue, tip: "Tasks run one after another: each completes at its estimate, then the next starts" });
-    if (picks.ids.length) out.push({ key: "arpick", text: "▶ " + picks.ids.length + " task" + (picks.ids.length === 1 ? "" : "s") + " in run order", btn: queue && Array.isArray(queue.ids) && queue.ids.length ? "Add to queue" : "Start", run: async () => setNote(await startArPick()), tip: picks.ids.map((id, i) => i + 1 + ". " + (picks.names[id] || id)).join("\n") });
-    if (n) out.push({ key: "marks", text: "⏱ " + n + " task" + (n === 1 ? "" : "s") + " complete at " + (n === 1 ? "its" : "their") + " estimate", btn: "Turn off", run: clearMarks, tip: Object.values(marked).map((m) => m.name).filter(Boolean).join("\n") });
-    if (boxes) out.push({ key: "boxes", text: "☑ Tick boxes in the task list", btn: "Hide", run: hideBoxes, tip: "Tick a task to have it complete at its estimate" });
-    if (arBoxes) out.push({ key: "arboxes", text: "① Numbered boxes in the task list", btn: "Hide", run: hideArBoxes, tip: "Click a task's box to put it in the run order, click it again to take it out" });
+    if (queue && Array.isArray(queue.ids) && queue.ids.length) {
+      const k = queue.total - queue.ids.length + 1, cur = String(queue.current || queue.ids[0]);
+      const wait = queue.paused || queueWaiting();
+      const nm = (queue.names && queue.names[cur]) || "its task";
+      out.push({ key: "queue", text: (wait ? "\u23F8 Queue " : "\u25B6 Queue ") + k + "/" + queue.total + (queue.paused ? " paused" : wait ? " waiting" : ""), btn: "Stop", run: stopQueue,
+        tip: wait ? "The queue is waiting: task " + k + " (\u201C" + nm + "\u201D) isn't running. Press \u25B6 on it to carry on - it completes at its estimate and the next one starts. Stop ends the whole queue."
+          : "Queue: task " + k + " of " + queue.total + " running (\u201C" + nm + "\u201D). Each completes at its estimate, then the next starts. Stop ends the whole queue." });
+    }
+    if (picks.ids.length) out.push({ key: "arpick", text: "\u25B6 " + picks.ids.length + " to run", btn: queue && Array.isArray(queue.ids) && queue.ids.length ? "Add to queue" : "Start", run: async () => setNote(await startArPick()), tip: "In run order, waiting for Start:\n" + picks.ids.map((id, i) => i + 1 + ". " + (picks.names[id] || id)).join("\n") });
+    if (n) out.push({ key: "marks", text: "\u23F1 " + n + " auto-complete", btn: "Off", run: clearMarks, tip: n + " task" + (n === 1 ? "" : "s") + " complete at " + (n === 1 ? "its" : "their") + " estimate:\n" + Object.values(marked).map((m) => m.name).filter(Boolean).join("\n") });
+    // The boxes switch on and off right here (with the Automation tab on they are
+    // always listed, so a Hide pressed by mistake is one click to undo). Only one
+    // kind shows at a time, as with the console commands.
+    const showAr = async () => { await chrome.storage.local.set({ arBoxes: true, acBoxes: false }); arBoxes = true; boxes = false; paintRows(); };
+    const showAc = async () => { await chrome.storage.local.set({ acBoxes: true, arBoxes: false }); boxes = true; arBoxes = false; paintRows(); };
+    if (arBoxes || autoTab) out.push({ key: "arboxes", text: "\u2460 Run boxes", btn: arBoxes ? "Hide" : "Show", run: arBoxes ? hideArBoxes : showAr, tip: arBoxes ? "Numbered boxes in the task list: click tasks in the order they should run (during a run: click a waiting one to take it out, another to add it at the end)" : "Show the numbered boxes in the task list, to pick tasks to run one after another" });
+    if (boxes || autoTab) out.push({ key: "boxes", text: "\u2611 Tick boxes", btn: boxes ? "Hide" : "Show", run: boxes ? hideBoxes : showAc, tip: boxes ? "Tick a task to have it complete at its estimate" : "Show tick boxes in the task list, to mark tasks that complete at their estimate" });
     const ns = Object.keys(stops).length;
-    if (ns) out.push({ key: "stopat", text: "\u23F1 " + ns + " stop-at limit" + (ns === 1 ? "" : "s"), btn: "Turn off", run: async () => { await chrome.storage.local.set({ autoStopTasks: {} }); stops = {}; paintBar(); }, tip: Object.values(stops).map((r) => (r.action === "complete" ? "complete " : "stop ") + (r.name || "") + " at " + fmtLimit(r.ms) + (r.scope === "total" ? " in all" : " today") + (r.daily ? ", every day" : "")).join("\n") });
+    if (ns) out.push({ key: "stopat", text: "\u23F1 " + ns + " stop-at", btn: "Off", run: async () => { await chrome.storage.local.set({ autoStopTasks: {} }); stops = {}; paintBar(); }, tip: Object.values(stops).map((r) => (r.action === "complete" ? "complete " : "stop ") + (r.name || "") + " at " + fmtLimit(r.ms) + (r.scope === "total" ? " in all" : " today") + (r.daily ? ", every day" : "")).join("\n") });
     if (note) out.push({ key: "note", text: note, btn: "", run: null, tip: "" });
     return out;
   }
@@ -239,7 +345,8 @@
     if (!items.length || !anchor || !anchor.parentNode) { if (bar) bar.remove(); return; }
     if (!bar) { bar = document.createElement("div"); bar.id = "xaBar"; bar.className = "xa-bar"; }
     if (bar.nextSibling !== anchor) anchor.parentNode.insertBefore(bar, anchor);
-    const sig = JSON.stringify(items.map((i) => i.text + i.tip));
+    bar.style.display = typeof dropOn !== "undefined" && dropOn ? "none" : "";
+    const sig = JSON.stringify(items.map((i) => i.text + i.btn + i.tip));
     if (bar._sig === sig) return;
     bar._sig = sig;
     bar.textContent = "";
@@ -252,10 +359,85 @@
       b.onclick = async (e) => { e.preventDefault(); e.stopPropagation(); b.disabled = true; await it.run(); };
       p.append(t, b); bar.appendChild(p);
     }
-    if (items.filter((i) => i.btn).length > 1) { const all = document.createElement("button"); all.type = "button"; all.className = "xa-all"; all.textContent = "Turn all off"; all.onclick = async () => { all.disabled = true; await allOff(); }; bar.appendChild(all); }
+    if (items.filter((i) => i.btn && i.btn !== "Show").length > 1) { const all = document.createElement("button"); all.type = "button"; all.className = "xa-all"; all.textContent = "All off"; all.title = "Turn every automation off (the running timer keeps going)"; all.onclick = async () => { all.disabled = true; await allOff(); }; bar.appendChild(all); }
+  }
+  // ---------- drop a task here: complete at its estimate / run in order ----------
+  // Shown above the task list while the Automation tab is on. Rows are dragged
+  // the way they already are (the dashboard's list: grab anywhere; Ctrl+click
+  // several first to drop them together; the popup: the ⠿ handle).
+  let dragTasks = null;
+  document.addEventListener("dragstart", (e) => {
+    const row = e.target && e.target.closest ? e.target.closest(".cu-task") : null;
+    dragTasks = row && row._cuTask ? [row._cuTask] : null;
+    if (dragTasks) showDrop(true);
+  }, true);
+  document.addEventListener("dragend", () => {
+    dragTasks = null;
+    showDrop(false);
+  }, true);
+  // Hidden until a task is picked up; while it's dragged the two boxes stand in the
+  // Active bar's place (so nothing below jumps), and go away when it's dropped.
+  let dropOn = false;
+  function showDrop(on) {
+    dropOn = !!on && autoTab;
+    const z = document.getElementById("xaDrop"), bar = document.getElementById("xaBar");
+    if (z) { z.hidden = !dropOn; z.classList.toggle("dragging", dropOn); if (!dropOn) z.querySelectorAll(".over").forEach((x) => x.classList.remove("over")); }
+    if (bar) bar.style.display = dropOn ? "none" : "";
+  }
+  const dropped = () => {
+    // Several picked with Ctrl+click on the dashboard come as one drag (cuDragTasks there).
+    let list = null;
+    try { if (typeof cuDragTasks !== "undefined" && Array.isArray(cuDragTasks) && cuDragTasks.length) list = cuDragTasks; } catch (e) {}
+    return (list || dragTasks || []).filter(Boolean);
+  };
+  async function dropComplete(tasks) {
+    const ok = tasks.filter((t) => canMark(t)), skip = tasks.length - ok.length;
+    if (!ok.length) { setNote(skip ? "that task can't complete itself - it needs an estimate (and not the Extra Task)" : ""); return; }
+    const g = await chrome.storage.local.get("autoCompleteTasks").catch(() => ({}));
+    const next = { ...((g && g.autoCompleteTasks) || {}) };
+    for (const t of ok) next[String(t.id)] = { name: t.name || "", at: Date.now() };
+    marked = next;
+    await chrome.storage.local.set({ autoCompleteTasks: next });
+    setNote("\u23F1 " + (ok.length === 1 ? "\u201C" + String(ok[0].name || "").slice(0, 50) + "\u201D completes" : ok.length + " tasks complete") + " at " + (ok.length === 1 ? "its" : "their") + " estimate" + (skip ? " (" + skip + " skipped: no estimate)" : ""));
+  }
+  async function dropRun(tasks) {
+    const ok = tasks.filter((t) => canMark(t)), skip = tasks.length - ok.length;
+    if (!ok.length) { setNote(skip ? "that task can't run in order - it needs an estimate (and not the Extra Task)" : ""); return; }
+    const ids = picks.ids.slice(), names = { ...picks.names };
+    for (const t of ok) { const id = String(t.id); if (!ids.includes(id) && ids.length < AR_MAX) { ids.push(id); names[id] = t.name || ""; } }
+    await savePicks(ids, names);
+    const running = queue && Array.isArray(queue.ids) && queue.ids.length;
+    // A run going: straight to its end. Otherwise they wait for Start (the order can still change).
+    if (running) setNote(await startArPick());
+    else setNote(ids.length + " in run order - press Start in the Active bar (or drop more)" + (skip ? " (" + skip + " skipped: no estimate)" : ""));
+  }
+  function paintDrop() {
+    const bar = document.getElementById("xaBar");
+    const anchor = bar || document.getElementById("ltBox") || document.getElementById("dashTasks") || document.getElementById("cuTaskList");
+    let z = document.getElementById("xaDrop");
+    if (!autoTab || !anchor || !anchor.parentNode) { if (z) z.remove(); return; }
+    if (!z) {
+      z = document.createElement("div");
+      z.id = "xaDrop";
+      z.className = "xa-drop";
+      const zone = (text, sub, run) => {
+        const d = document.createElement("div");
+        d.className = "xa-z";
+        d.innerHTML = text + " <small>" + sub + "</small>";
+        d.addEventListener("dragover", (e) => { if (!dragTasks && !dropped().length) return; e.preventDefault(); try { e.dataTransfer.dropEffect = "copy"; } catch (x) {} d.classList.add("over"); });
+        d.addEventListener("dragleave", () => d.classList.remove("over"));
+        d.addEventListener("drop", async (e) => { e.preventDefault(); e.stopPropagation(); d.classList.remove("over"); const tasks = dropped(); showDrop(false); if (tasks.length) await run(tasks); });
+        return d;
+      };
+      z.title = "Drop the task on one of these";
+      z.hidden = !dropOn;
+      z.append(zone("\u23F1 Complete at estimate", "drop a task here", dropComplete), zone("\u25B6 Run in order", "drop tasks here, one after another", dropRun));
+    }
+    if (z.nextSibling !== anchor) anchor.parentNode.insertBefore(z, anchor);
   }
   function paintRows() {
     paintBar();
+    paintDrop();
     document.querySelectorAll(".cu-task").forEach((row) => {
       const t = row._cuTask;
       const on = !!(t && t.id != null && marked[String(t.id)]);
@@ -265,26 +447,27 @@
       if (on && wrap && !chip) {
         chip = document.createElement("span");
         chip.className = "ac-chip";
-        chip.textContent = "⏱ auto-complete";
-        chip.title = "Completes itself (and stops the timer) when its tracked time reaches its estimate";
+        chip.textContent = "\u23F1"; // short: the row keeps its room (full wording in the hover)
+        chip.title = "Auto-complete: completes itself (and stops the timer) when its tracked time reaches its estimate";
         const nm = wrap.querySelector(".nm");
         if (nm && nm.nextSibling) wrap.insertBefore(chip, nm.nextSibling); else wrap.appendChild(chip);
       } else if (!on && chip) chip.remove();
       // Its place in the auto-run queue.
       let qc = wrap && wrap.querySelector(".ac-q");
       const qi = queue && Array.isArray(queue.ids) && t ? queue.ids.indexOf(String(t.id)) : -1;
-      if (qi >= 0 && wrap) {
+      if (qi >= 0 && wrap && !(arBoxes && qi > 0 && row.closest("#dashTasks, #cuTaskList"))) {
         const k = queue.total - queue.ids.length + qi + 1;
-        const txt = (qi === 0 ? "▶ running " : "▶ queue ") + k + "/" + queue.total;
+        const txt = (qi === 0 ? "\u25B6 " : "") + k + "/" + queue.total; // running: "▶ 4/6", waiting: "5/6"
         if (!qc) { qc = document.createElement("span"); qc.className = "ac-q"; const nm = wrap.querySelector(".nm"); if (nm && nm.nextSibling) wrap.insertBefore(qc, nm.nextSibling); else wrap.appendChild(qc); }
         if (qc.textContent !== txt) qc.textContent = txt; // unchanged writes re-wake the row observer
+        qc.classList.toggle("wait", qi !== 0);
         qc.title = qi === 0 ? "Running now in the auto-run queue - completes at its estimate, then the next one starts" : "Waiting in the auto-run queue - starts when the one before it completes";
       } else if (qc) qc.remove();
       // The tick box (shown while acBoxes is on).
       let cb = wrap && wrap.querySelector(".ac-box");
       // The boxes belong to the Tasks list only (dashboard / popup), not the other cards.
       const inMain = !!row.closest("#dashTasks, #cuTaskList");
-      const want = boxes && wrap && inMain && canMark(t);
+      const want = boxes && wrap && inMain && canBox(t);
       if (want && !cb) {
         cb = document.createElement("input");
         cb.type = "checkbox";
@@ -292,19 +475,35 @@
         cb.addEventListener("click", (e) => { e.stopPropagation(); toggleMark(row._cuTask, cb.checked); });
         wrap.insertBefore(cb, wrap.firstChild);
       } else if (!want && cb) { cb.remove(); cb = null; }
-      if (cb) { cb.checked = on; cb.title = on ? "Marked: completes itself (and stops the timer) when its tracked time reaches its estimate - untick to stop" : "Tick to complete this task automatically when its tracked time reaches its estimate"; }
+      if (cb) cb.disabled = noEst(t) && !on;
+      if (cb && cb.disabled) { cb.checked = false; cb.title = "Give this task an estimate first - it completes itself when its tracked time reaches the estimate"; }
+      else if (cb) { cb.checked = on; cb.title = on ? "Marked: completes itself (and stops the timer) when its tracked time reaches its estimate - untick to stop" : "Tick to complete this task automatically when its tracked time reaches its estimate"; }
       // The numbered box (shown while arBoxes is on) - its place in the run order.
       // A task already in a running queue shows its queue chip instead.
       let nb = wrap && wrap.querySelector(".ar-box");
-      const wantN = arBoxes && wrap && inMain && qi < 0 && canMark(t);
+      const wantN = arBoxes && wrap && inMain && qi !== 0 && canBox(t);
       if (wantN && !nb) {
         nb = document.createElement("button");
         nb.type = "button";
         nb.className = "ar-box";
-        nb.addEventListener("click", (e) => { e.preventDefault(); e.stopPropagation(); togglePick(row._cuTask); });
+        nb.addEventListener("click", (e) => { e.preventDefault(); e.stopPropagation(); if (qRunning()) toggleQueued(row._cuTask); else togglePick(row._cuTask); });
         wrap.insertBefore(nb, wrap.firstChild);
       } else if (!wantN && nb) { nb.remove(); nb = null; }
-      if (nb) {
+      if (nb && qRunning()) {
+        // Its number in the running queue (5, 6...), or empty = not in it.
+        nb.disabled = noEst(t) && qi < 0;
+        const k = qi > 0 ? queue.total - queue.ids.length + qi + 1 : 0;
+        const nbt = k ? String(k) : "";
+        if (nb.textContent !== nbt) nb.textContent = nbt;
+        nb.classList.toggle("on", qi > 0);
+        nb.title = nb.disabled ? "Give this task an estimate first - each task in the run completes at its estimate"
+          : qi > 0 ? "Number " + k + " in the running queue - click to take it out (the ones after it move up)"
+          : "Click to add this task at the end of the running queue (number " + (queue.total + 1) + ")";
+      } else if (nb && noEst(t) && pickAt(t.id) < 0) {
+        nb.disabled = true; nb.textContent = ""; nb.classList.remove("on");
+        nb.title = "Give this task an estimate first - each task in the run completes at its estimate";
+      } else if (nb) {
+        nb.disabled = false;
         const pi = t ? pickAt(t.id) : -1;
         const nbt = pi >= 0 ? String(pi + 1) : "";
         if (nb.textContent !== nbt) nb.textContent = nbt;
@@ -376,8 +575,7 @@
     { name: "/autorun", about: "run tasks one after another: each starts, completes at its estimate, then the next starts - while one runs, the tasks you pick go at its end  (/autorun list | stop | clear)" },
     { name: "/autorun boxes", about: "a numbered box on every task row: click them in the order you want the tasks to run, then Start  (/autorun boxes off to hide)" },
     { name: "/stopat", about: "stop the running task's timer at the time you choose: /stopat <your time> (or just /stopat and it asks)  - add daily = every day, total = all its time  (/stopat list | off | clear)" },
-    { name: "/doneat", about: "the same, but also mark the task complete: /doneat <your time> (or just /doneat and it asks)" },
-    { name: "/completeat", about: "the same as /doneat: stop the timer AND mark the task complete at that time - /completeat <your time> (or just /completeat and it asks)" },
+    { name: "/completeat", about: "stop the timer AND mark the task complete at the time you choose: /completeat <your time> (or just /completeat and it asks; /doneat works too)" },
     { name: "/automation", about: "show the Automation tab (every command here, with buttons) - /automation off hides it again" },
     { name: "/refresh", about: "read everything from ClickUp again now" },
     { name: "/whoami", about: "who and where you are" },

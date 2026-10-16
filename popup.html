@@ -354,6 +354,7 @@
   /* Columns that line up: fixed widths right of the name (also with a guess). */
   .cu-task .cu-due { width: 50px; box-sizing: border-box; text-align: center; overflow: hidden; text-overflow: ellipsis; }
   .cu-task .estpairs { flex: 0 0 auto; width: 118px; box-sizing: border-box; overflow: hidden; }
+  .cu-task .estpairs > * { white-space: nowrap; }
   /* Narrow lists (the popup, a slim side panel): the row gives things up in order
      so the task name always keeps room and no column runs over the next one -
      first the parent name before a subtask (still in the name tooltip), then the
@@ -364,6 +365,7 @@
   @container cutl (max-width: 700px) { .cu-tasklist .cu-task .nmwrap .cu-parent { display: none; } }
   @container cutl (max-width: 560px) {
     .cu-tasklist .cu-task .estpairs { width: 76px; min-width: 0; justify-content: flex-end; }
+    .cu-tasklist .cu-task .estpairs .trk-all { display: none; } /* still in the time's hover */
     .cu-tasklist .cu-task .estpairs:has(.est-guess, .est-staged) .est.zero { display: none; }
     .cu-tasklist .cu-task .cu-client { width: 64px; }
     .cu-tasklist .cu-task .cu-due { width: 42px; }
@@ -891,6 +893,7 @@
 <script src="rollup-help.js"></script>
   <script src="local-tasks.js"></script>
   <script src="ui-extras.js"></script>
+  <script src="simple-view.js"></script>
   <script src="celebrate.js"></script>
   <script src="pcm-help.js"></script>
   <script src="pcm-search.js"></script>

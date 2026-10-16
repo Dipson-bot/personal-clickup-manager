@@ -7476,6 +7476,21 @@ var INS_TTL = 5 * 60000;  // consider the open-task cache stale after this
 // shows it at once ("Updated 2h ago · refreshing…") instead of "Loading…" every
 // time; only the very first visit has nothing to show.
 var INS_STORE = "insOpenCache";
+// Archived in ClickUp (background cuArchived) for Insights › Health; asked for
+// (one small read at most every 30 minutes) whenever Insights is drawn.
+var insArchived = [], insArchivedAt = 0;
+function insArchivedLoad() {
+  try {
+    chrome.storage.local.get("cuArchived").then(function (g) { var c = g && g.cuArchived; insArchived = c && Array.isArray(c.tasks) ? c.tasks : []; insArchivedAt = (c && c.at) || 0; }).catch(function () {});
+    send({ type: "ARCHIVED_GET" }, 30000).catch(function () {});
+  } catch (e) {}
+}
+insArchivedLoad();
+try { chrome.storage.onChanged.addListener(function (ch, area) { if (area === "local" && ch.cuArchived) { var c = ch.cuArchived.newValue; insArchived = c && Array.isArray(c.tasks) ? c.tasks : []; insArchivedAt = (c && c.at) || 0; try { if (typeof renderInsights === "function" && document.querySelector('.panel[data-panel="insights"].on')) renderInsights(); } catch (e) {} } }); } catch (e) {}
+// A short note under a row (the action couldn't be done here).
+// "today 1:41 PM" / "yesterday 4:13 PM" / "Oct 12, 9:05 AM"
+function insArchWhen(ts) { var d = new Date(ts), t = d.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" }), today = new Date().setHours(0, 0, 0, 0), day = new Date(ts).setHours(0, 0, 0, 0); return day === today ? "today " + t : day === today - 86400000 ? "yesterday " + t : d.toLocaleDateString([], { month: "short", day: "numeric" }) + ", " + t; }
+function alertOnce(row, text) { var n = row.querySelector(".ins-note") || document.createElement("small"); n.className = "ins-note"; n.style.cssText = "display:block;color:var(--red)"; n.textContent = text; (row.querySelector(".ttl") || row).appendChild(n); }
 var insLastAuto = 0;
 var insHydrated = null;
 function insHydrate() {
@@ -7612,7 +7627,7 @@ function insBuildModel(rows, st) {
   }
   function mk() { return { n: 0, est: 0 }; }
   var buckets = { overdue: mk(), thisWeek: mk(), nextWeek: mk(), later: mk(), noDate: mk() };
-  var overdueList = [], noEstList = [], noDueList = [], byClient = Object.create(null);
+  var overdueList = [], noEstList = [], noDueList = [], holList = [], byClient = Object.create(null);
   var kOverdue = 0, kWeek = 0, kNoEst = 0, kNoDue = 0, openTotal = 0;
   for (i = 0; i < list.length; i++) {
     r = list[i];
@@ -7632,7 +7647,9 @@ function insBuildModel(rows, st) {
     if (bk === "thisWeek") { kWeek++; if (!umbrella) c.weekEst += r.est; }
     if (!umbrella && r.est <= 0) { kNoEst++; c.noEst++; noEstList.push(r); }
     if (!umbrella && !r.due) { kNoDue++; noDueList.push(r); }
+    if (r.due && r.due >= todayStart && typeof insOnHoliday === "function" && insOnHoliday(r.due)) holList.push(r);
   }
+  holList.sort(function (a, b) { return a.due - b.due; });
   var byId = Object.create(null);
   for (i = 0; i < list.length; i++) byId[list[i].id] = list[i];
   var blockedList = [], w = (st && st.waiting) || {};
@@ -7699,7 +7716,7 @@ function insBuildModel(rows, st) {
   return {
     k: { overdue: kOverdue, week: kWeek, noEst: kNoEst, noDue: kNoDue, blocked: blockedList.length, open: openTotal },
     buckets: buckets, clients: clients, todayStart: todayStart, twTo: twTo, nwTo: nwTo, byId: byId,
-    overdueList: overdueList, noEstList: noEstList, noDueList: noDueList, blockedList: blockedList,
+    overdueList: overdueList, noEstList: noEstList, noDueList: noDueList, holList: holList, blockedList: blockedList,
   };
 }
 
@@ -7777,7 +7794,7 @@ function insPaintSubNav() {
     rb.onclick = function () {
       var plus = window.PcmInsightsPlus;
       var jobs = insSub === "performance" ? [plus ? plus.refresh("performance") : null]
-        : [insFetchOpen(true), insSub === "plan" && plus ? plus.refresh("plan") : null];
+        : [insFetchOpen(true), insSub === "plan" && plus ? plus.refresh("plan") : null, send({ type: "ARCHIVED_GET", force: true }, 30000)];
       rb._busy = true; rb.disabled = true; rb.textContent = "Refreshing…";
       Promise.all(jobs.map(function (j) { return Promise.resolve(j).catch(function () {}); })).then(function () {
         rb._busy = false; rb.disabled = false; rb.textContent = "↻ Refresh";
@@ -7892,6 +7909,10 @@ function insPaint(m, st, meta) {
   // list this page already fetched - the copies are often in another month, so
   // nothing on screen could have shown them side by side). One row per group,
   // dated with the soonest copy, so the due-date filter finds it where you look.
+  // Archived in ClickUp (background cuArchived): gone from every other list.
+  m.archList = (insArchived || []).map(function (t) {
+    return { id: t.id, name: t.name, url: t.url, client: t.client || "", due: t.dueDateMs || 0, at: t.archivedAt || t.noticedAt || 0, parentName: t.parentName || "" };
+  });
   m.dupeList = (window.PcmDupes ? window.PcmDupes.all() : []).map(function (g) {
     var first = g.members[0] || {};
     return { id: first.id, name: g.name, url: first.url, client: g.client, due: g.due,
@@ -8069,6 +8090,14 @@ function insDrillsHtml(m) {
   // what the eye reads ("waiting on", a date, a client) and nothing is
   // double-escaped.
   var out = "";
+  // Due on an office holiday (Dashain, Tihar...): each with the same weekday of
+  // the next working week. Nothing moves until its Move button is pressed.
+  if ((m.holList || []).length) out += insDrill("holiday", "Due on a holiday · " + m.holList.length + " task" + (m.holList.length === 1 ? "" : "s") + " to move", m.holList, function (r) {
+    var to = insHolMove(r.due);
+    return { badge: '<span class="badge red" title="Due on an office holiday">' + insDateShort(r.due) + "</span>",
+      plain: "due on a holiday (" + insDateShort(r.due) + ") · suggested: " + (to ? new Date(to).toLocaleDateString([], { weekday: "short", month: "short", day: "numeric" }) : "pick a day"),
+      action: to ? "Move to " + new Date(to).toLocaleDateString([], { weekday: "short", month: "short", day: "numeric" }) : "Change due date", act: to ? "hmove" : "due" };
+  });
   out += insDrill("overdue", "Overdue tasks", m.overdueList, function (r) {
     var d = insDaysAgo(r.due, m.todayStart);
     return { badge: '<span class="badge red">' + (d > 0 ? d + "d" : "due") + "</span>",
@@ -8077,6 +8106,12 @@ function insDrillsHtml(m) {
   out += cmtOut;
   out += lateOut;
   out += dupOut;
+  // Archived in ClickUp: listed so it can't vanish without a trace. Who did it
+  // is in the task's Activity in ClickUp (the name link) - ClickUp's API doesn't say.
+  out += insDrill("archived", "Archived recently" + (insArchivedAt ? " · checked " + insArchWhen(insArchivedAt) : " · not checked yet"), m.archList || [], function (r) {
+    return { badge: '<span class="badge amber" title="Archived in ClickUp - open the task and look at its Activity to see who archived it">archived</span>',
+      plain: "archived " + (r.at ? insArchWhen(r.at) : "") + (r.parentName ? " · with its parent " + r.parentName : "") + " · open it to see who (Activity)", action: "Unarchive", act: "unarch" };
+  });
   out += insDrill("blocked", "Blocked / waiting", m.blockedList, function (r) {
     var lab = { teammate: "teammate", subtasks: "subtasks", schedule: "schedule", dependency: "dependency" }[r.kind] || "held";
     return { badge: '<span class="badge red" title="Why it\'s blocked">' + lab + "</span>", plain: r.reason, action: "Open" };
@@ -8094,6 +8129,17 @@ function insDrillsHtml(m) {
 // Every row goes in the DOM (up to INS_DRILL_MAX) and insApplyFilter decides
 // which INS_DRILL_CAP of them are visible. Rendering only the first 60 would
 // mean a client filter found nothing for anyone further down the list.
+// An office holiday on a working day (company calendar: Dashain, Tihar...).
+function insOnHoliday(ts) {
+  var d = new Date(Number(ts)), g = d.getDay();
+  return g !== 0 && g !== 6 && !!(typeof window !== "undefined" && window.PcmCalendar && window.PcmCalendar.isHoliday && window.PcmCalendar.isHoliday(d.getTime()));
+}
+// The same weekday of the next working week that isn't a holiday (Oct 19 -> Oct 26).
+function insHolMove(ts) {
+  var d = new Date(Number(ts));
+  for (var i = 0; i < 8; i++) { d.setDate(d.getDate() + 7); if (!insOnHoliday(d.getTime())) return d.getTime(); }
+  return 0;
+}
 function insDrill(id, label, listArr, fmt) {
   var n = listArr.length, rendered = Math.min(n, INS_DRILL_MAX), body = "", i;
   for (i = 0; i < rendered; i++) {
@@ -8342,6 +8388,26 @@ function insRowAction(btn) {
   if (btn.getAttribute("data-act") === "seen") {
     row._busy = true;
     (window.PcmComments ? window.PcmComments.markRead(id) : Promise.resolve()).then(function () { insRowDone(row, "marked read"); });
+    return;
+  }
+  if (btn.getAttribute("data-act") === "hmove") {
+    var from = Number(row.getAttribute("data-due")) || 0, to = insHolMove(from);
+    if (!to) return;
+    row._busy = true; btn.disabled = true; btn.textContent = "Moving\u2026";
+    send({ type: "CLICKUP_SET_DUE", taskId: String(id), dueMs: to }, 15000).then(function (r) {
+      if (r && r.ok) { insPatchCache(id, { dueDateMs: to }); insRowDone(row, "moved to " + new Date(to).toLocaleDateString([], { weekday: "short", month: "short", day: "numeric" })); }
+      else { row._busy = false; btn.disabled = false; btn.textContent = "Couldn't move - try again"; btn.title = (r && r.error) || ""; }
+    });
+    return;
+  }
+  if (btn.getAttribute("data-act") === "unarch") {
+    // Back in ClickUp (and in your lists after the refresh that follows).
+    row._busy = true;
+    btn.disabled = true; btn.textContent = "Unarchiving\u2026";
+    send({ type: "ARCHIVED_UNARCHIVE", id: id }, 30000).then(function (r) {
+      if (r && r.ok) insRowDone(row, "unarchived - it's back in ClickUp and your lists");
+      else { row._busy = false; btn.disabled = false; btn.textContent = "Unarchive"; btn.title = (r && r.error) || "Couldn't unarchive - do it in ClickUp (Unarchive at the top of the task)"; alertOnce(row, (r && r.error) || "Couldn't unarchive here - open the task and press Unarchive in ClickUp."); }
+    });
     return;
   }
   if (btn.getAttribute("data-act") === "dupok") {
@@ -8925,6 +8991,22 @@ function smClock(ts) { return new Date(ts).toLocaleTimeString([], { hour: "numer
 // Opening the section while it is stale kicks a check, at most once a minute so
 // re-renders can't pile runs on top of each other.
 let smKickedAt = 0;
+let smKickNote = ""; // why an automatic catch-up check didn't start, shown in the banner
+// The list follows a check as it happens: each site's answer is saved as it
+// comes in, and the page redraws (not while you're typing in or editing a row).
+let smLiveT = 0;
+chrome.storage.onChanged.addListener((ch, area) => {
+  if (area !== "local" || !(ch.siteMonitorState || ch.siteMonitorChecking)) return;
+  clearTimeout(smLiveT);
+  smLiveT = setTimeout(async () => {
+    const box = $("siteMonitorStatus");
+    if (!box || !box.offsetParent) return;
+    const a = document.activeElement;
+    if (a && box.contains(a) && /^(INPUT|SELECT|TEXTAREA)$/.test(a.tagName)) return;
+    if (box.querySelector("#smAddSlot > *, .sm-editing, [data-sm-form]")) return;
+    renderSiteMonitorStatus(await getSiteMonitorConfigOpt());
+  }, 400);
+});
 
 function renderSiteMonitorStatus(cfg) {
   const el = $("siteMonitorStatus");
@@ -8938,8 +9020,14 @@ function renderSiteMonitorStatus(cfg) {
     return;
   }
   // Background replies { ok, state } - read the state object, not the wrapper.
-  Promise.all([send({ type: "GET_SITE_MONITOR_STATE" }), chrome.storage.local.get(["siteSnooze", "siteOff"]).catch(() => ({}))]).then(([resp, sg]) => {
+  Promise.all([send({ type: "GET_SITE_MONITOR_STATE" }), chrome.storage.local.get(["siteSnooze", "siteOff", "siteMonitorChecking"]).catch(() => ({}))]).then(([resp, sg]) => {
     const state = resp && resp.state && typeof resp.state === "object" ? resp.state : {};
+    // A check running right now (background siteMonitorChecking): the sites it
+    // hasn't reached yet say "Checking now…" instead of their old "Not checked
+    // for 8h" - each turns into its real status as its own result comes in.
+    const chk = sg && sg.siteMonitorChecking && Date.now() - (Number(sg.siteMonitorChecking.startedAt) || 0) < 5 * 60000 ? sg.siteMonitorChecking : null;
+    const chkSet = new Set(chk && Array.isArray(chk.urls) ? chk.urls : []);
+    const waitingOn = (url) => chk && chkSet.has(url) && !((Number((state[url] || {}).lastCheck) || 0) >= Number(chk.startedAt));
     const snooze = (sg && sg.siteSnooze) || {};
     const offMap = (sg && sg.siteOff) || {};
     const nowTs = Date.now();
@@ -8959,6 +9047,7 @@ function renderSiteMonitorStatus(cfg) {
       const stale = !isOff && !st.paused && st.lastCheck > 0 && nowTs - st.lastCheck > SM_STALE_MS;
       const was = st.up === true ? "Up" : st.up === false ? "down" : "not checked";
       const statusText = isOff ? "\u23F9 Monitoring off for this site" : st.paused ? "\u23F8 Client paused - not checked"
+        : waitingOn(s.url) ? '<span class="sm-checking"><i class="sm-spin"></i>Checking now\u2026</span>' + (st.lastCheck ? " \u00B7 was " + was + " at " + smClock(st.lastCheck) : "")
         : stale ? '<span class="sm-stale">\u231B Not checked for ' + smGap(nowTs - st.lastCheck) + "</span> \u00B7 was " + was + " at " + smClock(st.lastCheck)
         : st.up === true ? "✅ Up" : st.up === false ? (st.blank || st.kind === "blank" ? "⚠️ Blank page" : st.kind === "5xx" ? "🔥 Server error" + (st.status ? " (HTTP " + st.status + ")" : "") : "🚨 Down") : "⚪ Not checked yet";
       // A stale row already names its own gap and time, so it does not repeat it.
@@ -8971,7 +9060,7 @@ function renderSiteMonitorStatus(cfg) {
       const snoozeTxt = snoozed ? ' · <span class="sm-snoozed">🔕 alerts snoozed until ' + escapeHtml(new Date(until).toLocaleString([], { weekday: "short", month: "short", day: "numeric", hour: "numeric", minute: "2-digit" })) + "</span>" : "";
       const why = st.lastError ? ' · <span class="sm-err">' + escapeHtml(st.lastError) + "</span>"
         : st.blocked ? ' · <span class="sm-err" title="The site is up, but its security is blocking or challenging this computer (it fetches the page every few minutes, which can look like a bot). No alarm is raised for this. If it keeps happening, ask whoever manages the site to allow this office\'s IP.">' + escapeHtml(st.blocked) + " (site is up - not an outage)</span>" : "";
-      const speed = !stale && st.up === true && st.lastMs ? " · " + (st.lastMs < 1000 ? st.lastMs + "ms" : (st.lastMs / 1000).toFixed(1) + "s") : "";
+      const speed = !stale && !waitingOn(s.url) && st.up === true && st.lastMs ? " · " + (st.lastMs < 1000 ? st.lastMs + "ms" : (st.lastMs / 1000).toFixed(1) + "s") : "";
       const u = escapeHtml(s.url);
       return '<div class="imp-row" data-sm-row="' + u + '"><div class="imp-entry"><b>' + label + '</b><br><span class="hint">' + statusText + speed + " · last check: " + lastCheckText + (st.fails && st.up !== false ? " · " + st.fails + " failed check(s)" : "") + why + snoozeTxt + "</span></div>"
         + '<div class="sm-acts"><label class="sm-on" title="Untick to stop checking this site (and its alerts) - whether or not the client is with us. Tick it again to start."><input type="checkbox" data-sm-on="' + u + '"' + (isOff ? "" : " checked") + " /> Monitor</label>"
@@ -8983,16 +9072,26 @@ function renderSiteMonitorStatus(cfg) {
         + '<button type="button" class="sm-act sm-del" data-sm-del="' + u + '" title="Stop monitoring this site">Delete</button></div></div>';
     }).join("");
     // Said once at the top too, so it cannot be missed in a long list.
-    const banner = allStale
-      ? '<p class="hint sm-stale-banner">\u231B Nothing has been checked for ' + smGap(nowTs - newest) + ' (last check ' + escapeHtml(new Date(newest).toLocaleString()) + '). The statuses below are from then, not now, so a site could have gone down since. Checking again now.</p>'
+    const nChk = chk ? [...chkSet].filter((u) => !offMap[u]).length : 0;
+    const nDone = chk ? [...chkSet].filter((u) => !offMap[u] && !waitingOn(u)).length : 0;
+    const banner = chk && nChk
+      ? '<p class="hint sm-checking-banner"><i class="sm-spin"></i>Checking ' + nChk + " site" + (nChk === 1 ? "" : "s") + " now\u2026 " + nDone + " of " + nChk + " done. Each site below changes to its new status as its answer comes in.</p>"
+      : allStale
+      ? '<p class="hint sm-stale-banner">\u231B Nothing has been checked for ' + smGap(nowTs - newest) + ' (last check ' + escapeHtml(new Date(newest).toLocaleString()) + '). The statuses below are from then, not now, so a site could have gone down since. ' +
+        (smKickNote ? escapeHtml(smKickNote) : "Starting a check now\u2026") + "</p>"
       : "";
     el.innerHTML = '<div class="sm-headrow"><div class="cu-subhead">Current status</div><button type="button" class="sm-act" data-sm-add="1">+ Add site</button></div>' + banner + '<div id="smBlankLine" class="hint"></div><div id="smAddSlot"></div>' + rows;
     smPaintBlankLine(cfg.sites);
     // Stale and the user is looking at it: catch up, then redraw with the real
     // answer. Throttled so a re-render cannot pile runs on top of each other.
-    if (allStale && Date.now() - smKickedAt > 60000) {
+    if (allStale && !chk && Date.now() - smKickedAt > 60000) {
       smKickedAt = Date.now();
-      send({ type: "SITE_MONITOR_CHECK_NOW" }).then(async () => { renderSiteMonitorStatus(await getSiteMonitorConfigOpt()); }).catch(() => {});
+      smKickNote = "";
+      send({ type: "SITE_MONITOR_CHECK_NOW" }).then(async (r) => {
+        // Say it plainly when the check didn't happen, instead of "checking" for ever.
+        smKickNote = !r ? "The check didn't start (no answer from the extension) - press Check all now." : !r.ok ? "The check didn't start: " + (r.reason || "unknown error") + " - press Check all now." : "";
+        renderSiteMonitorStatus(await getSiteMonitorConfigOpt());
+      }).catch(() => { smKickNote = "The check didn't start - press Check all now."; });
     }
   }).catch(() => {
     el.innerHTML = '<p class="hint">Could not fetch state.</p>';
@@ -9751,7 +9850,7 @@ const ADMIN_FILES = [
   "manifest.json", "background.js", "popup.html", "popup.js", "options.html", "options.js", "phone-timer.js",
   "offscreen.html", "offscreen.js", "update.html", "update.js", "auto-update.html", "auto-update.js", "wrapup.html", "wrapup.js",
   "notify-menu.js", "export-tasks.js", "lib-zip.js", "lib-unzip.js", "lib-automation.js",
-  "lib-availability.js", "lib-clickup.js", "lib-crypto.js", "lib-tidy.js", "lib-drive.js", "find-many.js", "automation.js", "task-panel.js", "lib-updater.js", "offscreen-updater.js", "celebrate.js", "celebrate.html", "celebrate-window.js", "fx.js", "pcm-help.js", "tracker.html", "tracker.js", "bulk-edit.js", "pcm-search.js", "lib-taskfiles.js", "task-files.js", "reminders.js", "hub.js", "task-sort.js", "breakdown.js", "calendar.js", "notices.js", "insights-plus.js", "header-ui.js", "weather.js", "paused-clients.js", "plan-apply.js", "task-notes.js", "task-dupes.js", "rollup-help.js", "md-notes.js", "mention.js", "long-list.js", "local-tasks.js", "ui-extras.js", "assignees.js", "add-time.js", "team-hub.gs", "vendor/pdf.min.js", "vendor/pdf.worker.min.js", "vendor/pdfjs-LICENSE.txt",
+  "lib-availability.js", "lib-clickup.js", "lib-crypto.js", "lib-tidy.js", "lib-drive.js", "find-many.js", "automation.js", "lib-rules.js", "nav-badges.js", "simple-view.js", "task-panel.js", "lib-updater.js", "offscreen-updater.js", "celebrate.js", "celebrate.html", "celebrate-window.js", "fx.js", "pcm-help.js", "tracker.html", "tracker.js", "bulk-edit.js", "pcm-search.js", "lib-taskfiles.js", "task-files.js", "reminders.js", "hub.js", "task-sort.js", "breakdown.js", "calendar.js", "notices.js", "insights-plus.js", "header-ui.js", "weather.js", "paused-clients.js", "plan-apply.js", "task-notes.js", "task-dupes.js", "rollup-help.js", "md-notes.js", "mention.js", "long-list.js", "local-tasks.js", "ui-extras.js", "assignees.js", "add-time.js", "team-hub.gs", "vendor/pdf.min.js", "vendor/pdf.worker.min.js", "vendor/pdfjs-LICENSE.txt",
   "icons/icon16.png", "icons/icon48.png", "icons/icon128.png", "icons/celebrate.png", "icons/sad.png",
   "sounds/notify.wav", "sounds/danger.mp3", "sounds/winner.wav",
   "README.md", "CHANGELOG.md",

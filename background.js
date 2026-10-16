@@ -27,9 +27,10 @@ import {
   linkifySheet,
 } from "./lib-drive.js";
 import { runAllAccounts, runAccountLogin, readAgentRouterLogin, URLS, GITHUB_KEEP_COOKIES } from "./lib-automation.js";
-import { getLatestCommentBy, getTaskCommentsLite, getTaskTimeEntries, deleteTimeEntry, getUserGroups, getUser, verifyToken, getTeams, fetchTodayEstimate, fetchWeeklySummary, fetchDateRangeEstimate, createTaskCache, fetchTeamMembers, fetchWorkspaceTags, cuTagNames, fmtDuration, findExtraTaskByName, parseTaskIdFromUrl, getCurrentTimeEntry, getRunningTaskProgress, startTimer, stopTimer, getTaskById, setTaskStatus, setTaskDates, taskUrlFor, clientLabelFromContainer, resolveSpaceNamesFor, taskContainer, cuPriorityName, isTaskDone, getSubtasksOfParent, getTaskTree, getTaskDetail, updateTimeEntry, setTaskDueDate, clearTaskTreeCache, listWorkspaceClients, cuRowAssignees, fetchDoneBetween, fetchDoneLite, fetchTrackedHistory, getTaskPanel, addTaskComment, postTaskComment, setTaskDescription, getTaskCommentLinks, createTask, removeTaskAssignee, postAssignedComment, addTimeEntry, weeklyWithToday, listClientFieldOptions, listReachableClients, bgToken, patientToken, cuRawFetch, getRelatedTasks, slimIndexTask, fetchTeamTasksPage, listAllLists, setPausedClients } from "./lib-clickup.js";
+import { fetchArchivedMine, unarchiveTask, getLatestCommentBy, getTaskCommentsLite, getTaskTimeEntries, deleteTimeEntry, getUserGroups, getUser, verifyToken, getTeams, fetchTodayEstimate, fetchWeeklySummary, fetchDateRangeEstimate, createTaskCache, fetchTeamMembers, fetchWorkspaceTags, cuTagNames, fmtDuration, findExtraTaskByName, parseTaskIdFromUrl, getCurrentTimeEntry, getRunningTaskProgress, startTimer, stopTimer, getTaskById, setTaskStatus, setTaskDates, taskUrlFor, clientLabelFromContainer, resolveSpaceNamesFor, taskContainer, cuPriorityName, isTaskDone, getSubtasksOfParent, getTaskTree, getTaskDetail, updateTimeEntry, setTaskDueDate, clearTaskTreeCache, listWorkspaceClients, cuRowAssignees, fetchDoneBetween, fetchDoneLite, fetchTrackedHistory, getTaskPanel, addTaskComment, postTaskComment, setTaskDescription, getTaskCommentLinks, createTask, removeTaskAssignee, postAssignedComment, addTimeEntry, weeklyWithToday, listClientFieldOptions, listReachableClients, bgToken, patientToken, cuRawFetch, getRelatedTasks, slimIndexTask, fetchTeamTasksPage, listAllLists, setPausedClients } from "./lib-clickup.js";
 import { resolveRelayKey, pickProbeModel, probeRelay } from "./lib-availability.js";
 import { tidyCollect, tidyLines, tidyResolved, tidyDayOk, tidyUrgent, tidyDateShort } from "./lib-tidy.js";
+import "./lib-rules.js"; // globalThis.PcmRules - the Automation tab's rule blocks
 
 const CHECK_ALARM = "dailyLoginCheck";
 const CLICKUP_ALARM = "clickupRefresh";
@@ -663,6 +664,7 @@ function fireDueReminders() {
       const offToday = (REM_SKIP[r.id] || []).some((k) => (k === "holiday" ? isCompanyHoliday : isCompanyWfh)(Number(r.at)));
       if (shown < 5 && !offToday) {
         if (r.forMe !== false) await showReminder(r, missed);
+        if (missed && r.forMe !== false) r.missedAt = now; // the sidebar counts it on Reminders
         if (Array.isArray(r.to) && r.to.length) await remSendToPeople(r).catch(() => {});
         shown++;
       }
@@ -1165,6 +1167,9 @@ async function checkSitesImpl(opts = {}) {
   for (const s of cfg.sites) if (s && s.url && siteOff[s.url]) state[s.url] = { ...(state[s.url] || { up: null, fails: 0, lastCheck: 0 }), off: true };
   for (const s of cfg.sites) if (s && s.url && !siteOff[s.url] && state[s.url] && state[s.url].off) { const { off, ...rest } = state[s.url]; state[s.url] = rest; }
   const sites = cfg.sites.filter((s) => s && s.url && (!opts.url || s.url === opts.url) && !isPausedSite(s) && !siteOff[s.url]);
+  // Site monitor shows "Checking now…" on these until each one's own result is in
+  // (startSiteCheck clears it when the run ends, however it ends).
+  try { await chrome.storage.local.set({ siteMonitorChecking: { startedAt: now, urls: sites.map((s) => s.url) } }); } catch (e) {}
   // Persist on EVERY run (not only when a status flips) so the "last check" time
   // stays current - AND in stages, not once at the end. A run that fails waits
   // up to a minute in sleeps and retries below; if the worker is stopped in the
@@ -1219,6 +1224,8 @@ async function checkSitesImpl(opts = {}) {
           // results of the run (it used to be sent before the only save).
           await notify("site-" + d.note.kind + "-" + key, d.note.title, d.note.message, d.note.sound, chrome.runtime.getURL("options.html#sites"),
             { priority: 2, requireInteraction: d.note.kind !== "up" }).catch((e) => diagLog("sites", e));
+          // Automation rules: "A client's site goes down / comes back up".
+          rulesFire(d.note.kind === "up" ? "site_up" : "site_down", [{ site: { name: site.name || site.url, url: site.url, paused: false }, at: now }]).catch(() => {});
         }
       } catch (e) { diagLog("sites", "deciding " + key + ": " + ((e && e.message) || e)); }
     }
@@ -1281,7 +1288,7 @@ function startSiteCheck(opts) {
     }
     await chrome.storage.local.set({ siteMonitorLock: { at: Date.now() } }).catch(() => {});
     try { return await checkSitesImpl(opts); }
-    finally { await chrome.storage.local.remove("siteMonitorLock").catch(() => {}); }
+    finally { await chrome.storage.local.remove(["siteMonitorLock", "siteMonitorChecking"]).catch(() => {}); }
   })().finally(() => { if (siteCheckInFlight === run) siteCheckInFlight = null; });
   siteCheckInFlight = run;
   return run;
@@ -2683,7 +2690,7 @@ async function pushAllToDrive(tok, accounts) {
 // Each key carries its own "last changed" stamp (extrasStamps) so the newest copy
 // wins per key: a fresh install adopts the Drive copy, while a newer local edit is
 // never overwritten by an older remote one.
-const EXTRA_KEYS = ["siteMonitorConfig", "theme", "cuFilter", "cuFilterMode", "cuFilterDefault", "customSounds", "cuManualOrder", "siteDirSeen", "reminders", "clientNotes", "taskNotes", "taskPins", "planOverrides", "localTasks", "cuDupesOk"];
+const EXTRA_KEYS = ["autoRules", "siteMonitorConfig", "theme", "cuFilter", "cuFilterMode", "cuFilterDefault", "customSounds", "cuManualOrder", "siteDirSeen", "reminders", "clientNotes", "taskNotes", "taskPins", "planOverrides", "localTasks", "cuDupesOk"];
 const EXTRAS_MAX_SOUNDS = 1500000; // skip very large custom-sound files in the Drive copy
 async function collectExtras() {
   const got = await chrome.storage.local.get([...EXTRA_KEYS, "extrasStamps"]);
@@ -3101,6 +3108,488 @@ async function heldStartReminder(taskId) {
 // [last 6 comments by others] } }; cuCommentSeen { taskId: when you looked }.
 // The pages count a comment as unread when it's newer than that look (and less
 // than 60 days old). A new comment that @mentions you pops up a notification.
+// ---------- Automation rules (the Automation tab, shown with /automation) ----------
+// WHEN something happens / IF conditions hold / THEN do things - the blocks,
+// checks and plain words live in lib-rules.js (globalThis.PcmRules). This is the
+// runner. Events come from what the extension already sees, with no extra
+// ClickUp requests to notice them: a refresh compared with the one before
+// (timers, completions, new tasks), the every-minute alarm (time of day, "the
+// running task reaches…", tasks due / overdue at their check time), Site monitor
+// (down / up) and the comment scan (mentions).
+// Storage: autoRules (the rules, in the Drive backup) · autoRuleLog (what they
+// did, with undo) · autoRuleSeen (once per task per trigger per day) ·
+// autoRuleRuns (at most LIMITS.perDay runs a day each) · autoRuleQueue (the rest
+// of a rule after "Wait", and actions held back while ClickUp rate-limits) ·
+// autoRulePending (waiting for your OK: a shared task, or more than LIMITS.bulk
+// tasks at once) · autoRuleKnown (task ids already seen, for "a new task").
+const RULES = globalThis.PcmRules;
+const RULE_LOG_MAX = 150;
+const ruleDay = (ts) => { const d = new Date(ts || Date.now()); return d.getFullYear() + "-" + (d.getMonth() + 1) + "-" + d.getDate(); };
+async function rulesAll() {
+  const { autoRules } = await chrome.storage.local.get("autoRules");
+  return (Array.isArray(autoRules) ? autoRules : []).filter((r) => r && r.id && r.trigger && Array.isArray(r.actions));
+}
+const rulesOn = async (type) => (await rulesAll()).filter((r) => r.on !== false && r.trigger.type === type);
+// A timer the rules started or stopped themselves is not a new "timer starts /
+// stops" event for other rules - that is how two rules would ping-pong.
+let rulesTimerTouchedAt = 0;
+let rulesBusy = Promise.resolve();
+// Rows the extension already holds, by task id (today, the weeks, the open-task set).
+async function rulesRows() {
+  const st = (await getClickupState().catch(() => null)) || {};
+  const g = await chrome.storage.local.get(["insOpenCache"]).catch(() => ({}));
+  const rows = new Map();
+  const add = (t) => { if (t && t.id != null && !rows.has(String(t.id))) rows.set(String(t.id), t); };
+  for (const b of [st, st.todayFilter, st.thisWeek, st.nextWeek]) if (b) for (const k of ["tasks", "deadlineTasks", "trackedTasks"]) for (const t of b[k] || []) add(t);
+  for (const t of (g.insOpenCache && g.insOpenCache.tasks) || []) add(t);
+  return { st, rows };
+}
+function rulesTaskCtx(t) {
+  if (!t) return null;
+  return { id: String(t.id != null ? t.id : t.taskId), name: String(t.name || t.taskName || ""), client: String(t.client || ""), status: String(t.status || ""),
+    priority: String(t.priority || ""), estimateMs: Number(t.totalEstimateMs || t.estimateMs) || 0, spentMs: Number(t.totalSpentMs || t.spentMs) || 0,
+    dueDateMs: Number(t.dueDateMs) || 0, done: !!t.done, paused: !!t.paused, url: t.url || (t.id != null ? taskUrlFor(t.id) : ""),
+    assignees: Array.isArray(t.assignees) ? t.assignees.map((a) => String((a && a.id) || "")).filter(Boolean) : null };
+}
+async function rulesBaseCtx() {
+  const st = (await getClickupState().catch(() => null)) || {};
+  const now = Date.now(), dow = new Date(now).getDay();
+  const live = st.running && st.running.startMs ? Math.max(0, now - Math.max(Number(st.running.startMs) || 0, Number(st.at) || 0, new Date(now).setHours(0, 0, 0, 0))) : 0;
+  return { now, workday: dow !== 0 && dow !== 6 && !isCompanyHoliday(now), todayMs: (Number(st.spentMs) || 0) + live };
+}
+async function rulesLog(entry) {
+  const { autoRuleLog } = await chrome.storage.local.get("autoRuleLog");
+  const log = Array.isArray(autoRuleLog) ? autoRuleLog : [];
+  log.unshift({ id: "l" + Date.now().toString(36) + Math.random().toString(36).slice(2, 5), at: Date.now(), ...entry });
+  await chrome.storage.local.set({ autoRuleLog: log.slice(0, RULE_LOG_MAX) });
+}
+// The next task to start: open, mine, due today, not paused, not the one just
+// finished - in the order the Today list shows them.
+async function rulesNextTask(exceptId) {
+  const cfg = await getClickupConfig().catch(() => null);
+  const me = String((cfg && cfg.userId) || "");
+  const st = (await getClickupState().catch(() => null)) || {};
+  const today = new Date().setHours(0, 0, 0, 0);
+  const pick = (st.tasks || []).filter((t) => t && t.id != null && !t.done && !t.paused && String(t.id) !== String(exceptId || "") &&
+    !EXTRA_TASK_RE.test(t.name || "") && (!t.dueDateMs || new Date(t.dueDateMs).setHours(0, 0, 0, 0) <= today) &&
+    (!Array.isArray(t.assignees) || !t.assignees.length || t.assignees.some((a) => String(a && a.id) === me)));
+  return pick.find((t) => Number(t.estimateMs) > 0) || pick[0] || null;
+}
+// One action. Returns { did: "what happened", undo?: {...}, changed?: bool }.
+async function rulesDoAction(rule, a, ctx, cfg) {
+  const p = a.params || {}, t = ctx.task;
+  const fill = (s) => RULES.fill(s, ctx);
+  switch (a.type) {
+    case "notify": {
+      const title = fill(p.title) || rule.name;
+      const msg = fill(p.message) || RULES.describe(rule);
+      await notify("rule-" + rule.id + "-" + ((t && t.id) || (ctx.site && ctx.site.url) || "x"), title, msg, p.sound === "none" ? "none" : p.sound, (t && t.url) || (ctx.site && ctx.site.url) || chrome.runtime.getURL("options.html#automation"));
+      return { did: "notified you: " + title };
+    }
+    case "stop_timer": {
+      const cur = await getCurrentTimeEntry(cfg.token, cfg.teamId).catch(() => null);
+      if (!cur) return { did: "no timer was running" };
+      rulesTimerTouchedAt = Date.now();
+      await stopTimer(cfg.token, cfg.teamId);
+      return { did: "stopped the timer on " + (cur.taskName || "the task"), undo: { op: "start", taskId: String(cur.taskId) }, changed: true };
+    }
+    case "start_timer": {
+      const target = p.which === "this" ? t : rulesTaskCtx(await rulesNextTask(t && t.id));
+      if (!target || !target.id) return { did: "no task left to start" };
+      const cur = await getCurrentTimeEntry(cfg.token, cfg.teamId).catch(() => null);
+      rulesTimerTouchedAt = Date.now();
+      if (cur && String(cur.taskId) === target.id) return { did: target.name + " was already running" };
+      if (cur) await stopTimer(cfg.token, cfg.teamId).catch(() => {});
+      await setTaskStatus(cfg.token, target.id, "in progress").catch(() => {});
+      await startTimer(cfg.token, cfg.teamId, target.id);
+      await patchStateTask(target.id, { status: "in progress" }).catch(() => {});
+      const st = (await getClickupState().catch(() => null)) || {};
+      await setClickupState({ ...st, activeTaskId: target.id });
+      return { did: "started " + target.name, undo: { op: "stop" }, changed: true };
+    }
+    case "complete_task": {
+      if (!t) return { did: "no task to complete" };
+      await setTaskStatus(cfg.token, t.id, "complete");
+      await patchStateTask(t.id, { status: "complete", done: true }).catch(() => {});
+      const cur = await getCurrentTimeEntry(cfg.token, cfg.teamId).catch(() => null);
+      if (cur && String(cur.taskId) === t.id) { rulesTimerTouchedAt = Date.now(); await stopTimer(cfg.token, cfg.teamId).catch(() => {}); }
+      await advanceAutoRun(cfg, t.id).catch(() => {});
+      return { did: "completed " + t.name, undo: { op: "status", taskId: t.id, prev: t.status && !/complete|closed|done/i.test(t.status) ? t.status : "to do" }, changed: true };
+    }
+    case "set_status": {
+      if (!t) return { did: "no task" };
+      await setTaskStatus(cfg.token, t.id, p.status);
+      await patchStateTask(t.id, { status: p.status }).catch(() => {});
+      return { did: "set " + t.name + " to " + p.status, undo: { op: "status", taskId: t.id, prev: t.status || "to do" }, changed: true };
+    }
+    case "move_due": {
+      if (!t) return { did: "no task" };
+      const task = await getTaskById(cfg.token, t.id);
+      const d = new Date(); d.setHours(0, 0, 0, 0);
+      const work = (x) => x.getDay() !== 0 && x.getDay() !== 6 && !isCompanyHoliday(x.getTime());
+      if (p.to === "tomorrow") d.setDate(d.getDate() + 1);
+      else if (p.to === "next_monday") { d.setDate(d.getDate() + 1); while (d.getDay() !== 1) d.setDate(d.getDate() + 1); }
+      else { d.setDate(d.getDate() + 1); for (let i = 0; i < 14 && !work(d); i++) d.setDate(d.getDate() + 1); }
+      const due = shiftDueToDay(task && task.dueDateMs, d.getTime());
+      await setTaskDueDate(cfg.token, t.id, due, task ? task.dueDateHasTime : null);
+      return { did: "moved " + t.name + " to " + d.toLocaleDateString([], { weekday: "short", month: "short", day: "numeric" }), undo: { op: "due", taskId: t.id, prev: (task && task.dueDateMs) || null, hasTime: task ? task.dueDateHasTime : null }, changed: true };
+    }
+    case "comment": {
+      if (!t) return { did: "no task" };
+      const text = fill(p.text);
+      if (!text) return { did: "the comment was empty" };
+      await postTaskComment(cfg.token, t.id, text);
+      return { did: "commented on " + t.name, changed: true };
+    }
+    case "open_task": {
+      if (!t) return { did: "no task" };
+      await chrome.tabs.create({ url: t.url || taskUrlFor(t.id), active: true }).catch(() => {});
+      return { did: "opened " + t.name };
+    }
+    case "open_url": {
+      const url = fill(p.url);
+      if (!/^https?:\/\/\S+$/i.test(url)) return { did: "no valid link to open" };
+      await chrome.tabs.create({ url, active: true }).catch(() => {});
+      return { did: "opened " + url };
+    }
+    case "remind_open": {
+      const { rows } = await rulesRows();
+      const today = new Date().setHours(0, 0, 0, 0);
+      const wk = new Date(today); wk.setDate(wk.getDate() + ((7 - wk.getDay()) % 7)); // to Sunday
+      const end = wk.getTime() + 86400000 - 1;
+      const open = [...rows.values()].filter((x) => x && !x.done && !x.paused && Number(x.dueDateMs) > 0 && !EXTRA_TASK_RE.test(x.name || "")).filter((x) => {
+        const due = new Date(x.dueDateMs).setHours(0, 0, 0, 0);
+        return p.range === "today" ? due === today : p.range === "overdue" ? due < today : due >= today && x.dueDateMs <= end;
+      });
+      const word = p.range === "today" ? "due today" : p.range === "overdue" ? "overdue" : "due this week";
+      const title = open.length ? open.length + " task" + (open.length === 1 ? "" : "s") + " " + word + " still open" : "Nothing " + word + " is still open ✓";
+      await notify("rule-" + rule.id + "-open", title, open.slice(0, 4).map((x) => "• " + x.name).join("\n") + (open.length > 4 ? "\n+" + (open.length - 4) + " more" : ""), undefined, chrome.runtime.getURL("options.html#dashboard"));
+      return { did: title };
+    }
+    default: return { did: "skipped an unknown action" };
+  }
+}
+// Run a rule's actions for one context, from step `from`. "Wait" (and ClickUp
+// asking us to slow down) puts the rest in autoRuleQueue for later.
+async function rulesRun(rule, ctx, from = 0, why = "") {
+  const cfg = await getClickupConfig().catch(() => null);
+  if (!cfg || !cfg.token || !cfg.teamId) return;
+  const did = [], undo = [];
+  let changed = false, error = "";
+  for (let i = from; i < rule.actions.length; i++) {
+    const a = rule.actions[i];
+    if (a.type === "wait") {
+      await rulesEnqueue(rule, ctx, i + 1, Date.now() + a.params.minutes * 60000);
+      did.push("waiting " + RULES.fmtMin(a.params.minutes) + " for the rest");
+      break;
+    }
+    if (RULES.ACTIONS[a.type].changes) {
+      const st = (await getClickupState().catch(() => null)) || {};
+      if (st.rateLimitedUntil > Date.now()) { await rulesEnqueue(rule, ctx, i, Math.max(st.rateLimitedUntil, Date.now() + 5 * 60000)); did.push("ClickUp asked to slow down - the rest runs in a few minutes"); break; }
+    }
+    try {
+      const r = await rulesDoAction(rule, a, ctx, cfg);
+      did.push(r.did);
+      if (r.undo) undo.push(r.undo);
+      if (r.changed) changed = true;
+    } catch (e) {
+      error = String((e && e.message) || e);
+      did.push("stopped: " + error);
+      break;
+    }
+  }
+  await rulesLog({ ruleId: rule.id, ruleName: rule.name, task: ctx.task ? { id: ctx.task.id, name: ctx.task.name, url: ctx.task.url } : null, site: ctx.site || null, did, undo, error, why });
+  if (changed) { clearFilterCache(); refreshClickup({ includeTasks: true }).catch(() => {}); }
+}
+async function rulesEnqueue(rule, ctx, from, runAt) {
+  const { autoRuleQueue } = await chrome.storage.local.get("autoRuleQueue");
+  const q = Array.isArray(autoRuleQueue) ? autoRuleQueue : [];
+  q.push({ id: "q" + Date.now().toString(36) + Math.random().toString(36).slice(2, 5), ruleId: rule.id, ctx, from, runAt });
+  await chrome.storage.local.set({ autoRuleQueue: q.slice(-100) });
+}
+async function rulesRunQueue() {
+  const { autoRuleQueue } = await chrome.storage.local.get("autoRuleQueue");
+  const q = Array.isArray(autoRuleQueue) ? autoRuleQueue : [];
+  const due = q.filter((x) => x.runAt <= Date.now());
+  if (!due.length) return;
+  await chrome.storage.local.set({ autoRuleQueue: q.filter((x) => x.runAt > Date.now()) });
+  const all = await rulesAll();
+  for (const x of due) {
+    const rule = all.find((r) => r.id === x.ruleId);
+    if (rule && rule.on !== false) await rulesRun(rule, x.ctx, x.from, "after waiting");
+  }
+}
+// Something happened: every switched-on rule with that trigger, for each
+// context (a task, a site, or none), its conditions, the once-a-day and per-day
+// limits, then the actions - or held for your OK.
+function rulesFire(type, items, opts = {}) {
+  rulesBusy = rulesBusy.then(() => rulesFireNow(type, items, opts)).catch((e) => diagLog("rules", type + ": " + ((e && e.message) || e)));
+  return rulesBusy;
+}
+async function rulesFireNow(type, items, opts) {
+  const rules = (await rulesOn(type)).filter((r) => !opts.only || r.id === opts.only);
+  if (!rules.length) return;
+  const cfg = await getClickupConfig().catch(() => null);
+  const me = String((cfg && cfg.userId) || "");
+  const base = await rulesBaseCtx();
+  const g = await chrome.storage.local.get(["autoRuleSeen", "autoRuleRuns"]);
+  const seen = g.autoRuleSeen && typeof g.autoRuleSeen === "object" ? g.autoRuleSeen : {};
+  const runs = g.autoRuleRuns && typeof g.autoRuleRuns === "object" ? g.autoRuleRuns : {};
+  const day = ruleDay();
+  for (const rule of rules) {
+    const matched = [];
+    for (const it of items.length ? items : [{}]) {
+      const ctx = { ...base, task: it.task || null, site: it.site || null };
+      const key = rule.id + "|" + type + "|" + ((ctx.task && ctx.task.id) || (ctx.site && ctx.site.url + "|" + (it.at || "")) || "") + "|" + day;
+      if (seen[key]) continue;
+      // Everything but the one condition that costs a ClickUp read first.
+      const cheap = { ...rule, conds: (rule.conds || []).filter((c) => c.type !== "no_proof") };
+      if (!RULES.condsMet(cheap, ctx)) continue;
+      if (RULES.needsProofCheck(rule) && ctx.task && cfg) ctx.proofMissing = !!(await completionEvidenceMissing(cfg, ctx.task.id));
+      if (RULES.needsProofCheck(rule) && !ctx.proofMissing) continue;
+      seen[key] = Date.now();
+      matched.push(ctx);
+    }
+    if (!matched.length) continue;
+    const r = runs[rule.id] && runs[rule.id].day === day ? runs[rule.id] : { day, n: 0 };
+    const changes = rule.actions.some((a) => RULES.ACTIONS[a.type].changes);
+    // Never another person's task; a shared one, or many at once, waits for your OK.
+    const ok = [], ask = [];
+    for (const ctx of matched) {
+      const who = ctx.task && ctx.task.assignees;
+      if (changes && ctx.task && who && who.length && me && !who.includes(me)) {
+        await rulesLog({ ruleId: rule.id, ruleName: rule.name, task: { id: ctx.task.id, name: ctx.task.name, url: ctx.task.url }, did: ["skipped - not your task"], undo: [] });
+        continue;
+      }
+      if (changes && ctx.task && who && who.length > 1) ask.push(ctx); else ok.push(ctx);
+    }
+    if (changes && ok.length > RULES.LIMITS.bulk) { ask.push(...ok.splice(0)); }
+    for (const ctx of ok) {
+      if (r.n >= RULES.LIMITS.perDay) { await rulesLog({ ruleId: rule.id, ruleName: rule.name, task: ctx.task ? { id: ctx.task.id, name: ctx.task.name } : null, did: ["not run - it already ran " + RULES.LIMITS.perDay + " times today"], undo: [] }); break; }
+      r.n++;
+      await rulesRun(rule, ctx, 0, RULES.sayTrigger(rule.trigger));
+    }
+    if (ask.length) await rulesAsk(rule, ask);
+    runs[rule.id] = r;
+  }
+  // Seen keys older than 3 days go.
+  const cut = Date.now() - 3 * 86400000;
+  for (const k of Object.keys(seen)) if (seen[k] < cut) delete seen[k];
+  await chrome.storage.local.set({ autoRuleSeen: seen, autoRuleRuns: runs });
+}
+async function rulesAsk(rule, ctxs) {
+  const { autoRulePending } = await chrome.storage.local.get("autoRulePending");
+  const list = Array.isArray(autoRulePending) ? autoRulePending : [];
+  list.push({ id: "p" + Date.now().toString(36) + Math.random().toString(36).slice(2, 5), ruleId: rule.id, ruleName: rule.name, at: Date.now(), ctxs,
+    why: ctxs.length > RULES.LIMITS.bulk ? ctxs.length + " tasks at once" : "a task shared with other people" });
+  await chrome.storage.local.set({ autoRulePending: list.slice(-30) });
+  await notify("rule-ask-" + rule.id, "“" + rule.name + "” is waiting for your OK",
+    (ctxs.length === 1 && ctxs[0].task ? ctxs[0].task.name + " is shared with other people." : ctxs.length + " tasks at once.") + " Open Automation to approve or dismiss.", undefined, chrome.runtime.getURL("options.html#automation"));
+}
+async function rulesUndo(logId) {
+  const { autoRuleLog } = await chrome.storage.local.get("autoRuleLog");
+  const log = Array.isArray(autoRuleLog) ? autoRuleLog : [];
+  const e = log.find((x) => x.id === logId);
+  if (!e || !Array.isArray(e.undo) || !e.undo.length || e.undone) return { ok: false, error: "Nothing to undo." };
+  const cfg = await getClickupConfig().catch(() => null);
+  if (!cfg || !cfg.token) return { ok: false, error: "ClickUp isn't connected." };
+  for (const u of e.undo.slice().reverse()) {
+    if (u.op === "status") { await setTaskStatus(cfg.token, u.taskId, u.prev); await patchStateTask(u.taskId, { status: u.prev, done: false }).catch(() => {}); }
+    else if (u.op === "due") await setTaskDueDate(cfg.token, u.taskId, u.prev, u.hasTime);
+    else if (u.op === "stop") { rulesTimerTouchedAt = Date.now(); await stopTimer(cfg.token, cfg.teamId).catch(() => {}); }
+    else if (u.op === "start") { rulesTimerTouchedAt = Date.now(); await startTimer(cfg.token, cfg.teamId, u.taskId); }
+  }
+  e.undone = Date.now();
+  await chrome.storage.local.set({ autoRuleLog: log });
+  clearFilterCache(); refreshClickup({ includeTasks: true }).catch(() => {});
+  return { ok: true };
+}
+// ---- the event sources ----
+// A refresh compared with the one before: timers, completions, new tasks.
+async function rulesOnState(prev, next) {
+  if (!prev || !next) return;
+  if (!(await rulesAll()).some((r) => r.on !== false)) return;
+  const keyOf = (x) => (x ? String(x.taskId || "") + ":" + String(x.startMs || "") : "");
+  const touchedByRule = Date.now() - rulesTimerTouchedAt < 20000;
+  const { rows } = await rulesRows();
+  const rowCtx = (id, name) => rulesTaskCtx(rows.get(String(id)) || { id, name });
+  if (keyOf(prev.running) !== keyOf(next.running) && !touchedByRule) {
+    if (prev.running && prev.running.taskId) await rulesFire("timer_stopped", [{ task: rowCtx(prev.running.taskId, prev.running.taskName) }]);
+    if (next.running && next.running.taskId) await rulesFire("timer_started", [{ task: rowCtx(next.running.taskId, next.running.taskName) }]);
+  }
+  const bundles = (s) => [s, s.todayFilter, s.thisWeek, s.nextWeek].filter(Boolean);
+  const before = new Map();
+  for (const b of bundles(prev)) for (const k of ["tasks", "deadlineTasks", "trackedTasks"]) for (const t of b[k] || []) if (t && t.id != null) before.set(String(t.id), t);
+  const completed = [], fresh = [];
+  const { autoRuleKnown } = await chrome.storage.local.get("autoRuleKnown");
+  const known = new Set(Array.isArray(autoRuleKnown) ? autoRuleKnown : []);
+  const firstRun = !known.size;
+  for (const b of bundles(next)) for (const k of ["tasks", "deadlineTasks", "trackedTasks"]) for (const t of b[k] || []) {
+    if (!t || t.id == null) continue;
+    const id = String(t.id), was = before.get(id);
+    if (t.done && was && !was.done && !completed.some((c) => c.task.id === id)) completed.push({ task: rulesTaskCtx(t) });
+    if (!known.has(id)) { known.add(id); if (!firstRun && !t.done && !EXTRA_TASK_RE.test(t.name || "")) fresh.push({ task: rulesTaskCtx(t) }); }
+  }
+  await chrome.storage.local.set({ autoRuleKnown: [...known].slice(-3000) });
+  if (completed.length) await rulesFire("task_completed", completed);
+  if (fresh.length) await rulesFire("task_new", fresh);
+}
+chrome.storage.onChanged.addListener((ch, area) => {
+  if (area === "local" && ch.clickupState) rulesOnState(ch.clickupState.oldValue, ch.clickupState.newValue).catch(() => {});
+});
+// Every minute: the time of day, the running task's time, due / overdue at
+// their check time, and anything waiting in the queue.
+async function rulesTick() {
+  const all = (await rulesAll()).filter((r) => r.on !== false);
+  await rulesRunQueue().catch(() => {});
+  if (!all.length) return;
+  const now = Date.now(), d = new Date(now);
+  const hmNow = d.getHours() * 60 + d.getMinutes();
+  const at = (hm) => { const [h, m] = String(hm).split(":").map(Number); return h * 60 + m; };
+  // Late by up to 2 hours (Chrome was closed at 4:30) still counts; later than that is skipped.
+  const inWindow = (hm) => hmNow >= at(hm) && hmNow - at(hm) <= 120;
+  for (const r of all.filter((x) => x.trigger.type === "time_of_day")) {
+    if ((r.trigger.params.days || []).includes(d.getDay()) && inWindow(r.trigger.params.hhmm)) await rulesFire("time_of_day", [{}], { only: r.id });
+  }
+  const dayRules = all.filter((x) => (x.trigger.type === "task_due_today" || x.trigger.type === "task_overdue") && inWindow(x.trigger.params.hhmm));
+  if (dayRules.length) {
+    const { rows } = await rulesRows();
+    const today = new Date(now).setHours(0, 0, 0, 0);
+    const open = [...rows.values()].filter((t) => t && !t.done && Number(t.dueDateMs) > 0 && !EXTRA_TASK_RE.test(t.name || ""));
+    for (const r of dayRules) {
+      const due = open.filter((t) => { const x = new Date(t.dueDateMs).setHours(0, 0, 0, 0); return r.trigger.type === "task_due_today" ? x === today : x < today; });
+      if (due.length) await rulesFire(r.trigger.type, due.map((t) => ({ task: rulesTaskCtx(t) })), { only: r.id });
+    }
+  }
+  const reach = all.filter((x) => x.trigger.type === "tracked_reaches");
+  if (reach.length) {
+    const st = (await getClickupState().catch(() => null)) || {};
+    const run = st.running;
+    const { runningProgress: rp } = await chrome.storage.local.get("runningProgress");
+    if (run && run.taskId && rp && String(rp.taskId) === String(run.taskId)) {
+      const live = Math.max(0, now - (Number(run.startMs) || now));
+      const tracked = (Number(rp.closedMs) || 0) + live, est = Number(rp.estimateMs) || 0;
+      const todayTask = (Number(rp.closedTodayMs) || 0) + Math.max(0, now - Math.max(Number(run.startMs) || now, new Date(now).setHours(0, 0, 0, 0)));
+      const { rows } = await rulesRows();
+      const task = rulesTaskCtx({ ...(rows.get(String(run.taskId)) || { id: run.taskId, name: rp.taskName || run.taskName }), estimateMs: est, spentMs: tracked });
+      for (const r of reach) {
+        const p = r.trigger.params;
+        const hit = p.what === "estimate" ? est > 0 && tracked >= est : p.what === "before" ? est > 0 && tracked >= est - p.minutes * 60000 && tracked < est : todayTask >= p.minutes * 60000;
+        if (hit) await rulesFire("tracked_reaches", [{ task }], { only: r.id });
+      }
+    }
+  }
+}
+// A dry run: what a rule would do right now, without doing it.
+async function rulesTest(rule) {
+  const { rule: r } = RULES.normRule(rule);
+  const probs = RULES.problems(r);
+  const base = await rulesBaseCtx();
+  const { st, rows } = await rulesRows();
+  const out = { problems: probs, describe: RULES.describe(r), items: [], note: "" };
+  if (!r.trigger) return out;
+  const today = new Date().setHours(0, 0, 0, 0);
+  let cands = [];
+  const t = r.trigger.type;
+  if (t === "timer_started" || t === "timer_stopped" || t === "tracked_reaches") {
+    if (st.running && st.running.taskId) cands = [{ task: rulesTaskCtx(rows.get(String(st.running.taskId)) || { id: st.running.taskId, name: st.running.taskName }) }];
+    else out.note = "No timer is running now, so there's nothing to try it on. It runs when one is.";
+  } else if (t === "task_completed") cands = [...rows.values()].filter((x) => x && x.done).slice(0, 3).map((x) => ({ task: rulesTaskCtx(x) }));
+  else if (t === "task_due_today" || t === "task_overdue") cands = [...rows.values()].filter((x) => x && !x.done && Number(x.dueDateMs) > 0 && (t === "task_due_today" ? new Date(x.dueDateMs).setHours(0, 0, 0, 0) === today : new Date(x.dueDateMs).setHours(0, 0, 0, 0) < today)).map((x) => ({ task: rulesTaskCtx(x) }));
+  else if (t === "site_down" || t === "site_up") {
+    const cfg = await getSiteMonitorConfig().catch(() => null);
+    const sst = (await chrome.storage.local.get("siteMonitorState")).siteMonitorState || {};
+    cands = ((cfg && cfg.sites) || []).filter((s) => s && s.url && sst[s.url] && sst[s.url].up === (t === "site_up")).map((s) => ({ site: { name: s.name || s.url, url: s.url, paused: !!isPausedSite(s) } }));
+    if (!cands.length) out.note = t === "site_down" ? "No site is down right now - it runs when one goes down." : "No site to try it on yet.";
+  } else if (t === "time_of_day") { cands = [{}]; out.note = "It runs at " + RULES.fmtTime(r.trigger.params.hhmm) + " on " + r.trigger.params.days.map((n) => RULES.DAY_NAMES[n]).join(", ") + "."; }
+  else out.note = "It runs when that happens - there's nothing to try it on right now.";
+  for (const c of cands.slice(0, 8)) {
+    const ctx = { ...base, ...c };
+    const cheap = { ...r, conds: r.conds.filter((x) => x.type !== "no_proof") };
+    const met = RULES.condsMet(cheap, ctx);
+    out.items.push({ who: (c.task && c.task.name) || (c.site && c.site.name) || "now", would: met ? r.actions.map(RULES.sayAction) : [],
+      skip: met ? (RULES.needsProofCheck(r) ? "(and only if nothing shows the work - checked when it runs)" : "") : "its conditions don't hold" });
+  }
+  return out;
+}
+
+// ---------- archived tasks (Insights › Health › Archived recently) ----------
+// A task archived in ClickUp vanishes from every list here without a word (all
+// the extension's reads ask for non-archived tasks) - a whole Weekly Production
+// Schedule went, subtasks and all, and nobody noticed. One small read lists the
+// archived tasks assigned to me: about every 30 minutes, and within a minute
+// when a task drops out of my lists without being completed. New ones are
+// notified (grouped by their parent) and kept in cuArchived for 30 days. WHO
+// archived it isn't in ClickUp's API - the task's Activity in ClickUp shows it,
+// one click away.
+const ARCH_EVERY_MS = 30 * 60000, ARCH_SOON_MS = 2 * 60000, ARCH_KEEP_MS = 30 * 86400000;
+let archSoon = false, archRun = null;
+function archiveWatch(force) {
+  if (archRun) return archRun;
+  archRun = (async () => {
+    const cfg = await getClickupConfig().catch(() => null);
+    if (!cfg || !cfg.token || !cfg.teamId || cfg.userId == null) return null;
+    const st = (await getClickupState().catch(() => null)) || {};
+    if (st.rateLimitedUntil > Date.now()) return null;
+    const { cuArchived } = await chrome.storage.local.get("cuArchived");
+    const prev = cuArchived && typeof cuArchived === "object" && Array.isArray(cuArchived.tasks) ? cuArchived : null;
+    const now = Date.now();
+    const gap = prev ? now - (prev.at || 0) : Infinity;
+    if (!force && prev && !(gap >= ARCH_EVERY_MS || (archSoon && gap >= ARCH_SOON_MS))) return prev;
+    archSoon = false;
+    // First time: the last 7 days, kept quietly (no flood of old news).
+    const since = prev ? (prev.at || now) - 10 * 60000 : now - 7 * 86400000;
+    const found = await fetchArchivedMine(bgToken(cfg.token), cfg.teamId, cfg.userId, since);
+    const known = new Map((prev ? prev.tasks : []).map((t) => [t.id, t]));
+    const fresh = found.filter((t) => !known.has(t.id));
+    // The parent's name, for "archived with its parent ..." (a few reads at most).
+    const parents = {};
+    for (const pid of [...new Set(fresh.map((t) => t.parentId).filter(Boolean))].slice(0, 5)) {
+      const p = await getTaskById(cfg.token, pid).catch(() => null);
+      if (p && p.name) parents[pid] = p.name;
+    }
+    for (const t of fresh) { if (parents[t.parentId]) t.parentName = parents[t.parentId]; t.noticedAt = now; known.set(t.id, t); }
+    const tasks = [...known.values()].filter((t) => now - (t.archivedAt || t.noticedAt || now) < ARCH_KEEP_MS)
+      .sort((a, b) => (b.archivedAt || 0) - (a.archivedAt || 0)).slice(0, 200);
+    const out = { at: now, tasks };
+    await chrome.storage.local.set({ cuArchived: out });
+    if (prev && fresh.length) {
+      // One notification per parent (or per task on its own).
+      const groups = new Map();
+      for (const t of fresh) { const k = t.parentId && t.parentName ? "p" + t.parentId : "t" + t.id; if (!groups.has(k)) groups.set(k, []); groups.get(k).push(t); }
+      let n = 0;
+      for (const [k, list] of groups) {
+        if (n++ >= 3) break;
+        const first = list[0];
+        const title = "\uD83D\uDCE6 Archived in ClickUp: " + (k[0] === "p" ? first.parentName : first.name);
+        const msg = k[0] === "p"
+          ? "With " + list.length + " of your task" + (list.length === 1 ? "" : "s") + ": " + list.slice(0, 3).map((t) => t.name).join(", ") + (list.length > 3 ? " and " + (list.length - 3) + " more" : "") + ". Click to see who archived it (Activity)."
+          : (first.client ? first.client + " · " : "") + "Click to see who archived it (Activity in ClickUp).";
+        await notify("arch-" + k, title, msg, undefined, k[0] === "p" ? taskUrlFor(first.parentId) : first.url).catch(() => {});
+      }
+      // Automation rules: "A task of mine is archived".
+      rulesFire("task_archived", fresh.map((t) => ({ task: rulesTaskCtx(t) }))).catch(() => {});
+    }
+    return out;
+  })().catch((e) => { diagLog("archived", (e && e.message) || e); return null; }).finally(() => { archRun = null; });
+  return archRun;
+}
+// A task that was in my lists, not completed, and is gone after a refresh: maybe
+// archived - look within the minute instead of waiting half an hour.
+chrome.storage.onChanged.addListener((ch, area) => {
+  if (area !== "local" || !ch.clickupState) return;
+  const a = ch.clickupState.oldValue, b = ch.clickupState.newValue;
+  if (!a || !b) return;
+  const ids = (s) => { const m = new Map(); for (const x of [s, s.todayFilter, s.thisWeek, s.nextWeek].filter(Boolean)) for (const k of ["tasks", "deadlineTasks"]) for (const t of x[k] || []) if (t && t.id != null) m.set(String(t.id), t); return m; };
+  const before = ids(a), after = ids(b);
+  const today = new Date().setHours(0, 0, 0, 0);
+  for (const [id, t] of before) {
+    if (after.has(id) || t.done) continue;
+    // Its dates still fall inside what the lists cover: not just a week rolling over.
+    if (!t.dueDateMs || Number(t.dueDateMs) >= today) { archSoon = true; break; }
+  }
+});
+
 const CMT_PER_RUN = 6, CMT_RECHECK_MS = 3 * 3600000;
 let cmtScanning = false;
 async function scanComments(more) {
@@ -3151,6 +3640,8 @@ async function scanComments(more) {
     for (const p of pings.slice(0, 3)) {
       await notify("cmt-" + p.id + "-" + p.c.at, "\uD83D\uDCAC " + p.c.who + " mentioned you", "“" + p.name + "”: " + p.c.text, undefined, p.url).catch(() => {});
     }
+    // Automation rules: "Someone mentions me in a comment".
+    if (pings.length) rulesFire("comment_mention", pings.map((p) => ({ task: rulesTaskCtx(rows.get(p.id) || { id: p.id, name: p.name, url: p.url }) }))).catch(() => {});
   } finally { cmtScanning = false; }
 }
 
@@ -5687,13 +6178,26 @@ function extraCloseDue(t, now) {
   const at = new Date(Number(t.dueDateMs)); at.setHours(EXTRA_CLOSE_HOUR, 0, 0, 0);
   return now >= at.getTime();
 }
+// A week that is office holidays from Monday to Friday (Dashain...) needs no
+// Extra Task: its occurrence is closed at once, so it never sits in the lists
+// and ClickUp makes the next working week's. A week with any working day keeps it.
+function extraWeekAllHoliday(t) {
+  if (!t || !t.id || t.done || !(Number(t.dueDateMs) > 0)) return false;
+  const d = new Date(Number(t.dueDateMs)); d.setHours(12, 0, 0, 0);
+  const dow = d.getDay();
+  const mon = new Date(d);
+  if (dow === 0) mon.setDate(mon.getDate() + 1); else if (dow === 6) mon.setDate(mon.getDate() + 2); else mon.setDate(mon.getDate() - (dow - 1));
+  for (let i = 0; i < 5; i++) { const x = new Date(mon); x.setDate(mon.getDate() + i); if (!isCompanyHoliday(x.getTime())) return false; }
+  return true;
+}
 async function maybeCloseExtraTask() {
   const s = await getSettings();
   if (s.clickupExtraAutoClose === false) return;
   const st = (await getClickupState().catch(() => null)) || {};
   const ex = st.extraTask;
   const now = Date.now();
-  if (!extraCloseDue(ex, now)) return;
+  const skip = extraWeekAllHoliday(ex);
+  if (!skip && !extraCloseDue(ex, now)) return;
   const { extraAutoClosed, extraCloseTry } = await chrome.storage.local.get(["extraAutoClosed", "extraCloseTry"]);
   const done = extraAutoClosed && typeof extraAutoClosed === "object" ? extraAutoClosed : {};
   if (done[ex.id]) return;
@@ -5708,7 +6212,7 @@ async function maybeCloseExtraTask() {
   const t = await getTaskById(cfg.token, String(ex.id)).catch(() => null);
   if (!t) return;
   const fresh = { id: String(ex.id), done: isTaskDone(t), dueDateMs: Number(t.dueDateMs || t.due_date) || 0 };
-  if (!extraCloseDue(fresh, now)) return;
+  if (skip ? !extraWeekAllHoliday(fresh) : !extraCloseDue(fresh, now)) return; // (its dates moved meanwhile: left alone)
   const cur = await getCurrentTimeEntry(cfg.token, cfg.teamId).catch(() => null);
   if (cur && String(cur.taskId) === fresh.id) return; // still tracking on it: wait until it's stopped
   try { await setTaskStatus(cfg.token, fresh.id, "complete"); }
@@ -5723,8 +6227,9 @@ async function maybeCloseExtraTask() {
   extraTaskCache.clear();
   refreshClickup({ includeTasks: true }).catch(() => {});
   setTimeout(() => { extraTaskCache.clear(); clearFilterCache(); refreshClickup({ includeTasks: true, forceWeeks: true, forceWeekly: true }).catch(() => {}); }, 90000);
-  await notify("cu-extra-closed-" + now, "Extra Task closed for this week",
-    (ex.name || "Your Extra Task") + " was still open after 5 PM on its due day, so it was marked complete. ClickUp now creates next week's one.",
+  await notify("cu-extra-closed-" + now, skip ? "Holiday week: Extra Task skipped" : "Extra Task closed for this week",
+    skip ? (ex.name || "Your Extra Task") + " was for a week of office holidays, so it was closed straight away. ClickUp now creates the one for the next working week."
+      : (ex.name || "Your Extra Task") + " was still open after 5 PM on its due day, so it was marked complete. ClickUp now creates next week's one.",
     undefined, t.url || ex.url || null);
 }
 // ---------- the Extra Task's dates: Monday to Friday of one week ----------
@@ -6092,6 +6597,13 @@ async function updateBadge() {
     else if (st.lastResult && st.lastResult !== "success" && isToday(st.lastRunAt)) attention++;
     else pending++;
   }
+  // The options sidebar shows this count on Agent Router (nav-badges.js) - "since"
+  // is when it went above 0, so a count you've already looked at stays quiet.
+  try {
+    const { arAttention: was } = await chrome.storage.local.get("arAttention");
+    const n0 = (was && was.n) || 0;
+    if (n0 !== attention) await chrome.storage.local.set({ arAttention: { n: attention, since: attention > 0 && n0 > 0 ? (was.since || Date.now()) : attention > 0 ? Date.now() : 0 } });
+  } catch (e) {}
   let text = "";
   let color = "#6b7280";
   if (accounts.length === 0) text = "";
@@ -6801,7 +7313,9 @@ function perfScores(perf, targetMs, now = Date.now()) {
 }
 async function teamSummary() {
   const { teamSummaryCache } = await chrome.storage.local.get("teamSummaryCache");
-  if (teamSummaryCache && Date.now() - (teamSummaryCache.at || 0) < 3 * 3600000) return teamSummaryCache;
+  // A summary whose open tasks couldn't be read (ClickUp busy) is kept only 20
+  // minutes, not 3 hours - so the admin's Health column fills in at the next try.
+  if (teamSummaryCache && Date.now() - (teamSummaryCache.at || 0) < (teamSummaryCache.h ? 3 * 3600000 : 20 * 60000)) return teamSummaryCache;
   const cfg = await getClickupConfig().catch(() => null);
   if (!cfg || !cfg.token || cfg.userId == null) return null;
   const settings = await getSettings().catch(() => ({}));
@@ -6821,6 +7335,12 @@ async function teamSummary() {
         bl: Object.keys(st.waiting || {}).length };
     }
   } catch (e) {}
+  // Couldn't read them this time: the last good counts (under a day old) rather
+  // than an empty Health cell; with none, the short cache above retries soon.
+  if (!out.h && teamSummaryCache && teamSummaryCache.h && Date.now() - (teamSummaryCache.hAt || teamSummaryCache.at || 0) < 24 * 3600000) {
+    out.h = teamSummaryCache.h;
+    out.hAt = teamSummaryCache.hAt || teamSummaryCache.at;
+  } else if (out.h) out.hAt = out.at;
   if (!out.p && !out.h) return null;
   await chrome.storage.local.set({ teamSummaryCache: out });
   return out;
@@ -6963,6 +7483,12 @@ async function hubPollReplies(force) {
     const was = Number(seen[t.id]) || 0;
     if (!first && t.lastAt > was && t.lastRole === "admin") {
       const done = t.status === "resolved";
+      try {
+        const { hubUnread } = await chrome.storage.local.get("hubUnread");
+        const list = (Array.isArray(hubUnread) ? hubUnread : []).filter((x) => x && x.id !== t.id);
+        list.push({ id: t.id, title: String(t.title || "").slice(0, 120), at: Number(t.lastAt) || Date.now(), resolved: done });
+        await chrome.storage.local.set({ hubUnread: list.slice(-30) });
+      } catch (e) {}
       await notify("hub-" + t.id + "-" + t.lastAt, done ? "Resolved" + (t.fixedIn ? " in v" + t.fixedIn : "") + ": " + t.title : "Admin replied: " + t.title,
         done ? "Your admin marked this issue resolved." + (t.fixedIn ? " Update to v" + t.fixedIn + " if you haven't." : "") : "Open Help & issues to read the reply.",
         null, chrome.runtime.getURL("options.html?thread=" + encodeURIComponent(t.id) + "#hub"));
@@ -7997,6 +8523,8 @@ chrome.alarms.onAlarm.addListener(async (alarm) => {
     // adding one on the 30-min check only guarantees an overlapping burst.
     autoSyncIfSignedIn();
   } else if (alarm.name === UPDATE_ALARM) {
+    rulesTick().catch((e) => diagLog("rules", "tick: " + ((e && e.message) || e))); // Automation rules: time of day, timers, due / overdue, waits
+    archiveWatch(false).catch(() => {}); // archived tasks: self-gated (30 min, or a minute after a task vanished)
     await checkForUpdate().catch(() => {});
     await maybeAutoUpdate().catch(() => {});
     // Backstop for the wrap-up alarm (missed while asleep / Chrome closed).
@@ -8822,7 +9350,8 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         const { hubSeen } = await chrome.storage.local.get("hubSeen");
         const seen = hubSeen && typeof hubSeen === "object" ? { ...hubSeen } : {};
         seen[String(msg.id)] = Math.max(Number(seen[String(msg.id)]) || 0, Number(msg.lastAt) || Date.now());
-        await chrome.storage.local.set({ hubSeen: seen });
+        const { hubUnread } = await chrome.storage.local.get("hubUnread");
+        await chrome.storage.local.set({ hubSeen: seen, hubUnread: (Array.isArray(hubUnread) ? hubUnread : []).filter((x) => x && x.id !== String(msg.id)) });
         sendResponse({ ok: true });
         break;
       }
@@ -10518,6 +11047,26 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
           sendResponse({ ok: true, added: add.length, total: next.total, done: next.total - next.ids.length });
           break;
         }
+        if (cmd === "autorun-set-waiting") {
+          // The tasks still WAITING in a running queue, in a new order (the numbered
+          // boxes edit them live). The one running now (ids[0]) is never touched;
+          // a task taken out loses the auto-complete mark the queue gave it.
+          const { autoRunQueue: q } = await chrome.storage.local.get("autoRunQueue");
+          if (!q || !Array.isArray(q.ids) || !q.ids.length) { sendResponse({ ok: false, none: true, error: "No queue is running." }); break; }
+          const names = msg.names && typeof msg.names === "object" ? msg.names : {};
+          const run = String(q.ids[0]);
+          const waiting = (Array.isArray(msg.waiting) ? msg.waiting : []).map(String).filter((id) => id && id !== run).filter((id, i, a) => a.indexOf(id) === i).slice(0, 29);
+          const done = (Number(q.total) || q.ids.length) - q.ids.length;
+          const gone = q.ids.slice(1).map(String).filter((id) => !waiting.includes(id));
+          const { autoCompleteTasks: ac } = await chrome.storage.local.get("autoCompleteTasks");
+          const marks = { ...(ac || {}) };
+          for (const id of gone) delete marks[id];
+          for (const id of waiting) if (!marks[id]) marks[id] = { name: names[id] || (q.names || {})[id] || "", at: Date.now() };
+          const next = { ...q, ids: [run].concat(waiting), names: { ...(q.names || {}), ...names }, total: done + 1 + waiting.length };
+          await chrome.storage.local.set({ autoRunQueue: next, autoCompleteTasks: marks });
+          sendResponse({ ok: true, total: next.total, done });
+          break;
+        }
         if (cmd === "autorun-stop") {
           await chrome.storage.local.remove("autoRunQueue");
           sendResponse({ ok: true });
@@ -10650,6 +11199,89 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         // project, with its client and the links in its description. Asked when the
         // page opens / Refresh is pressed (kept a minute), never on a timer.
         sendResponse(await getDoneToday(!!msg.force));
+        break;
+      }
+      case "ARCHIVED_GET": {
+        let r = await archiveWatch(!!msg.force).catch(() => null);
+        if (!r) r = (await chrome.storage.local.get("cuArchived")).cuArchived || null;
+        sendResponse({ ok: true, data: r });
+        break;
+      }
+      case "ARCHIVED_UNARCHIVE": {
+        const cfg = await getClickupConfig();
+        if (!cfg || !cfg.token) { sendResponse({ ok: false, error: "ClickUp isn't connected." }); break; }
+        try {
+          await unarchiveTask(cfg.token, String(msg.id));
+          const { cuArchived } = await chrome.storage.local.get("cuArchived");
+          if (cuArchived && Array.isArray(cuArchived.tasks)) await chrome.storage.local.set({ cuArchived: { ...cuArchived, tasks: cuArchived.tasks.filter((t) => t.id !== String(msg.id)) } });
+          clearFilterCache();
+          refreshClickup({ includeTasks: true }).catch(() => {});
+          sendResponse({ ok: true });
+        } catch (e) { sendResponse({ ok: false, error: String((e && e.message) || e) }); }
+        break;
+      }
+      // ---- Automation rules (the Automation tab) ----
+      case "RULES_GET": {
+        const g = await chrome.storage.local.get(["autoRules", "autoRuleLog", "autoRulePending", "autoRuleQueue", "autoRuleRuns"]);
+        sendResponse({ ok: true, rules: Array.isArray(g.autoRules) ? g.autoRules : [], log: (Array.isArray(g.autoRuleLog) ? g.autoRuleLog : []).slice(0, 60),
+          pending: Array.isArray(g.autoRulePending) ? g.autoRulePending : [], queued: (Array.isArray(g.autoRuleQueue) ? g.autoRuleQueue : []).length, runs: g.autoRuleRuns || {} });
+        break;
+      }
+      case "RULES_SAVE": {
+        const { rule, dropped } = RULES.normRule(msg.rule);
+        const probs = RULES.problems(rule);
+        if (probs.length) rule.on = false; // never switched on while it can't run
+        const all = await rulesAll();
+        const i = all.findIndex((r) => r.id === rule.id);
+        if (i >= 0) { rule.createdAt = all[i].createdAt || rule.createdAt; all[i] = rule; } else all.push(rule);
+        await chrome.storage.local.set({ autoRules: all.slice(0, 100) });
+        sendResponse({ ok: true, rule, problems: probs, dropped });
+        break;
+      }
+      case "RULES_TOGGLE": {
+        const all = await rulesAll();
+        const r = all.find((x) => x.id === msg.id);
+        if (!r) { sendResponse({ ok: false, error: "That rule is gone." }); break; }
+        const probs = msg.on ? RULES.problems(r) : [];
+        if (probs.length) { sendResponse({ ok: false, problems: probs }); break; }
+        r.on = !!msg.on;
+        await chrome.storage.local.set({ autoRules: all });
+        sendResponse({ ok: true });
+        break;
+      }
+      case "RULES_DELETE": {
+        const all = (await rulesAll()).filter((x) => x.id !== msg.id);
+        const g = await chrome.storage.local.get(["autoRuleQueue", "autoRulePending"]);
+        await chrome.storage.local.set({ autoRules: all, autoRuleQueue: (g.autoRuleQueue || []).filter((x) => x.ruleId !== msg.id), autoRulePending: (g.autoRulePending || []).filter((x) => x.ruleId !== msg.id) });
+        sendResponse({ ok: true });
+        break;
+      }
+      case "RULES_TEST": {
+        try { sendResponse({ ok: true, ...(await rulesTest(msg.rule)) }); }
+        catch (e) { sendResponse({ ok: false, error: String((e && e.message) || e) }); }
+        break;
+      }
+      case "RULES_UNDO": {
+        try { sendResponse(await rulesUndo(msg.id)); }
+        catch (e) { sendResponse({ ok: false, error: String((e && e.message) || e) }); }
+        break;
+      }
+      case "RULES_PENDING": {
+        // msg.approve true: run it now for those tasks; false: drop it.
+        const g = await chrome.storage.local.get("autoRulePending");
+        const list = Array.isArray(g.autoRulePending) ? g.autoRulePending : [];
+        const p = list.find((x) => x.id === msg.id);
+        await chrome.storage.local.set({ autoRulePending: list.filter((x) => x.id !== msg.id) });
+        if (p && msg.approve) {
+          const rule = (await rulesAll()).find((r) => r.id === p.ruleId);
+          if (rule) for (const ctx of p.ctxs || []) await rulesRun(rule, ctx, 0, "approved by you");
+        }
+        sendResponse({ ok: true });
+        break;
+      }
+      case "RULES_CLEAR_LOG": {
+        await chrome.storage.local.set({ autoRuleLog: [] });
+        sendResponse({ ok: true });
         break;
       }
       case "CLICKUP_OVERDUE": {
