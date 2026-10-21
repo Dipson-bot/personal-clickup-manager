@@ -3176,6 +3176,23 @@ async function rulesNextTask(exceptId) {
   return pick.find((t) => Number(t.estimateMs) > 0) || pick[0] || null;
 }
 // One action. Returns { did: "what happened", undo?: {...}, changed?: bool }.
+// Ready-made rules put in the Rules list once, switched off (one click turns them
+// on). Deleting one is respected: it is never added back.
+const RULE_SEEDS = ["Weekly Extra Task"];
+async function rulesSeed() {
+  const g = await chrome.storage.local.get(["autoRules", "autoRuleSeeded"]);
+  const seeded = Array.isArray(g.autoRuleSeeded) ? g.autoRuleSeeded : [];
+  const todo = RULE_SEEDS.filter((n) => !seeded.includes(n));
+  if (!todo.length) return;
+  const rules = Array.isArray(g.autoRules) ? g.autoRules.slice() : [];
+  for (const n of todo) {
+    const tpl = (RULES.TEMPLATES || []).find((x) => x.name === n);
+    if (!tpl || rules.some((r) => r && r.name === n)) continue;
+    const { rule } = RULES.normRule({ ...tpl, on: false });
+    rules.push(rule);
+  }
+  await chrome.storage.local.set({ autoRules: rules, autoRuleSeeded: seeded.concat(todo) });
+}
 async function rulesDoAction(rule, a, ctx, cfg) {
   const p = a.params || {}, t = ctx.task;
   const fill = (s) => RULES.fill(s, ctx);
@@ -3233,6 +3250,59 @@ async function rulesDoAction(rule, a, ctx, cfg) {
       const due = shiftDueToDay(task && task.dueDateMs, d.getTime());
       await setTaskDueDate(cfg.token, t.id, due, task ? task.dueDateHasTime : null);
       return { did: "moved " + t.name + " to " + d.toLocaleDateString([], { weekday: "short", month: "short", day: "numeric" }), undo: { op: "due", taskId: t.id, prev: (task && task.dueDateMs) || null, hasTime: task ? task.dueDateHasTime : null }, changed: true };
+    }
+    case "create_extra": {
+      // This week's Monday to Friday (on a weekend: next week's).
+      const now = new Date(ctx.now || Date.now());
+      const mon = new Date(now); mon.setHours(0, 0, 0, 0);
+      const dow = mon.getDay();
+      if (dow === 0) mon.setDate(mon.getDate() + 1); else if (dow === 6) mon.setDate(mon.getDate() + 2); else mon.setDate(mon.getDate() - (dow - 1));
+      const fri = new Date(mon); fri.setDate(mon.getDate() + 4); fri.setHours(23, 59, 59, 999);
+      const fmt = (d) => d.toLocaleDateString([], { month: "short", day: "numeric" });
+      const label = fmt(mon) + " \u2013 " + fmt(fri);
+      let work = 0;
+      for (let i = 0; i < 5; i++) { const x = new Date(mon); x.setDate(mon.getDate() + i); if (!isCompanyHoliday(x.getTime())) work++; }
+      if (!work) return { did: "no Extra Task for " + label + " - the whole week is holidays" };
+      const hint = cfg.username || cfg.email || "";
+      // Already covered this week? Any Extra Task of mine whose start..due span
+      // touches Mon-Fri - a weekly one, one with odd dates (due next Monday), or a
+      // daily one. Always a fresh look (the lookup cache is an hour long).
+      const covers = (x) => {
+        if (!x) return false;
+        const due = Number(x.dueDateMs) || 0, st = Number(x.startDateMs) || due;
+        return !!due && Math.min(st, due) <= fri.getTime() && due >= mon.getTime();
+      };
+      extraTaskCache.clear();
+      const have = await discoverExtraTaskFor(cfg, cfg.userId, hint, { fromTs: mon.getTime(), toTs: fri.getTime() });
+      if (have === undefined) throw new Error("ClickUp didn't answer - it tries again next time");
+      if (covers(have)) return { did: "this week's Extra Task is already there (" + (have.name || "Extra Tasks") + ")" };
+      // An earlier one still open: if it repeats in ClickUp, closing it makes this
+      // week's - making one here too would be a duplicate. Nothing until it's closed.
+      const back = new Date(mon); back.setDate(mon.getDate() - 35);
+      const prev = await discoverExtraTaskFor(cfg, cfg.userId, hint, { fromTs: back.getTime(), toTs: mon.getTime() - 1 });
+      if (prev === undefined) throw new Error("ClickUp didn't answer - it tries again next time");
+      if (prev && !prev.done) return { did: "not made: your earlier Extra Task (" + (prev.name || "Extra Tasks") + ") is still open - close it first (if it repeats in ClickUp, that makes this week's one)" };
+      // A tracking task added by link in ClickUp setup (any name) that covers this week.
+      const sset = await getSettings().catch(() => ({}));
+      for (const u of (Array.isArray(sset.clickupDeadlineTaskUrls) ? sset.clickupDeadlineTaskUrls : []).slice(0, 6)) {
+        const id = parseTaskIdFromUrl(u);
+        if (!id) continue;
+        const ct = await getTaskById(cfg.token, id).catch(() => null);
+        if (ct && !/^(closed|done)$/i.test(ct.statusType || "") && covers(ct)) return { did: "not made: your tracking task " + (ct.name || "") + " already covers this week" };
+      }
+      // Where and what: the List and name of the last one (remembered when found).
+      const { extraTaskMemo: memo } = await chrome.storage.local.get("extraTaskMemo").catch(() => ({}));
+      let listId = (have && have.listId) || (prev && prev.listId) || (memo && memo.listId) || "";
+      let name = (have && have.name) || (prev && prev.name) || (memo && memo.name) || "";
+      if (!listId) throw new Error("no earlier Extra Task found to copy its List from - make one in ClickUp once, then the rule makes the next ones");
+      if (!name) name = "Extra Tasks - " + (cfg.username || "me");
+      const hours = Math.max(1, Math.min(60, Number(p.hours) || 7));
+      const made = await createTask(cfg.token, listId, { name, startDateMs: mon.getTime() + 9 * 3600000, dueDateMs: new Date(fri).setHours(17, 0, 0, 0), estimateMs: hours * 3600000, assignees: cfg.userId != null ? [cfg.userId] : [] });
+      await chrome.storage.local.set({ extraTaskMemo: { listId, name, at: Date.now() } }).catch(() => {});
+      extraTaskCache.clear();
+      clearFilterCache();
+      refreshClickup({ includeTasks: true, forceWeeks: true }).catch(() => {});
+      return { did: "created " + name + " for " + label + " (" + hours + "h, " + RULES.fmtMin(Math.round(hours * 60 / 5)) + " a day)", changed: true, url: made && made.url };
     }
     case "comment": {
       if (!t) return { did: "no task" };
@@ -3931,6 +4001,9 @@ async function discoverExtraTaskFor(cfg, userId, hint, range) {
     return hit ? hit.value : undefined;
   }
   extraTaskCache.set(key, { at: Date.now(), value });
+  if (value && value.listId && String(userId != null ? userId : cfg.userId) === String(cfg.userId)) {
+    chrome.storage.local.set({ extraTaskMemo: { listId: value.listId, name: value.name || "", at: Date.now() } }).catch(() => {});
+  }
   return value;
 }
 
@@ -11222,6 +11295,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       }
       // ---- Automation rules (the Automation tab) ----
       case "RULES_GET": {
+        await rulesSeed().catch(() => {});
         const g = await chrome.storage.local.get(["autoRules", "autoRuleLog", "autoRulePending", "autoRuleQueue", "autoRuleRuns"]);
         sendResponse({ ok: true, rules: Array.isArray(g.autoRules) ? g.autoRules : [], log: (Array.isArray(g.autoRuleLog) ? g.autoRuleLog : []).slice(0, 60),
           pending: Array.isArray(g.autoRulePending) ? g.autoRulePending : [], queued: (Array.isArray(g.autoRuleQueue) ? g.autoRuleQueue : []).length, runs: g.autoRuleRuns || {} });

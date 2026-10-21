@@ -1,5 +1,8 @@
 # Changelog
 
+## v4.2.7
+- The taskbar timer download (Get the taskbar timer) is now ClickUp Tracker 0.4.0: a parent task's timer goes on from its subtasks' time when its estimate covers them. Installed copies update themselves.
+
 ## v4.2.6
 - The Time column of a task list can now be made wider, like Who, Client and Due: drag the small line on its left edge to the left, and the whole "4m · 3m today · 4h 35m in all" fits instead of being cut off. Double-click the line for the normal width again. It is remembered separately for the dashboard and for the popup and side panel.
 - Site monitor shows a check as it happens: while it is checking, each site that hasn't answered yet says "Checking now..." instead of its old "Not checked for 8h 35m", and turns into its real status as soon as its own answer comes in. The banner counts them ("Checking 36 sites now... 12 of 36 done") and says plainly if a check couldn't start, instead of claiming to check for ever.

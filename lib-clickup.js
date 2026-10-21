@@ -1587,6 +1587,7 @@ export async function findExtraTaskByName({ token, teamId, userId, usernameHint 
           startDateMs: Number(t.start_date) || 0,
           dueDateMs: Number(t.due_date) || 0,
           done: isTaskDone(t),
+          listId: t.list && t.list.id != null ? String(t.list.id) : "", // where a new week's one is made (Weekly Extra Task rule)
           hasHint: !!(hint && name.toLowerCase().includes(hint)),
         });
       }

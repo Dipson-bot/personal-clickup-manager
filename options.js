@@ -10544,7 +10544,7 @@ if ($("admCalCard")) {
 // Where the timer shows (Floating window / Taskbar / Both / Neither) is picked once
 // and kept; the Dashboard card invites people to try the taskbar until they pick.
 const DESK_REL = "https://github.com/Dipson-bot/personal-clickup-manager/releases";
-const DESK_TAG = "desktop-v0.3.9";
+const DESK_TAG = "desktop-v0.4.0";
 let deskOs = "";
 async function deskPlatform() {
   if (deskOs) return deskOs;

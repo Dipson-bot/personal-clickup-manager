@@ -55,6 +55,11 @@
     open_url: { label: "Open a link", f: [{ k: "url", type: "text", label: "", def: "https://" }] },
     remind_open: { label: "Tell me what's still open", f: [{ k: "range", type: "select", label: "", opts: { today: "due today", week: "due this week", overdue: "overdue" }, def: "week" }] },
     wait: { label: "Wait", f: [{ k: "minutes", type: "minutes", label: "", def: 10 }] },
+    // The weekly "Extra Tasks - <name>" in ClickUp (Mon-Fri, your weekly hours),
+    // made by the extension instead of by hand. Nothing is made when this week
+    // already has one, or when the whole week is office holidays.
+    create_extra: { label: "Create this week's Extra Task", changes: true, f: [{ k: "hours", type: "select", label: "Hours a week",
+      opts: { "5": "5h a week (1h a day)", "6": "6h a week (1h 12m a day)", "7": "7h a week (1h 24m a day)", "8": "8h a week (1h 36m a day)", "10": "10h a week (2h a day)", "15": "15h a week (3h a day)", "20": "20h a week (4h a day)" }, def: "7" }] },
   };
   const DAY_NAMES = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
   const LIMITS = { perDay: 20, bulk: 3, maxConds: 6, maxActions: 6 };
@@ -167,6 +172,7 @@
       case "complete_task": return "mark it complete";
       case "set_status": return "set its status to " + q(p.status);
       case "move_due": return "move its due date to " + ACTIONS.move_due.f[0].opts[p.to];
+      case "create_extra": return "create this week's Extra Task (" + (ACTIONS.create_extra.f[0].opts[p.hours] || p.hours + "h a week") + ")";
       case "comment": return "post the comment " + q(String(p.text).slice(0, 60));
       case "open_url": return "open " + p.url;
       case "remind_open": return "tell me what's still open (" + ACTIONS.remind_open.f[0].opts[p.range] + ")";
@@ -248,6 +254,9 @@
     { name: "Friday tidy-up", why: "At 4:30 on Friday, what's still open this week, so nothing slips to Monday unnoticed.",
       trigger: { type: "time_of_day", params: { hhmm: "16:30", days: [5] } }, conds: [{ type: "workday" }],
       actions: [{ type: "remind_open", params: { range: "week" } }] },
+    { name: "Weekly Extra Task", why: "Your Extra Tasks - <name> is made in ClickUp each working week, Monday to Friday, with your weekly hours (pick yours below) - no need to make it by hand. Checked every working day at 9:00, so a Monday off doesn't miss the week; a week of holidays gets none.",
+      trigger: { type: "time_of_day", params: { hhmm: "09:00", days: [1, 2, 3, 4, 5] } }, conds: [{ type: "workday" }],
+      actions: [{ type: "create_extra", params: { hours: "7" } }] },
     { name: "Someone needs me", why: "A mention opens the task straight away.",
       trigger: { type: "comment_mention" }, conds: [],
       actions: [{ type: "open_task" }] },
