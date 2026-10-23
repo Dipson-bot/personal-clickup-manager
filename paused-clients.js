@@ -82,7 +82,7 @@
     const label = mins >= 1 ? " Paused \u00b7 " + dur + " tracked" : " Paused";
     const tx = pill.querySelector(".t");
     if (tx && tx.textContent !== label) tx.textContent = label;
-    pill.title = tip(p) + (t && !t.done ? " Its estimate isn't counted in any total while the client is paused." : "") +
+    pill.title = tip(p) + (t && !t.done ? " While the client is paused its estimate counts in the totals only up to the time already tracked on it." : "") +
       (mins >= 1 ? " " + dur + " was tracked on it anyway - that time still counts in your tracked time." : "");
   }
   let queued = false;

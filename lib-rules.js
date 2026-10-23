@@ -143,7 +143,7 @@
       case "task_overdue": return "a task is overdue (checked at " + fmtTime(p.hhmm) + ")";
       case "time_of_day": {
         const d = (p.days || []).slice().sort();
-        const days = d.join(",") === "1,2,3,4,5" ? "on weekdays" : d.length === 7 ? "every day" : "on " + d.map((n) => DAY_NAMES[n]).join(", ");
+        const days = d.join(",") === "1,2,3,4,5" ? "Monday to Friday" : d.length === 7 ? "every day" : "on " + d.map((n) => DAY_NAMES[n]).join(", ");
         return "it is " + fmtTime(p.hhmm) + " " + days;
       }
       default: return TRIGGERS[t.type].label.charAt(0).toLowerCase() + TRIGGERS[t.type].label.slice(1);
@@ -254,8 +254,8 @@
     { name: "Friday tidy-up", why: "At 4:30 on Friday, what's still open this week, so nothing slips to Monday unnoticed.",
       trigger: { type: "time_of_day", params: { hhmm: "16:30", days: [5] } }, conds: [{ type: "workday" }],
       actions: [{ type: "remind_open", params: { range: "week" } }] },
-    { name: "Weekly Extra Task", why: "Your Extra Tasks - <name> is made in ClickUp each working week, Monday to Friday, with your weekly hours (pick yours below) - no need to make it by hand. Checked every working day at 9:00, so a Monday off doesn't miss the week; a week of holidays gets none.",
-      trigger: { type: "time_of_day", params: { hhmm: "09:00", days: [1, 2, 3, 4, 5] } }, conds: [{ type: "workday" }],
+    { name: "Weekly Extra Task", why: "For anyone whose Extra Task does NOT already repeat in ClickUp: the extension makes your Extra Tasks - <name> for each working week instead, Monday to Friday with your weekly hours (pick yours below). It checks at 8:00 AM on each working day (so a Monday off doesn't miss the week), makes nothing when that week already has one, and none for a week of holidays. If your Extra Task repeats in ClickUp, turn that repeat off first - switching this on warns you.",
+      trigger: { type: "time_of_day", params: { hhmm: "08:00", days: [1, 2, 3, 4, 5] } }, conds: [{ type: "workday" }],
       actions: [{ type: "create_extra", params: { hours: "7" } }] },
     { name: "Someone needs me", why: "A mention opens the task straight away.",
       trigger: { type: "comment_mention" }, conds: [],

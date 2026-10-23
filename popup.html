@@ -355,6 +355,8 @@
   .cu-task .cu-due { width: 50px; box-sizing: border-box; text-align: center; overflow: hidden; text-overflow: ellipsis; }
   .cu-task .estpairs { flex: 0 0 auto; width: 118px; box-sizing: border-box; overflow: hidden; }
   .cu-task .estpairs > * { white-space: nowrap; }
+  /* the previous rows, kept while a new filter's tasks load (no blank flash) */
+  #cuTaskList.cu-stale { position: relative; opacity: .45; pointer-events: none; transition: opacity .15s; }
   /* Narrow lists (the popup, a slim side panel): the row gives things up in order
      so the task name always keeps room and no column runs over the next one -
      first the parent name before a subtask (still in the name tooltip), then the
@@ -373,13 +375,19 @@
     .cu-tasklist .cu-task .nmwrap, .cu-tasklist .cu-task { gap: 5px; }
   }
   @container cutl (max-width: 470px) { .cu-tasklist .cu-task .cu-client { display: none; } }
-  @container cutl (max-width: 380px) { .cu-tasklist .cu-task .cu-who, .cu-tasklist .cu-task .tn-marks { display: none; } }
+  /* narrow: who goes; 📌 / 📝 show only on the row under the pointer (or when pinned / with notes / unread comments) - they used to vanish for good */
+  @container cutl (max-width: 380px) { .cu-tasklist .cu-task .cu-who { display: none; } .cu-tasklist .cu-task:not(:hover) .tn-marks:not(:has(.on, .tn-cmt:not([hidden]))) { display: none; } }
   @container cutl (max-width: 320px) { .cu-tasklist .cu-task .cu-due { display: none; } }
   /* Split by week: a heading per week (a month heading above them when the list spans months) */
   .cu-mgroup { margin: 10px 0 2px; padding: 4px 8px; border-radius: 7px; background: color-mix(in srgb, var(--indigo) 14%, transparent); font-size: 11.5px; color: var(--muted); }
   .cu-mgroup b { color: var(--text); font-size: 12px; }
   .cu-wkgroup { margin: 8px 0 2px; padding: 3px 7px; border-left: 3px solid var(--indigo); background: color-mix(in srgb, var(--indigo) 7%, transparent); border-radius: 0 6px 6px 0; font-size: 11px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .cu-mgroup:first-child, .cu-wkgroup:first-child { margin-top: 2px; }
+  /* a client heading (Tasks list with clients ticked, Explore): one line - name, totals (cut with … when narrow), buttons on the right */
+  .cu-mgroup.ex-client { display: flex; align-items: center; gap: 4px 8px; white-space: nowrap; }
+  .cu-mgroup.ex-client > b { flex: none; max-width: 45%; overflow: hidden; text-overflow: ellipsis; }
+  .cu-mgroup.ex-client > span:not(.pcm-chtools) { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+  .cu-mgroup.ex-client > .cu-tgbtn, .cu-mgroup.ex-client > .pcm-chtools { flex: none; }
   .cu-wkgroup b { color: var(--text); }
   .cu-wkgroup.now { border-left-color: var(--green); background: color-mix(in srgb, var(--green) 9%, transparent); }
   .est-guess, .est-staged { margin-right: 3px; padding: 0 5px; border-radius: 999px; font-size: 10.5px; font-weight: 700; cursor: pointer; white-space: nowrap; }
@@ -891,6 +899,8 @@
   <script src="task-notes.js"></script>
   <script src="task-dupes.js"></script>
 <script src="rollup-help.js"></script>
+<script src="week-fold.js"></script>
+<script src="ar-status.js"></script>
   <script src="local-tasks.js"></script>
   <script src="ui-extras.js"></script>
   <script src="simple-view.js"></script>

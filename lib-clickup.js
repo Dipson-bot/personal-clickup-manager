@@ -1236,6 +1236,7 @@ export async function getTaskPanel(token, taskId, force) {
     name: (t && t.name) || "",
     url: (t && t.url) || taskUrlFor(key),
     status: (t && t.status && t.status.status) || "",
+    startDateMs: t && t.start_date ? Number(t.start_date) : null,
     dueDateMs: t && t.due_date ? Number(t.due_date) : null,
     estimateMs: Number(t && t.time_estimate) || 0,
     list: (t && t.list && t.list.name) || "",
@@ -1670,7 +1671,7 @@ function resolveCustomFieldValue(cf) {
 // The client name from a task's custom fields (the first client-named field with
 // a non-empty value), or "" when the task has no such field.
 // Paused clients (Admin › Paused clients, set by the background): an unfinished
-// task of theirs adds NO estimate to any total - today, the 7h target, the week,
+// task of theirs adds no estimate beyond what was already tracked on it (countedEst) - today, the 7h target, the week,
 // date ranges - while its tracked time still counts. Its row stays (struck
 // through on the pages), marked paused: true. Same matching as paused-clients.js:
 // letters and digits only, exact or one a prefix of the other.
@@ -1690,6 +1691,14 @@ export function isPausedTask(t) {
     if (pausedKeys.some((p) => k === p || (k.length >= 4 && p.length >= 4 && (k.startsWith(p) || p.startsWith(k))))) return true;
   }
   return false;
+}
+// What a paused client's unfinished task adds to the estimate totals: the part
+// already worked (up to its tracked time), so the time tracked on it is matched
+// by estimate and "tracked" can't look larger than the work it was for. Work not
+// started yet still adds nothing.
+export function countedEst(est, spent, paused) {
+  const e = Number(est) || 0;
+  return paused ? Math.min(e, Math.max(0, Number(spent) || 0)) : e;
 }
 export function taskClientField(t) {
   const cfs = t && Array.isArray(t.custom_fields) ? t.custom_fields : [];
@@ -1907,6 +1916,15 @@ export async function fetchArchivedMine(token, teamId, userId, sinceMs) {
     if (tasks.length < 100 || (j && j.last_page)) break;
   }
   return out;
+}
+// What says whether a task can go ahead yet (Insights "held up"): its name, plain
+// description, status and parent. One small read; the caller caches it.
+export async function getTaskHoldInfo(token, taskId) {
+  const j = await cuFetch(token, "/task/" + encodeURIComponent(String(taskId)));
+  const t = j && j.task ? j.task : j;
+  if (!t || !t.id) return null;
+  return { id: String(t.id), name: t.name || "", status: (t.status && t.status.status) || "", done: isTaskDone(t),
+    parentId: t.parent != null ? String(t.parent) : "", text: String(t.text_content || t.description || "").slice(0, 3000) };
 }
 // Bring an archived task back (ClickUp: update the task with archived false).
 export async function unarchiveTask(token, taskId) {
@@ -2607,6 +2625,11 @@ function extraTaskWeekdayShare(task, dayTs) {
   // picks the occurrence covering the day, this net is only for the gap before
   // ClickUp creates the next one, and showing nothing there is the honest answer.
   if (task.done) return 0;
+  // Only AFTER this occurrence (the gap before ClickUp makes the next one), never
+  // before it starts: an Extra Task moved to next week (a holiday week, say) owns
+  // nothing this week - it used to show 1h 24m a day for a week with none.
+  const st = Number(task.startDateMs) || Number(task.dueDateMs) || 0;
+  if (st && dayTs < new Date(st).setHours(0, 0, 0, 0)) return 0;
   const total = Number(task.estimateMs) || 0;
   return total > 0 ? Math.round(total / WEEKDAY_COUNT) : 0;
 }
@@ -2841,7 +2864,7 @@ export async function fetchWeeklySummary({ token, teamId, userId, taskUrls = [],
       const est = spread ? dayEstimateOf(t, ts, extendedMode, byDayTask) : (Number(t.time_estimate) || 0);
       const sp = dayTime.get(t.id) || 0;
       const paused = isPausedTask(t);
-      if (!paused) dayEst += est;
+      dayEst += countedEst(est, sp, paused);
       dayRows.push({ paused, id: t.id, name: t.name || "(untitled task)", url: taskUrlFor(t.id), estimateMs: est, totalEstimateMs: Number(t.time_estimate) || 0, totalSpentMs: Number(t.time_spent) || 0, dueDateMs: Number(t.due_date) || null, spentMs: sp, done: isTaskDone(t), doneAt: Number(t.date_done || t.date_closed) || 0, status: (t.status && t.status.status) || "", priority: cuPriorityName(t), type: "due", parentId: t.parent != null ? String(t.parent) : null, assignees: cuRowAssignees(t), container: taskContainer(t) });
     }
     // Configured tasks active on this day (skip the extra and anything already
@@ -3039,7 +3062,7 @@ export function ownShareOfParents(rows, pool) {
     const est = Number(p.estimateMs) || 0;
     // est can be a share of the whole (a task spread over its days): keep the share.
     const next = est === whole ? own : Math.round((est * own) / whole);
-    if (!p.paused) off += est - next;
+    off += countedEst(est, p.spentMs, p.paused) - countedEst(next, p.spentMs, p.paused);
     p.estimateMs = next;
     p.rollupEstimateMs = whole;
     p.subtasksEstimateMs = subEst;
@@ -3130,7 +3153,7 @@ export async function fetchTodayEstimate({ token, teamId, userId, targetHours = 
     if (t._spanning && !(est > 0)) continue; // no share today: not today's work
     const spent = entriesOk ? (todayByTask.get(t.id) || 0) : (Number(t.time_spent) || 0);
     const paused = isPausedTask(t);
-    if (!paused) estimateMs += est;
+    estimateMs += countedEst(est, spent, paused);
     spentMs += spent;
     tasks.push({
       paused,
@@ -3208,7 +3231,7 @@ export async function fetchTodayEstimate({ token, teamId, userId, targetHours = 
       }
       const sSpent = entriesOk ? (todayByTask.get(s.id) || 0) : (Number(s.time_spent) || 0);
       const sPaused = isPausedTask(s) || isPausedTask(t);
-      if (!sPaused) estimateMs += sEst;
+      estimateMs += countedEst(sEst, sSpent, sPaused);
       spentMs += sSpent;
       subRows.push({
         paused: sPaused,
@@ -3516,7 +3539,7 @@ export async function fetchDateRangeEstimate({ token, teamId, userId, fromTs, to
     // user's entries), we show 0m - never a misleading cumulative÷span estimate.
     let spentRow = spent;
     const paused = isPausedTask(t);
-    if (!paused) estimateMs += est;
+    estimateMs += countedEst(est, spentRow, paused);
     spentMs += spentRow;
     seen.add(t.id);
     tasks.push({

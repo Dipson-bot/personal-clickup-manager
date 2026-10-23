@@ -39,6 +39,27 @@
   /* A stopped task (roadblock, blocked, on hold...) says so on its row, in red. */
   .cu-task .nmwrap > .cu-stopst { flex: 0 1 auto; min-width: 0; overflow: hidden; white-space: nowrap; font-size: 10px; font-weight: 700; padding: 1px 7px; border-radius: 999px; background: #dc2626; color: #fff; text-transform: capitalize; cursor: help; }
   .pcm-st-btn { cursor: pointer; }
+  /* ⚠ on a task row: something may hold it up (one icon, however many reasons) */
+  .cu-task .nmwrap > .cu-warnb { flex: 0 0 auto; display: inline-flex; align-items: center; gap: 2px; padding: 0 6px; height: 18px; border: 1px solid rgba(217,119,6,.55); border-radius: 999px; background: rgba(217,119,6,.14); color: #b45309; font: inherit; font-size: 11px; font-weight: 800; line-height: 1; cursor: pointer; }
+  .cu-task .nmwrap > .cu-warnb:hover { background: #d97706; color: #fff; }
+  .pcm-warn-list { display: grid; gap: 8px; }
+  .pcm-warn-i { display: flex; gap: 8px; align-items: flex-start; padding: 8px 10px; border-radius: 8px; border: 1px solid rgba(217,119,6,.45); background: rgba(217,119,6,.08); font-size: 12.5px; line-height: 1.45; }
+  .pcm-warn-i b { color: #b45309; }
+  .pcm-warn-acts { display: flex; gap: 8px; flex-wrap: wrap; }
+  .pcm-steps { margin: 10px 0; }
+  .pcm-steps-why { font-size: 12.5px; line-height: 1.5; margin: 0 0 6px; }
+  .pcm-steps-wrap { overflow-x: auto; border: 1px solid var(--border); border-radius: 8px; background: var(--card); }
+  .pcm-steps-t { width: 100%; border-collapse: collapse; font-size: 12px; }
+  .pcm-steps-t th { text-align: left; font-size: 10.5px; text-transform: uppercase; letter-spacing: .04em; color: var(--muted); font-weight: 700; padding: 6px 8px; border-bottom: 1px solid var(--border); }
+  .pcm-steps-t td { padding: 6px 8px; border-bottom: 1px solid var(--border); vertical-align: middle; }
+  .pcm-steps-t tr:last-child td { border-bottom: 0; }
+  .pcm-steps-t td.n { font-weight: 600; min-width: 160px; }
+  .pcm-steps-t td.w { color: var(--muted); white-space: nowrap; }
+  .pcm-steps-t td.late { color: var(--red, #dc2626); font-weight: 700; white-space: nowrap; }
+  .pcm-steps-t tr.done td.n { color: var(--muted); text-decoration: line-through; font-weight: 500; }
+  .pcm-steps-t tr.open-before { background: rgba(217,119,6,.08); }
+  .pcm-steps-t tr.me { background: rgba(99,102,241,.1); }
+  .pcm-steps-t .me-tag { margin-left: 6px; padding: 0 6px; border-radius: 999px; background: var(--indigo, #6366f1); color: #fff; font-size: 10px; font-weight: 700; }
   .pcm-st-btn::after { content: " \u25BE"; font-size: 9px; opacity: .7; }
   .pcm-st-menu { position: fixed; z-index: 2147483000; min-width: 170px; max-height: 300px; overflow: auto; padding: 4px; border-radius: 10px; border: 1px solid var(--border); background: var(--card, #fff); box-shadow: 0 10px 28px rgba(0,0,0,.22); font-size: 12px; }
   .pcm-st-menu button { display: flex; width: 100%; align-items: center; gap: 6px; padding: 5px 8px; border: 0; border-radius: 6px; background: none; color: var(--text); font: inherit; text-align: left; cursor: pointer; text-transform: capitalize; }
@@ -49,6 +70,9 @@
   .pcm-tabs button { font: inherit; font-size: 12px; font-weight: 600; padding: 6px 12px; border: 0; border-bottom: 2px solid transparent; margin-bottom: -1px; background: none; color: var(--muted); cursor: pointer; border-radius: 6px 6px 0 0; }
   .pcm-tabs button:hover { color: var(--text); background: rgba(127,127,127,.08); }
   .pcm-tabs button.on { color: var(--indigo); border-bottom-color: var(--indigo); }
+  .pcm-tabs button[data-pt="warn"] { color: #b45309; }
+  .pcm-tabs button[data-pt="warn"].on { border-bottom-color: #d97706; }
+  .pcm-tabs .n.w { background: rgba(217,119,6,.18); color: #b45309; }
   .pcm-tabs .n { display: inline-block; min-width: 16px; margin-left: 4px; padding: 0 5px; border-radius: 999px; background: rgba(99,102,241,.15); color: var(--indigo); font-size: 10.5px; line-height: 16px; text-align: center; }
   .pcm-pane[hidden] { display: none !important; }
   .pcm-pane { display: flex; flex-direction: column; gap: 10px; }
@@ -1636,10 +1660,84 @@
     stMenu.style.top = (r.bottom + 4 + stMenu.offsetHeight > window.innerHeight ? Math.max(8, r.top - stMenu.offsetHeight - 4) : r.bottom + 4) + "px";
   }
   // The row: a stopped task shows a red chip right after its name.
+  // ---------- ⚠ warnings on task rows ----------
+  // Why a task may not be able to go ahead: what the background found (holdFound:
+  // a live/schema step on an unwritten page, a PENDING parent, "only build if...")
+  // and who it's waiting on (clickupState.waiting). One icon per row; the reasons
+  // are in the task's ⚠ Warnings tab, where "Not a problem" hides them for good.
+  let warnFound = {}, warnWait = {}, warnOff = {};
+  chrome.storage.local.get(["holdFound", "clickupState", "warnDismissed"]).then((g) => {
+    warnFound = g.holdFound || {}; warnWait = (g.clickupState && g.clickupState.waiting) || {}; warnOff = g.warnDismissed || {};
+    markStopped();
+  }).catch(() => {});
+  chrome.storage.onChanged.addListener((ch, area) => {
+    if (area !== "local") return;
+    if (ch.holdFound) warnFound = ch.holdFound.newValue || {};
+    if (ch.clickupState) warnWait = (ch.clickupState.newValue && ch.clickupState.newValue.waiting) || {};
+    if (ch.warnDismissed) warnOff = ch.warnDismissed.newValue || {};
+    if (ch.holdFound || ch.clickupState || ch.warnDismissed) markStopped();
+  });
+  function warningsFor(id) {
+    id = String(id || "");
+    const out = [];
+    const f = warnFound[id];
+    if (f && f.why) out.push({ k: "hold", text: "Held up: " + f.why });
+    const w = warnWait[id];
+    if (w && Array.isArray(w.blockers) && w.blockers.length) {
+      const b = w.blockers[0];
+      out.push({ k: "wait", text: "Waiting on a teammate: " + (b.who || "someone") + "'s subtask \u201C" + String(b.name || "").slice(0, 80) + "\u201D" + (b.overdue ? " (overdue)" : "") + (w.blockers.length > 1 ? " + " + (w.blockers.length - 1) + " more" : "") });
+    }
+    if (w && w.selfBlock && w.selfBlock.parentOverdue) out.push({ k: "subs", text: "Its own subtasks: " + (w.selfBlock.open || "some") + " still open, and the task is past its due date" });
+    const sig = out.map((x) => x.text).join("|");
+    return sig && warnOff[id] === sig ? [] : out;
+  }
+  // Rows on screen that haven't been checked lately: asked in one go (the
+  // background reads at most 30, each kept 6 hours) - never on every redraw.
+  let askT = 0, asked = {};
+  function askHolds() {
+    clearTimeout(askT);
+    askT = setTimeout(() => {
+      const now = Date.now(), ids = [];
+      for (const row of document.querySelectorAll(".cu-task")) {
+        const t = row._cuTask;
+        if (!t || t.done || t.id == null || t.local || /^rev-/.test(String(t.id)) || stTone(t.status) === "t-bad") continue;
+        const id = String(t.id), f = warnFound[id];
+        if ((f && now - (f.at || 0) < 6 * 3600000) || now - (asked[id] || 0) < 30 * 60000 || ids.includes(id)) continue;
+        ids.push(id);
+        if (ids.length >= 30) break;
+      }
+      if (!ids.length) return;
+      for (const id of ids) asked[id] = now;
+      try { chrome.runtime.sendMessage({ type: "INS_HOLD_HINTS", ids }, () => void chrome.runtime.lastError); } catch (e) {}
+    }, 2500);
+  }
+  function markWarn(row, wrap, t) {
+    let b = wrap.querySelector(".cu-warnb");
+    const list = t && !t.done && t.id != null ? warningsFor(t.id) : [];
+    if (!list.length) { if (b) b.remove(); return; }
+    if (!b) {
+      b = el("button", "cu-warnb");
+      b.type = "button";
+      b.addEventListener("mousedown", (e) => e.stopPropagation());
+      b.addEventListener("click", (e) => {
+        e.preventDefault(); e.stopPropagation();
+        const chev = row.querySelector(".pcm-chev");
+        if (chev && chev.getAttribute("aria-expanded") !== "true") { wantTab = "warn"; chev.click(); }
+        else if (panel && panel._showTab) panel._showTab("warn");
+      });
+      const nm = wrap.querySelector(".nm");
+      if (nm) nm.after(b); else wrap.appendChild(b);
+    }
+    const txt = "\u26A0" + (list.length > 1 ? " " + list.length : "");
+    if (b.textContent !== txt) b.textContent = txt;
+    b.title = list.map((x) => "\u2022 " + x.text).join("\n") + "\nClick for the details";
+  }
   function markStopped() {
+    askHolds();
     for (const row of document.querySelectorAll(".cu-task")) {
       const t = row._cuTask, wrap = row.querySelector(".nmwrap");
       if (!wrap) continue;
+      markWarn(row, wrap, t);
       let c = wrap.querySelector(".cu-stopst");
       const bad = !!(t && !t.done && t.status && stTone(t.status) === "t-bad");
       if (!bad) { if (c) c.remove(); continue; }
@@ -1650,7 +1748,13 @@
     }
   }
   let msT = 0;
-  new MutationObserver(() => { if (!msT) msT = setTimeout(() => { msT = 0; markStopped(); }, 120); }).observe(document.documentElement, { childList: true, subtree: true });
+  let msB = 0;
+  new MutationObserver(() => {
+    if (msT) return;
+    msT = 1;
+    const run = () => { msT = 0; markStopped(); };
+    if (msB++ < 3) { queueMicrotask(run); setTimeout(() => { msB = 0; }, 0); } else setTimeout(run, 40); // same frame as the redrawn rows
+  }).observe(document.documentElement, { childList: true, subtree: true });
   setTimeout(markStopped, 300);
 
   // ---------- the panel ----------
@@ -1779,6 +1883,7 @@
       meta.appendChild(sc);
     }
     const mchip = (k, v) => { const c = el("span", "pcm-mchip"); c.append(k + " "); c.appendChild(el("b", "", v)); return c; };
+    if (d.startDateMs) meta.appendChild(mchip("Start", fmtDay(d.startDateMs)));
     if (d.dueDateMs) meta.appendChild(mchip("Due", fmtDay(d.dueDateMs)));
     if (d.estimateMs) meta.appendChild(mchip("Estimate", fmtDur(d.estimateMs)));
     const macts = el("span", "pcm-meta-acts");
@@ -1819,6 +1924,7 @@
     if (Array.isArray(d._notes) && d._notes.length) {
       // What the user noted about this client (Options > Clients).
       const ns = el("div");
+      ns.dataset.cnotes = "1"; // its own tab (tabify)
       ns.appendChild(el("div", "pcm-sec-h", "\uD83D\uDCDD Client notes"));
       for (const n of d._notes.slice().sort((a, b) => b.at - a.at).slice(0, 6)) {
         const row = el("div", "pcm-desc");
@@ -1865,8 +1971,102 @@
   }
   // The sections below the task's summary as tabs, one shown at a time (the last
   // one picked is remembered). Simple view (simple-view.js) leaves out AI and Time.
+  let wantTab = "";
+  function warnPane(p, d, warns) {
+    const box = el("div", "pcm-warn-list");
+    for (const w of warns) { const i = el("div", "pcm-warn-i"); i.append(el("b", "", "\u26A0"), el("span", "", w.text)); box.appendChild(i); }
+    const acts = el("div", "pcm-warn-acts");
+    const msg = el("span", "hint", "");
+    if (stTone(d.status) !== "t-bad") {
+      const rb = el("button", "pcm-btn", "\u26D4 Set roadblock"); rb.type = "button";
+      rb.title = "Set this task's status to roadblock in ClickUp";
+      rb.onclick = async (e) => {
+        e.stopPropagation(); rb.disabled = true; rb.textContent = "Saving\u2026";
+        const r = await send({ type: "CLICKUP_BULK_ONE", taskId: String(d.id), change: { kind: "status", value: "roadblock" } }).catch(() => null);
+        if (r && r.ok) { load(p, d.id, true); try { chrome.runtime.sendMessage({ type: "CLICKUP_REFRESH" }, () => void chrome.runtime.lastError); } catch (x) {} }
+        else { rb.disabled = false; rb.textContent = "\u26D4 Set roadblock"; msg.textContent = "Couldn't set it: " + ((r && r.error) || "no answer") + " (the list may not have a roadblock status)"; }
+      };
+      acts.appendChild(rb);
+    }
+    const ok = el("button", "pcm-btn", "Not a problem"); ok.type = "button";
+    ok.title = "Hide these warnings for this task (they come back only if the reason changes)";
+    ok.onclick = async (e) => {
+      e.stopPropagation();
+      const sig = warns.map((x) => x.text).join("|");
+      const g = await chrome.storage.local.get("warnDismissed").catch(() => ({}));
+      const next = { ...((g && g.warnDismissed) || {}), [String(d.id)]: sig };
+      const keep = Object.entries(next).slice(-300);
+      await chrome.storage.local.set({ warnDismissed: Object.fromEntries(keep) }).catch(() => {});
+      load(p, d.id, true);
+    };
+    acts.append(ok, msg);
+    const w = el("div");
+    w.append(box);
+    // Under a parent: its steps the way ClickUp lists them, so it is plain what has
+    // to happen first (outline -> writing -> images -> review -> live & schema...).
+    if (d.parentId) {
+      const steps = el("div", "pcm-steps");
+      steps.appendChild(el("div", "pcm-note", "Loading the other steps\u2026"));
+      w.appendChild(steps);
+      fillSteps(steps, d).catch(() => { steps.textContent = ""; });
+    }
+    w.appendChild(acts);
+    return w;
+  }
+  async function fillSteps(box, d) {
+    const res = await send({ type: "CLICKUP_TASK_PANEL", taskId: String(d.parentId) });
+    const par = res && res.ok && res.data;
+    const subs = par && Array.isArray(par.subtasks) ? par.subtasks : [];
+    box.textContent = "";
+    if (subs.length < 2) return;
+    const me = subs.findIndex((s) => String(s.id) === String(d.id));
+    const before = me > 0 ? subs.slice(0, me).filter((s) => !s.done) : [];
+    const others = subs.filter((s, i) => i !== me && !s.done);
+    const today = new Date().setHours(0, 0, 0, 0);
+    const late = (s) => !s.done && Number(s.dueDateMs) > 0 && new Date(Number(s.dueDateMs)).setHours(0, 0, 0, 0) < today;
+    const nm = (s) => "\u201C" + String(s.name || "").slice(0, 60) + "\u201D";
+    // The reason, in one sentence.
+    const why = el("div", "pcm-steps-why");
+    const parRel = (d.related || []).find((x) => x.kind === "parent");
+    const parName = (parRel && parRel.name) || par.name || "its parent task";
+    if (me >= 0 && before.length) {
+      why.textContent = "This is step " + (me + 1) + " of " + subs.length + " under \u201C" + parName + "\u201D, and " + before.length + " step" + (before.length === 1 ? "" : "s") + " before it " + (before.length === 1 ? "is" : "are") + " still open: " +
+        before.slice(0, 4).map((s) => nm(s) + (late(s) ? " (overdue)" : "")).join(", ") + (before.length > 4 ? " and " + (before.length - 4) + " more" : "") + ". It can't be done before " + (before.length === 1 ? "that is" : "they are") + " finished.";
+    } else if (others.length) {
+      why.textContent = "\u201C" + parName + "\u201D still has " + others.length + " other open step" + (others.length === 1 ? "" : "s") + " - check none of them has to come first.";
+    } else {
+      why.textContent = "The other steps under \u201C" + parName + "\u201D are done.";
+    }
+    box.appendChild(why);
+    // The steps, like ClickUp's subtask list.
+    const tbl = el("table", "pcm-steps-t");
+    tbl.innerHTML = "<thead><tr><th>#</th><th>Step</th><th>Status</th><th>Who</th><th>Due</th></tr></thead>";
+    const tb = el("tbody");
+    subs.forEach((s, i) => {
+      const tr = el("tr", (i === me ? "me" : "") + (!s.done && i < me ? " open-before" : "") + (s.done ? " done" : ""));
+      tr.appendChild(el("td", "", String(i + 1)));
+      const nc = el("td", "n");
+      nc.append(s.name || "(step)");
+      if (i === me) nc.appendChild(el("span", "me-tag", "this task"));
+      tr.appendChild(nc);
+      const sc = el("td"); sc.appendChild(stChip(s.status, s.done, "pcm-fam-st" + (s.done ? " done" : ""))); tr.appendChild(sc);
+      tr.appendChild(el("td", "w", (Array.isArray(s.assignees) ? s.assignees : []).join(", ") || "-"));
+      const dc = el("td", late(s) ? "late" : "", Number(s.dueDateMs) > 0 ? fmtDay(Number(s.dueDateMs)) : "-");
+      tr.appendChild(dc);
+      tb.appendChild(tr);
+    });
+    tbl.appendChild(tb);
+    const wrapT = el("div", "pcm-steps-wrap");
+    wrapT.appendChild(tbl);
+    box.appendChild(wrapT);
+  }
   function tabify(p, d, det, ai, tn, te, cs) {
-    const panes = [["det", "Details", det], ["ai", "\u2728 AI", [ai]], ["notes", "My notes", tn ? [tn] : []], ["cmt", "Comments", [cs]], ["time", "Time", [te]]]
+    const warns = warningsFor(d.id);
+    const wpane = warns.length ? [warnPane(p, d, warns)] : [];
+    // Client notes: a tab of their own (they were buried under the description).
+    const cnote = det.find((n) => n && n.dataset && n.dataset.cnotes);
+    if (cnote) det = det.filter((n) => n !== cnote);
+    const panes = [["det", "Details", det], ["warn", "\u26A0 Warnings", wpane], ["ai", "\u2728 AI", [ai]], ["notes", "My notes", tn ? [tn] : []], ["cn", "Client notes", cnote ? [cnote] : []], ["cmt", "Comments", [cs]], ["time", "Time", [te]]]
       .filter((x) => x[2].length);
     const bar = el("div", "pcm-tabs");
     bar.setAttribute("role", "tablist");
@@ -1877,13 +2077,15 @@
       for (const n of nodes) w.appendChild(n);
       wraps[k] = w;
     }
-    const nC = (d.comments || []).length;
+    // How many are inside, like a notification count: My notes, Client notes, Comments, Warnings.
+    const counts = { cmt: (d.comments || []).length, warn: warns.length, cn: Array.isArray(d._notes) ? d._notes.length : 0,
+      notes: window.PcmTaskNotes && window.PcmTaskNotes.notesOf ? window.PcmTaskNotes.notesOf(String(d.id)).length : 0 };
     for (const [k, label] of panes) {
       const b = el("button", "", label);
       b.type = "button";
       b.dataset.pt = k;
       b.setAttribute("role", "tab");
-      if (k === "cmt" && nC) b.appendChild(el("span", "n", String(nC)));
+      if (counts[k]) b.appendChild(el("span", "n" + (k === "warn" ? " w" : ""), String(counts[k])));
       b.onclick = (e) => { e.stopPropagation(); show(k, true); };
       bar.appendChild(b);
     }
@@ -1898,7 +2100,9 @@
     }
     let k0 = "det";
     try { k0 = localStorage.getItem("pcmPanelTab") || "det"; } catch (e) {}
+    if (wantTab) { k0 = wantTab; wantTab = ""; } // opened by the row's 📝 / 💬 / ⚠: that section first
     show(k0, false);
+    p._showTab = (k) => show(k, false);
     // A long description: about six lines, then "Show more".
     const desc = wraps.det && wraps.det.querySelector(".pcm-desc");
     if (desc) requestAnimationFrame(() => {
@@ -2005,7 +2209,7 @@
     const say = (t, err) => {
       const card = wrap.closest(".cu-clientcard");
       if (!note && opts.noteEl) { note = opts.noteEl; note.hidden = false; note.textContent = ""; }
-      if (!note) { note = el("div", "pcm-note pcm-chnote"); const h = wrap.closest(".cu-clienthead, .flt-tot"); if (h) h.after(note); else if (card) card.prepend(note); }
+      if (!note) { note = el("div", "pcm-note pcm-chnote"); const h = wrap.closest(".cu-clienthead, .cu-mgroup, .flt-tot"); if (h) h.after(note); else if (card) card.prepend(note); }
       note.className = (err ? "pcm-err" : "pcm-note") + " pcm-chnote";
       note.textContent = t;
       return note;
@@ -2210,19 +2414,22 @@
   // The lists re-render every few minutes (and on any change). Keep the open
   // panel - with a half-written comment or an answer still streaming - by moving
   // the same element back under its task's new row.
+  // In the same frame as the redraw (a microtask, not a timer): with a timer the
+  // open details were missing for one frame on every refresh - a visible flash.
   let queued = false;
   new MutationObserver(() => {
     if (queued || !openId || !panel) return;
     queued = true;
-    setTimeout(() => {
+    queueMicrotask(() => {
       queued = false;
       if (!openId || !panel) return;
       const btn = [...document.querySelectorAll(".pcm-chev")].find((b) => b.dataset.taskId === openId);
-      const row = btn && btn.closest(".cu-task");
+      // A panel opened from an Insights list row (openIn) follows that row instead.
+      const row = panel.dataset.host ? document.querySelector(panel.dataset.host + "[data-id=\"" + CSS.escape(openId) + "\"]") : (btn && btn.closest(".cu-task"));
       if (sheet) return; // the popup's full view doesn't follow the list
       if (row && panel.previousElementSibling !== row) row.after(panel);
       setChevrons();
-    }, 0);
+    });
   }).observe(document.documentElement, { childList: true, subtree: true });
 
   // Shared AI helper (also used by the export's "Rewrite in plain language").
@@ -2383,5 +2590,17 @@
       return b;
     },
     close,
+    // The row's icons open a section: wantTab before the details open, showTab once they are.
+    wantTab(k) { wantTab = String(k || ""); },
+    showTab(k) { if (panel && panel._showTab) { panel._showTab(k); return true; } wantTab = String(k || ""); return false; },
+    // Any list row (Insights): its task's details right under it; again = close.
+    openIn(row, id) {
+      id = String(id || "");
+      if (!row || !id) return false;
+      if (openId === id && panel && panel.isConnected) { close(); return false; }
+      open(row, id);
+      if (panel && row.classList && row.classList.contains("trow")) panel.dataset.host = "#insView .trow";
+      return true;
+    },
   };
 })();

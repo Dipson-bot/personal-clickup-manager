@@ -25,15 +25,16 @@
     /* status chips under the page title, the "Worth a look" strip, the setup card */
     html.pcm-simple #statusStrip, html.pcm-simple #pcmDashStrip, html.pcm-simple .pcm-setup, html.pcm-simple #deskTry { display: none !important; }
     /* Due today card: the Custom / Meeting choice, its note box, Add missed time */
-    html.pcm-simple #cuXMode, html.pcm-simple .amt-link, html.pcm-simple #cuAutoExtra .cu-autox-h .hint { display: none !important; }
+    /* (Custom / Meeting, its note and Add missed time stay: they are things you DO, not text to read) */
+    html.pcm-simple #cuAutoExtra .cu-autox-h .hint { display: none !important; }
     /* This week card: the multi-day choice */
     html.pcm-simple #optWeekMode { display: none !important; }
     /* Tasks card: the summary line ("Shown: 14 tasks ...") and the plan-a-task line */
     html.pcm-simple .cu-totals, html.pcm-simple #ltBox .lt-head .lt-sub { display: none !important; }
     /* Recently completed and Explore tasks cards (Ctrl+K finds any task) */
     html.pcm-simple #dashDoneCard, html.pcm-simple #dashExploreCard { display: none !important; }
-    /* task rows: pin / note marks (a pinned task keeps its pin), parent prefix, guesses, "in all" */
-    html.pcm-simple .cu-task .tn-marks .tn-b:not([aria-pressed="true"]):not(.tn-cmt), html.pcm-simple .cu-task .cu-parent,
+    /* task rows: parent prefix, guesses, "in all" (the 📌 / 📝 on hover stay: pinning and notes are things you DO) */
+    html.pcm-simple .cu-task .cu-parent,
     html.pcm-simple .cu-task .est-guess, html.pcm-simple .cu-task .trk-all, html.pcm-simple .cu-task .cu-kids { display: none !important; }
     /* popup / side panel: the setup line, the small grey summaries, the switch hint, Drive sync's explanation */
     html.pcm-simple .pcm-setupline, html.pcm-simple #cuSub, html.pcm-simple #weekSub, html.pcm-simple .cu-timer-hint, html.pcm-simple #syncHelp { display: none !important; }

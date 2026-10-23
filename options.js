@@ -1355,7 +1355,11 @@ function cuWeekOf(ms) {
   const end = new Date(d); end.setDate(d.getDate() + conf[1] - 1);
   return { start: d.getTime(), end: end.getTime() };
 }
-function cuSplitByWeekOpt(sorted) {
+// opts.inGroup: the client whose section this is (one list of clients) - weeks
+// only (the client heading is the level above), keyed per client.
+function cuSplitByWeekOpt(sorted, opts) {
+  const inGroup = opts && opts.inGroup ? String(opts.inGroup) : "";
+  const gkPre = inGroup ? inGroup.toLowerCase().replace(/[^a-z0-9]+/g, "") + ":" : "";
   if (!cuSplitWeeks || !Array.isArray(sorted) || sorted.length < 2) return sorted;
   const basis = cuBasis(cuFilter);
   const dateOf = (t) => Number(basis === "start" ? (t.startDateMs || t.dueDateMs) : t.dueDateMs) || 0;
@@ -1373,6 +1377,10 @@ function cuSplitByWeekOpt(sorted) {
   const thisWeek = cuWeekOf(Date.now()).start;
   const md = (ms, withMonth) => new Date(ms).toLocaleDateString(undefined, withMonth ? { month: "short", day: "numeric" } : { day: "numeric" });
   const out = [];
+  // "~Xh with guesses" on a heading, the same as the Shown line (guessed or kept
+  // estimates of its tasks with none).
+  const gctx = typeof cuGuessCtx === "function" ? cuGuessCtx(sorted) : null;
+  const withGuess = (rows, est) => { if (!gctx) return ""; const g = rows.reduce((a, t) => a + cuGuessMs(t, gctx), 0); return g !== 0 ? " \u00b7 ~" + fmtDurOpt(Math.max(0, est + g)) + " with guesses" : ""; };
   // Several months (a long range): a month heading above its weeks. A
   // week belongs to the month most of its days are in (its Thursday's month).
   const monthOf = (k) => { const d = new Date(k); d.setDate(d.getDate() + 3); return d.getFullYear() * 12 + d.getMonth(); };
@@ -1381,7 +1389,7 @@ function cuSplitByWeekOpt(sorted) {
   let curMonth = null;
   for (const k of keys) {
     const bl = weeks.get(k), rows = bl.flat();
-    if (months.size > 1 && k && monthOf(k) !== curMonth) {
+    if (!inGroup && months.size > 1 && k && monthOf(k) !== curMonth) {
       curMonth = monthOf(k);
       const inMonth = keys.filter((x) => x && monthOf(x) === curMonth).flatMap((x) => weeks.get(x).flat());
       const mh = document.createElement("div");
@@ -1390,8 +1398,10 @@ function cuSplitByWeekOpt(sorted) {
       mb.textContent = new Date(Math.floor(curMonth / 12), curMonth % 12, 1).toLocaleDateString(undefined, { month: "long", year: "numeric" });
       const ms = document.createElement("span");
       const mest = inMonth.reduce((a, t) => a + cuEstOf(t), 0), mtrk = inMonth.reduce((a, t) => a + (Number(t.spentMs) || 0), 0);
-      ms.textContent = " \u00b7 " + inMonth.length + " task" + (inMonth.length === 1 ? "" : "s") + " \u00b7 est " + fmtDurOpt(mest) + (mtrk > 0 ? " \u00b7 tracked " + fmtDurOpt(mtrk) : "");
+      ms.textContent = " \u00b7 " + inMonth.length + " task" + (inMonth.length === 1 ? "" : "s") + " \u00b7 est " + fmtDurOpt(mest) + withGuess(inMonth, mest) + (mtrk > 0 ? " \u00b7 tracked " + fmtDurOpt(mtrk) : "");
       mh.append(mb, ms);
+      mh.dataset.gk = "m:" + curMonth; // click to fold (week-fold.js)
+      mh.title = "Click to fold or unfold this month";
       if (typeof cuTabGroupBtn === "function") mh.appendChild(cuTabGroupBtn(mb.textContent, () => inMonth, "blue"));
       out.push({ _wkHead: mh });
     }
@@ -1402,12 +1412,17 @@ function cuSplitByWeekOpt(sorted) {
     if (k) { const w = cuWeekOf(k); const sameMonth = new Date(w.start).getMonth() === new Date(w.end).getMonth(); t1.textContent = "Week of " + md(w.start, true) + " - " + md(w.end, !sameMonth) + (k === thisWeek ? " · this week" : ""); }
     else t1.textContent = basis === "start" ? "No start or due date" : "No due date";
     const t2 = document.createElement("span");
-    t2.textContent = " · " + rows.length + " task" + (rows.length === 1 ? "" : "s") + " · est " + fmtDurOpt(est) + (trk > 0 ? " · tracked " + fmtDurOpt(trk) : "");
+    t2.textContent = " · " + rows.length + " task" + (rows.length === 1 ? "" : "s") + " · est " + fmtDurOpt(est) + withGuess(rows, est) + (trk > 0 ? " · tracked " + fmtDurOpt(trk) : "");
     h.append(t1, t2);
+    h.dataset.gk = "w:" + gkPre + k;
+    h.title = "Click to fold or unfold this week";
     h.appendChild(cuTabGroupBtn(t1.textContent.replace(/ · this week$/, ""), () => rows, k === thisWeek ? "green" : "blue"));
     out.push({ _wkHead: h });
     for (const b of bl) out.push(...b);
   }
+  // Where the weeks end: a folded last week stops here.
+  const end = document.createElement("div"); end.className = inGroup ? "cu-wend" : "cu-gend"; // in a client's section only its weeks end
+  out.push({ _wkHead: end });
   return out;
 }
 
@@ -1496,6 +1511,8 @@ document.addEventListener("dragend", () => {
   cuRoClear();
   if (d && d.row._roTemp) { d.row.draggable = false; d.row._roTemp = false; }
 }, true);
+// A client heading dragged to a new place (week-fold.js): draw the list again.
+window.addEventListener("pcm-client-order", () => { if (Array.isArray(cuFilter.clients) && cuFilter.clients.length) { try { optRepaintCuPreview(); } catch (e) {} } });
 // Comparator for the user's custom drag order: tasks appear in the exact order
 // their ids sit in `orderIds`. Ids not in the list (e.g. a task added since the
 // last arrange) sink to the bottom, where they fall back to the normal priority
@@ -2057,7 +2074,9 @@ function listContentHeight(el) {
   const r = el.getBoundingClientRect(), lr = last.getBoundingClientRect();
   if (!r.height && !lr.height) return 0;
   const cs = getComputedStyle(el);
-  return Math.ceil(lr.bottom - r.top + el.scrollTop + (parseFloat(cs.paddingBottom) || 0) + (parseFloat(cs.borderBottomWidth) || 0));
+  // + the last row's own bottom margin (an open task's details have one), or a
+  // list stretched to "everything" still kept a few pixels of scroll.
+  return Math.ceil(lr.bottom - r.top + el.scrollTop + (parseFloat(getComputedStyle(last).marginBottom) || 0) + (parseFloat(cs.paddingBottom) || 0) + (parseFloat(cs.borderBottomWidth) || 0));
 }
 function capListToContent(el) {
   // Only lists the user has resized: an untouched list keeps its CSS default.
@@ -2234,6 +2253,9 @@ function makeListResizable(el, key) {
       // the list in one go - the whole point of the bar for anyone who doesn't
       // realise it can be dragged.
       if (moved < 4 && Date.now() - startT < 400) { toggle(); return; }
+      // Dragged all the way down: that IS "show every task" - no fixed height, so
+      // opening a task or a refresh with more rows never brings a scroll bar back.
+      if (maxH !== Infinity && el.getBoundingClientRect().height >= maxH - 2) { el.style.height = ""; expand(10); return; }
       capListToContent(el);
       save();
       retitle();
@@ -2954,7 +2976,7 @@ function renderClickupSettings(cu) {
 // Clicking a day in the weekly chart shows that day's tasks in the Tasks card
 // (a one-day custom date filter, saved like any filter so the popup, side panel
 // and badge follow), with a bar to go back to the previous filter.
-let cuChartPrev = null, cuChartDay = "", cuChartSrc = "chart";
+let cuChartPrev = null, cuChartDay = "", cuChartSrc = "chart", cuChartTo = "", cuChartDays = []; // cuChartTo: last day of a range picked in the calendar
 const cuYmd = (ts) => { const d = new Date(ts); return d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0") + "-" + String(d.getDate()).padStart(2, "0"); };
 // The week chart's bars: grown in once; on every later redraw (each background
 // refresh rebuilds the card) they keep their place, and a changed one glides to
@@ -2971,13 +2993,15 @@ function cuChartBar(bar, key, h) {
   bar.style.transition = "height .5s cubic-bezier(.22,1,.36,1), transform .2s, filter .2s";
   setTimeout(() => { bar.style.height = h; }, 30);
 }
-function cuShowChartDay(ts, src) {
+function cuShowChartDay(ts, src, toTs, days) {
   const ymd = cuYmd(ts);
+  cuChartTo = toTs ? cuYmd(toTs) : ymd;
+  cuChartDays = Array.isArray(days) && days.length > 1 ? days.map(cuYmd).sort() : [];
   cuChartSrc = src || "chart";
   if (!cuChartPrev) cuChartPrev = cuSnapshotFilter();
   const snap = cuSnapshotFilter();
   for (const k of [...CU_DATE_KEYS, "deadlineCrossed"]) snap[k] = false;
-  snap.dueCustom = true; snap.customFrom = ymd; snap.customTo = ymd;
+  snap.dueCustom = true; snap.customFrom = ymd; snap.customTo = cuChartTo; snap.customDays = cuChartDays.slice();
   cuChartDay = ymd;
   document.querySelectorAll("#optWeekChart .wk-day").forEach((c) => c.classList.remove("sel"));
   cuApplyFilterSnapshot(snap); // saved, so the popup, side panel and badge follow too
@@ -2997,7 +3021,7 @@ function cuPaintChartBanner() {
   const card = $("dashTasksCard");
   if (!card) return;
   let bar = $("cuChartDayBar");
-  const active = !!cuChartPrev && cuFilter.dueCustom && cuFilter.customFrom === cuChartDay && (cuFilter.customTo || cuChartDay) === cuChartDay;
+  const active = !!cuChartPrev && cuFilter.dueCustom && cuFilter.customFrom === cuChartDay && (cuFilter.customTo || cuChartDay) === (cuChartTo || cuChartDay);
   if (!active) {
     if (bar) bar.remove();
     cuChartPrev = null; cuChartDay = "";
@@ -3013,16 +3037,23 @@ function cuPaintChartBanner() {
   }
   bar.textContent = "";
   const d = new Date(cuChartDay + "T12:00:00");
-  bar.append("\uD83D\uDCC5 Showing " + d.toLocaleDateString(undefined, { weekday: "short", month: "short", day: "numeric" }) + " (picked in the " + cuChartSrc + ")");
+  const fmtD = (x) => x.toLocaleDateString(undefined, { weekday: "short", month: "short", day: "numeric" });
+  const range = cuChartTo && cuChartTo !== cuChartDay;
+  const picked = cuPickedDays(cuFilter);
+  const fmtS = (k2) => new Date(k2 + "T12:00:00").toLocaleDateString(undefined, { month: "short", day: "numeric" });
+  bar.append("\uD83D\uDCC5 Showing " + (picked ? picked.length + " picked days (" + picked.slice(0, 6).map(fmtS).join(", ") + (picked.length > 6 ? ", \u2026" : "") + ")" : fmtD(d) + (range ? " \u2013 " + fmtD(new Date(cuChartTo + "T12:00:00")) : "")) + " (picked in the " + cuChartSrc + ")");
   bar.title = "The popup, side panel and toolbar badge show this day too. Back to my filter returns everywhere.";
   const back = document.createElement("button");
   back.type = "button";
   back.textContent = "\u2715 Back to my filter";
-  back.onclick = () => { const prev = cuChartPrev; cuChartPrev = null; cuChartDay = ""; if (prev) cuApplyFilterSnapshot(prev); };
+  back.onclick = () => { const prev = cuChartPrev; cuChartPrev = null; cuChartDay = ""; cuChartTo = ""; if (prev) cuApplyFilterSnapshot(prev); };
   bar.appendChild(back);
 }
-// Calendar (calendar.js): clicking a day lists that day's tasks, like the chart.
+// Calendar (calendar.js): clicking a day lists that day's tasks, like the chart;
+// dragging across days (or "List all of October") lists the whole range.
 window.pcmPickDay = (ts) => cuShowChartDay(ts, "calendar");
+window.pcmPickRange = (fromTs, toTs) => cuShowChartDay(fromTs, "calendar", toTs);
+window.pcmPickDays = (list) => { const s = (list || []).slice().sort((a, b) => a - b); if (s.length) cuShowChartDay(s[0], "calendar", s[s.length - 1], s); };
 // The worked example under ClickUp setup › Advanced › Multi-day tasks: highlight
 // the row (and its explanation) of the option chosen in the dropdown.
 function paintMultiDayExample() {
@@ -3429,7 +3460,8 @@ try { chrome.storage.local.get("optWeekAssign").then((g) => { if (g && /^(all|me
 // paused client (Admin › Paused clients) - its tracked time still counts.
 function cuEstOf(t) {
   if (!t) return 0;
-  if (!t.done && (t.paused || (window.PcmPaused && window.PcmPaused.pausedFor(t)))) return 0;
+  // Paused: only the part already worked (up to its tracked time) - see countedEst in lib-clickup.
+  if (!t.done && (t.paused || (window.PcmPaused && window.PcmPaused.pausedFor(t)))) return Math.min(Number(t.estimateMs) || 0, Math.max(0, Number(t.spentMs) || 0));
   return Number(t.estimateMs) || 0;
 }
 // The running timer's minutes since the last ClickUp refresh. The totals from
@@ -4043,33 +4075,85 @@ function renderPeopleMenu() {
 let optWorkspaceClients = [];
 let optFltResultClients = [];
 let optClientSig = "";
+// Explore's Client: tick boxes like the Tasks card's Client (exFilter.clients).
+// One client narrows the list; several each get their own section (with the
+// people sections inside), so anyone's tasks read client by client. "In these
+// results" lists the clients the loaded tasks have, with how many; your clients
+// and (searching) any client in the workspace come after. A tick only narrows
+// rows already loaded - nothing is read from ClickUp again.
+let exClientCounts = new Map(); // client key -> { name, n }
+const exCKey = (n) => String(n || "").toLowerCase().replace(/[^a-z0-9]+/g, "");
+const exNotClient = (n) => /^(extra tasks?|daily tracking)$/i.test(String(n).replace(/^[^a-z0-9]+/i, ""));
+function exClientPicks() { return Array.isArray(exFilter.clients) ? exFilter.clients.filter(Boolean) : []; }
+// Which picked client a row belongs to (index), or -1. Names differing only by
+// emoji, spacing or case are the same client; one name inside the other matches.
+function exClientOf(t, picks) {
+  const c = exCKey(t && t.client);
+  if (!c) return -1;
+  for (let i = 0; i < picks.length; i++) { const pk = exCKey(picks[i]); if (c === pk || (c.length >= 4 && pk.length >= 4 && (c.includes(pk) || pk.includes(c)))) return i; }
+  return -1;
+}
+function exClientBtnLabel() {
+  const b = $("exClientBtn");
+  if (!b) return;
+  const cl = exClientPicks();
+  const short = (s) => { s = String(s).replace(/^[^a-z0-9]+/i, ""); return s.length > 22 ? s.slice(0, 21) + "\u2026" : s; };
+  b.textContent = "\u25BE " + (cl.length === 1 ? short(cl[0]) : cl.length > 1 ? cl.length + " clients" : "All clients");
+  b.title = cl.length ? "Showing " + cl.join(", ") + " - click to change" : "Show only some clients - tick one or several (each gets its own section); search to find any client in the workspace";
+  b.classList.toggle("active", cl.length > 0);
+}
 function fillClientSelect() {
-  const sel = $("optFltClient");
-  if (!sel) return "";
-  const pick = sel.value;
-  // Rebuilding the list while it's open closes it (the first click on it seemed
-  // to do nothing): wait until it's closed, and skip it when nothing changed.
-  if (document.activeElement === sel) { sel._pendingFill = true; return pick; }
-  // One entry per client: names differing only by emoji, spacing or case are the
-  // same client (the key canonicalizeClientLabels uses). The spelling your tasks
-  // carry wins, because that is what the filter matches against.
-  const key = (n) => String(n).toLowerCase().replace(/[^a-z0-9]+/g, "") || String(n);
-  const byKey = new Map();
-  // Your clients first (any date - the same list the Tasks card's filter has), then
-  // the workspace's (read once, kept a day) and any the results carry.
+  exClientBtnLabel();
+  const menu = $("exClientMenu");
+  if (!menu || menu.hidden) return exClientPicks().join(", ");
+  const q = String(($("exClientSearch") && $("exClientSearch").value) || "").trim().toLowerCase();
+  const picks = exClientPicks(), pickKeys = new Set(picks.map(exCKey));
+  const hit = (n) => !q || String(n).toLowerCase().includes(q);
+  const box = (attr, name, count) => {
+    const l = document.createElement("label");
+    l.title = name;
+    const i = document.createElement("input"); i.type = "checkbox"; i.setAttribute(attr, name); i.checked = pickKeys.has(exCKey(name));
+    const s = document.createElement("span"); s.textContent = name;
+    l.append(i, " ", s);
+    if (count != null) { const n = document.createElement("span"); n.className = "n"; n.textContent = String(count); l.appendChild(n); }
+    return l;
+  };
+  // In these results (and anything ticked that isn't), most tasks first.
+  const res = [...exClientCounts.values()].filter((c) => !exNotClient(c.name));
+  for (const p of picks) if (!exClientCounts.has(exCKey(p))) res.push({ name: p, n: 0 });
+  res.sort((a, b) => b.n - a.n || a.name.replace(/^[^a-z0-9]+/i, "").localeCompare(b.name.replace(/^[^a-z0-9]+/i, "")));
+  const resBox = $("exClientRes");
+  resBox.textContent = "";
+  const shownRes = res.filter((c) => hit(c.name));
+  if (!q && res.length > 1) {
+    const all = box("data-ex-client-all", "All - one section each", null);
+    const n = res.filter((c) => pickKeys.has(exCKey(c.name))).length;
+    all.className = "cu-filter-all"; all.title = "Tick every client in these results: the list is split client by client";
+    const ai = all.querySelector("input"); ai.checked = n === res.length; ai.indeterminate = n > 0 && n < res.length;
+    resBox.appendChild(all);
+  }
+  for (const c of shownRes) resBox.appendChild(box("data-ex-client", c.name, c.n));
+  $("exClientResGroup").hidden = !shownRes.length;
+  $("exClientResHead").textContent = exClientCounts.size ? "In these results" : "Ticked";
+  // Your clients (any date), then - when searching - the workspace's.
   let mine = [];
   try { mine = cuAvailableFacets((optClickup && optClickup.state) || {}).clients; } catch (e) {}
-  for (const n of [].concat(pick ? [pick] : [], mine, optFltResultClients, optWorkspaceClients)) {
-    if (n && !/^(extra tasks?|daily tracking)$/i.test(String(n).replace(/^[^a-z0-9]+/i, "")) && !byKey.has(key(n))) byKey.set(key(n), n);
+  const seen = new Set(res.map((c) => exCKey(c.name)));
+  const more = [];
+  for (const n of [].concat(mine, q ? optWorkspaceClients : [])) {
+    const k = exCKey(n);
+    if (!n || !k || seen.has(k) || exNotClient(n) || !hit(n)) continue;
+    seen.add(k); more.push(n);
   }
-  const names = [...byKey.values()].sort((a, b) => a.replace(/^[^a-z0-9]+/i, "").localeCompare(b.replace(/^[^a-z0-9]+/i, "")));
-  const sig = names.join("\n");
-  if (sig === optClientSig && sel.options.length > 1) return pick;
-  optClientSig = sig;
-  sel.innerHTML = '<option value="">All clients</option>' +
-    names.map((n) => '<option value="' + escapeHtml(n) + '"' + (n === pick ? " selected" : "") + ">" + escapeHtml(n) + "</option>").join("");
-  sel.value = pick;
-  return pick;
+  more.sort((a, b) => a.replace(/^[^a-z0-9]+/i, "").localeCompare(b.replace(/^[^a-z0-9]+/i, "")));
+  const moreBox = $("exClientMore");
+  moreBox.textContent = "";
+  for (const n of more.slice(0, 60)) moreBox.appendChild(box("data-ex-client", n, null));
+  $("exClientMoreGroup").hidden = !more.length;
+  $("exClientMoreHead").textContent = q ? "Clients in the workspace" : "Your clients";
+  const note = $("exClientNote");
+  if (note) note.textContent = q && !shownRes.length && !more.length ? "No client matches \u201C" + q + "\u201D." : !q ? (exClientCounts.size ? "Type to find any client in the workspace." : "Load tasks to see how many each client has. Type to find any client.") : "";
+  return picks.join(", ");
 }
 let optWorkspaceClientsP = null;
 async function loadWorkspaceClients() {
@@ -4083,23 +4167,50 @@ async function loadWorkspaceClients() {
 // The list is filled when it's first opened (it was never loaded before - only
 // a Load tasks filled it from its own results).
 (function wireExploreClients() {
-  const sel = $("optFltClient");
-  if (!sel) return;
-  const fill = () => { fillClientSelect(); loadWorkspaceClients(); };
-  sel.addEventListener("mousedown", () => { if (sel.options.length <= 1) fillClientSelect(); loadWorkspaceClients(); });
-  sel.addEventListener("focus", () => loadWorkspaceClients());
-  sel.addEventListener("blur", () => { if (sel._pendingFill) { sel._pendingFill = false; fillClientSelect(); } });
-  // Filled ahead, so the first click opens a list that's already there.
-  setTimeout(fill, 2500);
+  const btn = $("exClientBtn"), menu = $("exClientMenu"), search = $("exClientSearch");
+  if (!btn || !menu) return;
+  const open = (on) => {
+    menu.hidden = !on;
+    btn.setAttribute("aria-expanded", on ? "true" : "false");
+    if (!on) return;
+    if (search) search.value = "";
+    fillClientSelect();
+    loadWorkspaceClients();
+    if (search) setTimeout(() => search.focus(), 0);
+  };
+  btn.onclick = (e) => { e.stopPropagation(); open(menu.hidden); };
+  if (search) search.addEventListener("input", () => fillClientSelect());
+  menu.addEventListener("click", (e) => e.stopPropagation());
+  menu.addEventListener("change", (e) => {
+    const el = e.target;
+    if (!el || el.tagName !== "INPUT" || el === search) return;
+    e.stopPropagation();
+    let cl = exClientPicks();
+    if (el.hasAttribute("data-ex-client-all")) cl = el.checked ? [...exClientCounts.values()].map((c) => c.name).filter((n) => !exNotClient(n)) : [];
+    else if (el.hasAttribute("data-ex-client")) {
+      const n = el.getAttribute("data-ex-client"), k = exCKey(n);
+      cl = cl.filter((x) => exCKey(x) !== k);
+      if (el.checked) cl.push(n);
+    } else return;
+    exFilter.clients = cl;
+    exSave();
+    fillClientSelect();
+    // Already loaded: narrow the same rows again (no new read from ClickUp).
+    if (optFltLast) { optFltReuse = true; optFltArmed = true; renderOptionsFilter(); }
+  });
+  document.addEventListener("click", () => { if (!menu.hidden) open(false); });
+  document.addEventListener("keydown", (e) => { if (e.key === "Escape" && !menu.hidden) open(false); });
+  setTimeout(exClientBtnLabel, 0);
 })();
 
 // Explore tasks reads from ClickUp only after "Load tasks" is pressed; changing a
 // filter afterwards asks for it again instead of loading by itself.
 let optFltArmed = false;
+let optFltLast = null, optFltReuse = false; // the last answer, re-used when only a client tick changed
 // ---- Explore's own ▾ Filter (saved as exFilter; never the Tasks card's cuFilter) ----
 const EX_REFINE = ["missingEst", "missingStart", "missingDue", "incomplete", "overdue", "span"];
 const EX_DUE_LABEL = { today: "Today", week: "This week", nextWeek: "Next week", prevWeek: "Previous week", month: "This month", nextMonth: "Next month", prevMonth: "Previous month", custom: "Custom range" };
-const exDefaults = () => ({ due: "today", from: "", to: "", basis: "", dueOnly: true, missingEst: false, missingStart: false, missingDue: false, incomplete: false, overdue: false, span: false, statuses: [], priorities: [] });
+const exDefaults = () => ({ due: "today", from: "", to: "", days: [], clients: [], basis: "", dueOnly: true, missingEst: false, missingStart: false, missingDue: false, incomplete: false, overdue: false, span: false, statuses: [], priorities: [] });
 let exFilter = exDefaults();
 let exSeen = { statuses: [], priorities: [] }; // what the last loaded list had, for the Status / Priority ticks
 function exSave() { chrome.storage.local.set({ exFilter }).catch(() => {}); exBtnLabel(); }
@@ -4132,15 +4243,27 @@ function exRange() {
     const p = (v) => { const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(v || "")); return m ? new Date(+m[1], +m[2] - 1, +m[3]).getTime() : 0; };
     let a = p(exFilter.from), b = p(exFilter.to) || a;
     if (b < a) { const x = a; a = b; b = x; }
-    return { fromTs: a, toTs: dayE(b), label: a === b ? md(a) : md(a) + " – " + md(b) };
+    const days = typeof exPickedDays === "function" ? exPickedDays() : null;
+    return { fromTs: a, toTs: dayE(b), label: days ? days.length + " picked days (" + days.slice(0, 4).map((x) => md(p(x))).join(", ") + (days.length > 4 ? ", \u2026" : "") + ")" : a === b ? md(a) : md(a) + " – " + md(b) };
   }
   return { fromTs: dayS(now), toTs: dayE(now), label: "Today" };
 }
 function exFlags() {
   return { estimate: !!exFilter.missingEst, start: !!exFilter.missingStart, due: !!exFilter.missingDue, incomplete: !!exFilter.incomplete, overdue: !!exFilter.overdue, span: !!exFilter.span };
 }
+// Days picked one by one in the calendar (📅 Dates): one read for their span,
+// rows kept only for those days. Valid only while the span is still theirs.
+function exPickedDays() {
+  const d = Array.isArray(exFilter.days) ? exFilter.days : [];
+  return exFilter.due === "custom" && d.length > 1 && d[0] === exFilter.from && d[d.length - 1] === (exFilter.to || exFilter.from) ? d : null;
+}
 // Status / priority ticks and "Dates by" (start / both) on a loaded row.
 function exPassMore(t, r) {
+  const days = typeof exPickedDays === "function" ? exPickedDays() : null;
+  if (days) {
+    const v = Number(exFilter.basis === "start" ? t && t.startDateMs : t && t.dueDateMs) || 0;
+    if (!v || !days.includes(cuYmd(v))) return false;
+  }
   const st = (exFilter.statuses || []), pr = (exFilter.priorities || []);
   if (st.length && !st.includes(String((t && t.status) || "").toLowerCase())) return false;
   if (pr.length && !pr.includes(String((t && t.priority) || "none").toLowerCase())) return false;
@@ -4215,7 +4338,11 @@ async function renderOptionsFilter() {
   const type = exFilter.due;
 
   box.style.display = "block";
-  box.innerHTML = '<div class="flt-tot">Loading ' + label + "…</div>";
+  if (box.querySelector(".cu-task")) {
+    box.classList.add("flt-loading");
+    box.dataset.loading = "Loading " + label + "\u2026";
+    for (const n of box.querySelectorAll(".flt-stale")) n.remove();
+  } else box.innerHTML = '<div class="flt-tot">Loading ' + label + "…</div>";
   try {
     // Department scope: resolve the checked Department/User selects into the list
     // of ClickUp member ids to query. Empty => background queries own tasks only.
@@ -4260,7 +4387,11 @@ async function renderOptionsFilter() {
     const withControls = false;
     // By start date: a task can start in the range and be due later, so read two months further.
     const qTo = exFilter.basis === "start" ? toTs + 62 * 864e5 : toTs;
-    const res = await send({ type: "CLICKUP_FILTER", fromTs, toTs: qTo, assigneeIds: assigneeIds.length ? assigneeIds : [] });
+    // A client tick re-draws the rows already read (same dates and people).
+    const reqSig = JSON.stringify([fromTs, qTo, assigneeIds]);
+    const reuse = optFltReuse && optFltLast && optFltLast.sig === reqSig;
+    optFltReuse = false;
+    const res = reuse ? optFltLast.res : await send({ type: "CLICKUP_FILTER", fromTs, toTs: qTo, assigneeIds: assigneeIds.length ? assigneeIds : [] });
     if (seq !== optFltSeq) return;
     // The background computes a fresh scope in the background and replies with
     // { building: true } until the result is cached - poll patiently instead of
@@ -4279,6 +4410,9 @@ async function renderOptionsFilter() {
       }
     }
     if (seq !== optFltSeq) return;
+    box.classList.remove("flt-loading");
+    const goB = $("optFltGo"); if (goB) { goB.textContent = "\u21BB Reload"; goB.title = "Read these tasks from ClickUp again"; }
+    if (fltRes && fltRes.ok && fltRes.data) optFltLast = { sig: reqSig, res: fltRes };
     if (!fltRes || !fltRes.ok || !fltRes.data) {
       const why = (fltRes && (fltRes.error || fltRes.reason)) || (fltRes && fltRes.building ? "is still computing - try again in a moment." : "");
       box.innerHTML = '<div class="flt-tot" style="color:var(--red)">Couldn\x27t load: ' + (why || "unknown") + "</div>";
@@ -4363,18 +4497,22 @@ async function renderOptionsFilter() {
     // Client dropdown: options come from the tasks this query returned, and the
     // chosen client narrows every section (tasks, configured tasks, tracked).
     let estShown = null, spentShown = null;
-    const clientSel = $("optFltClient");
-    let clientPick = "";
-    if (clientSel) {
-      clientPick = clientSel.value;
-      // Clients in this result (taken BEFORE the checkboxes, so a checkbox narrows
-      // the rows, not the choices), merged with every client in the workspace.
-      optFltResultClients = [...new Set([].concat(tasks, deadline, Array.isArray(d.trackedTasks) ? d.trackedTasks : [])
-        .map((t) => String((t && t.client) || "").trim()).filter(Boolean))];
-      clientPick = fillClientSelect();
-      if (clientPick) {
-        const pk = String(clientPick).toLowerCase().replace(/[^a-z0-9]+/g, "");
-        const keep = (t) => { const c = String((t && t.client) || "").toLowerCase().replace(/[^a-z0-9]+/g, ""); return c === pk || (c.length >= 4 && pk.length >= 4 && (c.includes(pk) || pk.includes(c))); };
+    // Clients in this result, with how many tasks each (counted BEFORE the client
+    // ticks, so a tick narrows the rows, not the choices).
+    optFltResultClients = [...new Set([].concat(tasks, deadline, Array.isArray(d.trackedTasks) ? d.trackedTasks : [])
+      .map((t) => String((t && t.client) || "").trim()).filter(Boolean))];
+    exClientCounts = new Map();
+    for (const t of [].concat(shownTasks, shownDeadline, shownTracked)) {
+      const n = String((t && t.client) || "").trim(), k = exCKey(n);
+      if (!k) continue;
+      if (!exClientCounts.has(k)) exClientCounts.set(k, { name: n, n: 0 });
+      exClientCounts.get(k).n++;
+    }
+    const clientPicks = exClientPicks();
+    const clientPick = fillClientSelect();
+    {
+      if (clientPicks.length) {
+        const keep = (t) => exClientOf(t, clientPicks) >= 0;
         shownTasks = shownTasks.filter(keep);
         shownDeadline = shownDeadline.filter(keep);
         shownTracked = shownTracked.filter(keep);
@@ -4392,6 +4530,9 @@ async function renderOptionsFilter() {
     }
     shownTasks = cuGroupSubtaskRowsOpt(shownTasks);
     optFltExport = cuExportRowsOpt(shownTasks, shownDeadline, shownTracked, label + (clientPick ? " - " + clientPick : ""));
+    // Its dates go with it, as the Tasks card's do: "Include subtasks" then keeps
+    // to them instead of bringing a task's whole month of subtasks.
+    if (dueOnly) optFltExport.range = { fromTs: rangeLo, toTs: rangeHi };
     const total = shownTasks.length + shownDeadline.length + shownTracked.length;
     const filterTags = active.map((k) => ({
       estimate: "missing estimates",
@@ -4420,7 +4561,48 @@ async function renderOptionsFilter() {
     list.className = "cu-tasklist";
     makeListResizable(list, "explore");
     list.dataset.reorder = "explore";
-    for (const t of sortByPriority(shownTasks, cuListOrderFor("explore"))) list.appendChild(optExploreTaskRow(t, withControls));
+    let grouped = false;
+    const drawRows = (rows, gk) => {
+      const whoSecs = exPeopleSections(rows, sameTask ? [] : assigneeIds);
+      if (!whoSecs) { for (const t of sortByPriority(rows, cuListOrderFor("explore"))) list.appendChild(optExploreTaskRow(t, withControls)); return; }
+      grouped = true;
+      for (const sec of whoSecs) {
+        const h = document.createElement("div");
+        h.className = "cu-wkgroup ex-who" + (sec.shared ? " shared" : "");
+        h.dataset.gk = "p:" + gk + sec.key; // click to fold (week-fold.js)
+        const est = sec.rows.reduce((a, t) => a + cuEstOf(t), 0), trk = sec.rows.reduce((a, t) => a + (Number(t.spentMs) || 0), 0);
+        const noEst = sec.rows.filter((t) => !Number(t.estimateMs)).length;
+        const b = document.createElement("b"); b.textContent = sec.label;
+        const s = document.createElement("span");
+        s.textContent = " \u00b7 " + sec.rows.length + " task" + (sec.rows.length === 1 ? "" : "s") + " \u00b7 est " + fmtDurOpt(est) + " \u00b7 tracked " + fmtDurOpt(trk) + (noEst ? " \u00b7 " + noEst + " without an estimate" : "");
+        h.append(b, s);
+        h.title = sec.tip + " Click to fold or unfold.";
+        h.appendChild(cuTabGroupBtn(sec.label, () => sec.rows, sec.shared ? "purple" : "cyan"));
+        list.appendChild(h);
+        for (const t of sortByPriority(sec.rows, cuListOrderFor("explore"))) list.appendChild(optExploreTaskRow(t, withControls));
+      }
+    };
+    if (clientPicks.length > 1) {
+      // Several clients ticked: one section each (the order they were ticked).
+      grouped = true;
+      clientPicks.forEach((cp, i) => {
+        const rows = shownTasks.filter((t) => exClientOf(t, clientPicks) === i);
+        if (!rows.length) return;
+        const mh = document.createElement("div");
+        mh.className = "cu-mgroup ex-client";
+        mh.dataset.gk = "c:" + exCKey(cp);
+        const est = rows.reduce((a, t) => a + cuEstOf(t), 0), trk = rows.reduce((a, t) => a + (Number(t.spentMs) || 0), 0);
+        const b = document.createElement("b"); b.textContent = cp;
+        const s = document.createElement("span");
+        s.textContent = " \u00b7 " + rows.length + " task" + (rows.length === 1 ? "" : "s") + " \u00b7 est " + fmtDurOpt(est) + " \u00b7 tracked " + fmtDurOpt(trk);
+        mh.append(b, s);
+        mh.title = cp + " - click to fold or unfold";
+        mh.appendChild(cuTabGroupBtn(cp, () => rows, "blue"));
+        list.appendChild(mh);
+        drawRows(rows, exCKey(cp) + ":");
+      });
+    } else drawRows(shownTasks, "");
+    if (grouped) { const end = document.createElement("div"); end.className = "cu-gend"; list.appendChild(end); }
     for (const dt of sortByPriority(shownDeadline)) {
       if (dt.error) continue;
       const row = document.createElement("div");
@@ -4484,6 +4666,38 @@ async function renderOptionsFilter() {
   }
 }
 
+// Explore for several people: the rows split by who is on them - each person's
+// own tasks ("Only Anna"), then the ones they share ("Shared: Anna +
+// Ben"), each with its own count / estimate / tracked. null = one list (one
+// person, a whole department of more than 8, or "same task" which is all shared).
+function exPeopleSections(rows, ids) {
+  ids = (Array.isArray(ids) ? ids : []).map(String);
+  if (ids.length < 2 || ids.length > 8 || !rows.length) return null;
+  const first = (id) => { const n = String(typeof peopleNameOf === "function" ? peopleNameOf(id) : id); return n.split(" ")[0] || n; };
+  const secs = new Map();
+  // A subtask goes with its parent's section when its parent is listed.
+  const byId = new Map(rows.map((t) => [String(t.id), t]));
+  const keyOf = (t) => {
+    const on = new Set((Array.isArray(t && t.assignees) ? t.assignees : []).map((a) => String(a && a.id)));
+    return ids.filter((id) => on.has(id));
+  };
+  for (const t of rows) {
+    const p = t.isSubtask && t.parentId != null ? byId.get(String(t.parentId)) : null;
+    const who = keyOf(p || t);
+    const k = who.join("+") || "none";
+    if (!secs.has(k)) {
+      const names = who.map(first);
+      secs.set(k, {
+        key: k, rows: [], shared: who.length > 1, n: who.length,
+        label: !who.length ? "None of them assigned" : who.length === 1 ? "Only " + names[0] : "Shared: " + names.join(" + "),
+        tip: !who.length ? "Tasks listed for them that none of them is assigned to (watching, or a subtask)." : who.length === 1 ? "Tasks only " + names[0] + " is on, of the people picked." : "Tasks " + names.join(" and ") + " are all on.",
+      });
+    }
+    secs.get(k).rows.push(t);
+  }
+  const order = (s) => (s.n === 0 ? 99 : s.n === 1 ? ids.indexOf(s.key) : 10 + s.n);
+  return [...secs.values()].sort((a, b) => order(a) - order(b));
+}
 // One task row of Explore tasks (also the rows Find these tasks shows).
 function optExploreTaskRow(t, withControls) {
   const row = document.createElement("div");
@@ -4566,8 +4780,9 @@ async function renderFindModeOpt(box, seq, ctx) {
   if (seq !== optFltSeq) return;
   // The choices above narrow the search only when they're set.
   const ckey = (n) => String(n || "").toLowerCase().replace(/[^a-z0-9]+/g, "");
-  const clientPick = $("optFltClient") ? $("optFltClient").value : "";
-  const ck = ckey(clientPick);
+  const clientPicks = exClientPicks();
+  const clientPick = clientPicks.join(", ");
+  const ck = clientPicks.length ? "y" : "";
   const useDates = !!($("optFindUseDates") && $("optFindUseDates").checked);
   const lo = new Date(ctx.fromTs).setHours(0, 0, 0, 0), hi = new Date(ctx.toTs).setHours(23, 59, 59, 999);
   const inRange = (v) => { v = Number(v) || 0; return v >= lo && v <= hi; };
@@ -4581,7 +4796,7 @@ async function renderFindModeOpt(box, seq, ctx) {
   if (people.size) narrowed.push(ctx.label.split(" · ").slice(1).join(" · ") || "chosen people");
   for (const [k, on] of Object.entries(flt)) if (on) narrowed.push({ estimate: "missing estimates", start: "missing start date", due: "missing due date", incomplete: "incomplete", overdue: "deadline crossed", span: "start ≠ due" }[k]);
   const pool = all.filter((t) => {
-    if (ck) { const c = ckey(t.client); if (!(c === ck || (c.length >= 4 && ck.length >= 4 && (c.includes(ck) || ck.includes(c))))) return false; }
+    if (ck && exClientOf(t, clientPicks) < 0) return false;
     if (useDates && !(inRange(t.dueDateMs) || inRange(t.startDateMs) || inRange(t.doneAt))) return false;
     if (people.size) {
       const ids = (t.assignees || []).map((a) => String(a && a.id));
@@ -4993,7 +5208,7 @@ function initDeptCreator() {
 // Priority sections narrow the visible task LIST only; they never change the
 // headline totals or the toolbar badge.
 // "Due today" is ticked by default (a saved choice always wins).
-let cuFilter = { dueWeek: false, dueNextWeek: false, duePrevWeek: false, dueThisMonth: false, dueNextMonth: false, duePrevMonth: false, dueCustom: false, dateBasis: "", missingDue: false, customFrom: "", customTo: "", missingEst: false, hasTracked: false, deadlineCrossed: false, waitingOthers: false, onlyMe: false, sharedTasks: false, manualOrder: false, statuses: [], priorities: [], clients: [] };
+let cuFilter = { dueWeek: false, dueNextWeek: false, duePrevWeek: false, dueThisMonth: false, dueNextMonth: false, duePrevMonth: false, dueCustom: false, dateBasis: "", missingDue: false, customFrom: "", customTo: "", customDays: [], missingEst: false, hasTracked: false, deadlineCrossed: false, waitingOthers: false, onlyMe: false, sharedTasks: false, manualOrder: false, statuses: [], priorities: [], clients: [] };
 const CU_FILTER_KEYS = ["dueWeek", "dueNextWeek", "duePrevWeek", "dueThisMonth", "dueNextMonth", "duePrevMonth", "dueCustom", "missingEst", "missingDue", "hasTracked", "deadlineCrossed", "waitingOthers", "onlyMe", "sharedTasks", "groupSubtasks", "manualOrder"];
 const CU_PRIORITY_ORDER = ["urgent", "high", "normal", "low", "none"];
 // The section under the task list: time you tracked in the period on tasks
@@ -5212,7 +5427,7 @@ function resolveCuFilterView(st, f) {
   if (planV) return planV;
   // Deadline crossed looks at ALL dates, so it takes over the date scope.
   if (f.deadlineCrossed) return cuOverdueView();
-  if (cuCustomRange(f)) { const cv = cuCustomView(f, st); if (cv) return cv; }
+  if (cuCustomRange(f)) { const cv = cuCustomView(f, st); if (cv) return cuPickDaysView(cv, f); }
   const wk = st.weekly || null;
   if (f.dueNextWeek && st.nextWeek) {
     const nw = st.nextWeek;
@@ -5414,6 +5629,23 @@ function cuTomorrowView(st) {
     label: "due tomorrow" + (c.status === "error" ? " (couldn't load)" : " (loading…)"), loading: c.status !== "error" };
 }
 
+// Days picked one by one in the calendar (customDays): one read for their span,
+// shown only for those days - the list, the totals, Export and Plan with AI.
+function cuPickedDays(f) {
+  const d = f && Array.isArray(f.customDays) ? f.customDays : [];
+  return d.length > 1 && f.dueCustom && d[0] === f.customFrom && d[d.length - 1] === (f.customTo || f.customFrom) ? d : null;
+}
+function cuPickDaysView(v, f) {
+  const days = cuPickedDays(f);
+  if (!v || !days) return v;
+  const set = new Set(days);
+  const dayOf = (ms) => { const x = new Date(Number(ms)); return x.getFullYear() + "-" + String(x.getMonth() + 1).padStart(2, "0") + "-" + String(x.getDate()).padStart(2, "0"); };
+  const keep = (t) => t && Number(t.dueDateMs) > 0 && set.has(dayOf(t.dueDateMs));
+  const tasks = (v.tasks || []).filter(keep), tracked = (v.trackedTasks || []).filter(keep);
+  const sum = (k) => tasks.reduce((n, t) => n + (Number(t[k]) || 0), 0);
+  return { ...v, tasks, trackedTasks: tracked, deadlineTasks: [], estimateMs: sum("estimateMs"), spentMs: sum("spentMs"), taskCount: tasks.length,
+    noEstimateCount: tasks.filter((t) => !Number(t.estimateMs)).length, label: days.length + " picked days" + (v.loading ? " (loading\u2026)" : "") };
+}
 function cuCustomView(f, state) {
   const r = cuCustomRange(f);
   if (!r) return null;
@@ -5429,12 +5661,13 @@ function cuCustomView(f, state) {
   const label = cuCustomLabel(r);
   // By start date (or both): only the background builds it (it needs the open
   // tasks list) - wait for it.
-  if (r.basis !== "due") return { estimateMs: 0, spentMs: 0, tasks: [], deadlineTasks: [], trackedTasks: [], scope: "custom", label: label + " (loading…)", loading: true };
+  if (r.basis !== "due") { cuViewLoading = true; return { estimateMs: 0, spentMs: 0, tasks: [], deadlineTasks: [], trackedTasks: [], scope: "custom", label: label + " (loading…)", loading: true }; }
   const c = cuCustomCache;
   const stale = c.key === key && c.status === "ready" && Date.now() - c.at > 5 * 60000;
   if (c.key !== key || stale) cuFetchCustom(r, key); // refresh in the background
   if (c.key === key && c.data) return { ...c.data, scope: "custom", label };
   const st = cuCustomCache.status;
+  if (st !== "error") cuViewLoading = true;
   return { estimateMs: 0, spentMs: 0, tasks: [], deadlineTasks: [], trackedTasks: [], scope: "custom",
     label: label + (st === "error" ? " (couldn't load)" : " (loading…)"), loading: st !== "error" };
 }
@@ -6012,8 +6245,21 @@ function renderClickupPreview(st) {
   // Mid-edit / mid-drag the body postpones the redraw: then nothing is on screen
   // for this state yet, so don't remember it as drawn.
   cuLastPaintSig = cuEstEditingOpt || cuDraggingOpt ? "" : sig;
-  keepPageStill(() => renderClickupPreviewBody(st));
+  keepPageStill(() => {
+    // A new filter / calendar day whose tasks are still loading: keep the rows
+    // that were on screen (faded, "Loading...") instead of an empty list for a
+    // moment - that blank-then-full was the flicker. The real rows replace them
+    // in one go when they arrive.
+    const dt = $("dashTasks");
+    const old = dt && dt.querySelector(".cu-task") ? [...dt.childNodes] : null;
+    cuViewLoading = false;
+    renderClickupPreviewBody(st);
+    if (!dt) return;
+    if (old && cuViewLoading && !dt.querySelector(".cu-task")) { dt.replaceChildren(...old); dt.classList.add("cu-stale"); }
+    else dt.classList.remove("cu-stale");
+  });
 }
+var cuViewLoading = false; // set while the view being drawn is still loading (cuCustomView)
 function renderClickupPreviewBody(st) {
   if (cuEstEditingOpt || cuDraggingOpt) { cuRenderPendingOpt = true; return; }
   const box = $("cuPreview");
@@ -6299,7 +6545,9 @@ function renderClickupPreviewBody(st) {
   {
     const scopeTxt = scopeLabel ? scopeLabel.charAt(0).toUpperCase() + scopeLabel.slice(1) : "Today";
     if ($("dashTodayTitle")) $("dashTodayTitle").textContent = scopeTxt;
-    if ($("dashTasksScope")) $("dashTasksScope").textContent = scopeTxt.toLowerCase() + (clientsSel.length ? " · " + clientsSel.join(", ") : "");
+    // The dates only: the clients ticked are on the Clients button (and each has
+    // its own heading below) - listing them here ran to three lines.
+    if ($("dashTasksScope")) { $("dashTasksScope").textContent = scopeTxt.toLowerCase(); $("dashTasksScope").title = clientsSel.length ? "Clients: " + clientsSel.join(", ") : ""; }
     const chip = $("dashTodayChip");
     if (chip) {
       chip.style.display = targetMs > 0 ? "" : "none";
@@ -6416,7 +6664,7 @@ function renderClickupPreviewBody(st) {
       // Orphaned subtasks (parent filtered out by a refine box) - append so none vanish.
       for (const subs of subsByParent.values()) for (const s of subs) if (!emittedSubs.has(s)) sorted.push(s);
       const tasksGuessCtx = cuGuessCtx(viewTasks);
-      for (const t of cuSplitByWeekOpt(sorted)) {
+      for (const t of cuSplitByWeekOpt(sorted, grouped ? { inGroup: groupName } : null)) {
         if (t && t._wkHead) { listEl.appendChild(t._wkHead); continue; }
         const row = document.createElement("div");
         // A parent with its subtasks right under it: tinted, bold, "N subtasks";
@@ -6499,15 +6747,6 @@ function renderClickupPreviewBody(st) {
       }
       lists.appendChild(listEl);
     }
-    if (grouped) {
-      // The heading already names the client: drop the per-row pill (from every
-      // row of the group, so the columns stay aligned) and keep the rows tight
-      // under their heading.
-      for (const el of [...lists.children].slice(first)) {
-        el.querySelectorAll(".cu-client").forEach((pill) => pill.remove());
-        if (el.classList.contains("cu-tasklist")) el.classList.add("cu-grouplist");
-      }
-    }
   };
   // The totals of exactly what the table shows - whatever filter, picked day,
   // client or search is on (tracked-only rows add their time, not an estimate,
@@ -6540,19 +6779,27 @@ function renderClickupPreviewBody(st) {
         }
       }
       tot.title = "Added up from the rows below, under the filter, day, client and search that are on now.";
-      tot.appendChild(cuTabGroupBtn(($("dashTasksScope") && $("dashTasksScope").textContent) || "Tasks", () => [].concat(viewTasks, shownDl, viewTracked)));
+      tot.appendChild(cuTabGroupBtn((($("dashTasksScope") && $("dashTasksScope").textContent) || "Tasks") + (clientsSel.length === 1 ? " · " + clientsSel[0] : clientsSel.length > 1 ? " · " + clientsSel.length + " clients" : ""), () => [].concat(viewTasks, shownDl, viewTracked)));
       lists.appendChild(tot);
     }
   }
   if (clientsSel.length) {
     // All client groups sit in ONE scroll box with the stretch bar under it
     // (each group's own list stops scrolling on its own inside it).
+    // ONE list (one column header) with a heading per client - the same look as
+    // Explore tasks: name, tasks, est, ~with guesses, tracked, Tab group, Plan with
+    // AI; click a heading to fold it (week-fold.js). Each client's rows are drawn
+    // as before, then moved into the one list.
     const gw = document.createElement("div");
     gw.className = "cu-tasklist cu-groupwrap";
+    gw.dataset.reorder = "tasks:main";
     lists.appendChild(gw);
     makeListResizable(gw, "dash");
     const clientOf = (t) => String((t && t.client) || "").trim();
-    for (const c of clientsSel.slice().sort((a, b) => a.localeCompare(b))) {
+    // A-Z, or your own order (drag a client's heading) with Custom order on.
+    const ownOrder = !!cuFilter.manualOrder;
+    const ordered = window.PcmFold && window.PcmFold.sortClients ? window.PcmFold.sortClients(clientsSel, ownOrder) : clientsSel.slice().sort((a, b) => a.localeCompare(b));
+    for (const c of ordered) {
       const d1 = viewDeadline.filter((t) => clientOf(t) === c);
       const t1 = viewTasks.filter((t) => clientOf(t) === c);
       const k1 = viewTracked.filter((t) => clientOf(t) === c);
@@ -6560,25 +6807,30 @@ function renderClickupPreviewBody(st) {
       const est = t1.reduce((a, t) => a + cuEstOf(t), 0)
         + d1.reduce((a, t) => a + (Number(t.dayEstimateMs) || 0), 0);
       const trk = t1.concat(d1, k1).reduce((a, t) => a + (Number(t.spentMs) || 0), 0);
+      const n = d1.length + t1.length + k1.length;
+      const gctx = cuGuessCtx(t1);
+      const withG = t1.reduce((a, t) => a + cuGuessMs(t, gctx), 0);
       const head = document.createElement("div");
-      head.className = "cu-dhead cu-clienthead";
-      const nameSpan = document.createElement("span");
-      nameSpan.className = "cu-chname";
-      nameSpan.textContent = c;
-      nameSpan.title = c;
-      head.appendChild(nameSpan);
+      head.className = "cu-mgroup ex-client";
+      head.dataset.gk = "c:" + c.toLowerCase().replace(/[^a-z0-9]+/g, "");
+      head.title = c + " - click to fold or unfold" + (ownOrder ? "; drag it above or below another client" : "");
+      head.dataset.client = c;
+      if (ownOrder) head.draggable = true;
+      const nameB = document.createElement("b");
+      nameB.textContent = c;
       const subSpan = document.createElement("span");
-      subSpan.className = "cu-chsub";
-      subSpan.textContent = "est " + fmtDurOpt(est) + (trk > 0 ? " \u00b7 tracked " + fmtDurOpt(trk) : "");
-      head.appendChild(subSpan);
+      subSpan.textContent = " \u00b7 " + n + " task" + (n === 1 ? "" : "s") + " \u00b7 est " + fmtDurOpt(est) +
+        (withG !== 0 ? " \u00b7 ~" + fmtDurOpt(Math.max(0, est + withG)) + " with guesses" : "") + " \u00b7 tracked " + fmtDurOpt(trk);
+      head.append(nameB, subSpan);
       head.appendChild(cuTabGroupBtn(c, () => t1.concat(d1, k1), "orange"));
       if (window.PcmTaskPanel && window.PcmTaskPanel.clientTools) head.appendChild(window.PcmTaskPanel.clientTools(c, t1.concat(d1, k1)));
-      // Each client in its own card, so the groups are easy to tell apart.
-      const card = document.createElement("div");
-      card.className = "cu-clientcard";
-      card.appendChild(head);
-      gw.appendChild(card);
-      renderSections(card, d1, t1, k1, true, c);
+      gw.appendChild(head);
+      const tmp = document.createElement("div");
+      renderSections(tmp, d1, t1, k1, true, c);
+      for (const el of [...tmp.children]) {
+        if (el.classList.contains("cu-tasklist")) { for (const r of [...el.children]) gw.appendChild(r); }
+        else { el.classList.add("cu-foldable"); gw.appendChild(el); } // e.g. "Other tasks you tracked" - folds with its client
+      }
     }
     if (!gw.children.length) gw.remove();
   } else {
@@ -7343,6 +7595,7 @@ function cuClearAllFilters() {
   cuFilter.clients = [];
   cuFilter.customFrom = "";
   cuFilter.customTo = "";
+  cuFilter.customDays = [];
   cuFilter.dateBasis = "";
   chrome.storage.local.set({ cuFilter }).catch(() => {});
   optRenderCuFilterMenu();
@@ -7351,7 +7604,7 @@ function cuClearAllFilters() {
 }
 // Your own starting point: "Save as my default" remembers the ticked filters
 // and the selection mode; a fresh install (or "Use my default") applies them.
-const CU_FILTER_EXTRAS = ["statuses", "priorities", "clients", "customFrom", "customTo", "dateBasis"];
+const CU_FILTER_EXTRAS = ["statuses", "priorities", "clients", "customFrom", "customTo", "dateBasis", "customDays"];
 function cuSnapshotFilter() {
   const out = { mode: cuFilterSingle ? "single" : "multi" };
   for (const k of CU_FILTER_KEYS) out[k] = !!cuFilter[k];
@@ -7621,12 +7874,13 @@ function insBuildModel(rows, st) {
       id: r.id, name: r.name || "(untitled task)", url: r.url || insTaskUrl(r.id),
       due: Number(r.dueDateMs) || 0, est: Number(r.estimateMs) || 0,
       client: (r.client && String(r.client)) || "(no client)",
-      isSubtask: !!r.isSubtask, parentId: r.parentId || null,
+      isSubtask: !!r.isSubtask, parentId: r.parentId || null, status: r.status ? String(r.status) : "",
       dependsOn: Array.isArray(r.dependsOn) ? r.dependsOn.map(String) : [], // ClickUp "waiting on" tasks
     });
   }
   function mk() { return { n: 0, est: 0 }; }
   var buckets = { overdue: mk(), thisWeek: mk(), nextWeek: mk(), later: mk(), noDate: mk() };
+  var bucketRows = { overdue: [], thisWeek: [], nextWeek: [], later: [], noDate: [] }; // Workload outlook: a bar's tasks
   var overdueList = [], noEstList = [], noDueList = [], holList = [], byClient = Object.create(null);
   var kOverdue = 0, kWeek = 0, kNoEst = 0, kNoDue = 0, openTotal = 0;
   for (i = 0; i < list.length; i++) {
@@ -7642,6 +7896,7 @@ function insBuildModel(rows, st) {
     else if (r.due <= nwTo) bk = "nextWeek";
     else bk = "later";
     buckets[bk].n++;
+    bucketRows[bk].push(r);
     if (!umbrella) buckets[bk].est += r.est; // don't double-count umbrella hours
     if (bk === "overdue") { kOverdue++; c.overdue++; overdueList.push(r); }
     if (bk === "thisWeek") { kWeek++; if (!umbrella) c.weekEst += r.est; }
@@ -7675,7 +7930,7 @@ function insBuildModel(rows, st) {
       kind = "schedule";
       reason = "Schedule: " + sb.later + " subtask" + (sb.later === 1 ? " is" : "s are") + " due after this task" + (sb.latestDueMs ? " (until " + insDateShort(sb.latestDueMs) + ")" : "");
     }
-    blockedList.push({ id: key, name: row ? row.name : "(task " + key + ")", url: row ? row.url : insTaskUrl(key), client: row ? row.client : "", due: row ? row.due : 0, reason: reason, kind: kind });
+    blockedList.push({ id: key, name: row ? row.name : "(task " + key + ")", url: row ? row.url : insTaskUrl(key), client: row ? row.client : "", due: row ? row.due : 0, reason: reason, kind: kind, status: row ? row.status : "" });
   }
   // A ClickUp dependency ("waiting on" another task) that is still open.
   var blockedIds = Object.create(null);
@@ -7685,9 +7940,28 @@ function insBuildModel(rows, st) {
     if (!dr || blockedIds[dr.id] || !Array.isArray(dr.dependsOn) || !dr.dependsOn.length) continue;
     var waitsOn = dr.dependsOn.map(function (x) { return byId[String(x)]; }).filter(Boolean);
     if (!waitsOn.length) continue;
-    blockedList.push({ id: dr.id, name: dr.name, url: dr.url, client: dr.client || "", due: dr.due || 0, kind: "dependency",
+    blockedList.push({ id: dr.id, name: dr.name, url: dr.url, client: dr.client || "", due: dr.due || 0, kind: "dependency", status: dr.status,
       reason: "Waiting on another task (ClickUp dependency): “" + String(waitsOn[0].name || "").slice(0, 70) + "”, still open" + (waitsOn.length > 1 ? " + " + (waitsOn.length - 1) + " more" : "") });
   }
+  // Stopped in ClickUp itself (roadblock, blocked, on hold, waiting...): blocked too.
+  var stTone = typeof insStTone === "function" ? insStTone : function () { return ""; };
+  for (i = 0; i < list.length; i++) {
+    var sr = list[i];
+    if (!sr || blockedIds[sr.id] || stTone(sr.status) !== "bad") continue;
+    blockedIds[sr.id] = 1;
+    blockedList.push({ id: sr.id, name: sr.name, url: sr.url, client: sr.client || "", due: sr.due || 0, kind: "status", status: sr.status,
+      reason: "Status in ClickUp: " + sr.status });
+  }
+  // Not marked stopped, but held up: waiting on something above, or its parent is
+  // stopped - "set roadblock?" is offered on its row (Overdue, Deadlines missed...).
+  var whyHeld = Object.create(null);
+  blockedList.forEach(function (b) { if (b.kind !== "status") whyHeld[b.id] = b.reason; });
+  for (i = 0; i < list.length; i++) {
+    var hr = list[i], par = hr && hr.parentId ? byId[String(hr.parentId)] : null;
+    if (hr && !whyHeld[hr.id] && par && stTone(par.status) === "bad") whyHeld[hr.id] = "its parent task is " + par.status;
+  }
+  for (i = 0; i < list.length; i++) if (!whyHeld[list[i].id] && typeof insHoldHints !== "undefined" && insHoldHints[list[i].id]) whyHeld[list[i].id] = insHoldHints[list[i].id];
+  for (i = 0; i < list.length; i++) if (whyHeld[list[i].id] && stTone(list[i].status) !== "bad") list[i].hold = whyHeld[list[i].id];
   // Due date order, soonest first, with the dateless ones last. Only Overdue
   // used to be sorted, so the other lists came out in whatever order ClickUp
   // happened to return - Nov 30, Dec 7, Nov 30, Nov 23 - which reads as broken
@@ -7716,7 +7990,7 @@ function insBuildModel(rows, st) {
   return {
     k: { overdue: kOverdue, week: kWeek, noEst: kNoEst, noDue: kNoDue, blocked: blockedList.length, open: openTotal },
     buckets: buckets, clients: clients, todayStart: todayStart, twTo: twTo, nwTo: nwTo, byId: byId,
-    overdueList: overdueList, noEstList: noEstList, noDueList: noDueList, holList: holList, blockedList: blockedList,
+    overdueList: overdueList, noEstList: noEstList, noDueList: noDueList, holList: holList, blockedList: blockedList, bucketRows: bucketRows,
   };
 }
 
@@ -7733,6 +8007,10 @@ function insStateCounts(st) {
 }
 function renderDashStrip() {
   var el = document.getElementById("pcmDashStrip");
+  // Removed from the Dashboard (it crowded it): the same counts are in Insights,
+  // and the sidebar shows a count on Insights when something new needs a look.
+  if (el) { el.hidden = true; el.innerHTML = ""; }
+  return;
   if (!el) return;
   var st = optClickup && optClickup.state;
   if (!insConnected() || !st) { el.style.display = "none"; return; }
@@ -7804,6 +8082,28 @@ function insPaintSubNav() {
   }
 }
 try { chrome.storage.onChanged.addListener(function (ch, area) { if (area === "local" && ch.perfHistory && ch.perfHistory.newValue) { insLateList = insLateFrom(ch.perfHistory.newValue); if (insSub === "health") renderInsights(); } }); } catch (e) {}
+// Held up without a ClickUp dependency (a schema step on an unwritten page, a
+// PENDING parent, "only build if..."): the background reads the overdue and
+// soon-due tasks once (cached 6 h) and the lists are drawn again with the reasons.
+var insHoldHints = Object.create(null), insHoldAsked = "";
+function insAskHoldHints(m) {
+  var soon = Date.now() + 7 * 86400000, ids = [];
+  var pool = (m.overdueList || []).concat((m.bucketRows && m.bucketRows.thisWeek) || [], (m.bucketRows && m.bucketRows.nextWeek) || []);
+  for (var i = 0; i < pool.length && ids.length < 30; i++) {
+    var r = pool[i];
+    if (!r || !r.id || r.hold || insStTone(r.status) === "bad" || (r.due && r.due > soon) || ids.indexOf(r.id) >= 0) continue;
+    ids.push(String(r.id));
+  }
+  var key = ids.join(",");
+  if (!ids.length || key === insHoldAsked) return;
+  insHoldAsked = key;
+  send({ type: "INS_HOLD_HINTS", ids: ids }, 120000).then(function (res) {
+    if (!res || typeof res !== "object") return;
+    var changed = false;
+    for (var k in res) if (Object.prototype.hasOwnProperty.call(res, k) && insHoldHints[k] !== res[k]) { insHoldHints[k] = res[k]; changed = true; }
+    if (changed && insTabActive()) renderInsights();
+  }).catch(function () {});
+}
 function renderInsights() {
   var view = document.getElementById("insView");
   if (!view) return;
@@ -7962,7 +8262,10 @@ function insPaint(m, st, meta) {
   html += insDrillsHtml(m);
   return html;
 }
+var insWkModel = null, insWkShown = "";
 function insWorkloadCard(m) {
+  insWkModel = m;
+  try { insAskHoldHints(m); } catch (e) {}
   var order = [
     { key: "overdue", lab: "Overdue", cls: "od" },
     { key: "thisWeek", lab: "This week", cls: "" },
@@ -7977,12 +8280,12 @@ function insWorkloadCard(m) {
     var o = order[i], bk = m.buckets[o.key];
     var pct = max > 0 ? Math.max(bk.est > 0 ? 6 : 0, Math.round((bk.est / max) * 100)) : 0;
     var val = o.key === "noDate" ? "—" : (bk.est > 0 ? insHrs(bk.est) : "—");
-    bars += '<div class="wk-day ' + o.cls + '"><div class="wk-cnt">' + bk.n + (bk.n === 1 ? " task" : " tasks") + "</div>" +
+    bars += '<div class="wk-day wk-click ' + o.cls + (insWkShown === o.key ? " on" : "") + '" data-wk="' + o.key + '" role="button" tabindex="0" title="Click to list these ' + bk.n + ' task' + (bk.n === 1 ? "" : "s") + '"><div class="wk-cnt">' + bk.n + (bk.n === 1 ? " task" : " tasks") + "</div>" +
       '<div class="wk-bars"><div class="wk-bar est" style="height:' + pct + '%"></div></div>' +
       '<div class="wk-lab">' + o.lab + '</div><div class="wk-val">' + val + "</div></div>";
   }
   return '<div class="card"><div class="dash-h"><div><h3>Workload outlook</h3><p class="hint">Estimated hours waiting for you, by when it’s due</p></div></div>' +
-    '<div class="wk-chart">' + bars + "</div>" +
+    '<div class="wk-chart">' + bars + "</div>" + '<div id="insWkList"></div>' +
     '<div class="legend"><span><i style="background:color-mix(in srgb,var(--amber) 82%,transparent)"></i>Estimated hours</span>' +
     '<span><i style="background:color-mix(in srgb,var(--red) 78%,transparent)"></i>Overdue</span>' +
     '<span><i style="background:var(--muted);opacity:.5"></i>No due date</span></div></div>';
@@ -8140,6 +8443,31 @@ function insHolMove(ts) {
   for (var i = 0; i < 8; i++) { d.setDate(d.getDate() + 7); if (!insOnHoliday(d.getTime())) return d.getTime(); }
   return 0;
 }
+// Status colours, as in a task's details: red = stopped, amber = review, blue = in progress.
+function insStTone(st) {
+  var x = String(st || "").toLowerCase();
+  if (!x) return "";
+  if (/\b(complete|completed|done|closed|approved|resolved)\b/.test(x)) return "ok";
+  if (/road\s*-?block|block|on hold|\bhold\b|stuck|waiting|pending|halt|paused/.test(x)) return "bad";
+  if (/review|\bqa\b|test|approval|feedback/.test(x)) return "rev";
+  if (/progress|doing|working|active|started/.test(x)) return "work";
+  return "";
+}
+function insStChip(st) {
+  if (!st) return "";
+  var t = insStTone(st);
+  return '<span class="ins-st' + (t ? " t-" + t : "") + '" title="Status in ClickUp">' + (t === "bad" ? "\u26D4 " : "") + insEsc(st) + "</span>";
+}
+// A task's name in the Insights lists shows the task right there (task-panel.js);
+// Ctrl / Cmd / middle click still opens it in ClickUp, as does the row's Open.
+if (typeof document !== "undefined") document.addEventListener("click", function (e) {
+  var a = e.target && e.target.closest ? e.target.closest("#insView .trow .ttl-a") : null;
+  if (!a || e.ctrlKey || e.metaKey || e.shiftKey || e.button !== 0 || !window.PcmTaskPanel || !window.PcmTaskPanel.openIn) return;
+  var row = a.closest(".trow"), id = row && row.getAttribute("data-id");
+  if (!id) return;
+  e.preventDefault();
+  window.PcmTaskPanel.openIn(row, id);
+}, true);
 function insDrill(id, label, listArr, fmt) {
   var n = listArr.length, rendered = Math.min(n, INS_DRILL_MAX), body = "", i;
   for (i = 0; i < rendered; i++) {
@@ -8148,8 +8476,9 @@ function insDrill(id, label, listArr, fmt) {
     // The name opens the task in ClickUp; the action does the fix right here
     // (an estimate box, or the extension's own calendar) - see insRowAction.
     body += '<div class="trow" data-client="' + insEsc(client) + '" data-hay="' + insEsc(hay) + '"' + (r.id ? ' data-id="' + insEsc(r.id) + '"' : "") + ' data-due="' + (Number(r.due) || 0) + '">' +
-      f.badge + '<div class="ttl"><b>' + (r.url ? '<a class="ttl-a" href="' + insEsc(r.url) + '" target="_blank" rel="noopener" title="Open in ClickUp">' + insEsc(r.name) + "</a>" : insEsc(r.name)) + "</b><small>" +
-      (client ? insEsc(client) + " · " : "") + insEsc(plain) + "</small></div>" +
+      f.badge + '<div class="ttl"><b>' + (r.url ? '<a class="ttl-a" href="' + insEsc(r.url) + '" target="_blank" rel="noopener" title="Show this task here (description, comments, status) - Ctrl+click opens it in ClickUp">' + insEsc(r.name) + "</a>" : insEsc(r.name)) + "</b>" + insStChip(r.status) + "<small>" +
+      (client ? insEsc(client) + " · " : "") + insEsc(plain) + (r.hold ? '<span class="ins-hold"> · held up: ' + insEsc(r.hold) + "</span>" : "") + "</small></div>" +
+      (r.hold && r.id && id !== "blocked" ? '<button type="button" class="lnk ins-act ins-rb" data-act="roadblock" title="Set this task\u2019s status to roadblock in ClickUp">Set roadblock</button>' : "") +
       (f.act && r.id
         ? '<button type="button" class="lnk ins-act" data-act="' + f.act + '">' + f.action + "</button>"
         : '<a class="lnk" href="' + insEsc(r.url) + '" target="_blank" rel="noopener">' + f.action + "</a>") + "</div>";
@@ -8304,7 +8633,30 @@ function insSetFilter(client, q, due) {
   if (box) box.value = insFilter.q;
   insApplyFilter();
 }
+// Workload outlook: a bar shows its tasks under the chart (again = hide).
+function insShowBucket(key, toggle) {
+  var box = document.getElementById("insWkList");
+  if (!box || !insWkModel) return;
+  if (toggle && insWkShown === key) key = "";
+  insWkShown = key;
+  document.querySelectorAll("#insView .wk-click").forEach(function (d) { d.classList.toggle("on", d.getAttribute("data-wk") === key); });
+  if (!key) { box.innerHTML = ""; return; }
+  var labs = { overdue: "Overdue", thisWeek: "Due this week", nextWeek: "Due next week", later: "Due later", noDate: "No due date" };
+  var list = ((insWkModel.bucketRows || {})[key] || []).slice().sort(function (a, z) { return ((a.due || 8.64e15) - (z.due || 8.64e15)) || String(a.name || "").localeCompare(String(z.name || "")); });
+  box.innerHTML = insDrill("wk-" + key, labs[key] || key, list, function (r) {
+    return { badge: r.due ? '<span class="badge' + (key === "overdue" ? " red" : "") + '">' + insDateShort(r.due) + "</span>" : '<span class="badge">no date</span>',
+      plain: (r.est ? insHrs(r.est) : "no estimate"), action: r.due ? "Change due date" : "Set due date", act: "due" };
+  });
+  var det = box.querySelector("details");
+  if (det) det.open = true;
+  box.querySelectorAll(".ins-act").forEach(function (b) { b.onclick = function (e) { e.preventDefault(); insRowAction(b); }; });
+}
 function insWire(view) {
+  view.querySelectorAll("[data-wk]").forEach(function (el) {
+    el.onclick = function () { insShowBucket(el.getAttribute("data-wk"), true); };
+    el.onkeydown = function (e) { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); insShowBucket(el.getAttribute("data-wk"), true); } };
+  });
+  if (insWkShown) insShowBucket(insWkShown, false); // kept open across a repaint
   view.querySelectorAll("[data-drill]").forEach(function (el) {
     if (el.tagName === "DETAILS") {
       // Put back what the user had open: a repaint (a background ClickUp
@@ -8388,6 +8740,14 @@ function insRowAction(btn) {
   if (btn.getAttribute("data-act") === "seen") {
     row._busy = true;
     (window.PcmComments ? window.PcmComments.markRead(id) : Promise.resolve()).then(function () { insRowDone(row, "marked read"); });
+    return;
+  }
+  if (btn.getAttribute("data-act") === "roadblock") {
+    row._busy = true; btn.disabled = true; btn.textContent = "Saving\u2026";
+    send({ type: "CLICKUP_BULK_ONE", taskId: String(id), change: { kind: "status", value: "roadblock" } }, 30000).then(function (r) {
+      if (r && r.ok) { insPatchCache(id, { status: "roadblock" }); btn.textContent = "\u26D4 Roadblock set"; var st0 = row.querySelector(".ins-st"); if (st0) { st0.className = "ins-st t-bad"; st0.textContent = "\u26D4 roadblock"; } row._busy = false; }
+      else { row._busy = false; btn.disabled = false; btn.textContent = "Couldn't set - try again"; btn.title = ((r && r.error) || "") + " (the task's list may not have a roadblock status)"; }
+    });
     return;
   }
   if (btn.getAttribute("data-act") === "hmove") {
@@ -8498,6 +8858,7 @@ function insOpenDrill(drill, client) {
       cuFilter.clients = Array.isArray(got.cuFilter.clients) ? got.cuFilter.clients.slice() : [];
       cuFilter.customFrom = typeof got.cuFilter.customFrom === "string" ? got.cuFilter.customFrom : "";
       cuFilter.customTo = typeof got.cuFilter.customTo === "string" ? got.cuFilter.customTo : "";
+      cuFilter.customDays = Array.isArray(got.cuFilter.customDays) ? got.cuFilter.customDays.slice() : [];
       cuFilter.dateBasis = typeof got.cuFilter.dateBasis === "string" ? got.cuFilter.dateBasis : "";
     } else if (got.cuDueTodayOnly === true) {
       cuFilter.dueToday = true; // migrate the legacy single checkbox
@@ -8707,6 +9068,7 @@ chrome.storage.onChanged.addListener((changes, area) => {
     if (!cuArrEq(cuFilter.priorities, nvP)) { cuFilter.priorities = nvP.slice(); diff = true; }
     if (!cuArrEq(cuFilter.clients, nvC)) { cuFilter.clients = nvC.slice(); diff = true; }
     for (const k of ["customFrom", "customTo", "dateBasis"]) { const v = typeof nv[k] === "string" ? nv[k] : ""; if ((cuFilter[k] || "") !== v) { cuFilter[k] = v; diff = true; } }
+    { const nd = Array.isArray(nv.customDays) ? nv.customDays : []; if ((cuFilter.customDays || []).join() !== nd.join()) { cuFilter.customDays = nd.slice(); diff = true; } }
     if (diff) { optRenderCuFilterMenu(); optCuFilterBtnLabel(); optRepaintCuPreview(); }
   }
   // A drag in the popup / side panel (or a Drive restore) changed the custom
@@ -9292,7 +9654,7 @@ if ($("versionsBtn")) $("versionsBtn").onclick = () => {
 // Header: open the side panel / the wrap-up page from the options page too.
 // Explore tasks: its own export (rows as filtered there, including the client).
 if (window.pcmExport) window.pcmExport.attach($("optFltExportBtn"), () => optFltExport);
-if ($("optFltClient")) $("optFltClient").addEventListener("change", () => renderOptionsFilter());
+// (Explore's Client ticks: wireExploreClients.)
 // Explore tasks: clear its tick boxes, client and department in one go.
 if ($("optFltGo")) $("optFltGo").onclick = () => {
   optFltArmed = true;
@@ -9309,7 +9671,9 @@ if ($("optFltColl")) for (const ev of ["change", "input"]) $("optFltColl").addEv
 }, true);
 if ($("optFltClearBtn")) $("optFltClearBtn").onclick = () => {
   for (const k of EX_REFINE) exFilter[k] = false;
-  exFilter.statuses = []; exFilter.priorities = [];
+  exFilter.statuses = []; exFilter.priorities = []; exFilter.clients = [];
+  optFltLast = null;
+  setTimeout(exClientBtnLabel, 0);
   exSave(); exPaintMenu();
   for (const id of ["optFltClient", "optFltDept", "optFltDeptUser"]) if ($(id)) $(id).value = "";
   if ($("optFltDeptUserWrap")) $("optFltDeptUserWrap").style.display = "none";
@@ -9320,7 +9684,32 @@ if ($("optFltClearBtn")) $("optFltClearBtn").onclick = () => {
   if ($("optFindText")) { $("optFindText").value = ""; $("optFindUseDates").checked = false; }
   optFindPicks = {};
   chrome.storage.local.set({ cuFind: { text: "", useDates: false, picks: {}, shown: false } }).catch(() => {});
+  // Everything cleared, the earlier results too - they looked like the answer to
+  // the cleared choices ("Found 1 of 1", the last pasted task).
+  exFilter.due = "today"; exFilter.from = ""; exFilter.to = ""; exFilter.days = []; exSave(); exPaintMenu();
+  optFltArmed = false;
+  const box = $("optFltResult");
+  if (box) { box.classList.remove("flt-loading"); box.innerHTML = ""; }
+  const goB = $("optFltGo"); if (goB) { goB.textContent = "Load tasks"; goB.title = "Read the tasks for these choices from ClickUp"; }
   renderOptionsFilter();
+};
+// 📅 Dates: the calendar's picking (drag a week, Pick days, a whole month, any
+// month, AD or BS) sets Explore's dates - for any person or department - and loads.
+if ($("exDatesBtn")) $("exDatesBtn").onclick = (e) => {
+  e.stopPropagation();
+  if (!window.PcmCalendar || !window.PcmCalendar.open) return;
+  const use = (a, z, days) => {
+    exFilter.due = "custom"; exFilter.from = cuYmd(a); exFilter.to = cuYmd(z);
+    exFilter.days = Array.isArray(days) && days.length > 1 ? days.map(cuYmd).sort() : [];
+    exSave(); exPaintMenu(); exBtnLabel();
+    optFltArmed = true;
+    renderOptionsFilter();
+  };
+  window.PcmCalendar.open($("exDatesBtn"), {
+    title: "Dates for Explore tasks",
+    onRange: (a, z) => use(a, z, null),
+    onDays: (list) => { const s = list.slice().sort((x, y) => x - y); use(s[0], s[s.length - 1], s); },
+  });
 };
 
 // Export button on the ClickUp card (exports exactly what the card shows).
@@ -9850,7 +10239,7 @@ const ADMIN_FILES = [
   "manifest.json", "background.js", "popup.html", "popup.js", "options.html", "options.js", "phone-timer.js",
   "offscreen.html", "offscreen.js", "update.html", "update.js", "auto-update.html", "auto-update.js", "wrapup.html", "wrapup.js",
   "notify-menu.js", "export-tasks.js", "lib-zip.js", "lib-unzip.js", "lib-automation.js",
-  "lib-availability.js", "lib-clickup.js", "lib-crypto.js", "lib-tidy.js", "lib-drive.js", "find-many.js", "automation.js", "lib-rules.js", "nav-badges.js", "simple-view.js", "task-panel.js", "lib-updater.js", "offscreen-updater.js", "celebrate.js", "celebrate.html", "celebrate-window.js", "fx.js", "pcm-help.js", "tracker.html", "tracker.js", "bulk-edit.js", "pcm-search.js", "lib-taskfiles.js", "task-files.js", "reminders.js", "hub.js", "task-sort.js", "breakdown.js", "calendar.js", "notices.js", "insights-plus.js", "header-ui.js", "weather.js", "paused-clients.js", "plan-apply.js", "task-notes.js", "task-dupes.js", "rollup-help.js", "md-notes.js", "mention.js", "long-list.js", "local-tasks.js", "ui-extras.js", "assignees.js", "add-time.js", "team-hub.gs", "vendor/pdf.min.js", "vendor/pdf.worker.min.js", "vendor/pdfjs-LICENSE.txt",
+  "lib-availability.js", "lib-clickup.js", "lib-crypto.js", "lib-tidy.js", "lib-drive.js", "find-many.js", "week-fold.js", "ar-status.js", "automation.js", "lib-rules.js", "nav-badges.js", "simple-view.js", "task-panel.js", "lib-updater.js", "offscreen-updater.js", "celebrate.js", "celebrate.html", "celebrate-window.js", "fx.js", "pcm-help.js", "tracker.html", "tracker.js", "bulk-edit.js", "pcm-search.js", "lib-taskfiles.js", "task-files.js", "reminders.js", "hub.js", "task-sort.js", "breakdown.js", "calendar.js", "notices.js", "insights-plus.js", "header-ui.js", "weather.js", "paused-clients.js", "plan-apply.js", "task-notes.js", "task-dupes.js", "rollup-help.js", "md-notes.js", "mention.js", "long-list.js", "local-tasks.js", "ui-extras.js", "assignees.js", "add-time.js", "team-hub.gs", "vendor/pdf.min.js", "vendor/pdf.worker.min.js", "vendor/pdfjs-LICENSE.txt",
   "icons/icon16.png", "icons/icon48.png", "icons/icon128.png", "icons/celebrate.png", "icons/sad.png",
   "sounds/notify.wav", "sounds/danger.mp3", "sounds/winner.wav",
   "README.md", "CHANGELOG.md",

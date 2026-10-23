@@ -170,7 +170,8 @@
     const anchor = mountPoint();
     if (!anchor) return;
     let box = document.getElementById(mountId);
-    if (!box) { box = el("div", "lt-box"); box.id = mountId; anchor.parentNode.insertBefore(box, anchor); }
+    if (!box) { box = el("div", "lt-box"); box.id = mountId; }
+    if (box.nextElementSibling !== anchor && !(box.nextElementSibling && box.nextElementSibling.id === "xaBar")) anchor.parentNode.insertBefore(box, anchor); // stays right above the list (the popup moves the list into its own card)
     box.textContent = "";
     const head = el("div", "lt-head");
     if (drafts.length) {

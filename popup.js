@@ -1098,7 +1098,9 @@ function listContentHeight(el) {
   const r = el.getBoundingClientRect(), lr = last.getBoundingClientRect();
   if (!r.height && !lr.height) return 0;
   const cs = getComputedStyle(el);
-  return Math.ceil(lr.bottom - r.top + el.scrollTop + (parseFloat(cs.paddingBottom) || 0) + (parseFloat(cs.borderBottomWidth) || 0));
+  // + the last row's own bottom margin (an open task's details have one), or a
+  // list stretched to "everything" still kept a few pixels of scroll.
+  return Math.ceil(lr.bottom - r.top + el.scrollTop + (parseFloat(getComputedStyle(last).marginBottom) || 0) + (parseFloat(cs.paddingBottom) || 0) + (parseFloat(cs.borderBottomWidth) || 0));
 }
 function capListToContent(el) {
   // Only lists the user has resized: an untouched list keeps its CSS default.
@@ -1227,6 +1229,9 @@ function makeListResizable(el, key) {
       // the list in one go - the whole point of the bar for anyone who doesn't
       // realise it can be dragged.
       if (moved < 4 && Date.now() - startT < 400) { toggle(); return; }
+      // Dragged all the way down: that IS "show every task" - no fixed height, so
+      // opening a task or a refresh with more rows never brings a scroll bar back.
+      if (maxH !== Infinity && el.getBoundingClientRect().height >= maxH - 2) { el.style.height = ""; expand(10); return; }
       capListToContent(el);
       save();
       retitle();
@@ -1403,6 +1408,15 @@ function cuGuessEst(t, ctx) {
   if (hist.length >= 5) { const ms = cuRound5(cuMedian(hist.map((h) => h.ms))); return { ms, why: "your usual task time (" + hist.length + " finished)" }; }
   return null;
 }
+// What a row adds "with guesses" (its kept or guessed time; not a parent's share).
+function cuGuessMs(t, ctx) {
+  if (!t) return 0;
+  const st = cuEstStaged[cuId(t)];
+  if (Number(t.estimateMs) > 0) return st && !st.share ? (Number(st.ms) || 0) - Number(t.estimateMs) : 0;
+  if (st) { const g = cuGuessEst(t, ctx); return g && g.covered ? 0 : Number(st.ms) || 0; }
+  const g = cuGuessEst(t, ctx);
+  return g && g.ms && !g.covered ? g.ms : 0;
+}
 function cuEstGuess(estSpan, t, ctx, keptOnly) {
   if (!estSpan || !t) return;
   const id = cuId(t), st = cuEstStaged[id];
@@ -1491,7 +1505,10 @@ function cuSplitByWeek(sorted) {
   if (weeks.size < 2) return sorted;
   const thisWeek = cuWeekOf(Date.now()).start;
   const md = (ms, withMonth) => new Date(ms).toLocaleDateString(undefined, withMonth ? { month: "short", day: "numeric" } : { day: "numeric" });
-  const sums = (rows) => " \u00b7 " + rows.length + " task" + (rows.length === 1 ? "" : "s") + " \u00b7 est " + fmtDur(rows.reduce((a, t) => a + cuEstOf(t), 0)) + (rows.some((t) => Number(t.spentMs) > 0) ? " \u00b7 tracked " + fmtDur(rows.reduce((a, t) => a + (Number(t.spentMs) || 0), 0)) : "");
+  // "~Xh with guesses": the guessed or kept estimates of its tasks with none.
+  const gctx = typeof cuGuessCtx === "function" ? cuGuessCtx(sorted) : null;
+  const withGuess = (rows, est) => { if (!gctx) return ""; const g = rows.reduce((a, t) => a + cuGuessMs(t, gctx), 0); return g !== 0 ? " \u00b7 ~" + fmtDur(Math.max(0, est + g)) + " with guesses" : ""; };
+  const sums = (rows) => { const est = rows.reduce((a, t) => a + cuEstOf(t), 0); return " \u00b7 " + rows.length + " task" + (rows.length === 1 ? "" : "s") + " \u00b7 est " + fmtDur(est) + withGuess(rows, est) + (rows.some((t) => Number(t.spentMs) > 0) ? " \u00b7 tracked " + fmtDur(rows.reduce((a, t) => a + (Number(t.spentMs) || 0), 0)) : ""); };
   // A week belongs to the month most of its days are in (its Thursday's month).
   const monthOf = (k) => { const d = new Date(k); d.setDate(d.getDate() + 3); return d.getFullYear() * 12 + d.getMonth(); };
   const keys = [...weeks.keys()].sort((a, b) => (a || Infinity) - (b || Infinity));
@@ -1509,6 +1526,8 @@ function cuSplitByWeek(sorted) {
       const ms = document.createElement("span");
       ms.textContent = sums(keys.filter((x) => x && monthOf(x) === curMonth).flatMap((x) => weeks.get(x).flat()));
       mh.append(mb, ms);
+      mh.dataset.gk = "m:" + curMonth; // click to fold (week-fold.js)
+      mh.title = mb.textContent + ms.textContent + " - click to fold or unfold";
       out.push({ _wkHead: mh });
     }
     const h = document.createElement("div");
@@ -1519,10 +1538,13 @@ function cuSplitByWeek(sorted) {
     const t2 = document.createElement("span");
     t2.textContent = sums(rows);
     h.append(t1, t2);
-    h.title = t1.textContent + t2.textContent;
+    h.title = t1.textContent + t2.textContent + " - click to fold or unfold";
+    h.dataset.gk = "w:" + k;
     out.push({ _wkHead: h });
     for (const b of bl) out.push(...b);
   }
+  const end = document.createElement("div"); end.className = "cu-gend"; // a folded last week stops here
+  out.push({ _wkHead: end });
   return out;
 }
 function appendFilterTaskRows(container, tasks, deadlineTasks, trackedTasks = [], opts = {}) {
@@ -1622,7 +1644,7 @@ function appendFilterTaskRows(container, tasks, deadlineTasks, trackedTasks = []
   // dates"). The caller passes the right label via opts.trackedLabel.
   if (Array.isArray(trackedTasks) && trackedTasks.length) {
     const sec = document.createElement("div");
-    sec.className = "cu-dhead";
+    sec.className = "cu-dhead" + (opts.group ? " cu-foldable" : ""); // under a client heading: folds with it
     sec.textContent = opts.trackedLabel || cuOtherTrackedLabel("range");
     sec.title = CU_OTHER_TRACKED_TIP;
     container.appendChild(sec);
@@ -1919,6 +1941,8 @@ async function discoverClientSites() {
 // caller; here we just split them into per-client sections, each headed by the
 // client name + its own est/tracked subtotal. Row format matches the flat list;
 // the per-row client pill is suppressed (hideClient) since the header names it.
+// A client heading dragged to a new place (week-fold.js): draw the list again.
+window.addEventListener("pcm-client-order", () => { if (Array.isArray(cuFilter.clients) && cuFilter.clients.length) { try { renderClickup(); } catch (e) {} } });
 function renderClickupTasksByClient(tasks, deadlineTasks, trackedTasks, scope, selected) {
   tasks = cuGroupSubtaskRows(tasks);
   cuExportRows(tasks, deadlineTasks, trackedTasks, scope);
@@ -1927,7 +1951,10 @@ function renderClickupTasksByClient(tasks, deadlineTasks, trackedTasks, scope, s
   listEl.innerHTML = "";
   cuEstBar(listEl);
   const clientOf = (t) => String((t && t.client) || "").trim();
-  const order = (Array.isArray(selected) ? selected.filter(Boolean) : []).slice().sort((a, b) => a.localeCompare(b));
+  // A-Z, or your own order (drag a client's heading) with Custom order on.
+  const ownOrder = !!cuFilter.manualOrder;
+  const picked = Array.isArray(selected) ? selected.filter(Boolean) : [];
+  const order = window.PcmFold && window.PcmFold.sortClients ? window.PcmFold.sortClients(picked, ownOrder) : picked.slice().sort((a, b) => a.localeCompare(b));
   const trackedLabel = cuOtherTrackedLabel(scope);
   let any = false;
   for (const c of order) {
@@ -1939,24 +1966,26 @@ function renderClickupTasksByClient(tasks, deadlineTasks, trackedTasks, scope, s
     const est = t1.reduce((a, t) => a + cuEstOf(t), 0)
       + t2.reduce((a, t) => a + (Number(t.dayEstimateMs) || 0), 0);
     const trk = t1.concat(t2, t3).reduce((a, t) => a + (Number(t.spentMs) || 0), 0);
+    // One list with a heading per client (the dashboard's and Explore's look):
+    // name, tasks, est, ~with guesses, tracked, Plan with AI; click to fold.
+    const n = t1.length + t2.length + t3.length;
+    const gctx = cuGuessCtx(t1);
+    const withG = t1.reduce((a, t) => a + cuGuessMs(t, gctx), 0);
     const head = document.createElement("div");
-    head.className = "cu-dhead cu-clienthead";
-    const nameSpan = document.createElement("span");
-    nameSpan.className = "cu-chname";
-    nameSpan.textContent = c;
-    nameSpan.title = c;
-    head.appendChild(nameSpan);
+    head.className = "cu-mgroup ex-client";
+    head.dataset.gk = "c:" + c.toLowerCase().replace(/[^a-z0-9]+/g, "");
+    const nameB = document.createElement("b");
+    nameB.textContent = c;
     const subSpan = document.createElement("span");
-    subSpan.className = "cu-chsub";
-    subSpan.textContent = "est " + fmtDur(est) + (trk > 0 ? " · tracked " + fmtDur(trk) : "");
-    head.appendChild(subSpan);
+    subSpan.textContent = " \u00b7 " + n + " task" + (n === 1 ? "" : "s") + " \u00b7 est " + fmtDur(est) +
+      (withG !== 0 ? " \u00b7 ~" + fmtDur(Math.max(0, est + withG)) + " with guesses" : "") + (trk > 0 ? " \u00b7 tracked " + fmtDur(trk) : "");
+    head.append(nameB, subSpan);
+    head.title = c + subSpan.textContent + " - click to fold or unfold" + (ownOrder ? "; drag it above or below another client" : "");
+    head.dataset.client = c;
+    if (ownOrder) head.draggable = true;
     if (window.PcmTaskPanel && window.PcmTaskPanel.clientTools) head.appendChild(window.PcmTaskPanel.clientTools(c, t1.concat(t2, t3)));
-    // Each client in its own card, so the groups are easy to tell apart.
-    const card = document.createElement("div");
-    card.className = "cu-clientcard";
-    card.appendChild(head);
-    listEl.appendChild(card);
-    appendFilterTaskRows(card, t1, t2, t3, { trackedLabel, hideClient: true, scope, draggable: true, group: c });
+    listEl.appendChild(head);
+    appendFilterTaskRows(listEl, t1, t2, t3, { trackedLabel, hideClient: true, scope, draggable: true, group: c });
   }
   listEl.style.display = any ? "block" : "none";
 }
@@ -2236,7 +2265,8 @@ function initFilterControls() {
 // paused client (Admin › Paused clients) - its tracked time still counts.
 function cuEstOf(t) {
   if (!t) return 0;
-  if (!t.done && (t.paused || (window.PcmPaused && window.PcmPaused.pausedFor(t)))) return 0;
+  // Paused: only the part already worked (up to its tracked time) - see countedEst in lib-clickup.
+  if (!t.done && (t.paused || (window.PcmPaused && window.PcmPaused.pausedFor(t)))) return Math.min(Number(t.estimateMs) || 0, Math.max(0, Number(t.spentMs) || 0));
   return Number(t.estimateMs) || 0;
 }
 // The running timer's minutes since the last ClickUp refresh. The totals from
@@ -2427,7 +2457,7 @@ function renderWeekDetail(w, agg) {
 // narrow the visible task LIST only; they never change the headline totals or
 // the badge.
 // "Due today" is ticked by default (a saved choice always wins).
-let cuFilter = { dueWeek: false, dueNextWeek: false, duePrevWeek: false, dueThisMonth: false, dueNextMonth: false, duePrevMonth: false, dueCustom: false, dateBasis: "", missingDue: false, customFrom: "", customTo: "", missingEst: false, hasTracked: false, deadlineCrossed: false, waitingOthers: false, onlyMe: false, sharedTasks: false, manualOrder: false, statuses: [], priorities: [], clients: [] };
+let cuFilter = { dueWeek: false, dueNextWeek: false, duePrevWeek: false, dueThisMonth: false, dueNextMonth: false, duePrevMonth: false, dueCustom: false, dateBasis: "", missingDue: false, customFrom: "", customTo: "", customDays: [], missingEst: false, hasTracked: false, deadlineCrossed: false, waitingOthers: false, onlyMe: false, sharedTasks: false, manualOrder: false, statuses: [], priorities: [], clients: [] };
 const CU_FILTER_KEYS = ["dueWeek", "dueNextWeek", "duePrevWeek", "dueThisMonth", "dueNextMonth", "duePrevMonth", "dueCustom", "missingEst", "missingDue", "hasTracked", "deadlineCrossed", "waitingOthers", "onlyMe", "sharedTasks", "groupSubtasks", "manualOrder"];
 const CU_PRIORITY_ORDER = ["urgent", "high", "normal", "low", "none"];
 
@@ -2624,7 +2654,7 @@ function resolveCuFilterView(st, f) {
   if (planV) return planV;
   // Deadline crossed looks at ALL dates, so it takes over the date scope.
   if (f.deadlineCrossed) return cuOverdueView();
-  if (cuCustomRange(f)) { const cv = cuCustomView(f, st); if (cv) return cv; }
+  if (cuCustomRange(f)) { const cv = cuCustomView(f, st); if (cv) return cuPickDaysView(cv, f); }
   const wk = st.weekly || null;
   if (f.dueNextWeek && st.nextWeek) {
     const nw = st.nextWeek;
@@ -2826,6 +2856,23 @@ function cuTomorrowView(st) {
     label: "due tomorrow" + (c.status === "error" ? " (couldn't load)" : " (loading…)"), loading: c.status !== "error" };
 }
 
+// Days picked one by one in the calendar (customDays): one read for their span,
+// shown only for those days - the list, the totals, Export and Plan with AI.
+function cuPickedDays(f) {
+  const d = f && Array.isArray(f.customDays) ? f.customDays : [];
+  return d.length > 1 && f.dueCustom && d[0] === f.customFrom && d[d.length - 1] === (f.customTo || f.customFrom) ? d : null;
+}
+function cuPickDaysView(v, f) {
+  const days = cuPickedDays(f);
+  if (!v || !days) return v;
+  const set = new Set(days);
+  const dayOf = (ms) => { const x = new Date(Number(ms)); return x.getFullYear() + "-" + String(x.getMonth() + 1).padStart(2, "0") + "-" + String(x.getDate()).padStart(2, "0"); };
+  const keep = (t) => t && Number(t.dueDateMs) > 0 && set.has(dayOf(t.dueDateMs));
+  const tasks = (v.tasks || []).filter(keep), tracked = (v.trackedTasks || []).filter(keep);
+  const sum = (k) => tasks.reduce((n, t) => n + (Number(t[k]) || 0), 0);
+  return { ...v, tasks, trackedTasks: tracked, deadlineTasks: [], estimateMs: sum("estimateMs"), spentMs: sum("spentMs"), taskCount: tasks.length,
+    noEstimateCount: tasks.filter((t) => !Number(t.estimateMs)).length, label: days.length + " picked days" + (v.loading ? " (loading\u2026)" : "") };
+}
 function cuCustomView(f, state) {
   const r = cuCustomRange(f);
   if (!r) return null;
@@ -3084,6 +3131,27 @@ function cuSetupDrag(container) {
   });
 }
 
+// Popup / side panel: the day's numbers in one card, the task list in its own
+// card below (one big card read as a wall). The filter buttons go with the list.
+// Everything keeps its id, so the code that fills it doesn't notice.
+(function splitTasksCard() {
+  const stats = document.getElementById("statsCard");
+  if (!stats || document.getElementById("tasksCard")) return;
+  const card = document.createElement("div");
+  card.className = "card"; card.id = "tasksCard"; card.style.display = stats.style.display;
+  const title = document.createElement("div"); title.className = "card-title";
+  const lab = document.createElement("span"); lab.textContent = "Tasks";
+  const sp = document.createElement("span"); sp.className = "spacer";
+  title.append(lab, sp);
+  const st = stats.querySelector(".card-title");
+  if (st) for (const el of [...st.children]) if (el.id === "cuClientWrap" || el.id === "cuRefresh" || (el.classList.contains("cu-filter") && el.querySelector("#cuFilterBtn"))) title.appendChild(el);
+  card.appendChild(title);
+  for (const id of ["cuNow", "ltBox", "cuTaskList"]) { const el = document.getElementById(id); if (el) card.appendChild(el); }
+  stats.after(card);
+  // shown and hidden with the day card
+  new MutationObserver(() => { if (card.style.display !== stats.style.display) card.style.display = stats.style.display; }).observe(stats, { attributes: true, attributeFilter: ["style"] });
+})();
+
 function renderClickup() {
   if (cuEstEditing || cuDragging) { cuRenderPending = true; return; }
   try { cuPaintDayBar(); } catch (e) {}
@@ -3272,9 +3340,26 @@ function renderClickup() {
   if (clientsSel.length) bits.push("client: " + clientsSel.join("/"));
   if (cuBusy) bits.push("ClickUp busy, refreshing");
   if (st.at) bits.push("updated " + fmtClock(st.at));
-  sub.textContent = bits.join(" · ");
+  // On screen only what isn't shown right next to it: the dates, how many tasks,
+  // how many have no estimate, when it was read. The estimate and target are the
+  // bars above, the clients and filter are the Clients / Filter buttons, so the
+  // whole line (it ran to four lines with clients ticked) is the hover text.
+  const short = [];
+  if (view.scope && view.scope !== "extended") short.push(view.label || CU_SCOPE_LABEL[view.scope]);
+  short.push(taskCount + (taskCount === 1 ? " task" : " tasks"));
+  if (noEstimateCount) short.push(noEstimateCount + " without an estimate");
+  if (cuBusy) short.push("ClickUp busy, refreshing");
+  if (st.at) short.push("updated " + fmtClock(st.at));
+  sub.textContent = short.join(" · ");
+  sub.title = bits.join(" · ");
 
-  if (clientsSel.length) renderClickupTasksByClient(taskList, deadlineList, trackedList, view.scope, clientsSel);
+  // A new filter / day still loading: the rows on screen stay (faded) until the
+  // new ones arrive, instead of a blank list for a moment - that was the flicker.
+  const tlEl = $("cuTaskList");
+  const stale = !!(view.loading && !taskList.length && !deadlineList.length && !trackedList.length && tlEl && tlEl.querySelector(".cu-task"));
+  if (tlEl) tlEl.classList.toggle("cu-stale", stale);
+  if (stale) { /* keep them */ }
+  else if (clientsSel.length) renderClickupTasksByClient(taskList, deadlineList, trackedList, view.scope, clientsSel);
   else renderClickupTasks(taskList, deadlineList, trackedList, view.scope);
   // Click Estimated / Tracked: the tasks behind the number and why they differ.
   if (window.PcmBreakdown) {
@@ -4128,6 +4213,7 @@ function cuClearAllFilters() {
   cuFilter.clients = [];
   cuFilter.customFrom = "";
   cuFilter.customTo = "";
+  cuFilter.customDays = [];
   cuFilter.dateBasis = "";
   chrome.storage.local.set({ cuFilter }).catch(() => {});
   renderCuFilterMenu();
@@ -4136,20 +4222,25 @@ function cuClearAllFilters() {
 }
 // Your own starting point: "Save as my default" remembers the ticked filters
 // and the selection mode; a fresh install (or "Use my default") applies them.
-const CU_FILTER_EXTRAS = ["statuses", "priorities", "clients", "customFrom", "customTo", "dateBasis"];
+const CU_FILTER_EXTRAS = ["statuses", "priorities", "clients", "customFrom", "customTo", "dateBasis", "customDays"];
 // Calendar (calendar.js): clicking a day lists that day's tasks (saved like any
 // filter, so the dashboard and badge follow).
 // The filter you had before is kept, and a bar over the list says which day is
 // showing with "Back to my filter" - the list is scrolled into view, so a click
 // on a day never changes the list out of sight.
-let cuDayPrev = null, cuDayYmd = "";
-window.pcmPickDay = (ts) => {
-  const d = new Date(ts);
-  const k = d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0") + "-" + String(d.getDate()).padStart(2, "0");
+let cuDayPrev = null, cuDayYmd = "", cuDayTo = "";
+const cuYmdP = (ts) => { const d = new Date(ts); return d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0") + "-" + String(d.getDate()).padStart(2, "0"); };
+// Dragging across days in the calendar (or "List all of October"): the range.
+window.pcmPickRange = (fromTs, toTs) => window.pcmPickDay(fromTs, toTs);
+window.pcmPickDays = (list) => { const s = (list || []).slice().sort((a, b) => a - b); if (s.length) window.pcmPickDay(s[0], s[s.length - 1], s); };
+window.pcmPickDay = (ts, toTs, days) => {
+  const k = cuYmdP(ts);
   if (!cuDayPrev) cuDayPrev = cuSnapshotFilter();
   const s = cuSnapshotFilter();
   for (const f of [...CU_DATE_KEYS, "deadlineCrossed"]) s[f] = false;
-  s.dueCustom = true; s.customFrom = k; s.customTo = k;
+  cuDayTo = toTs ? cuYmdP(toTs) : k;
+  s.dueCustom = true; s.customFrom = k; s.customTo = cuDayTo;
+  s.customDays = Array.isArray(days) && days.length > 1 ? days.map(cuYmdP).sort() : [];
   cuDayYmd = k;
   cuApplyFilterSnapshot(s);
   setTimeout(() => {
@@ -4160,16 +4251,19 @@ window.pcmPickDay = (ts) => {
 function cuPaintDayBar() {
   const list = $("cuTaskList");
   let bar = $("cuDayBar");
-  const active = !!cuDayPrev && cuFilter.dueCustom && cuFilter.customFrom === cuDayYmd && (cuFilter.customTo || cuDayYmd) === cuDayYmd;
+  const active = !!cuDayPrev && cuFilter.dueCustom && cuFilter.customFrom === cuDayYmd && (cuFilter.customTo || cuDayYmd) === (cuDayTo || cuDayYmd);
   if (!active || !list) { if (bar) bar.remove(); if (!active) { cuDayPrev = null; cuDayYmd = ""; } return; }
   if (!bar) { bar = document.createElement("div"); bar.id = "cuDayBar"; bar.className = "cu-chartday"; }
   if (bar.nextSibling !== list) list.parentNode.insertBefore(bar, list);
   bar.textContent = "";
-  bar.append("\uD83D\uDCC5 Showing " + new Date(cuDayYmd + "T12:00:00").toLocaleDateString(undefined, { weekday: "short", month: "short", day: "numeric" }) + " (picked in the calendar)");
+  const fmtD = (k2) => new Date(k2 + "T12:00:00").toLocaleDateString(undefined, { weekday: "short", month: "short", day: "numeric" });
+  const picked = cuPickedDays(cuFilter);
+  const fmtS = (k2) => new Date(k2 + "T12:00:00").toLocaleDateString(undefined, { month: "short", day: "numeric" });
+  bar.append("\uD83D\uDCC5 Showing " + (picked ? picked.length + " picked days (" + picked.slice(0, 4).map(fmtS).join(", ") + (picked.length > 4 ? ", \u2026" : "") + ")" : fmtD(cuDayYmd) + (cuDayTo && cuDayTo !== cuDayYmd ? " \u2013 " + fmtD(cuDayTo) : "")) + " (picked in the calendar)");
   const back = document.createElement("button");
   back.type = "button";
   back.textContent = "\u2715 Back to my filter";
-  back.onclick = () => { const prev = cuDayPrev; cuDayPrev = null; cuDayYmd = ""; if (prev) cuApplyFilterSnapshot(prev); };
+  back.onclick = () => { const prev = cuDayPrev; cuDayPrev = null; cuDayYmd = ""; cuDayTo = ""; if (prev) cuApplyFilterSnapshot(prev); };
   bar.appendChild(back);
 }
 function cuSnapshotFilter() {
@@ -4319,6 +4413,7 @@ function openCuFilterMenu(open) {
       cuFilter.clients = Array.isArray(got.cuFilter.clients) ? got.cuFilter.clients.slice() : [];
       cuFilter.customFrom = typeof got.cuFilter.customFrom === "string" ? got.cuFilter.customFrom : "";
       cuFilter.customTo = typeof got.cuFilter.customTo === "string" ? got.cuFilter.customTo : "";
+      cuFilter.customDays = Array.isArray(got.cuFilter.customDays) ? got.cuFilter.customDays.slice() : [];
       cuFilter.dateBasis = typeof got.cuFilter.dateBasis === "string" ? got.cuFilter.dateBasis : "";
     } else if (got.cuDueTodayOnly === true) {
       cuFilter.dueToday = true; // migrate the legacy single checkbox
@@ -4460,6 +4555,7 @@ chrome.storage.onChanged.addListener((changes, area) => {
     const nvC = Array.isArray(nv.clients) ? nv.clients : [];
     if (!cuArrEq(cuFilter.clients, nvC)) { cuFilter.clients = nvC.slice(); diff = true; }
     for (const k of ["customFrom", "customTo", "dateBasis"]) { const v = typeof nv[k] === "string" ? nv[k] : ""; if ((cuFilter[k] || "") !== v) { cuFilter[k] = v; diff = true; } }
+    { const nd = Array.isArray(nv.customDays) ? nv.customDays : []; if ((cuFilter.customDays || []).join() !== nd.join()) { cuFilter.customDays = nd.slice(); diff = true; } }
     if (diff) { renderCuFilterMenu(); cuFilterBtnLabel(); renderClickup(); }
   }
   // Custom drag order changed here or on another page -> adopt it and repaint,
@@ -4546,7 +4642,13 @@ makeListResizable(document.getElementById("cuTaskList"), IN_PANEL ? "panel" : "p
   };
   const scan = () => document.querySelectorAll(".cu-tasklist").forEach(check);
   let pending = 0;
-  new MutationObserver(() => { if (!pending) pending = setTimeout(() => { pending = 0; scan(); }, 40); }).observe(document.documentElement, { childList: true, subtree: true });
+  let burst = 0;
+  new MutationObserver(() => {
+    if (pending) return;
+    pending = 1;
+    const run = () => { pending = 0; scan(); };
+    if (burst++ < 3) { queueMicrotask(run); setTimeout(() => { burst = 0; }, 0); } else pending = setTimeout(run, 40); // same frame as the rows
+  }).observe(document.documentElement, { childList: true, subtree: true });
   scan();
 })();
 

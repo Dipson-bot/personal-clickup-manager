@@ -88,8 +88,14 @@
   }
   const decorateAll = () => document.querySelectorAll(".cu-task").forEach(decorate);
   let pending = 0;
-  new MutationObserver(() => { if (pending) return; pending = setTimeout(() => { pending = 0; decorateAll(); }, 120); })
-    .observe(document.documentElement, { childList: true, subtree: true });
+  // Same frame as the redrawn rows (a 120 ms timer let the bare rows show first).
+  let burst = 0;
+  new MutationObserver(() => {
+    if (pending) return;
+    pending = 1;
+    const run = () => { pending = 0; decorateAll(); };
+    if (burst++ < 3) { queueMicrotask(run); setTimeout(() => { burst = 0; }, 0); } else pending = setTimeout(run, 40);
+  }).observe(document.documentElement, { childList: true, subtree: true });
   decorateAll();
   window.PcmRollupHelp = { decorateAll, open };
 })();

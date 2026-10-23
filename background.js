@@ -27,7 +27,7 @@ import {
   linkifySheet,
 } from "./lib-drive.js";
 import { runAllAccounts, runAccountLogin, readAgentRouterLogin, URLS, GITHUB_KEEP_COOKIES } from "./lib-automation.js";
-import { fetchArchivedMine, unarchiveTask, getLatestCommentBy, getTaskCommentsLite, getTaskTimeEntries, deleteTimeEntry, getUserGroups, getUser, verifyToken, getTeams, fetchTodayEstimate, fetchWeeklySummary, fetchDateRangeEstimate, createTaskCache, fetchTeamMembers, fetchWorkspaceTags, cuTagNames, fmtDuration, findExtraTaskByName, parseTaskIdFromUrl, getCurrentTimeEntry, getRunningTaskProgress, startTimer, stopTimer, getTaskById, setTaskStatus, setTaskDates, taskUrlFor, clientLabelFromContainer, resolveSpaceNamesFor, taskContainer, cuPriorityName, isTaskDone, getSubtasksOfParent, getTaskTree, getTaskDetail, updateTimeEntry, setTaskDueDate, clearTaskTreeCache, listWorkspaceClients, cuRowAssignees, fetchDoneBetween, fetchDoneLite, fetchTrackedHistory, getTaskPanel, addTaskComment, postTaskComment, setTaskDescription, getTaskCommentLinks, createTask, removeTaskAssignee, postAssignedComment, addTimeEntry, weeklyWithToday, listClientFieldOptions, listReachableClients, bgToken, patientToken, cuRawFetch, getRelatedTasks, slimIndexTask, fetchTeamTasksPage, listAllLists, setPausedClients } from "./lib-clickup.js";
+import { getTaskHoldInfo, fetchArchivedMine, unarchiveTask, getLatestCommentBy, getTaskCommentsLite, getTaskTimeEntries, deleteTimeEntry, getUserGroups, getUser, verifyToken, getTeams, fetchTodayEstimate, fetchWeeklySummary, fetchDateRangeEstimate, createTaskCache, fetchTeamMembers, fetchWorkspaceTags, cuTagNames, fmtDuration, findExtraTaskByName, parseTaskIdFromUrl, getCurrentTimeEntry, getRunningTaskProgress, startTimer, stopTimer, getTaskById, setTaskStatus, setTaskDates, taskUrlFor, clientLabelFromContainer, resolveSpaceNamesFor, taskContainer, cuPriorityName, isTaskDone, getSubtasksOfParent, getTaskTree, getTaskDetail, updateTimeEntry, setTaskDueDate, clearTaskTreeCache, listWorkspaceClients, cuRowAssignees, fetchDoneBetween, fetchDoneLite, fetchTrackedHistory, getTaskPanel, addTaskComment, postTaskComment, setTaskDescription, getTaskCommentLinks, createTask, removeTaskAssignee, postAssignedComment, addTimeEntry, weeklyWithToday, listClientFieldOptions, listReachableClients, bgToken, patientToken, cuRawFetch, getRelatedTasks, slimIndexTask, fetchTeamTasksPage, listAllLists, setPausedClients } from "./lib-clickup.js";
 import { resolveRelayKey, pickProbeModel, probeRelay } from "./lib-availability.js";
 import { tidyCollect, tidyLines, tidyResolved, tidyDayOk, tidyUrgent, tidyDateShort } from "./lib-tidy.js";
 import "./lib-rules.js"; // globalThis.PcmRules - the Automation tab's rule blocks
@@ -2436,10 +2436,15 @@ async function maybeNotifyQuotaCredit(nowMs = Date.now()) {
   // person reading the toast is not. The id must keep its ar-quota- prefix:
   // that is what routes a click to Agent Router in notifications.onClicked.
   const when = new Date(win.at).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+  // Only claim Claude when Agent Router actually offers it to this account.
+  const { arStatus: ars = null } = typeof chrome !== "undefined" && chrome.storage ? await chrome.storage.local.get("arStatus").catch(() => ({})) : {};
+  const noClaude = !!(ars && Array.isArray(ars.usable) && ars.usable.length && !ars.claude);
   await notify(
     "ar-quota-credit-" + nowMs,
     "Agent Router - the " + when + " batch is open 🚀",
-    "Claude and GPT are usable now, and your fresh quota is in. Click to jump in before it runs out."
+    noClaude
+      ? "Your fresh quota is in. Usable now: " + ars.usable.join(", ") + " - no Claude for your account at the moment."
+      : "Claude and GPT are usable now, and your fresh quota is in. Click to jump in before it runs out."
   );
   // Stamp with the SAME clock the decision used, and never behind the credit
   // being acknowledged. Reading Date.now() here instead let the stamp land
@@ -2509,6 +2514,7 @@ async function pollBalancesInBackground() {
         const j = await res.json().catch(() => null);
         const d = j && j.data ? j.data : j;
         if (!d || typeof d !== "object") continue;
+        if (d.group) chrome.storage.local.set({ arUserGroup: String(d.group) }).catch(() => {}); // which models it may use (arReadStatus)
         let balance = d.quota ?? d.balance ?? d.credits ?? d.remaining ?? null;
         if (typeof balance === "string" && balance.trim() !== "") balance = Number(balance);
         if (!Number.isFinite(balance)) continue;
@@ -3182,9 +3188,17 @@ const RULE_SEEDS = ["Weekly Extra Task"];
 async function rulesSeed() {
   const g = await chrome.storage.local.get(["autoRules", "autoRuleSeeded"]);
   const seeded = Array.isArray(g.autoRuleSeeded) ? g.autoRuleSeeded : [];
+  const rules = Array.isArray(g.autoRules) ? g.autoRules.slice() : [];
+  // Weekly Extra Task first came at 9:00: an untouched, switched-off copy moves to 8:00 (office hours start).
+  if (!seeded.includes("Weekly Extra Task@8")) {
+    for (const r of rules) {
+      if (r && r.name === "Weekly Extra Task" && r.on === false && r.trigger && r.trigger.params && r.trigger.params.hhmm === "09:00") r.trigger.params.hhmm = "08:00";
+    }
+    seeded.push("Weekly Extra Task@8");
+    await chrome.storage.local.set({ autoRules: rules, autoRuleSeeded: seeded });
+  }
   const todo = RULE_SEEDS.filter((n) => !seeded.includes(n));
   if (!todo.length) return;
-  const rules = Array.isArray(g.autoRules) ? g.autoRules.slice() : [];
   for (const n of todo) {
     const tpl = (RULES.TEMPLATES || []).find((x) => x.name === n);
     if (!tpl || rules.some((r) => r && r.name === n)) continue;
@@ -3192,6 +3206,89 @@ async function rulesSeed() {
     rules.push(rule);
   }
   await chrome.storage.local.set({ autoRules: rules, autoRuleSeeded: seeded.concat(todo) });
+}
+// Weekly Extra Task rule: an Extra Task of mine for this week that the rule did
+// NOT make (ClickUp's repeat, or made by hand). The repeat itself can't be read or
+// switched off through ClickUp's API, so the person is shown the task to do it.
+async function extraClash() {
+  const cfg = await getClickupConfig().catch(() => null);
+  if (!cfg || !cfg.token || cfg.userId == null) return null;
+  const now = new Date();
+  const mon = new Date(now); mon.setHours(0, 0, 0, 0);
+  const dow = mon.getDay();
+  if (dow === 0) mon.setDate(mon.getDate() + 1); else if (dow === 6) mon.setDate(mon.getDate() + 2); else mon.setDate(mon.getDate() - (dow - 1));
+  const fri = new Date(mon); fri.setDate(mon.getDate() + 4); fri.setHours(23, 59, 59, 999);
+  extraTaskCache.clear();
+  const have = await discoverExtraTaskFor(cfg, cfg.userId, cfg.username || cfg.email || "", { fromTs: mon.getTime() - 7 * 86400000, toTs: fri.getTime() });
+  if (!have || !have.id) return null;
+  const { extraTaskMemo: memo } = await chrome.storage.local.get("extraTaskMemo").catch(() => ({}));
+  if (memo && Array.isArray(memo.madeIds) && memo.madeIds.includes(String(have.id))) return null;
+  return { name: have.name || "Extra Tasks", url: have.url || taskUrlFor(have.id), done: !!have.done };
+}
+// ---------- held up? (Insights) ----------
+// A task can be waiting on work nobody linked in ClickUp: a schema / live / publish
+// step whose page (the parent task) isn't written yet, a parent marked PENDING, or a
+// description saying "only build if the client confirms". Read once per task and
+// kept 6 hours; at most 30 tasks, one at a time, and never while ClickUp is busy.
+const HOLD_TTL = 6 * 3600000;
+const HOLD_STEP_RE = /\b(live|go[- ]?live|publish(ing)?|schema|placement|upload|deploy|index(ing)?|implement(ation)?|launch)\b/i;
+const HOLD_NAME_RE = /\b(pending|on hold|waiting|awaiting|blocked)\b/i;
+const HOLD_TEXT_RE = /(only (?:build|do|start|proceed|publish|create|implement)[^.\n]{0,60}?\bif\b[^.\n]{0,80}|once (?:the )?[^.\n]{0,50}?\b(?:published|live|approved|confirmed|ready|signed off)\b|after (?:the )?[^.\n]{0,50}?\b(?:is |are |gets? )?(?:published|live|approved|confirmed)\b|waiting (?:for|on) [^.\n]{3,60}|depends on [^.\n]{3,60}|blocked by [^.\n]{3,60}|not (?:yet )?(?:published|live|approved|confirmed)[^.\n]{0,40}|pending (?:client|approval|confirmation|review|sign[- ]?off)[^.\n]{0,40})/i;
+function holdStopped(st) { return /road\s*-?block|block|on hold|\bhold\b|stuck|waiting|pending|halt|paused/i.test(String(st || "")); }
+function holdFinished(st, done) { return !!done || /\b(complete|completed|done|closed|approved|resolved|published|live|in review|review|qa)\b/i.test(String(st || "")); }
+function holdReason(t, p) {
+  const q = (s) => "\u201C" + String(s || "").trim().slice(0, 90) + "\u201D";
+  if (p && !p.done && holdStopped(p.status)) return "its parent task is " + p.status + " (" + q(p.name) + ")";
+  if (p && HOLD_NAME_RE.test(p.name || "") && !p.done) return "its parent is marked " + (String(p.name).match(HOLD_NAME_RE)[0]).toUpperCase() + " (" + q(p.name) + ")";
+  if (HOLD_NAME_RE.test(t.name || "")) return "its name says " + (String(t.name).match(HOLD_NAME_RE)[0]).toUpperCase();
+  if (p && HOLD_STEP_RE.test(t.name || "") && !holdFinished(p.status, p.done)) return "a " + String(t.name).match(HOLD_STEP_RE)[0].toLowerCase() + " step, but the work it goes on isn't finished yet (" + q(p.name) + " is " + (p.status || "open") + ")";
+  const m = String(t.text || "").match(HOLD_TEXT_RE);
+  if (m) return "its description says " + q(m[0]);
+  return "";
+}
+async function holdHints(ids) {
+  const out = {};
+  if (!ids.length) return out;
+  const cfg = await getClickupConfig().catch(() => null);
+  if (!cfg || !cfg.token) return out;
+  const { holdCache } = await chrome.storage.local.get("holdCache");
+  const cache = holdCache && typeof holdCache === "object" ? holdCache : {};
+  const now = Date.now();
+  const st = (await getClickupState().catch(() => null)) || {};
+  const busy = st.rateLimitedUntil > now;
+  const info = async (id) => {
+    const c = cache["i" + id];
+    if (c && now - c.at < HOLD_TTL) return c.v;
+    if (busy) return undefined;
+    const v = await getTaskHoldInfo(cfg.token, id).catch((e) => { if (e && e.status === 429) throw e; return null; });
+    cache["i" + id] = { at: now, v };
+    await new Promise((r) => setTimeout(r, 120));
+    return v;
+  };
+  const done = []; // the tasks actually read (a busy ClickUp leaves the rest unchecked)
+  try {
+    for (const id of ids) {
+      const t = await info(id);
+      if (!t) continue;
+      done.push(id);
+      const p = t.parentId ? await info(t.parentId) : null;
+      const why = holdReason(t, p);
+      if (why) out[id] = why;
+    }
+  } catch (e) { /* ClickUp busy: what we have so far */ }
+  // Per task, what was found (why = "" when nothing holds it up): the task rows'
+  // ⚠ icon reads this, so the dashboard, popup and side panel show it without asking.
+  try {
+    const { holdFound } = await chrome.storage.local.get("holdFound");
+    const found = holdFound && typeof holdFound === "object" ? { ...holdFound } : {};
+    for (const id of done) found[id] = { why: out[id] || "", at: now };
+    const keepF = Object.entries(found).sort((a, b) => (b[1].at || 0) - (a[1].at || 0)).slice(0, 400);
+    await chrome.storage.local.set({ holdFound: Object.fromEntries(keepF) });
+  } catch (e) {}
+  // Keep the cache small: the 300 newest entries.
+  const keep = Object.entries(cache).sort((a, b) => (b[1].at || 0) - (a[1].at || 0)).slice(0, 300);
+  await chrome.storage.local.set({ holdCache: Object.fromEntries(keep) }).catch(() => {});
+  return out;
 }
 async function rulesDoAction(rule, a, ctx, cfg) {
   const p = a.params || {}, t = ctx.task;
@@ -3273,9 +3370,13 @@ async function rulesDoAction(rule, a, ctx, cfg) {
         return !!due && Math.min(st, due) <= fri.getTime() && due >= mon.getTime();
       };
       extraTaskCache.clear();
+      const { extraTaskMemo: memo0 } = await chrome.storage.local.get("extraTaskMemo").catch(() => ({}));
       const have = await discoverExtraTaskFor(cfg, cfg.userId, hint, { fromTs: mon.getTime(), toTs: fri.getTime() });
       if (have === undefined) throw new Error("ClickUp didn't answer - it tries again next time");
-      if (covers(have)) return { did: "this week's Extra Task is already there (" + (have.name || "Extra Tasks") + ")" };
+      if (covers(have)) {
+        const mine = !!(memo0 && Array.isArray(memo0.madeIds) && memo0.madeIds.includes(String(have.id)));
+        return { did: "this week's Extra Task is already there (" + (have.name || "Extra Tasks") + (mine ? ", made by this rule" : " - made in ClickUp: if it repeats there, this rule isn't needed") + ")" };
+      }
       // An earlier one still open: if it repeats in ClickUp, closing it makes this
       // week's - making one here too would be a duplicate. Nothing until it's closed.
       const back = new Date(mon); back.setDate(mon.getDate() - 35);
@@ -3298,7 +3399,8 @@ async function rulesDoAction(rule, a, ctx, cfg) {
       if (!name) name = "Extra Tasks - " + (cfg.username || "me");
       const hours = Math.max(1, Math.min(60, Number(p.hours) || 7));
       const made = await createTask(cfg.token, listId, { name, startDateMs: mon.getTime() + 9 * 3600000, dueDateMs: new Date(fri).setHours(17, 0, 0, 0), estimateMs: hours * 3600000, assignees: cfg.userId != null ? [cfg.userId] : [] });
-      await chrome.storage.local.set({ extraTaskMemo: { listId, name, at: Date.now() } }).catch(() => {});
+      const madeIds = ((memo && Array.isArray(memo.madeIds)) ? memo.madeIds : []).concat(String(made && made.id || "")).filter(Boolean).slice(-12);
+      await chrome.storage.local.set({ extraTaskMemo: { listId, name, at: Date.now(), madeIds } }).catch(() => {});
       extraTaskCache.clear();
       clearFilterCache();
       refreshClickup({ includeTasks: true, forceWeeks: true }).catch(() => {});
@@ -3608,9 +3710,15 @@ function archiveWatch(force) {
     if (!force && prev && !(gap >= ARCH_EVERY_MS || (archSoon && gap >= ARCH_SOON_MS))) return prev;
     archSoon = false;
     // First time: the last 7 days, kept quietly (no flood of old news).
-    const since = prev ? (prev.at || now) - 10 * 60000 : now - 7 * 86400000;
+    // Later: from the oldest one still listed, so the answer is every task of mine
+    // that IS archived now - one unarchived in ClickUp drops off the list too.
+    const listed = prev ? prev.tasks : [];
+    const oldest = listed.reduce((m, t) => Math.min(m, Number(t.archivedAt) || now), now);
+    const since = prev ? Math.max(now - ARCH_KEEP_MS, Math.min((prev.at || now) - 10 * 60000, oldest - 60000)) : now - 7 * 86400000;
     const found = await fetchArchivedMine(bgToken(cfg.token), cfg.teamId, cfg.userId, since);
-    const known = new Map((prev ? prev.tasks : []).map((t) => [t.id, t]));
+    const still = new Set(found.map((t) => t.id));
+    const whole = found.length < 300; // a full answer (3 pages): only then can "missing" mean "unarchived"
+    const known = new Map(listed.filter((t) => !whole || still.has(t.id) || (Number(t.archivedAt) || 0) < since).map((t) => [t.id, t]));
     const fresh = found.filter((t) => !known.has(t.id));
     // The parent's name, for "archived with its parent ..." (a few reads at most).
     const parents = {};
@@ -6647,7 +6755,15 @@ function cuScopeEstimateMs(st, f) {
   // shared bundle (the same number the pages show); until it's built, today's.
   const r = cuFilterCustomRange(f);
   if (r) {
-    if (st.custom && st.custom.fromTs === r.fromTs && st.custom.toTs === r.toTs && (st.custom.basis || "due") === r.basis) return Number(st.custom.estimateMs) || 0;
+    if (st.custom && st.custom.fromTs === r.fromTs && st.custom.toTs === r.toTs && (st.custom.basis || "due") === r.basis) {
+      // Days picked one by one in the calendar: only those days count.
+      const days = Array.isArray(f.customDays) && f.customDays.length > 1 && f.customDays[0] === f.customFrom && f.customDays[f.customDays.length - 1] === (f.customTo || f.customFrom) ? new Set(f.customDays) : null;
+      if (days) {
+        const dayOf = (ms) => { const x = new Date(Number(ms)); return x.getFullYear() + "-" + String(x.getMonth() + 1).padStart(2, "0") + "-" + String(x.getDate()).padStart(2, "0"); };
+        return (st.custom.tasks || []).filter((t) => t && Number(t.dueDateMs) > 0 && days.has(dayOf(t.dueDateMs))).reduce((n, t) => n + (Number(t.estimateMs) || 0), 0);
+      }
+      return Number(st.custom.estimateMs) || 0;
+    }
     return Number(st.estimateMs) || 0;
   }
   // Nothing ticked under Due = today.
@@ -8312,7 +8428,7 @@ function parseArScheduleText(text) {
     const zh = /北京时间\s*((?:\d{1,2}:\d{2}\s*(?:和|、|,|，|及|与|\/)?\s*)+)/.exec(s);
     if (zh) { const r = clean(timesIn(zh[1])); if (r) return r; }
     // English: "... 10:00 AM and 7:00 PM Beijing Time"
-    const en = /((?:\d{1,2}:\d{2}\s*(?:AM|PM|a\.m\.|p\.m\.)?[\s,]*(?:and|&|,)?\s*)+)\s*(?:\(?\s*)Beijing/i.exec(s);
+    const en = /((?:\d{1,2}:\d{2}\s*(?:AM|PM|a\.m\.|p\.m\.)?[\s,]*(?:and|&|,|\/)?\s*)+)\s*(?:\(?\s*)Beijing/i.exec(s);
     if (en) { const r = clean(timesIn(en[1])); if (r) return r; }
     // UTC-only fallback: UTC时间02:00和11:00 / "02:00 and 11:00 UTC" -> +8h
     const zu = /UTC\s*时间\s*((?:\d{1,2}:\d{2}\s*(?:和|、|,|，|及|与|\/)?\s*)+)/i.exec(s);
@@ -8345,7 +8461,70 @@ function beijingTimesLabel(times) {
   return (times || []).join(" & ") + " Beijing" + (local.length ? " = " + local.join(" & ") + (zone ? " " + zone : " your time") : "");
 }
 
+// ---- Agent Router: what can be used right now (ar-status.js shows it) ----
+// Agent Router's public model list (/api/pricing) says which models each account
+// group may use: Claude can be listed yet open only to some groups (e.g. svip /
+// test), and then Claude Code through Agent Router fails with "no usable models"
+// for everyone else. Read with the notice at most every 30 minutes (a "Check
+// now" forces it), kept as storage arStatus; a notification when Claude comes or
+// goes, or a new notice is posted. A read that fails keeps the last answer.
+const AR_STATUS_MIN_MS = 30 * 60 * 1000;
+let arStatusInFlight = null;
+// The English half of the notice (it comes in Chinese, then English), as plain text.
+function arNoticeEnglish(md) {
+  let s = String(md || "");
+  const i = s.search(/important notice|^#+\s*notice/im);
+  if (i >= 0) s = s.slice(i);
+  return s.replace(/^#+\s*/gm, "").replace(/\*\*/g, "").replace(/^-{3,}\s*$/gm, "").replace(/\n{3,}/g, "\n\n").trim().slice(0, 2000);
+}
+function arStatusFrom(models, notice, group, prev) {
+  const usable = models ? models.filter((m) => !m.groups.length || m.groups.includes(group)).map((m) => m.name) : (prev && prev.usable) || [];
+  return {
+    at: Date.now(), group,
+    models: models ? models.map((m) => m.name) : (prev && prev.models) || [],
+    usable,
+    claude: usable.some((n) => /claude/i.test(n)),
+    claudeOnly: models ? models.filter((m) => /claude/i.test(m.name) && !usable.includes(m.name)).map((m) => ({ name: m.name, groups: m.groups })) : (prev && prev.claudeOnly) || [],
+    notice: notice ? arNoticeEnglish(notice) : (prev && prev.notice) || "",
+    noticeSig: notice ? String(notice).length + ":" + String(notice).slice(0, 80) : (prev && prev.noticeSig) || "",
+  };
+}
+function arReadStatus(opts = {}) {
+  if (arStatusInFlight) return arStatusInFlight;
+  arStatusInFlight = (async () => {
+    const { arStatus: prev = null, arUserGroup = "" } = await chrome.storage.local.get(["arStatus", "arUserGroup"]);
+    if (!opts.force && prev && Date.now() - (Number(prev.at) || 0) < AR_STATUS_MIN_MS) return prev;
+    let models = null, notice = "";
+    try {
+      const r = await fetch("https://agentrouter.org/api/pricing");
+      const j = r && r.ok ? await r.json().catch(() => null) : null;
+      if (j && Array.isArray(j.data)) models = j.data.map((m) => ({ name: String((m && m.model_name) || ""), groups: Array.isArray(m && m.enable_groups) ? m.enable_groups.map(String) : [] })).filter((m) => m.name);
+    } catch (e) {}
+    try {
+      const r = await fetch("https://agentrouter.org/api/notice", { credentials: "include" });
+      const j = r && r.ok ? await r.json().catch(() => null) : null;
+      const d = j && (j.data ?? j.notice ?? j.content);
+      if (typeof d === "string") notice = d;
+    } catch (e) {}
+    if (!models && !notice) return prev;
+    const st = arStatusFrom(models, notice, arUserGroup || "default", prev);
+    await chrome.storage.local.set({ arStatus: st });
+    // Told once: Claude gone (or not there on the first read) / back; else a new notice.
+    const prevClaude = prev ? !!prev.claude : true;
+    if (models && st.claude !== prevClaude) {
+      await notify("ar-claude", st.claude ? "Agent Router: Claude is available again" : "Agent Router: no Claude for your account right now",
+        st.claude ? "Claude models: " + st.usable.filter((n) => /claude/i.test(n)).join(", ") + "."
+          : "Usable now: " + (st.usable.join(", ") || "none") + ". Claude Code through Agent Router won't work until Claude is offered again.", undefined, "https://agentrouter.org").catch(() => {});
+    } else if (prev && st.noticeSig && st.noticeSig !== prev.noticeSig) {
+      await notify("ar-notice", "Agent Router posted a new notice", st.notice.replace(/\s+/g, " ").slice(0, 220), undefined, "https://agentrouter.org").catch(() => {});
+    }
+    return st;
+  })().catch(() => null).finally(() => { arStatusInFlight = null; });
+  return arStatusInFlight;
+}
+
 function syncArScheduleFromPage(opts = {}) {
+  arReadStatus().catch(() => {});
   if (arScheduleSyncInFlight) return arScheduleSyncInFlight;
   arScheduleSyncInFlight = (async () => {
     const { arScheduleCheckedAt = 0, arScheduleSeen = "" } =
@@ -9206,6 +9385,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
               const j = await r.json().catch(() => null);
               const d = j && j.data ? j.data : j;
               if (d && typeof d === "object") {
+                if (d.group) chrome.storage.local.set({ arUserGroup: String(d.group) }).catch(() => {});
                 let b = d.quota ?? d.balance ?? d.credits ?? d.remaining ?? null;
                 if (typeof b === "string" && b.trim() !== "") b = Number(b);
                 const norm = (x) => String(x || "").trim().toLowerCase();
@@ -11280,6 +11460,18 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         sendResponse({ ok: true, data: r });
         break;
       }
+      case "AR_STATUS": {
+        // ar-status.js: what Agent Router offers right now (msg.force = Check now).
+        const st = await arReadStatus({ force: !!msg.force }).catch(() => null);
+        sendResponse({ ok: !!st, status: st });
+        break;
+      }
+      case "INS_HOLD_HINTS": {
+        // Insights asks for its overdue / soon-due tasks: is something holding each
+        // one up that ClickUp doesn't show as a dependency? Cached 6 hours a task.
+        sendResponse(await holdHints(Array.isArray(msg.ids) ? msg.ids.map(String).slice(0, 30) : []).catch(() => ({})));
+        break;
+      }
       case "ARCHIVED_UNARCHIVE": {
         const cfg = await getClickupConfig();
         if (!cfg || !cfg.token) { sendResponse({ ok: false, error: "ClickUp isn't connected." }); break; }
@@ -11318,6 +11510,10 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         if (!r) { sendResponse({ ok: false, error: "That rule is gone." }); break; }
         const probs = msg.on ? RULES.problems(r) : [];
         if (probs.length) { sendResponse({ ok: false, problems: probs }); break; }
+        if (msg.on && !msg.force && (r.actions || []).some((x) => x && x.type === "create_extra")) {
+          const clash = await extraClash().catch(() => null);
+          if (clash) { sendResponse({ ok: false, extraClash: clash }); break; }
+        }
         r.on = !!msg.on;
         await chrome.storage.local.set({ autoRules: all });
         sendResponse({ ok: true });

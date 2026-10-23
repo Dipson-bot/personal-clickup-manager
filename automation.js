@@ -88,6 +88,9 @@
     .au-tm label { margin: 0; font-weight: 400; display: inline-flex; gap: 4px; align-items: center; font-size: 12px; }
     .au-cmd .msg { grid-column: 1 / -1; font-size: 12px; color: var(--muted); }
     .au-cmd .msg.ok { color: var(--green, #16a34a); } .au-cmd .msg.e { color: var(--red, #dc2626); }
+    .au-hidebox { position: fixed; z-index: 2147483000; width: min(340px, calc(100vw - 16px)); box-sizing: border-box; padding: 12px 14px; border-radius: 12px; border: 1px solid var(--border); background: var(--card, #fff); color: var(--text); box-shadow: 0 14px 34px rgba(0,0,0,.25); font-size: 12.5px; }
+    .au-hidebox ul { margin: 6px 0; padding-left: 18px; line-height: 1.5; }
+    .au-hidebox .au-btns button.pri { background: var(--red, #dc2626); border-color: var(--red, #dc2626); color: #fff; }
     .au-act .it { display: flex; gap: 8px; align-items: center; justify-content: space-between; border: 1px solid var(--border); border-radius: 8px; padding: 6px 10px; font-size: 12.5px; }
   `;
   document.head.appendChild(css);
@@ -98,11 +101,60 @@
   btn.dataset.tab = "automation";
   btn.innerHTML = '<svg class="nv-i" viewBox="0 0 24 24" aria-hidden="true"><path d="M13 2L4 14h7l-1 8 9-12h-7z"/></svg><span>Automation</span><span class="au-x" role="button" title="Hide the Automation tab (/automation shows it again) - what is switched on keeps running">\u2715</span>';
   btn.onclick = (e) => {
-    // The ✕: hide the tab right here, without opening it first.
-    if (e.target && e.target.closest && e.target.closest(".au-x")) { e.stopPropagation(); chrome.storage.local.set({ automationTab: false }); return; }
+    if (e.target && e.target.closest && e.target.closest(".au-x")) return; // the ✕ (handled below, before the sidebar)
     if (typeof showOptTab === "function") showOptTab("automation");
     window.scrollTo({ top: 0 });
   };
+  // The ✕: caught on the page FIRST (the sidebar's own tab switch used to see the
+  // click before the button and open the tab instead of hiding it). Nothing
+  // switched on: hidden at once. Something still on (a queue, auto-complete
+  // marks, a stop-at time, rules...): listed, to switch off safely before hiding.
+  document.addEventListener("click", (e) => {
+    const x = e.target && e.target.closest ? e.target.closest('.sidenav button[data-tab="automation"] .au-x') : null;
+    if (!x) return;
+    e.preventDefault(); e.stopPropagation(); e.stopImmediatePropagation();
+    askHide(x);
+  }, true);
+  async function onNow() {
+    const items = (window.PcmConsole && window.PcmConsole.active ? window.PcmConsole.active() : [])
+      .filter((i) => i.btn && i.key !== "boxes" && i.key !== "arboxes") // boxes on the rows are not "running"
+      .map((i) => ({ text: i.text, tip: i.tip || "" }));
+    let rules = [];
+    try { const g = await chrome.storage.local.get("autoRules"); rules = (Array.isArray(g.autoRules) ? g.autoRules : []).filter((r) => r && r.on !== false); } catch (e) {}
+    return { items, rules };
+  }
+  let hideBox = null;
+  async function askHide(x) {
+    if (hideBox) { hideBox.remove(); hideBox = null; }
+    const { items, rules } = await onNow();
+    if (!items.length && !rules.length) { await chrome.storage.local.set({ automationTab: false }); return; }
+    const box = el("div", "au-hidebox");
+    box.appendChild(el("b", "", "Still switched on:"));
+    const ul = el("ul");
+    for (const i of items) { const li = el("li", "", i.text); li.title = i.tip; ul.appendChild(li); }
+    for (const r of rules) ul.appendChild(el("li", "", "Rule: " + (r.name || "a rule")));
+    box.appendChild(ul);
+    box.appendChild(el("div", "au-st", "Turn them off before hiding, so nothing runs out of sight. (/automation brings the tab back.)"));
+    const bb = el("div", "au-btns");
+    const off = el("button", "pri", "Turn them off and hide"); off.type = "button";
+    const no = el("button", "", "Cancel"); no.type = "button";
+    off.onclick = async (e) => {
+      e.stopPropagation(); off.disabled = true; off.textContent = "Turning off\u2026";
+      try { if (window.PcmConsole && window.PcmConsole.allOff) await window.PcmConsole.allOff(); } catch (x2) {}
+      for (const r of rules) { try { await send({ type: "RULES_TOGGLE", id: r.id, on: false }); } catch (x2) {} }
+      box.remove(); hideBox = null;
+      await chrome.storage.local.set({ automationTab: false });
+    };
+    no.onclick = (e) => { e.stopPropagation(); box.remove(); hideBox = null; };
+    bb.append(off, no);
+    box.appendChild(bb);
+    document.body.appendChild(box);
+    hideBox = box;
+    const r0 = x.getBoundingClientRect();
+    box.style.left = Math.max(8, Math.min(window.innerWidth - box.offsetWidth - 8, r0.right + 8)) + "px";
+    box.style.top = Math.max(8, Math.min(window.innerHeight - box.offsetHeight - 8, r0.top - 10)) + "px";
+  }
+  document.addEventListener("mousedown", (e) => { if (hideBox && !hideBox.contains(e.target)) { hideBox.remove(); hideBox = null; } }, true);
   const panel = el("section", "panel");
   panel.dataset.panel = "automation";
   let built = false;
@@ -332,6 +384,18 @@
         cb.onchange = async () => {
           const r = await send({ type: "RULES_TOGGLE", id: rule.id, on: cb.checked });
           if (r && r.problems) { cb.checked = false; meta.textContent = r.problems.join(" "); meta.classList.add("bad"); return; }
+          if (r && r.extraClash) {
+            // An Extra Task made in ClickUp already: its repeat and this rule would make two a week.
+            cb.checked = false;
+            meta.textContent = "";
+            meta.classList.add("bad");
+            meta.append("Your Extra Task already comes from ClickUp (" + r.extraClash.name + "). If it repeats there, turn that repeat off first (open it \u203A the repeat icon next to the dates \u203A Remove), or you'll get two a week. ClickUp doesn't let other apps change a repeat, so it has to be done there. ");
+            const op = el("a", "", "Open it in ClickUp"); op.href = r.extraClash.url; op.target = "_blank"; op.rel = "noopener";
+            const any = el("button", "", "Its repeat is off - switch on"); any.type = "button";
+            any.onclick = async () => { const r2 = await send({ type: "RULES_TOGGLE", id: rule.id, on: true, force: true }); if (r2 && r2.ok) load(); };
+            meta.append(op, " ", any);
+            return;
+          }
           load();
         };
         const bTest = el("button", "", "Test"); bTest.type = "button";

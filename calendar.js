@@ -308,6 +308,30 @@
     .pcal-day.mt { min-height: 54px; }
     .pcal-day.mt .rm { bottom: 18px; }
     .pcal-day.pick { border-color: var(--indigo, #6366f1); box-shadow: inset 0 0 0 2px var(--indigo, #6366f1); }
+    .pcal-drag { user-select: none; touch-action: none; }
+    .pcal-day.rng { border-color: var(--indigo, #6366f1) !important; box-shadow: inset 0 0 0 2px var(--indigo, #6366f1); background: rgba(99,102,241,.22) !important; }
+    .pcal-rangebar { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 8px; margin: 8px 0 2px; font-size: 11.5px; color: var(--muted); }
+    .pcal-rangebar button { width: auto; height: auto; font: inherit; font-size: 11.5px; font-weight: 600; padding: 3px 10px; border-radius: 999px; border: 1px solid var(--indigo, #6366f1); background: transparent; color: var(--indigo, #6366f1); cursor: pointer; }
+    .pcal-rangebar button:hover:not(:disabled) { background: var(--indigo, #6366f1); color: #fff; }
+    .pcal-rangebar button.on, .pcal-rangebar button.pri { background: var(--indigo, #6366f1); color: #fff; }
+    .pcal-rangebar button:disabled { opacity: .45; cursor: not-allowed; }
+    .pcal-rangebar.on { padding: 6px 8px; border-radius: 9px; background: rgba(99,102,241,.1); color: var(--text); }
+    .pcal-for { margin: 0 0 6px; padding: 4px 8px; border-radius: 7px; background: rgba(99,102,241,.1); color: var(--indigo, #6366f1); font-size: 11.5px; font-weight: 700; text-align: center; }
+    .pcal-head .pcal-jumpt { cursor: pointer; border-radius: 6px; padding: 0 4px; }
+    .pcal-head .pcal-jumpt::after { content: " \u25BE"; font-size: 10px; opacity: .6; }
+    .pcal-head .pcal-jumpt:hover { background: rgba(99,102,241,.12); color: var(--indigo, #6366f1); }
+    .pcal-jump { margin: 0 0 8px; padding: 8px; border-radius: 10px; border: 1px solid var(--border); background: var(--bg2, rgba(127,127,127,.06)); }
+    .pcal-jy { display: flex; align-items: center; justify-content: center; gap: 12px; margin-bottom: 6px; }
+    .pcal-jy button { width: 30px; height: 28px; padding: 0; display: inline-flex; align-items: center; justify-content: center; border-radius: 8px; border: 1px solid var(--border); background: var(--card); color: var(--text); cursor: pointer; }
+    .pcal-jy button svg { width: 15px; height: 15px; display: block; }
+    .pcal-jy button:hover { border-color: var(--indigo, #6366f1); color: var(--indigo, #6366f1); }
+    .pcal-jy b { min-width: 84px; text-align: center; font-size: 13.5px; }
+    .pcal-day.rng-off { box-shadow: inset 0 0 0 2px var(--red, #dc2626) !important; background: rgba(220,38,38,.14) !important; text-decoration: line-through; }
+    .pcal-go input.bad { border-color: var(--red, #dc2626) !important; }
+    .pcal-jm { display: grid; grid-template-columns: repeat(4, 1fr); gap: 4px; }
+    .pcal-jm button { padding: 5px 0; border-radius: 6px; border: 1px solid var(--border); background: var(--card); color: var(--text); cursor: pointer; font: inherit; font-size: 11.5px; }
+    .pcal-jm button:hover:not(:disabled), .pcal-jm button.on { background: var(--indigo, #6366f1); border-color: var(--indigo, #6366f1); color: #fff; }
+    .pcal-jm button:disabled { opacity: .35; cursor: not-allowed; }
     .pcal-day.pick .tk { background: var(--indigo, #6366f1); border-color: var(--indigo, #6366f1); }
     .pcal-multi { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin: 6px 0 0; font-size: 11.5px; color: var(--muted); }
     .pcal-multi b { color: var(--indigo, #6366f1); }
@@ -390,6 +414,9 @@
   document.head.appendChild(css);
 
   let pop = null, view = null, picker = null;
+  let picks = new Set(), pickMode = false; // days picked to list together (kept while moving between months)
+  let rangeCb = null; // open(anchor, { onRange, onDays }): who gets the picked days (else the Tasks list)
+  let jump = null; // the month / year chooser: { y } (AD or BS year) while open
   const el = (tag, cls, text) => { const x = document.createElement(tag); if (cls) x.className = cls; if (text != null) x.textContent = text; return x; };
   // Closing without a day being chosen tells whoever opened it for picking that
   // nothing was picked, so it can put its chip back.
@@ -462,7 +489,42 @@
     }
     t.appendChild(modeSw);
     head.append(prev, t, next);
+    if (rangeCb && rangeCb.title && !picker) { const tl = el("div", "pcal-for", rangeCb.title); pop.appendChild(tl); }
     pop.appendChild(head);
+    // Any month in two clicks: the title opens 12 months and the year.
+    const tb = t.querySelector("b");
+    if (tb) {
+      tb.classList.add("pcal-jumpt");
+      tb.title = "Pick a month and year";
+      tb.setAttribute("role", "button");
+      tb.tabIndex = 0;
+      const toggleJump = (e) => { e.stopPropagation(); jump = jump ? null : { y: bsMode ? bv.y : y, mode: bsMode ? "bs" : "ad" }; paintMonth(); };
+      tb.onclick = toggleJump;
+      tb.onkeydown = (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); toggleJump(e); } };
+    }
+    if (jump && jump.mode !== (bsMode ? "bs" : "ad")) jump = { y: bsMode ? bv.y : y, mode: bsMode ? "bs" : "ad" }; // switched AD <-> BS while open
+    if (jump) {
+      const jp = el("div", "pcal-jump");
+      const yr = el("div", "pcal-jy");
+      const yb = el("button"); yb.type = "button"; yb.title = "Previous year"; yb.setAttribute("aria-label", "Previous year"); yb.onclick = (e) => { e.stopPropagation(); jump.y--; paintMonth(); };
+      const ya = el("button"); ya.type = "button"; ya.title = "Next year"; ya.setAttribute("aria-label", "Next year"); ya.onclick = (e) => { e.stopPropagation(); jump.y++; paintMonth(); };
+      yb.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M15 18l-6-6 6-6"/></svg>';
+      ya.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 18l6-6-6-6"/></svg>';
+      yr.append(yb, el("b", "", String(jump.y) + (bsMode ? " BS" : "")), ya);
+      jp.appendChild(yr);
+      const mg = el("div", "pcal-jm");
+      const names = bsMode ? BS_NAMES : Array.from({ length: 12 }, (_, i2) => new Date(2000, i2, 1).toLocaleDateString(undefined, { month: "short" }));
+      names.forEach((nm, i2) => {
+        const target = bsMode ? fromBS(jump.y, i2 + 1, 1) : new Date(jump.y, i2, 1).getTime();
+        const b2 = el("button", (bsMode ? bv.y === jump.y && bv.m === i2 + 1 : y === jump.y && m === i2) ? "on" : "", bsMode ? nm.slice(0, 5) : nm);
+        b2.type = "button";
+        if (!target) { b2.disabled = true; b2.title = "Outside the Nepali calendar the extension knows"; }
+        b2.onclick = (e) => { e.stopPropagation(); if (!target) return; view = new Date(target); jump = null; paintMonth(); };
+        mg.appendChild(b2);
+      });
+      jp.appendChild(mg);
+      pop.appendChild(jp);
+    }
     // Jump to any date: Today, or pick one (the month opens and the day is pointed at).
     // While a date is being set, those are replaced by the quick choices - the
     // browser's own date box would open a second, plain calendar inside ours.
@@ -486,11 +548,23 @@
     } else {
       const todayBtn = el("button", "", "Today"); todayBtn.type = "button";
       todayBtn.onclick = (e) => { e.stopPropagation(); goTo(ymd(Date.now())); };
-      const jump = el("input"); jump.type = "date"; jump.title = "Go to a date (type it)"; jump.dataset.pcalJump = "1";
-      jump.value = ymd(new Date(y, m, 1).getTime());
-      jump.onchange = (e) => { e.stopPropagation(); if (/^\d{4}-\d{2}-\d{2}$/.test(jump.value)) goTo(jump.value); };
-      jump.onclick = (e) => e.stopPropagation();
-      go.append(todayBtn, jump);
+      // A date typed in: AD (2026-10-23) or, in Nepali months, BS (2083-07-06).
+      const jumpIn = el("input"); jumpIn.type = "text"; jumpIn.dataset.pcalJump = "1"; jumpIn.spellcheck = false;
+      const pad2 = (n) => String(n).padStart(2, "0");
+      jumpIn.value = bsMode ? bv.y + "-" + pad2(bv.m) + "-01" : ymd(first.getTime());
+      jumpIn.placeholder = bsMode ? "2083-07-06 (BS)" : "2026-10-23";
+      jumpIn.title = bsMode ? "Go to a Nepali date: year-month-day (BS), then Enter" : "Go to a date: year-month-day, then Enter";
+      const goTyped = () => {
+        const mm = /^\s*(\d{4})\s*[-\/.]\s*(\d{1,2})\s*[-\/.]\s*(\d{1,2})\s*$/.exec(jumpIn.value || "");
+        if (!mm) { jumpIn.classList.add("bad"); return; }
+        const ts = bsMode ? fromBS(+mm[1], +mm[2], +mm[3]) : new Date(+mm[1], +mm[2] - 1, +mm[3]).getTime();
+        if (!ts) { jumpIn.classList.add("bad"); return; }
+        goTo(ymd(ts));
+      };
+      jumpIn.onkeydown = (e) => { e.stopPropagation(); jumpIn.classList.remove("bad"); if (e.key === "Enter") { e.preventDefault(); goTyped(); } };
+      jumpIn.onchange = (e) => { e.stopPropagation(); goTyped(); };
+      jumpIn.onclick = (e) => e.stopPropagation();
+      go.append(todayBtn, jumpIn);
     }
     pop.appendChild(go);
     const grid = el("div", "pcal-grid");
@@ -540,7 +614,12 @@
         (fest ? "\n\uD83E\uDE94 " + fest[0] : "") +
         (evs.length ? "\n" + evs.map((e) => icon(e.kind) + " " + e.title + evTime(e) + (e.note ? " - " + e.note : "")).join("\n") : "") + (c && c.n ? "\n" + c.n + " task" + (c.n === 1 ? "" : "s") + " due" : "") +
         (rms.length ? "\n" + rms.map((r) => "\u23F0 " + r.time + "  " + r.text).join("\n") : "") +
-        (picker && picker.multi ? (picker.picks.has(k) ? "\nTicked - click to untick" : picker.picks.size ? "\nClick to tick this day too" : "\nClick to use this day - or tick its box (or Ctrl+click) to pick several days") : picker ? (picker.sel === k ? "\nThe " + picker.what + " now" : picker.time ? "\nClick to use this day, then set the time below" : "\nClick to make this the " + picker.what) : "\nClick to list this day's tasks");
+        (picker && picker.multi ? (picker.picks.has(k) ? "\nTicked - click to untick" : picker.picks.size ? "\nClick to tick this day too" : "\nClick to use this day - or tick its box (or Ctrl+click) to pick several days") : picker ? (picker.sel === k ? "\nThe " + picker.what + " now" : picker.time ? "\nClick to use this day, then set the time below" : "\nClick to make this the " + picker.what) : "\nClick to list this day's tasks - or drag across days (a week...) to list them all");
+      if (!picker && (pickMode || picks.size)) {
+        const on = picks.has(k);
+        if (on) b.classList.add("pick");
+        if (pickMode) { b.classList.add("mt"); b.appendChild(el("span", "tk", on ? "\u2713" : "")); }
+      }
       b.onclick = picker
         ? (e) => {
             e.stopPropagation();
@@ -560,10 +639,94 @@
             if (picker.time) { picker.sel = k; goTo(k); return; }
             choose(ts);
           }
-        : (e) => { e.stopPropagation(); close(); if (typeof window.pcmPickDay === "function") window.pcmPickDay(ts); };
+        : (e) => {
+            e.stopPropagation();
+            if (pickMode) { if (picks.has(k)) picks.delete(k); else picks.add(k); paintMonth(); return; } // picking: tick / untick
+            close(); sendDay(ts);
+          };
       grid.appendChild(b);
     }
     pop.appendChild(grid);
+    // Several days at once - nothing changes until "List" is pressed (a drag let
+    // go by mistake used to switch the list at once):
+    //  - drag across days (a week, Mon to Fri...) to pick them;
+    //  - "Pick days" ticks any days, in any months (the ticks stay while moving);
+    //  - "List all of <month>".
+    // One read from ClickUp for the span (up to ~3 months), filtered to the days.
+    if (!picker && (rangeCb || typeof window.pcmPickRange === "function")) {
+      let from = "", to = "", moved = false, removing = false;
+      const span = () => (from <= to ? [from, to] : [to, from]);
+      const paintRng = () => {
+        const [a, z] = span();
+        grid.querySelectorAll(".pcal-day[data-k]").forEach((c) => {
+          const inR = moved && c.dataset.k >= a && c.dataset.k <= z;
+          c.classList.toggle("rng", inR && !removing);
+          c.classList.toggle("rng-off", inR && removing);
+        });
+      };
+      const end = () => {
+        if (!from) return;
+        const [a, z] = span(), was = moved;
+        from = to = ""; moved = false;
+        if (!was) return; // a plain click: handled by the day itself
+        // Started on a picked day: the dragged days come OFF; otherwise they go on.
+        const keep = removing || (picks.size && pickMode) ? picks : new Set();
+        for (let d = parseYmd(a); d <= parseYmd(z); d += 86400000) { const k2 = ymd(d + 3600000); if (removing) keep.delete(k2); else keep.add(k2); } // (+1h: a DST day stays the same date)
+        picks = keep;
+        removing = false;
+        paintMonth();
+      };
+      grid.addEventListener("pointerdown", (e) => {
+        const c = e.target.closest && e.target.closest(".pcal-day[data-k]");
+        if (!c || e.button !== 0) return;
+        from = to = c.dataset.k; moved = false;
+        removing = picks.has(c.dataset.k); // drag from a ticked day = untick the span
+        document.addEventListener("pointerup", end, { once: true });
+      });
+      grid.addEventListener("pointerover", (e) => {
+        if (!from) return;
+        const c = e.target.closest && e.target.closest(".pcal-day[data-k]");
+        if (!c || c.dataset.k === to) return;
+        to = c.dataset.k; moved = to !== from; paintRng();
+      });
+      grid.classList.add("pcal-drag");
+      const row = el("div", "pcal-rangebar");
+      if (picks.size) {
+        const list = [...picks].sort(), a = list[0], z = list[list.length - 1];
+        const days = Math.round((parseYmd(z) - parseYmd(a)) / 86400000) + 1;
+        const together = days === list.length;
+        const fmtS = (k) => new Date(parseYmd(k)).toLocaleDateString(undefined, { month: "short", day: "numeric" });
+        const lab = el("b", "", together ? (list.length === 1 ? fmtS(a) : fmtS(a) + " \u2013 " + fmtS(z)) + " \u00b7 " + list.length + " day" + (list.length === 1 ? "" : "s") : list.length + " days picked (" + fmtS(a) + " \u2026 " + fmtS(z) + ")");
+        const go = el("button", "pri", together && list.length > 1 ? "List these tasks" : "List " + list.length + " day" + (list.length === 1 ? "" : "s"));
+        go.type = "button";
+        const clr = el("button", "", "Clear"); clr.type = "button";
+        clr.onclick = (e) => { e.stopPropagation(); picks = new Set(); paintMonth(); };
+        if (days > 93) { go.disabled = true; go.title = "Up to about 3 months at a time - pick days closer together"; }
+        go.onclick = (e) => {
+          e.stopPropagation();
+          const sel = [...picks].sort();
+          picks = new Set(); pickMode = false;
+          close();
+          if (together) sendRange(parseYmd(sel[0]), parseYmd(sel[sel.length - 1]));
+          else sendDays(sel.map(parseYmd));
+        };
+        row.classList.add("on");
+        row.append(lab, go, clr);
+      } else {
+        row.append(el("span", "", "Several days? Drag across them, or"));
+      }
+      const pm = el("button", pickMode ? "on" : "", pickMode ? "\u2611 Picking days" : "\u2610 Pick days");
+      pm.type = "button";
+      pm.title = pickMode ? "Click days (any month) to tick or untick them, then List - click here to stop picking" : "Tick any days you like, in any months, then list their tasks together";
+      pm.onclick = (e) => { e.stopPropagation(); pickMode = !pickMode; paintMonth(); };
+      const mb = el("button", "", "All of " + (bsMode ? BS_NAMES[bv.m - 1] : first.toLocaleDateString(undefined, { month: "long" })));
+      mb.type = "button";
+      mb.title = "Every task due this month (one read from ClickUp)";
+      mb.onclick = (e) => { e.stopPropagation(); picks = new Set(); pickMode = false; close(); sendRange(first.getTime(), last.getTime()); };
+      row.append(pm, mb);
+      pop.appendChild(row);
+    }
+
     if (picker && picker.multi) {
       const ml = el("div", "pcal-multi");
       const list = [...picker.picks].sort();
@@ -720,7 +883,27 @@
     paintMonth();
     place(anchor);
   }
-  function open(anchor) { close(); openAt(anchor, Date.now()); freshOpen(); }
+  // open(anchor, { onRange(fromTs, toTs), onDays([ts...]), title }): the same day /
+  // range / Pick days choosing, handed to the caller (Explore tasks) instead of
+  // changing the Tasks list's filter.
+  function open(anchor, opts) {
+    close();
+    rangeCb = opts && (opts.onRange || opts.onDays) ? opts : null;
+    openAt(anchor, Date.now());
+    freshOpen();
+  }
+  function sendRange(a, z) {
+    const cb = rangeCb; rangeCb = null;
+    if (cb && cb.onRange) cb.onRange(a, z); else if (typeof window.pcmPickRange === "function") window.pcmPickRange(a, z);
+  }
+  function sendDays(list) {
+    const cb = rangeCb; rangeCb = null;
+    if (cb && cb.onDays) cb.onDays(list); else if (typeof window.pcmPickDays === "function") window.pcmPickDays(list);
+  }
+  function sendDay(ts) {
+    const cb = rangeCb; rangeCb = null;
+    if (cb && cb.onRange) cb.onRange(ts, ts); else if (typeof window.pcmPickDay === "function") window.pcmPickDay(ts);
+  }
   // It's fixed on the screen, so it follows what it was opened from while the
   // page scrolls, and gets out of the way if that is redrawn away under it
   // (the task lists refresh on their own).

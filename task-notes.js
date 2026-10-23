@@ -292,16 +292,20 @@
       box.querySelector(".tn-cmt").addEventListener("click", (e) => {
         e.preventDefault(); e.stopPropagation();
         const chev = row.querySelector(".pcm-chev");
-        if (chev && chev.getAttribute("aria-expanded") !== "true") chev.click();
-        else window.PcmComments.markRead(id);
+        const TP = window.PcmTaskPanel;
+        if (chev && chev.getAttribute("aria-expanded") !== "true") { if (TP && TP.wantTab) TP.wantTab("cmt"); chev.click(); }
+        else { if (TP && TP.showTab) TP.showTab("cmt"); window.PcmComments.markRead(id); }
       });
       box.querySelector(".tn-note").addEventListener("click", (e) => {
         e.preventDefault(); e.stopPropagation();
         focusNotesFor = id;
         const chev = row.querySelector(".pcm-chev");
         const open = chev && chev.getAttribute("aria-expanded") === "true";
-        if (chev && !open) chev.click();
-        else focusPanelNotes();
+        const TP = window.PcmTaskPanel;
+        // The details are tabs now: open them on My notes (the notes were hidden in
+        // another tab, so this click used to do nothing visible).
+        if (chev && !open) { if (TP && TP.wantTab) TP.wantTab("notes"); chev.click(); }
+        else { if (TP && TP.showTab) TP.showTab("notes"); focusPanelNotes(); }
       });
     }
     const pinOn = isPinned(id), n = notesOf(id).length;

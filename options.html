@@ -416,6 +416,13 @@
   .cu-tasklist.cu-resizable { min-height: 60px; }
   .cu-tasklist[style*="display: none"] + .cu-grip { display: none; } /* a closed day: no bar either */
   .cu-tasklist[data-all="1"] { max-height: none !important; height: auto !important; overflow: visible !important; }
+  /* the previous rows, kept while the new filter's tasks load (no blank flash) */
+  #optFltResult.flt-loading { position: relative; }
+  #optFltResult.flt-loading > * { opacity: .45; pointer-events: none; transition: opacity .15s; }
+  #optFltResult.flt-loading::before { content: attr(data-loading); position: sticky; top: 0; display: block; z-index: 2; margin: 0 0 6px; font-size: 12px; font-weight: 600; color: var(--indigo, #6366f1); }
+  #dashTasks.cu-stale { position: relative; }
+  #dashTasks.cu-stale .cu-tasklist, #dashTasks.cu-stale .cu-totals { opacity: .45; transition: opacity .15s; pointer-events: none; }
+  #dashTasks.cu-stale::before { content: "Loading\2026"; position: absolute; top: 6px; right: 8px; z-index: 2; font-size: 11.5px; font-weight: 600; color: var(--indigo, #6366f1); background: var(--card); padding: 2px 9px; border-radius: 999px; border: 1px solid var(--border); }
   /* Drag bar under a stretchable list: full width, above nothing clickable. */
   .cu-grip { height: 10px; margin: 2px 0 4px; cursor: ns-resize; display: flex; align-items: center; justify-content: center; gap: 6px; border-radius: 6px; touch-action: none; user-select: none; }
   .cu-grip::before { content: ""; width: 42px; height: 4px; border-radius: 3px; background: var(--border); transition: background .15s, width .15s; }
@@ -612,11 +619,17 @@
   .cu-clienthead .cu-tgbtn { margin-left: auto; }
   .cu-mgroup { margin: 14px 0 2px; padding: 6px 10px; border-radius: 8px; background: color-mix(in srgb, var(--indigo) 14%, transparent); font-size: 13.5px; color: var(--muted); }
   .cu-mgroup:first-child { margin-top: 2px; }
+  /* a client heading (Tasks list with clients ticked, Explore): one line - name, totals (cut with … when narrow), buttons on the right */
+  .cu-mgroup.ex-client { display: flex; align-items: center; gap: 4px 8px; white-space: nowrap; }
+  .cu-mgroup.ex-client > b { flex: none; max-width: 45%; overflow: hidden; text-overflow: ellipsis; }
+  .cu-mgroup.ex-client > span:not(.pcm-chtools) { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+  .cu-mgroup.ex-client > .cu-tgbtn, .cu-mgroup.ex-client > .pcm-chtools { flex: none; }
   .cu-mgroup b { color: var(--text); font-size: 14px; }
   .cu-wkgroup { margin: 10px 0 2px; padding: 4px 8px; border-left: 3px solid var(--indigo); background: color-mix(in srgb, var(--indigo) 7%, transparent); border-radius: 0 6px 6px 0; font-size: 12.5px; color: var(--muted); }
   .cu-wkgroup:first-child { margin-top: 2px; }
   .cu-wkgroup b { color: var(--text); }
   .cu-wkgroup.now { border-left-color: var(--green); background: color-mix(in srgb, var(--green) 9%, transparent); }
+  .cu-wkgroup.ex-who.shared { border-left-color: #9333ea; background: color-mix(in srgb, #9333ea 8%, transparent); }
   .est-guess, .est-staged { margin-right: 4px; padding: 0 6px; border-radius: 999px; font-size: 11px; font-weight: 700; cursor: pointer; white-space: nowrap; }
   .est-guess { color: var(--muted); border: 1px dashed var(--border); }
   .est-guess:hover { color: var(--indigo); border-color: var(--indigo); }
@@ -690,6 +703,10 @@
   .flt-people-menu .foot button { width: auto; font-size: 12px; padding: 4px 10px; }
   .cu-filter-menu[hidden] { display: none; }
   .cu-client-menu { min-width: 240px; }
+  #exClientMenu { left: 0; right: auto; }
+  #exClientMenu label { margin: 0; }
+  #exClientMenu label .n { margin-left: auto; padding-left: 8px; color: var(--muted); font-size: 11px; font-weight: 600; }
+  #exClientBtn { min-width: 150px; justify-content: space-between; }
   .cu-client-search { width: 100%; box-sizing: border-box; margin: 2px 0 6px; padding: 5px 8px; font: inherit; font-size: 12.5px; border: 1px solid var(--border); border-radius: 7px; background: var(--bg); color: var(--text); }
   .cu-client-search:focus { outline: none; border-color: var(--indigo); }
   .cu-filter-menu.cu-client-menu input.cu-client-search { width: 100%; display: block; }
@@ -1199,6 +1216,16 @@
   #insView .det-body { padding: 2px 16px 14px; }
   #insView .trow { display: flex; align-items: center; gap: 10px; padding: 8px 0; border-top: 1px solid var(--border); font-size: 13px; }
   #insView .trow:first-child { border-top: 0; }
+  #insView .wk-click { cursor: pointer; border-radius: 8px; transition: background .12s; }
+  #insView .wk-click:hover, #insView .wk-click.on { background: rgba(99,102,241,.09); }
+  #insView .wk-click.on .wk-lab { color: var(--indigo); font-weight: 700; }
+  #insWkList:not(:empty) { margin-top: 10px; }
+  #insView .ins-st { display: inline-block; margin-left: 6px; padding: 0 7px; border-radius: 999px; border: 1px solid var(--border); font-size: 10.5px; font-weight: 700; line-height: 16px; vertical-align: 1px; text-transform: capitalize; color: var(--muted); }
+  #insView .ins-st.t-bad { background: #dc2626; border-color: #dc2626; color: #fff; }
+  #insView .ins-st.t-rev { background: rgba(217,119,6,.14); border-color: rgba(217,119,6,.6); color: #b45309; }
+  #insView .ins-st.t-work { background: rgba(37,99,235,.12); border-color: rgba(37,99,235,.5); color: #2563eb; }
+  #insView .ins-hold { color: #b45309; font-weight: 600; }
+  #insView .ins-rb { color: #dc2626 !important; margin-right: 8px; }
   #insView .trow .ttl { flex: 1; min-width: 0; }
   #insView .trow .ttl b { font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; display: block; }
   #insView .trow .ttl small { display: block; color: var(--muted); font-size: 11px; }
@@ -1449,6 +1476,7 @@
     <div class="card cu-needs-config" id="dashExploreCard" style="display:none;">
       <div class="dash-h"><h3>Explore tasks</h3><span class="hint">any date range, client, department or teammate</span><span class="spacer"></span>
         <button type="button" class="cu-filter-btn primary" id="optFltGo" title="Read the tasks for these choices from ClickUp (pressed again: read them again)">Load tasks</button>
+        <button type="button" class="cu-filter-btn" id="exDatesBtn" title="Pick the dates in the calendar: drag a week, tick any days (Pick days), a whole month - for anyone's tasks">&#128197; Dates</button>
         <div class="cu-filter" id="exFilterWrap">
           <button type="button" class="cu-filter-btn" id="exFilterBtn" aria-expanded="false" aria-haspopup="true" title="Dates, status, priority and more - Explore's own filter (the Tasks card's isn't changed)">&#9662; Filter</button>
           <div class="cu-filter-menu" id="exFilterMenu" hidden role="menu">
@@ -1499,9 +1527,21 @@
       <div class="flt-row" style="margin-top:8px;">
         <div>
           <label>Client</label>
-          <select id="optFltClient">
-            <option value="">All clients</option>
-          </select>
+          <div class="cu-filter" id="exClientWrap">
+            <button type="button" class="cu-filter-btn" id="exClientBtn" aria-expanded="false" aria-haspopup="true" title="Show only some clients - tick one or several (each gets its own section); search to find any client in the workspace">&#9662; All clients</button>
+            <div class="cu-filter-menu cu-client-menu" id="exClientMenu" hidden role="menu">
+              <input type="search" id="exClientSearch" class="cu-client-search" placeholder="Search clients…" autocomplete="off" aria-label="Search clients" />
+              <div class="cu-filter-group" id="exClientResGroup">
+                <div class="cu-filter-h" id="exClientResHead">In these results</div>
+                <div id="exClientRes"></div>
+              </div>
+              <div class="cu-filter-group" id="exClientMoreGroup" hidden>
+                <div class="cu-filter-h" id="exClientMoreHead">Your clients</div>
+                <div id="exClientMore"></div>
+              </div>
+              <div class="cu-client-note" id="exClientNote"></div>
+            </div>
+          </div>
         </div>
         <div>
           <label>Department</label>
@@ -2777,6 +2817,8 @@
 <script src="task-notes.js"></script>
 <script src="task-dupes.js"></script>
 <script src="rollup-help.js"></script>
+<script src="week-fold.js"></script>
+<script src="ar-status.js"></script>
 <script src="local-tasks.js"></script>
 <script src="ui-extras.js"></script>
 <script src="simple-view.js"></script>
