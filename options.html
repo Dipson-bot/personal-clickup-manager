@@ -186,6 +186,9 @@
   .acct .meta { flex: 1; min-width: 0; }
   .acct .name { font-weight: 600; font-size: 14.5px; }
   .acct .det { color: var(--muted); font-size: 12.5px; margin-top: 2px; }
+  .acct .det.ar-bal { display: flex; align-items: center; gap: 6px; color: var(--indigo); font-weight: 600; }
+  .acct .ar-balref { border: 0; background: none; padding: 0 3px; color: var(--muted); cursor: pointer; font-size: 13px; line-height: 1; }
+  .acct .ar-balref:hover:not(:disabled) { color: var(--indigo); }
   /* Per-account action buttons (Run/Edit/Delete) share a compact size so the row
      stays tidy; Run reuses the indigo .primary look from the popup. */
   .acct > button { flex: none; padding: 7px 14px; font-size: 13px; }
@@ -417,6 +420,27 @@
   .cu-tasklist[style*="display: none"] + .cu-grip { display: none; } /* a closed day: no bar either */
   .cu-tasklist[data-all="1"] { max-height: none !important; height: auto !important; overflow: visible !important; }
   /* the previous rows, kept while the new filter's tasks load (no blank flash) */
+  /* Tasks card header: buttons that wrap on a narrow window stay on the right, with the rest */
+  #dashTasksCard > .dash-h { justify-content: flex-end; row-gap: 6px; }
+  #dashTasksCard > .dash-h > h3 + .hint { margin-right: auto; }
+  .wk-gauge { display: inline-block; margin-left: 6px; padding: 0 7px; border-radius: 999px; font-size: 11px; font-weight: 700; line-height: 17px; }
+  .wk-gauge.low { color: #b45309; background: rgba(245,158,11,.15); }
+  .wk-gauge.over { color: #b91c1c; background: rgba(239,68,68,.13); }
+  .wk-gauge.ok { color: #15803d; background: rgba(34,197,94,.14); }
+  .wk-gauge.early { color: #15803d; background: transparent; border: 1px solid rgba(34,197,94,.45); }
+  html[data-theme="dark"] .wk-gauge.low { color: #fbbf24; } html[data-theme="dark"] .wk-gauge.over { color: #f87171; } html[data-theme="dark"] .wk-gauge.ok, html[data-theme="dark"] .wk-gauge.early { color: #4ade80; }
+  .wk-fill { font: inherit; font-size: 11px; font-weight: 700; padding: 2px 9px; border-radius: 7px; border: 1px solid #d97706; background: rgba(245,158,11,.1); color: #b45309; cursor: pointer; white-space: nowrap; }
+  .wk-fill:hover { background: rgba(245,158,11,.2); }
+  html[data-theme="dark"] .wk-fill { color: #fbbf24; }
+  .wk-nav { display: inline-flex; align-items: center; border: 1px solid var(--border); border-radius: 8px; overflow: hidden; margin-left: 6px; }
+  .wk-nav button { border: 0; background: var(--card); color: var(--text); font: inherit; font-size: 12px; padding: 3px 9px; cursor: pointer; line-height: 1.3; }
+  .wk-nav button + button { border-left: 1px solid var(--border); }
+  .wk-nav button:hover { color: var(--indigo); background: var(--bg2); }
+  .wk-nav button[data-wn="-1"], .wk-nav button[data-wn="1"] { font-size: 15px; padding: 1px 9px; font-weight: 700; }
+  .wk-nav button.off { font-weight: 700; color: var(--indigo); background: color-mix(in srgb, var(--indigo) 10%, var(--card)); }
+  #optWeekList.flt-loading { position: relative; }
+  #optWeekList.flt-loading > * { opacity: .45; pointer-events: none; transition: opacity .15s; }
+  #optWeekList.flt-loading::before { content: attr(data-loading); position: sticky; top: 0; display: block; z-index: 2; margin: 0 0 6px; font-size: 12px; font-weight: 600; color: var(--indigo, #6366f1); }
   #optFltResult.flt-loading { position: relative; }
   #optFltResult.flt-loading > * { opacity: .45; pointer-events: none; transition: opacity .15s; }
   #optFltResult.flt-loading::before { content: attr(data-loading); position: sticky; top: 0; display: block; z-index: 2; margin: 0 0 6px; font-size: 12px; font-weight: 600; color: var(--indigo, #6366f1); }
@@ -518,6 +542,22 @@
   .tf-bar { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 14px; margin-bottom: 8px; }
   .tf-bar input[type="search"] { flex: 1; min-width: 180px; padding: 6px 10px; }
   .tf-folders { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; margin: 0 0 8px; font-size: 13px; }
+  .tf-slack { margin: 0 0 10px; font-size: 13px; line-height: 1.5; }
+  .tf-slack .tf-slackon { display: inline-flex; align-items: center; gap: 6px; margin: 0; font-weight: 400; cursor: pointer; }
+  .tf-slackauto { margin-top: 8px; padding-top: 8px; border-top: 1px dashed var(--border); }
+  .tf-slackhead { display: flex; align-items: center; gap: 6px 8px; flex-wrap: wrap; }
+  .tf-slackhead > span { flex: 1 1 320px; min-width: 0; }
+  .tf-slackerr { color: var(--amber, #b45309) !important; margin-top: 4px; }
+  .tf-slackshots { display: flex; align-items: center; gap: 6px; margin: 6px 0 0; font-weight: 400; font-size: 12.5px; color: var(--muted); cursor: pointer; }
+  .tf-slackmap { margin-top: 6px; padding: 8px 10px; border: 1px solid var(--border); border-radius: 9px; background: var(--bg2, transparent); }
+  .tf-slackmr { display: flex; align-items: center; gap: 8px; padding: 3px 0; flex-wrap: wrap; }
+  .tf-slackmc { flex: 0 0 220px; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 600; }
+  .tf-slackmr select { flex: 1 1 220px; max-width: 360px; padding: 4px 8px; font-size: 12.5px; }
+  .tf-btn.pri { background: var(--indigo, #6366f1); border-color: var(--indigo, #6366f1); color: #fff; }
+  .tf-slackin { margin-top: 6px; padding: 8px 10px; border: 1px dashed var(--amber, #d97706); border-radius: 9px; background: rgba(217,119,6,.06); }
+  .tf-slackrow { display: flex; align-items: center; gap: 8px; padding: 4px 0; flex-wrap: wrap; }
+  .tf-slackrow .tf-slackn { flex: 1 1 200px; min-width: 0; }
+  .tf-slackrow .tf-slackc { width: 190px; flex: none; padding: 4px 8px; font-size: 12.5px; }
   .tf-folders code { font-size: 12px; padding: 1px 6px; border-radius: 4px; background: var(--card); border: 1px solid var(--border); word-break: break-all; }
   .tf-bar label { display: inline-flex; align-items: center; gap: 6px; margin: 0; font-weight: 400; font-size: 13px; }
   .tf-list { border: 1px solid var(--border); border-radius: 10px; max-height: 560px; overflow: auto; }
@@ -635,6 +675,9 @@
   .est-guess:hover { color: var(--indigo); border-color: var(--indigo); }
   .est-staged { color: var(--amber, #d97706); border: 1px dashed currentColor; background: color-mix(in srgb, var(--amber, #d97706) 9%, transparent); }
   .cu-gtot, .wk-gtot { color: var(--indigo); font-weight: 600; }
+  /* drafts (not in ClickUp yet) for a day: dashed, like the draft pills */
+  .wk-draftest { font-size: 11.5px; font-weight: 600; padding: 1px 8px; border-radius: 999px; border: 1px dashed color-mix(in srgb, var(--indigo, #6366f1) 55%, transparent); color: var(--indigo, #6366f1); white-space: nowrap; }
+  .wk-draftsec { margin: 8px 0 2px; font-size: 11.5px; }
   .cu-totals { margin: 6px 0 4px; padding: 6px 10px; border-radius: 8px; background: var(--bg2); font-size: 12.5px; color: var(--muted); }
   .cu-totals b { color: var(--text); }
   .cu-totals-warn { color: var(--amber); font-weight: 600; }
@@ -731,6 +774,8 @@
   .cu-filter-mode button { flex: 1; border: 0; border-radius: 0; background: transparent; color: var(--muted); font-size: 11px; font-weight: 600; padding: 5px 6px; cursor: pointer; white-space: nowrap; }
   .cu-filter-mode button + button { border-left: 1px solid var(--border); }
   .cu-filter-mode button.on { background: var(--indigo); color: #fff; }
+  .est-guess.skip { opacity: .45; text-decoration: line-through; }
+  .cu-cdot { width: 10px; height: 10px; border-radius: 50%; flex: none; box-sizing: border-box; }
   .cu-filter-h { font-size: 9.5px; font-weight: 700; letter-spacing: 0.06em; text-transform: uppercase; color: var(--muted); padding: 4px 8px 2px; }
   html[data-theme="dark"] .cu-filter-menu { box-shadow: 0 10px 26px rgba(0, 0, 0, 0.5); }
 
@@ -1428,6 +1473,10 @@
               <div class="cu-filter-h">Priority</div>
               <div id="optCuFilterPriorityList"></div>
             </div>
+            <div class="cu-filter-group" id="optCuFilterColorGroup" hidden title="Your own colours (🎨 on a task row): tick the ones to show - tick No colour too to keep the uncoloured tasks">
+              <div class="cu-filter-h">Your colours</div>
+              <div id="optCuFilterColorList"></div>
+            </div>
             <div class="cu-filter-sep"></div>
             <div class="cu-filter-group">
               <div class="cu-filter-h">Assigned to</div>
@@ -1464,7 +1513,9 @@
     </div>
 
     <div class="card cu-needs-config" id="dashWeekDaysCard" style="display:none;">
-      <div class="dash-h"><h3>This week by day</h3><span class="hint">click a day to expand it</span><span class="spacer"></span>
+      <div class="dash-h"><h3 id="optWeekDaysTitle">This week by day</h3>
+        <span class="wk-nav" id="optWeekNav" role="group" aria-label="Which week"><button type="button" data-wn="-1" title="The week before">&#8249;</button><button type="button" data-wn="0" id="optWeekNavLbl" title="Back to this week">This week</button><button type="button" data-wn="1" title="The week after - plan next week or any week ahead">&#8250;</button></span>
+        <span class="hint">click a day to expand it</span><span class="spacer"></span>
         <span class="opt-toggle sm" id="optWeekAssign" role="group" aria-label="Whose tasks"><button type="button" data-wa="all" title="Every task of yours">All</button><button type="button" data-wa="me" title="Only tasks you alone are assigned to">Only me</button><button type="button" data-wa="shared" title="Only tasks a teammate is assigned to as well">Shared</button></span>
         <button type="button" class="cu-collapse-btn" data-optcollapse="weekly" data-optcolltarget="optWeekColl" title="Show / hide the per-day breakdown">▸ Show</button>
       </div>
@@ -1918,6 +1969,7 @@
       <label title="The files' text is kept in your Google Drive's hidden app data, so a new computer or a reinstall gets them back. Screenshots stay on this computer."><input type="checkbox" id="tfDrive" /> Back up to Google Drive</label>
     </div>
     <div class="tf-folders" id="tfFolders" hidden></div>
+    <div class="tf-slack" id="tfSlack"></div>
     <div class="hint" id="tfSummary" style="margin:0 0 6px;"></div>
     <div class="hint" id="tfMsg" hidden style="margin:0 0 8px;"></div>
     <div class="tf-list" id="tfList"><div class="hint" style="padding:14px;">Loading…</div></div>
@@ -2480,6 +2532,17 @@
       <div class="btns" style="margin-top:10px;">
         <button class="primary" type="button" id="hubAdmSave">Save &amp; test</button>
         <span class="saved" id="hubAdmMsg" style="display:none;"></span>
+      </div>
+      <!-- The hub script's own editor link: saved on this computer only (never in the shared policy). -->
+      <div class="hub-upd" style="margin-top:14px;padding-top:12px;border-top:1px dashed var(--border);">
+        <label for="hubAdmScript">Hub script link <span class="hint">- its Apps Script editor, so updating it is one click</span></label>
+        <input type="text" id="hubAdmScript" placeholder="https://script.google.com/home/projects/.../edit" spellcheck="false" />
+        <div class="btns" style="margin-top:8px;">
+          <button type="button" class="primary" id="hubAdmUpd">📋 Copy the latest script &amp; open the editor ↗</button>
+          <button type="button" id="hubAdmOpen">Open the hub script ↗</button>
+          <span class="saved" id="hubAdmScriptMsg" style="display:none;"></span>
+        </div>
+        <p class="hint" style="margin:8px 0 0;line-height:1.55;">To update the hub: in the editor click <b>Code.gs</b>, press <b>Ctrl+A</b> then <b>Ctrl+V</b>, and <b>Ctrl+S</b>. Then <b>Deploy &rarr; Manage deployments &rarr; ✏️ &rarr; Version: New version &rarr; Deploy</b>. Not "New deployment": that changes the address everyone uses. Kept on this computer only.</p>
       </div>
       <div id="hubAdmUsers" style="margin-top:12px;"></div>
     </div>

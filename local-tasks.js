@@ -102,8 +102,11 @@
   .lt-head .lt-sub { font-weight: 500; font-size: 11px; }
   .lt-new { font: inherit; font-size: 11.5px; font-weight: 600; padding: 3px 10px; border: 1px dashed var(--indigo, #6366f1); border-radius: 7px; background: none; color: var(--indigo, #6366f1); cursor: pointer; }
   .lt-new:hover { background: rgba(99,102,241,.1); border-style: solid; }
+  .lt-new.lt-new-h { padding: 2px 9px; font-size: 11px; white-space: nowrap; flex: none; }
+  .lt-box[hidden] { display: none !important; }
   .lt-list { margin-top: 4px; max-height: 260px; }
   .cu-task.lt-row { background: repeating-linear-gradient(135deg, transparent 0 8px, rgba(99,102,241,.04) 8px 16px); }
+  .lt-relpill { flex: none; font-size: 11px; margin-left: 4px; cursor: help; }
   .lt-pill { flex: none; font-size: 10px; font-weight: 700; padding: 1px 7px; border-radius: 999px; border: 1px dashed var(--indigo, #6366f1); color: var(--indigo, #6366f1); text-transform: uppercase; letter-spacing: .04em; }
   .lt-pill.err { border-color: var(--red, #dc2626); color: var(--red, #dc2626); cursor: help; }
   .lt-acts { display: inline-flex; gap: 4px; align-items: center; flex: none; }
@@ -131,6 +134,7 @@
   .lt-dlg .err { color: var(--red, #dc2626); font-size: 11.5px; min-height: 14px; }
   .lt-dlg .bad { border-color: var(--red, #dc2626) !important; }
   .lt-dlg .opt { font-weight: 400; text-transform: none; letter-spacing: 0; }
+  .lt-dlg div.f[hidden], .lt-dlg label.f[hidden], .lt-dlg [hidden] { display: none !important; } /* the Client row when the parent / related task decides it */
   .lt-dlg div.f { display: flex; flex-direction: column; gap: 4px; font-size: 11px; font-weight: 700; color: var(--muted); text-transform: uppercase; letter-spacing: .04em; position: relative; }
   .lt-date { font: inherit; font-size: 12.5px; text-transform: none; letter-spacing: 0; font-weight: 400; text-align: left; padding: 6px 8px; border: 1px solid var(--border); border-radius: 7px; background: var(--card); color: var(--text); cursor: pointer; }
   .lt-date.empty { color: var(--muted); }
@@ -166,13 +170,50 @@
     const a = document.getElementById("dashTasks") || document.getElementById("cuTaskList");
     return a && a.parentNode ? a : null;
   }
+  // Other cards that show drafts (This week by day) redraw when they change.
+  let lastSig = "";
+  function announce() {
+    const sig = JSON.stringify(drafts.map((d) => [d.id, d.name, d.dueDateMs, d.startDateMs, d.estimateMs, d.applyAt, d.error, d.client]));
+    if (sig === lastSig) return;
+    lastSig = sig;
+    try { document.dispatchEvent(new CustomEvent("pcm-drafts-changed")); } catch (e) {}
+  }
+  // The drafts that belong to a day: due that day (or, with no due date, starting it).
+  const onDay = (ts) => drafts.filter((d) => { const at = Number(d.dueDateMs) || Number(d.startDateMs) || 0; return at && dayStart(at) === dayStart(ts); });
   function paint() {
+    announce();
     const anchor = mountPoint();
     if (!anchor) return;
     let box = document.getElementById(mountId);
     if (!box) { box = el("div", "lt-box"); box.id = mountId; }
     if (box.nextElementSibling !== anchor && !(box.nextElementSibling && box.nextElementSibling.id === "xaBar")) anchor.parentNode.insertBefore(box, anchor); // stays right above the list (the popup moves the list into its own card)
     box.textContent = "";
+    // No drafts: "+ New task" sits in the Tasks card's header (the popup's title row,
+    // the dashboard's button row) instead of a row of its own - with nothing else in
+    // it (Simple view hides the line's text) it looked like a stray button.
+    const slot = document.querySelector("#tasksCard > .card-title") || document.querySelector("#dashTasksCard > .dash-h");
+    const inSlot = slot && slot.querySelector(":scope > .lt-new");
+    if (slot && !drafts.length) {
+      if (!inSlot) {
+        const sb = el("button", "lt-new lt-new-h", "\uFF0B New task");
+        sb.type = "button";
+        sb.title = "Plan a task here first: write it in ClickUp's format - it stays in this extension and goes to ClickUp only when you press Apply.";
+        sb.onclick = (e) => { e.stopPropagation(); openEditor(null); };
+        const before = slot.querySelector(":scope > .cu-collapse-btn, :scope > #cuRefresh");
+        if (before) slot.insertBefore(sb, before); else slot.appendChild(sb);
+      }
+      if (flash && Date.now() - flash.at < 20000) {
+        const m = el("div", "lt-msg");
+        m.append("\u201C" + flash.name + "\u201D is now in ClickUp \u2713 ");
+        const a = el("a", "", "Open \u2197"); a.href = flash.url; a.target = "_blank"; a.rel = "noopener";
+        m.appendChild(a);
+        box.appendChild(m);
+      }
+      box.hidden = !box.children.length;
+      return;
+    }
+    if (inSlot) inSlot.remove();
+    box.hidden = false;
     const head = el("div", "lt-head");
     if (drafts.length) {
       head.append(el("span", "", "Drafts · " + drafts.length), el("span", "lt-sub", "only in this extension until you apply them to ClickUp"));
@@ -208,6 +249,7 @@
     nm.href = "#";
     nm.onclick = (e) => { e.preventDefault(); e.stopPropagation(); openEditor(d); };
     wrap.appendChild(nm);
+    if (d.relateId) { const rl = el("span", "lt-relpill", "\uD83D\uDD17"); rl.title = "Related to \u201C" + (d.relateName || "a task") + "\u201D when it's created in ClickUp"; wrap.appendChild(rl); }
     const pill = el("span", "lt-pill" + (d.error ? " err" : ""), d.error ? "Not applied" : d.applyAt ? "⏰ " + new Date(d.applyAt).toLocaleString([], { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" }) : "Draft");
     pill.title = d.error ? "ClickUp said: " + d.error + " - fix it with Edit, then Apply again." : d.applyAt ? "Goes to ClickUp by itself at this time (or press Apply to ClickUp now)" : "Only in this extension - press Apply to ClickUp to create it there";
     wrap.appendChild(pill);
@@ -262,6 +304,14 @@
     parents = ts.filter((t) => t && t.id && !t.parentId).map((t) => ({ id: String(t.id), name: String(t.name || ""), listId: (t.container && t.container.listId) || "", listName: (t.container && t.container.listName) || "", client: t.client || "" }));
     return parents;
   }
+  let openAll = null;
+  async function getOpenAll() {
+    if (openAll) return openAll;
+    const r = await send({ type: "CLICKUP_OPEN_TASKS" }, 45000);
+    const ts = (r && r.ok && r.data && Array.isArray(r.data.tasks)) ? r.data.tasks : [];
+    openAll = ts.filter((t) => t && t.id).map((t) => ({ id: String(t.id), name: String(t.name || ""), listId: String((t.container && t.container.listId) || ""), listName: (t.container && t.container.listName) || "", client: t.client || "" }));
+    return openAll;
+  }
   const dateLabel = (ms) => ms ? new Date(ms).toLocaleDateString([], { weekday: "short", month: "short", day: "numeric", year: "numeric" }) : "";
   let modal = null;
   function closeEditor() { if (modal) { modal.remove(); modal = null; } }
@@ -276,6 +326,7 @@
       '<p class="hint">Kept only in this extension until you press <b>Apply to ClickUp</b> (or the time you set comes) - then it\'s created in ClickUp with these people, dates, estimate, priority and description.</p>' +
       '<label class="f">Task name<input type="text" data-k="name" maxlength="1000" placeholder="e.g. Fix the slow server response (TTFB)" /></label>' +
       '<div class="f">Make it a subtask of <span class="opt">(optional)</span><div class="lt-pick" data-k="parentbox"><input type="text" data-k="parentq" placeholder="Search your open tasks…" autocomplete="off" /><div class="lt-sug" data-k="parentsug" hidden></div></div><div class="lt-chosen" data-k="parentchosen" hidden></div></div>' +
+      '<div class="f">Relate to a task <span class="opt">(optional - related in ClickUp when this task is created)</span><div class="lt-pick" data-k="relbox"><input type="text" data-k="relq" placeholder="Search your open tasks\u2026" autocomplete="off" /><div class="lt-sug" data-k="relsug" hidden></div></div><div class="lt-chosen" data-k="relchosen" hidden></div></div>' +
       '<div class="f" data-k="listrow">Client <span class="opt">(type to find any client)</span><div class="lt-pick"><input type="text" data-k="list" placeholder="Type a client name…" autocomplete="off" /><div class="lt-sug" data-k="listsug" hidden></div></div></div>' +
       '<div class="f">Assignees<div class="lt-people" data-k="people"><span data-k="chips"></span><input type="text" data-k="pq" placeholder="Type a name…" autocomplete="off" /></div><div class="lt-sug" data-k="psug" hidden></div></div>' +
       '<div class="row3"><div class="f">Start date<button type="button" class="lt-date" data-k="start"></button></div>' +
@@ -297,7 +348,7 @@
 
     // Dates: the extension's own calendar (holidays, work-from-home days, how full each day is).
     const dates = { start: Number(d.startDateMs) || 0, due: Number(d.dueDateMs) || 0, applyday: d.applyAt ? dayStart(d.applyAt) : 0 };
-    const paintDate = (k) => { const btn = $(k); const ms = dates[k]; btn.textContent = ms ? dateLabel(ms) : (k === "applyday" ? "Pick a day…" : "Pick a date…"); btn.classList.toggle("empty", !ms); };
+    let paintDate = (k) => { const btn = $(k); const ms = dates[k]; btn.textContent = ms ? dateLabel(ms) : (k === "applyday" ? "Pick a day…" : "Pick a date…"); btn.classList.toggle("empty", !ms); };
     for (const k of ["start", "due", "applyday"]) {
       paintDate(k);
       $(k).onclick = (e) => {
@@ -308,7 +359,29 @@
       };
     }
     if (d.applyAt) { const t = new Date(d.applyAt); $("applytime").value = String(t.getHours()).padStart(2, "0") + ":" + String(t.getMinutes()).padStart(2, "0"); }
-    $("applyclear").onclick = () => { dates.applyday = 0; $("applytime").value = ""; paintDate("applyday"); };
+    $("applyclear").onclick = () => { dates.applyday = 0; $("applytime").value = ""; paintDate("applyday"); paintBtns(); };
+    // The buttons say what they do: with a send time set, saving IS scheduling
+    // ("⏰ Schedule for ..."), and Apply sends it now instead (the time is dropped).
+    const paintBtns = () => {
+      const sv = dlg.querySelector("[data-save]"), ap = dlg.querySelector("[data-apply]");
+      if (!sv || !ap) return;
+      if (dates.applyday) {
+        const [hh, mm] = ($("applytime").value || "09:00").split(":").map(Number);
+        const at = new Date(new Date(dates.applyday).setHours(hh || 0, mm || 0, 0, 0));
+        sv.textContent = "⏰ Schedule for " + at.toLocaleString([], { weekday: "short", month: "short", day: "numeric", hour: "numeric", minute: "2-digit" });
+        sv.title = "Saves it here and creates it in ClickUp by itself at that time (while Chrome is open, or as soon as it opens)";
+        sv.classList.add("pri");
+        ap.textContent = "Send to ClickUp now instead";
+        ap.title = "Creates it in ClickUp right away and forgets the send time";
+        ap.classList.remove("pri");
+      } else {
+        sv.textContent = "Save draft"; sv.title = "Keeps it here only; nothing goes to ClickUp until you press Apply"; sv.classList.remove("pri");
+        ap.innerHTML = "Save &amp; apply to ClickUp"; ap.title = "Creates it in ClickUp now"; ap.classList.add("pri");
+      }
+    };
+    { const pd = paintDate; paintDate = (k) => { pd(k); if (k === "applyday") paintBtns(); }; }
+    $("applytime").addEventListener("input", paintBtns);
+    paintBtns();
 
     // Assignees: chips + type-ahead over the workspace people. New drafts start with you.
     let chosen = Array.isArray(d.assignees) ? d.assignees.slice() : null;
@@ -342,12 +415,14 @@
     pq.onblur = () => setTimeout(() => { psug.hidden = true; }, 150);
 
     // Subtask of: search the open tasks; the parent decides the List.
+    // Relate to a task (set up here: the client row below depends on it too).
+    let rel = d.relateId ? { id: d.relateId, name: d.relateName || "", listId: d.relateListId || "", listName: d.relateListName || "", client: d.relateClient || "" } : null;
     let parent = d.parentId ? { id: d.parentId, name: d.parentName || "", listId: d.listId, listName: d.listName } : null;
     const sel = $("list");
     const paintParent = () => {
       const ch = $("parentchosen");
       ch.hidden = !parent; $("parentbox").hidden = !!parent;
-      $("listrow").hidden = !!(parent && parent.listId); // the parent decides the List (asked only if unknown)
+      paintClientRow();
       ch.textContent = "";
       if (parent) {
         ch.append(el("span", "", "↳ subtask of "), el("b", "", parent.name || ("task " + parent.id)), el("span", "m", parent.listName ? "  · in " + parent.listName : ""));
@@ -355,6 +430,12 @@
         ch.appendChild(x);
       }
     };
+    // The parent - or else the task it's related to - decides the client (List):
+    // the Client box is asked only when neither is picked, or its List is unknown.
+    function paintClientRow() {
+      const from = parent && parent.listId ? parent : rel && rel.listId ? rel : null;
+      $("listrow").hidden = !!from;
+    }
     paintParent();
     const parq = $("parentq"), parsug = $("parentsug");
     const showParents = () => {
@@ -373,6 +454,38 @@
       if (p) { parent = p; parq.value = ""; parsug.hidden = true; paintParent(); }
     };
     parq.onblur = () => setTimeout(() => { parsug.hidden = true; }, 150);
+
+    // Relate to a task: picked from your open tasks; related in ClickUp (as its
+    // Relate a Task does) as soon as this task is created - by Apply or at its time.
+    const paintRel = () => {
+      const ch = $("relchosen");
+      ch.hidden = !rel; $("relbox").hidden = !!rel;
+      ch.textContent = "";
+      if (rel) {
+        ch.append(el("span", "", "\uD83D\uDD17 related to "), el("b", "", rel.name || ("task " + rel.id)), el("span", "m", rel.listId && !(parent && parent.listId) ? "  \u00b7 client " + (rel.client || rel.listName) + " (from that task)" : rel.listName ? "  \u00b7 in " + rel.listName : ""));
+        const x = el("button", "lt-x", "\u2715"); x.type = "button"; x.title = "Don't relate it"; x.onclick = () => { rel = null; paintRel(); };
+        ch.appendChild(x);
+      }
+      paintClientRow();
+    };
+    paintRel();
+    const relq = $("relq"), relsug = $("relsug");
+    const showRel = () => {
+      const q = relq.value.trim().toLowerCase();
+      if (!openAll) { relsug.innerHTML = '<div class="lt-none">Loading your open tasks\u2026</div>'; relsug.hidden = false; return; }
+      const hits = openAll.filter((p) => !q || p.name.toLowerCase().includes(q) || p.client.toLowerCase().includes(q)).slice(0, 10);
+      relsug.innerHTML = hits.length ? hits.map((p) => '<div class="lt-opt" data-id="' + esc(p.id) + '">' + esc(p.name) + (p.client || p.listName ? ' <span class="m">' + esc(p.client || p.listName) + "</span>" : "") + "</div>").join("") : '<div class="lt-none">No open task matches.</div>';
+      relsug.hidden = false;
+    };
+    relq.onfocus = () => { showRel(); getOpenAll().then(showRel); };
+    relq.oninput = showRel;
+    relsug.onmousedown = (e) => {
+      const o = e.target.closest(".lt-opt"); if (!o) return;
+      e.preventDefault();
+      const p = (openAll || []).find((x) => x.id === o.dataset.id);
+      if (p) { rel = { id: p.id, name: p.name, listId: p.listId, listName: p.listName, client: p.client }; relq.value = ""; relsug.hidden = true; paintRel(); }
+    };
+    relq.onblur = () => setTimeout(() => { relsug.hidden = true; }, 150);
 
     const ed = window.PcmMd ? window.PcmMd.editor(d.md || "", { maxLength: 20000, placeholder: "What needs doing, links, steps… Paste from Claude / ChatGPT keeps its formatting." }) : null;
     if (ed) $("desc").replaceWith(ed); else { const ta = el("textarea"); ta.value = d.md || ""; ta.style.cssText = "min-height:120px;font:inherit"; ta.getMarkdown = () => ta.value; $("desc").replaceWith(ta); }
@@ -440,6 +553,7 @@
       if (dates.start && dates.due && dates.start > dates.due) { errEl.textContent = "The start date is after the due date."; return null; }
       let listId = sel.dataset.id || "", listName = "", client = "";
       if (parent && parent.listId) { listId = parent.listId; listName = parent.listName || ""; client = parent.client || parent.listName || ""; }
+      else if (rel && rel.listId) { listId = rel.listId; listName = rel.listName || ""; client = rel.client || rel.listName || ""; } // the related task's client
       else if (listId) {
         const l = (lists || []).find((x) => String(x.id) === listId) || (allLists || []).find((x) => String(x.id) === listId);
         listName = l ? l.name : pickedClient.name || d.listName || "List " + listId;
@@ -455,7 +569,7 @@
       return { ...d, name: name.slice(0, 1000), md: String(de && de.getMarkdown ? de.getMarkdown() : "").trim().slice(0, 20000), listId, listName, client,
         dueDateMs: dates.due, startDateMs: dates.start, estimateMs: est, priority: $("prio").value,
         assignees: (chosen || []).map((p) => ({ id: p.id, name: p.name })), assignMe: undefined,
-        parentId: parent ? parent.id : "", parentName: parent ? parent.name : "", applyAt, error: "",
+        parentId: parent ? parent.id : "", parentName: parent ? parent.name : "", relateId: rel ? rel.id : "", relateName: rel ? rel.name : "", relateListId: rel ? rel.listId || "" : "", relateListName: rel ? rel.listName || "" : "", relateClient: rel ? rel.client || "" : "", applyAt, error: "",
         createdAt: d.createdAt || Date.now(), updatedAt: Date.now() };
     };
     dlg.querySelector("[data-cancel]").onclick = closeEditor;
@@ -508,6 +622,7 @@
     await moveExtras(id, r.task);
     if (window.PcmTaskPanel) try { window.PcmTaskPanel.close(); } catch (e) {}
     flash = { name: d.name, url: r.task.url, at: Date.now() };
+    if (r.relErr) alert(r.relErr);
     setTimeout(paint, 20500);
     await remove(id);
   }
@@ -569,6 +684,6 @@
   }
   try { chrome.storage.onChanged.addListener((ch, area) => { if (area === "local" && ch[KEY]) repanel(); }); } catch (e) {}
 
-  window.PcmLocalTasks = { fill, open: () => openEditor(null), list: () => drafts.slice(), _parseDur: parseDur, _listIdFrom: listIdFrom };
+  window.PcmLocalTasks = { fill, repaint: () => paint(), open: () => openEditor(null), list: () => drafts.slice(), onDay, row: (d) => row(d), _parseDur: parseDur, _listIdFrom: listIdFrom };
   if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", load); else load();
 })();

@@ -226,6 +226,10 @@ function startEdit(acc) {
   window.scrollTo({ top: 0, behavior: "smooth" });
 }
 
+// Agent Router balances (GET_STATE.balances, the same ones the popup shows): an
+// integer quota, 500000 = $1 unless settings.quotaPerUnit says otherwise.
+let arBalances = {}, arQuotaPer = 500000;
+const fmtArBalance = (raw) => { const n = Number(raw); return Number.isFinite(n) ? "$" + (n / arQuotaPer).toFixed(2) : "-"; };
 function renderList(accounts, status, today, running) {
   const list = $("list");
   if (!accounts.length) {
@@ -287,6 +291,37 @@ function renderList(accounts, status, today, running) {
     det.textContent = (a.username || "(no username)") + "  ·  " + statusText;
     meta.appendChild(name);
     meta.appendChild(det);
+
+    // Balance, as in the popup and side panel: the last one read, with ⟳ to read
+    // it again from an open Agent Router tab signed in as this account.
+    {
+      const bal = document.createElement("div");
+      bal.className = "det ar-bal";
+      const b = arBalances[a.id];
+      const has = b && Number.isFinite(Number(b.value));
+      const txt = document.createElement("span");
+      txt.textContent = has ? "Bal: " + fmtArBalance(b.value) + (b.at ? " · as of " + fmtDayTime(b.at) : "") : "Bal: -";
+      txt.title = has ? "Raw quota: " + b.value + (b.at ? "\nas of " + fmtDayTime(b.at) : "") : "No balance captured yet - it's read after a successful login, or click ⟳ with Agent Router open as this account.";
+      const rb = document.createElement("button");
+      rb.type = "button";
+      rb.className = "ar-balref";
+      rb.textContent = "⟳";
+      rb.title = "Refresh from the open Agent Router tab";
+      rb.onclick = async (ev) => {
+        ev.stopPropagation();
+        rb.disabled = true; rb.textContent = "…";
+        try {
+          const res = await send({ type: "FETCH_BALANCE", id: a.id });
+          if (res && res.ok && res.matched) { load(); return; }
+          txt.textContent = res && res.reason === "no-tab" ? "Open Agent Router, then ⟳"
+            : res && res.reason === "identity-mismatch" && res.loggedInAs ? "That tab is " + res.loggedInAs
+            : "Log in as this account to refresh";
+        } catch (e) { txt.textContent = "Couldn't refresh"; }
+        rb.disabled = false; rb.textContent = "⟳";
+      };
+      bal.append(txt, rb);
+      meta.appendChild(bal);
+    }
 
     // Identity actually captured on the last successful login (best-effort).
     const idBits = [];
@@ -395,6 +430,8 @@ async function load() {
     defaultMode = (state.settings && state.settings.mode) || "auto";
     // Keep the (pristine) Add form's Mode default in step with the global setting.
     if (!editingId) $("accMode").value = defaultMode;
+    arBalances = state.balances || {};
+    arQuotaPer = Number(state.settings && state.settings.quotaPerUnit) > 0 ? Number(state.settings.quotaPerUnit) : 500000;
     renderList(state.accounts || [], state.status || {}, state.today, !!state.running);
     applyArVisibility(state);
     if ($("showAgentRouter")) $("showAgentRouter").checked = arVisible(state);
@@ -1690,6 +1727,22 @@ function cuGuessWords(name) {
     .filter((w) => w.length > 2 && !CU_GUESS_STOP.has(w))
     .map((w) => (w.length > 4 && w.endsWith("s") && !w.endsWith("ss") ? w.slice(0, -1) : w)))];
 }
+// How big a job is, from its name: "quick" (turn off, unset, remove, request
+// indexing, rename, add a tag...), "big" (audit, report, migrate, rewrite, write,
+// build, merge, or 10+ pages / posts at once) or "mid". A quick change is guessed
+// around 30m - never from a client's average, which mixes in reports and audits.
+const CU_KIND_BIG = /\b(?:audit|reports?|reporting|migrat\w*|re-?write|rewrit\w*|writ(?:e|ing)|research|build|creat\w*|design|develop\w*|strateg\w*|analy[sz]\w*|outline|consolidat\w*|merg\w*|overhaul|redesign|implement\w*|blog|article|landing|hub|template)\b|\b(?:across|all)\b.*\b(?:\d{2,}|dozens?)\b|~\s?\d{2,}/i;
+const CU_KIND_QUICK_ANY = /\b(?:request(?:ing)? (?:indexing|re-?crawl)|re-?crawl|turn(?:ed)? (?:off|on)|key event|alt text|typo|meta (?:title|description)|noindex|canonical tag)\b/i;
+const CU_KIND_QUICK_START = /^(?:unset|un-?nest|turn|toggle|disable|enable|mark|rename|label|tag|exclude|hide|unhide|delete|remove|swap|replace|set|change|update|add|correct|check|verify|confirm|re-?run|request|submit|re-?submit|link|unlink|flag|pin|archive|move|clear|purge|ping|fix the|fix a)\b/i;
+const CU_KIND_FEW = /\b(?:[3-9]|three|four|five|six|seven|eight|nine)\s+(?:\w+\s+){0,2}(?:pages?|posts?|urls?|templates?|collections?|products?|sites?|articles?|sections?)\b/i;
+function cuTaskKind(name) {
+  const n = String(name || "").replace(/^\s*[A-Za-z]{1,8}[- ]?\d+(?:\.[A-Za-z0-9]+)?\s*[|:]\s*/, "").replace(/^\s*week \d+\s*[·:-]\s*\w+\s*-\s*/i, "").trim();
+  if (CU_KIND_BIG.test(n)) return "big";
+  if (CU_KIND_QUICK_ANY.test(n)) return "quick";
+  if (CU_KIND_FEW.test(n)) return "mid";
+  if (CU_KIND_QUICK_START.test(n)) return "quick";
+  return "mid";
+}
 // Your finished tasks: the recently completed list + the Performance history.
 function cuGuessHist() {
   let done = [];
@@ -1704,7 +1757,7 @@ function cuGuessHist() {
     seen.add(id);
     const ms = Number(r.spentMs) > 0 ? Number(r.spentMs) : Number(r.estimateMs || r.totalEstimateMs) || 0;
     if (!(ms >= 120000 && ms <= 12 * 3600000)) continue; // a real piece of work
-    hist.push({ words: cuGuessWords(r.name), ck: String(r.client || "").toLowerCase().replace(/[^a-z0-9]+/g, ""), ms });
+    hist.push({ words: cuGuessWords(r.name), ck: String(r.client || "").toLowerCase().replace(/[^a-z0-9]+/g, ""), ms, kind: cuTaskKind(r.name) });
   }
   cuGuessMemo = { key, hist };
   return hist;
@@ -1734,22 +1787,39 @@ function cuGuessEst(t, ctx) {
       if (left >= 300000) return { ms: cuRound5(left / open), covered: true, why: "its share of the parent task's " + fmtDurOpt(pe) + " estimate (already in that total)" };
     }
   }
+  // From your finished tasks, kept to the size of the job (see cuTaskKind): a
+  // quick change stays near 30m (45m at most, and only when very close matches
+  // you finished took that long), a regular task under 1h 30m.
+  const kind = cuTaskKind(t.name);
+  const kindTxt = kind === "quick" ? "a quick change" : kind === "big" ? "a bigger piece of work" : "a regular task";
+  const lo = kind === "quick" ? 600000 : 900000, cap = kind === "quick" ? 1800000 : kind === "mid" ? 5400000 : 4 * 3600000;
+  const fit = (ms) => cuRound5(Math.min(cap, Math.max(lo, ms)));
   const hist = cuGuessHist();
-  if (!hist.length) return null;
   const w = cuGuessWords(t.name);
-  if (w.length) {
+  if (hist.length && w.length) {
     const sc = hist.map((h) => { const inter = h.words.filter((x) => w.includes(x)).length; return { h, s: (w.length + h.words.length) ? (2 * inter) / (w.length + h.words.length) : 0 }; }) // shared words against both names' length
       .filter((x) => x.s >= 0.55).sort((a, b) => b.s - a.s).slice(0, 7);
-    if (sc.length) { const ms = cuRound5(cuMedian(sc.map((x) => x.h.ms))); return { ms, why: "usually " + fmtDurOpt(ms) + " - from " + sc.length + " similar task" + (sc.length === 1 ? "" : "s") + " you finished" }; }
+    if (sc.length) {
+      const raw = cuMedian(sc.map((x) => x.h.ms));
+      const strong = sc.filter((x) => x.s >= 0.7).length >= 2;
+      const ms = kind === "quick" && strong ? cuRound5(Math.min(2700000, Math.max(lo, raw))) : fit(raw);
+      return { ms, why: "usually " + fmtDurOpt(ms) + " - from " + sc.length + " similar task" + (sc.length === 1 ? "" : "s") + " you finished" + (ms < cuRound5(raw) ? " (" + kindTxt + ", so kept to " + fmtDurOpt(ms) + ")" : "") };
+    }
   }
+  const same = hist.filter((h) => h.kind === kind);
   const ck = String(t.client || "").toLowerCase().replace(/[^a-z0-9]+/g, "");
-  if (ck) { const same = hist.filter((h) => h.ck === ck); if (same.length >= 3) { const ms = cuRound5(cuMedian(same.map((h) => h.ms))); return { ms, why: "your usual for " + t.client + " (" + same.length + " finished)" }; } }
-  if (hist.length >= 5) { const ms = cuRound5(cuMedian(hist.map((h) => h.ms))); return { ms, why: "your usual task time (" + hist.length + " finished)" }; }
+  if (ck) { const c = same.filter((h) => h.ck === ck); if (c.length >= 3) { const ms = fit(cuMedian(c.map((h) => h.ms))); return { ms, why: "your usual for " + kindTxt + " for " + t.client + " (" + c.length + " finished)" }; } }
+  if (same.length >= (kind === "big" ? 2 : 5)) { const ms = fit(cuMedian(same.map((h) => h.ms))); return { ms, why: "your usual for " + kindTxt + " (" + same.length + " finished)" }; }
+  if (kind === "quick") return { ms: 1800000, why: "a quick change - about 30m" };
+  if (kind === "mid") return { ms: 2700000, why: "a regular task - about 45m" };
+  if (hist.length >= 5) { const ms = fit(cuMedian(hist.map((h) => h.ms))); return { ms, why: "your usual task time (" + hist.length + " finished)" }; }
   return null;
 }
 // What a row adds "with guesses" (its kept or guessed time; not a parent's share).
 function cuGuessMs(t, ctx) {
   if (!t) return 0;
+  // A colour left out of planning (e.g. Can't do yet): its guess isn't added.
+  if (typeof window !== "undefined" && (window.PcmTaskNotes && window.PcmTaskNotes.isSkipped && window.PcmTaskNotes.isSkipped(cuId(t)))) return 0;
   const st = cuEstStaged[cuId(t)];
   if (Number(t.estimateMs) > 0) return st && !st.share ? (Number(st.ms) || 0) - Number(t.estimateMs) : 0;
   if (st) { const g = cuGuessEst(t, ctx); return g && g.covered ? 0 : Number(st.ms) || 0; }
@@ -1771,9 +1841,9 @@ function cuEstGuess(estSpan, t, ctx, keptOnly) {
   } else {
     const g = cuGuessEst(t, ctx);
     if (!g || g.none) { if (g && g.none) estSpan.title = g.why; return; }
-    chip.className = "est-guess";
+    chip.className = "est-guess" + ((window.PcmTaskNotes && window.PcmTaskNotes.isSkipped && window.PcmTaskNotes.isSkipped(cuId(t))) ? " skip" : "");
     chip.textContent = "~" + fmtDurOpt(g.ms) + "?";
-    chip.title = "Guess: " + g.why + ". Click to use it - kept here until you press Apply to ClickUp.";
+    chip.title = (chip.classList.contains("skip") ? "Not counted in your plans (its colour is left out of planning). " : "") + "Guess: " + g.why + ". Click to use it - kept here until you press Apply to ClickUp.";
     chip.onclick = (e) => { e.preventDefault(); e.stopPropagation(); cuEstStaged[id] = { ms: g.ms, name: t.name || "" }; cuEstSave(); cuGuessRepaint(); };
   }
   chip.addEventListener("mousedown", (e) => e.stopPropagation());
@@ -2814,7 +2884,7 @@ function renderClickupSettings(cu) {
   $("cuClear").style.display = configured ? "inline-block" : "none";
   $("cuConnected").style.display = configured ? "block" : "none";
   $("cuSettingsBody").style.display = configured ? "block" : "none";
-  $("cuTodayWrap").style.display = configured ? "block" : "none";
+  $("cuTodayWrap").style.display = configured ? "" : "none"; // "": a column (simple-view.js), its Extra task at the bottom
   document.querySelectorAll(".cu-needs-config").forEach((el) => { el.style.display = configured ? "" : "none"; });
   if ($("cuDashEmpty")) $("cuDashEmpty").style.display = configured ? "none" : "";
   $("cuSaveToken").textContent = configured ? "Update token" : "Save & connect";
@@ -3489,6 +3559,54 @@ function cuBusyHere(root) {
   return !!(root && root.querySelector(".pcm-panel, .md-area, .cu-rowconfirm"));
 }
 let cuLiveCardTick = null; // repaints the Due today card's tracked figure
+// This week by day › ‹ / ›: the card can show another week (next week, any week
+// ahead, or back). Read from the background (CLICKUP_WEEK_AT, kept 30 minutes a
+// week); the This week numbers card stays on this week. Not remembered: the
+// dashboard always opens on this week.
+let optWeekOffset = 0, optWeekAt = null, optWeekAtSeq = 0, optWeekAtRefresh = false;
+function optWeekNavLabel(off) {
+  if (!off) return "This week";
+  if (off === 1) return "Next week";
+  if (off === -1) return "Last week";
+  const w = cuWeekOf(Date.now() + off * 7 * 864e5);
+  const md = (ms, m) => new Date(ms).toLocaleDateString(undefined, m ? { month: "short", day: "numeric" } : { day: "numeric" });
+  return "Week of " + md(w.start, true) + " - " + md(w.end, new Date(w.start).getMonth() !== new Date(w.end).getMonth());
+}
+function optWeekNavPaint() {
+  const lbl = $("optWeekNavLbl"), t = $("optWeekDaysTitle");
+  const name = optWeekNavLabel(optWeekOffset);
+  if (lbl) { lbl.textContent = name; lbl.classList.toggle("off", !!optWeekOffset); lbl.title = optWeekOffset ? "Back to this week" : "This week"; }
+  if (t) t.textContent = name + " by day";
+  const nav = $("optWeekNav");
+  if (nav) { const p = nav.querySelector('[data-wn="-1"]'), n = nav.querySelector('[data-wn="1"]'); if (p) p.disabled = optWeekOffset <= -8; if (n) n.disabled = optWeekOffset >= 12; }
+}
+async function optWeekGo(off, force) {
+  off = Math.max(-8, Math.min(12, off));
+  optWeekOffset = off;
+  optWeekNavPaint();
+  if (!off) { optWeekAt = null; renderOptionsWeekly(optClickup); return; }
+  const seq = ++optWeekAtSeq;
+  renderOptionsWeekly(optClickup); // the shown week's rows stay, faded, until the new week is in
+  const r = await send({ type: "CLICKUP_WEEK_AT", offset: off, force: !!force }, 90000).catch((e) => ({ ok: false, error: String((e && e.message) || e) }));
+  if (seq !== optWeekAtSeq || optWeekOffset !== off) return;
+  optWeekAt = { offset: off, weekly: r && r.ok && r.weekly ? r.weekly : null, error: r && r.ok ? "" : (r && (r.error || r.reason)) || "no reply" };
+  renderOptionsWeekly(optClickup);
+}
+// A draft added, edited, applied or deleted (local-tasks.js): This week by day, the
+// Today / This week cards and the Tasks totals follow (their "+ 1h in 1 draft").
+{
+  let dt = 0;
+  document.addEventListener("pcm-drafts-changed", () => { clearTimeout(dt); dt = setTimeout(() => { try { if (optClickup) { renderOptionsWeekly(optClickup); if (optClickup.state) renderClickupPreview(optClickup.state); } } catch (e) {} }, 150); });
+}
+// A task marked / unmarked "done early" (task-notes.js): the days' counts follow.
+chrome.storage.onChanged.addListener((ch, area) => { if (area === "local" && ch.taskEarly && optClickup && !cuBusyHere($("optWeekList"))) { try { renderOptionsWeekly(optClickup); } catch (e) {} } });
+if ($("optWeekNav")) $("optWeekNav").addEventListener("click", (e) => {
+  const b = e.target.closest("[data-wn]");
+  if (!b || b.disabled) return;
+  e.stopPropagation();
+  const d = Number(b.dataset.wn);
+  optWeekGo(d === 0 ? 0 : optWeekOffset + d);
+});
 function renderOptionsWeekly(cu) {
   if (cuEstEditingOpt) { cuRenderPendingOpt = true; return; }
   cu = cu || {};
@@ -3524,6 +3642,8 @@ function renderOptionsWeekly(cu) {
       }
     };
     setBar("optWeekEstFill", "optWeekEstOf", Number(agg.estimateMs) || 0);
+    // Drafts due in these days: beside the number (they count once created).
+    { const of = $("optWeekEstOf"); if (of) { const old = of.parentNode.querySelector(".wk-draftest"); if (old) old.remove(); const dr = cuDraftsIn({ fromTs: Number(agg.fromTs) || 0, toTs: Number(agg.toTs) || 0 }); if (dr.n) of.after(cuDraftChip(dr)); } }
     setBar("optWeekTrkFill", "optWeekTrkOf", Number(agg.spentMs) || 0);
   }
   // Click either number: the tasks behind it (each task's share added up over these days).
@@ -3592,11 +3712,35 @@ function renderOptionsWeekly(cu) {
     b.onclick = () => { optWeekAssign = b.dataset.wa; chrome.storage.local.set({ optWeekAssign }).catch(() => {}); renderOptionsWeekly(cu); };
   });
   const listBox = $("optWeekList");
-  const days = Array.isArray(w.perDay) ? w.perDay : [];
-  const showDays = days.filter((d) => d.ts <= agg.toTs && (cuIsWorkday(d.ts) || Number(d.estimateMs) > 0 || Number(d.spentMs) > 0));
-  if (listBox) {
+  // Another week picked with ‹ / ›: its own days (every day of it); this week: up to "To today / Friday".
+  optWeekNavPaint();
+  const wvAt = optWeekOffset && optWeekAt && optWeekAt.offset === optWeekOffset ? optWeekAt : null;
+  const wv = optWeekOffset ? (wvAt && wvAt.weekly) || null : w;
+  const days = wv && Array.isArray(wv.perDay) ? wv.perDay : [];
+  const showDays = days.filter((d) => (optWeekOffset || d.ts <= agg.toTs) && (cuIsWorkday(d.ts) || Number(d.estimateMs) > 0 || Number(d.spentMs) > 0));
+  // A moved task's new due date: read that week again so the days agree with ClickUp.
+  if (optWeekOffset && wv && !optWeekAtRefresh && optWeekPending.some((x) => x.status === "done" && (x.doneAt || 0) > (Number(wv.at) || 0))) {
+    optWeekAtRefresh = true;
+    optWeekGo(optWeekOffset, true).finally(() => { optWeekAtRefresh = false; });
+  }
+  if (listBox && optWeekOffset && !wvAt) {
+    // That week is still being read: the rows on screen stay, faded.
+    listBox.style.display = "block";
+    if (!listBox.children.length) listBox.innerHTML = '<div class="hint" style="padding:6px 2px">&nbsp;</div>';
+    listBox.classList.add("flt-loading");
+    listBox.dataset.loading = "Loading " + optWeekNavLabel(optWeekOffset).replace(/^Next week$/, "next week") + "\u2026";
+  } else if (listBox && optWeekOffset && !wv) {
+    listBox.classList.remove("flt-loading");
+    listBox.style.display = "block";
+    listBox.innerHTML = '<div class="hint" style="color:var(--red)">Couldn\x27t load that week: ' + escapeHtml(wvAt.error || "no reply") + ' <button type="button" class="wk-selclear" data-wkretry>Try again</button></div>';
+    const rb = listBox.querySelector("[data-wkretry]"); if (rb) rb.onclick = () => optWeekGo(optWeekOffset, true);
+  } else if (listBox) {
+    listBox.classList.remove("flt-loading");
     listBox.innerHTML = "";
-    if (!showDays.length) {
+    if (!showDays.length && optWeekOffset) {
+      listBox.style.display = "block";
+      listBox.innerHTML = '<div class="hint" style="padding:6px 2px">Nothing due or tracked in ' + escapeHtml(optWeekNavLabel(optWeekOffset).toLowerCase()) + ".</div>";
+    } else if (!showDays.length) {
       listBox.style.display = "none";
     } else {
       listBox.style.display = "block";
@@ -3678,7 +3822,7 @@ function renderOptionsWeekly(cu) {
       const waF = { onlyMe: optWeekAssign === "me", sharedTasks: optWeekAssign === "shared" };
       const byAssign = optWeekAssign !== "all";
       const waLabel = optWeekAssign === "me" ? "only me" : "shared";
-      let wkEst = 0, wkTrk = 0;
+      let wkEst = 0, wkTrk = 0, wkDraftMs = 0, wkDrafts = 0;
       const wkIds = new Set();
       // Where each task is drawn: staged moves (here only), then real moves in progress.
       const wkMoves = new Map();
@@ -3720,11 +3864,31 @@ function renderOptionsWeekly(cu) {
         const dEst = byAssign ? sumK(rows, "estimateMs") : Math.max(0, (Number(d.estimateMs) || 0) - sumK(moved, "estimateMs") + sumK(added, "estimateMs"));
         const dTrk = byAssign ? sumK(rows.concat(trackedRows), "spentMs") : Number(d.spentMs) || 0; // time logged that day - a moved due date doesn't move it
         const dGuess = rows.reduce((a, t) => a + cuGuessMs(t, dayCtx), 0);
+        // Drafts for this day (local-tasks.js: due that day, not in ClickUp yet): shown
+        // with the day's tasks and counted as planned time, but apart from ClickUp's est.
+        const dDrafts = window.PcmLocalTasks && window.PcmLocalTasks.onDay ? window.PcmLocalTasks.onDay(d.ts) : [];
+        const draftMs = dDrafts.reduce((a, x) => a + (Number(x.estimateMs) || 0), 0);
+        wkDraftMs += draftMs; wkDrafts += dDrafts.length;
         wkEst += dEst; wkTrk += dTrk; rows.forEach((t) => wkIds.add(String(t.id || t.name)));
+        // Against the daily target (a working day): ClickUp's estimates plus the
+        // ones you kept here - "2h 30m to fill" / "1h over" / "✓ 7h".
+        const dayTarget = Number(cu.state && cu.state.targetMs) || 0;
+        const keptPart = rows.reduce((a, t) => a + (cuEstStaged[cuId(t)] ? cuGuessMs(t, dayCtx) : 0), 0);
+        const planned = dEst + keptPart + draftMs;
+        const gap = dayTarget - planned;
+        const isWork = cuIsWorkday(d.ts) && !(typeof insOnHoliday === "function" && insOnHoliday(d.ts));
+        const nEarly = window.PcmTaskNotes && window.PcmTaskNotes.isEarly ? rows.filter((t) => !t.done && window.PcmTaskNotes.isEarly(cuId(t))).length : 0;
+        // The Extra Task's share (1h 24m of a 7h week) is part of the day's estimate already.
+        const extraMs = rows.filter((t) => t.type === "extra" || t.isExtra || /^extra.{0,6}task/i.test(String(t.name || ""))).reduce((a, t) => a + (Number(t.estimateMs) || 0), 0);
+        const extraNote = extraMs > 0 ? " (" + fmtDurOpt(extraMs) + " of it is the Extra Task)" : "";
+        const gauge = !dayTarget || !isWork ? "" : gap > 300000
+          ? ' <span class="wk-gauge low" title="Estimates for this day (with the ones you kept here) add up to ' + fmtDurOpt(planned) + extraNote + " of your " + fmtDurOpt(dayTarget) + ' a day">' + fmtDurOpt(gap) + " to fill</span>"
+          : gap < -300000 ? ' <span class="wk-gauge over" title="' + fmtDurOpt(planned) + " planned" + extraNote + " - more than your " + fmtDurOpt(dayTarget) + ' a day">' + fmtDurOpt(-gap) + " over</span>"
+          : ' <span class="wk-gauge ok" title="This day adds up to about your daily ' + fmtDurOpt(dayTarget) + extraNote + '">\u2713 ' + fmtDurOpt(dayTarget) + "</span>";
         // One line: the text, then the day's Plan with AI on the right.
         head.innerHTML = '<span class="wk-dtxt">' + "<b>" + weekdayNameOpt(new Date(d.ts).getDay()) + " · " + dateTxt + "</b>" +
-          " - est <b>" + fmtDurOpt(dEst) + "</b>" + (dGuess !== 0 ? ' <span class="wk-gtot" title="With the guessed estimates (and the ones you kept, not in ClickUp yet) for the tasks that have none">· ~' + fmtDurOpt(dEst + dGuess) + " with guesses</span>" : "") + " · tracked <b>" + fmtDurOpt(dTrk) + "</b>" +
-          (byAssign ? ' <span class="hint">· ' + waLabel + "</span>" : "") + "</span>";
+          " - est <b>" + fmtDurOpt(dEst) + "</b>" + (dDrafts.length ? ' <span class="wk-draftest" title="' + dDrafts.length + (dDrafts.length === 1 ? " draft" : " drafts") + " for this day, not in ClickUp yet - counted in the day\u2019s plan (to fill / over), added to ClickUp\u2019s estimate once created\">+ " + (draftMs ? fmtDurOpt(draftMs) + " in " : "") + dDrafts.length + (dDrafts.length === 1 ? " draft" : " drafts") + "</span>" : "") + (dGuess !== 0 ? ' <span class="wk-gtot" title="With the guessed estimates (and the ones you kept, not in ClickUp yet) for the tasks that have none">· ~' + fmtDurOpt(dEst + dGuess) + " with guesses</span>" : "") + " · tracked <b>" + fmtDurOpt(dTrk) + "</b>" +
+          (byAssign ? ' <span class="hint">· ' + waLabel + "</span>" : "") + gauge + (nEarly ? ' <span class="wk-gauge early" title="Marked done early (only in this extension)">\u2713 ' + nEarly + " done early</span>" : "") + "</span>";
         // 🧭 Plan with AI for this day's tasks (across clients).
         if (rows.length && window.PcmTaskPanel && window.PcmTaskPanel.clientTools) {
           const tools = window.PcmTaskPanel.clientTools(weekdayNameOpt(new Date(d.ts).getDay()) + " " + dateTxt, rows.filter((t) => !t.local), { day: true });
@@ -3745,13 +3909,57 @@ function renderOptionsWeekly(cu) {
           const first = head.querySelector(".cu-tgbtn");
           if (first) { first.style.marginLeft = ""; ap.style.marginLeft = "auto"; head.insertBefore(ap, first); } else head.appendChild(ap);
         }
+        // Fill to 7h: estimates for this day's tasks that have none, sharing the gap
+        // in proportion to their guesses (30m each without one), rounded to 5
+        // minutes. Kept here like any kept estimate - Apply sends them to ClickUp.
+        if (isWork && dayTarget && gap > 300000) {
+          const cands = rows.filter((t) => !t.done && !t.local && !(window.PcmTaskNotes && window.PcmTaskNotes.isSkipped && window.PcmTaskNotes.isSkipped(cuId(t))) && t.type !== "cfg" && t.type !== "extra" && !t.isExtra && !/^extra.{0,6}task/i.test(String(t.name || "")) && !(Number(t.estimateMs) > 0) && !cuEstStaged[cuId(t)] &&
+            (() => { const g = cuGuessEst(t, dayCtx); return !(g && (g.none || g.covered)); })());
+          if (cands.length) {
+            const fb = document.createElement("button"); fb.type = "button"; fb.className = "wk-fill";
+            fb.textContent = "Fill to " + fmtDurOpt(dayTarget);
+            fb.title = "Give the " + cands.length + " task" + (cands.length === 1 ? "" : "s") + " with no estimate on this day " + fmtDurOpt(gap) + " between them by their usual times, each kept within about twice its usual time (so it stays believable) - if that isn't enough, it says how much is still open. They're kept here - change any of them, then Apply to ClickUp.";
+            fb.onclick = (e) => {
+              e.stopPropagation();
+              // Done early with time tracked on it: its estimate is the time it took; the rest share what's left.
+              const r5 = (ms) => Math.max(300000, Math.round(ms / 300000) * 300000);
+              const tookOf = (t) => (window.PcmTaskNotes && window.PcmTaskNotes.isEarly && window.PcmTaskNotes.isEarly(cuId(t)) ? Number(t.totalSpentMs != null ? t.totalSpentMs : t.spentMs) || 0 : 0);
+              let left = gap;
+              const rest = [];
+              for (const t of cands) { const took = tookOf(t); if (took >= 300000) { cuEstStaged[cuId(t)] = { ms: r5(took), name: t.name || "" }; left -= r5(took); } else rest.push(t); }
+              const wts = rest.map((t) => { const g = cuGuessEst(t, dayCtx); return g && g.ms ? g.ms : 1800000; });
+              // Believable, not just "adds up to 7h": each task between half and about
+              // twice its usual time (its guess; at least guess + 1h of room, never
+              // over 4h). Shared by guess; what a capped task can't take goes to the
+              // others; what nobody can take stays open and is said.
+              const lo = wts.map((g) => g / 2), hi = wts.map((g) => Math.min(4 * 3600000, Math.max(2 * g, g + 3600000)));
+              const give = wts.map(() => 0);
+              let open = Math.max(0, left), free = rest.map((t, i) => i);
+              for (let pass = 0; pass < 6 && open > 60000 && free.length; pass++) {
+                const tw = free.reduce((a, i) => a + wts[i], 0) || 1;
+                let used = 0;
+                for (const i of free) { const add = Math.min(hi[i] - give[i], (open * wts[i]) / tw); give[i] += add; used += add; }
+                open -= used;
+                free = free.filter((i) => hi[i] - give[i] > 60000);
+              }
+              rest.forEach((t, i) => { cuEstStaged[cuId(t)] = { ms: r5(Math.max(lo[i], give[i])), name: t.name || "" }; });
+              cuEstSave();
+              const stillOpen = Math.round(open / 300000) * 300000;
+              if (stillOpen >= 300000) optWeekMsg = { at: Date.now(), text: weekdayNameOpt(new Date(d.ts).getDay()) + ": filled " + cands.length + " task" + (cands.length === 1 ? "" : "s") + ", each kept within about twice its usual time - " + fmtDurOpt(stillOpen) + " is still open. Pull in a task from another day or week rather than stretching these." };
+              renderOptionsWeekly(optClickup);
+            };
+            head.classList.add("wk-dhead");
+            const first = head.querySelector(".wk-apply, .cu-tgbtn");
+            if (first) { fb.style.marginLeft = "auto"; first.style.marginLeft = ""; head.insertBefore(fb, first); } else { fb.style.marginLeft = "auto"; head.appendChild(fb); }
+          }
+        }
         head.dataset.wkDay = String(d.ts);
         listBox.appendChild(head);
         const tlist = document.createElement("div");
         tlist.className = "cu-tasklist";
         tlist.dataset.wkDay = String(d.ts);
         tlist.dataset.reorder = cuDayKey(d.ts);
-        if (!rows.length && !trackedRows.length) {
+        if (!rows.length && !trackedRows.length && !dDrafts.length) {
           const e = document.createElement("div");
           e.className = "empty";
           e.textContent = "(no tasks this day)";
@@ -3818,12 +4026,21 @@ function renderOptionsWeekly(cu) {
             }
           }
         }
+        // This day's drafts, after its tasks: the same row as in the Tasks list (⏰ when it
+        // goes to ClickUp, Apply, ✕), under a line saying they aren't in ClickUp yet.
+        if (dDrafts.length && window.PcmLocalTasks && window.PcmLocalTasks.row) {
+          const sec = document.createElement("div");
+          sec.className = "flt-tot wk-draftsec";
+          sec.innerHTML = "<b>Drafts</b> - not in ClickUp yet" + (draftMs ? " \u00b7 " + fmtDurOpt(draftMs) : "");
+          tlist.appendChild(sec);
+          for (const x of dDrafts) tlist.appendChild(window.PcmLocalTasks.row(x));
+        }
         // The day's total under its tasks.
-        if (rows.length || trackedRows.length) {
+        if (rows.length || trackedRows.length || dDrafts.length) {
           const foot = document.createElement("div");
           foot.className = "hint wk-dayfoot";
           foot.style.cssText = "text-align:right;padding:4px 8px 2px;font-size:11.5px";
-          foot.innerHTML = "Total · " + rows.length + (rows.length === 1 ? " task" : " tasks") + " · est <b>" + fmtDurOpt(dEst) + "</b> · tracked <b>" + fmtDurOpt(dTrk) + "</b>";
+          foot.innerHTML = "Total · " + rows.length + (rows.length === 1 ? " task" : " tasks") + " · est <b>" + fmtDurOpt(dEst) + "</b>" + (dDrafts.length ? " (+ " + (draftMs ? fmtDurOpt(draftMs) + " in " : "") + dDrafts.length + (dDrafts.length === 1 ? " draft" : " drafts") + ")" : "") + " · tracked <b>" + fmtDurOpt(dTrk) + "</b>";
           tlist.appendChild(foot);
         }
         listBox.appendChild(tlist);
@@ -3844,7 +4061,7 @@ function renderOptionsWeekly(cu) {
           };
         }
       }
-      wkTot.innerHTML = "<b>" + (cu.weeklyTo === "friday" ? "This week" : "This week so far") + "</b> - est <b>" + fmtDurOpt(wkEst) + "</b> · tracked <b>" + fmtDurOpt(wkTrk) + "</b> · " + wkIds.size + (wkIds.size === 1 ? " task" : " tasks") + (byAssign ? ' <span class="hint">· ' + waLabel + "</span>" : "");
+      wkTot.innerHTML = "<b>" + (optWeekOffset ? optWeekNavLabel(optWeekOffset) : cu.weeklyTo === "friday" ? "This week" : "This week so far") + "</b> - est <b>" + fmtDurOpt(wkEst) + "</b>" + (wkDrafts ? ' <span class="wk-draftest">+ ' + (wkDraftMs ? fmtDurOpt(wkDraftMs) + " in " : "") + wkDrafts + (wkDrafts === 1 ? " draft" : " drafts") + "</span>" : "") + " · tracked <b>" + fmtDurOpt(wkTrk) + "</b> · " + wkIds.size + (wkIds.size === 1 ? " task" : " tasks") + (byAssign ? ' <span class="hint">· ' + waLabel + "</span>" : "");
       // Picked rows survive the redraw; the "N picked" line follows.
       listBox.querySelectorAll("[data-wk-move]").forEach((r) => r.classList.toggle("wk-sel", optWeekSel.has(cuWeekId(r._cuTask))));
       cuWeekSelBar(listBox);
@@ -5208,7 +5425,7 @@ function initDeptCreator() {
 // Priority sections narrow the visible task LIST only; they never change the
 // headline totals or the toolbar badge.
 // "Due today" is ticked by default (a saved choice always wins).
-let cuFilter = { dueWeek: false, dueNextWeek: false, duePrevWeek: false, dueThisMonth: false, dueNextMonth: false, duePrevMonth: false, dueCustom: false, dateBasis: "", missingDue: false, customFrom: "", customTo: "", customDays: [], missingEst: false, hasTracked: false, deadlineCrossed: false, waitingOthers: false, onlyMe: false, sharedTasks: false, manualOrder: false, statuses: [], priorities: [], clients: [] };
+let cuFilter = { dueWeek: false, dueNextWeek: false, duePrevWeek: false, dueThisMonth: false, dueNextMonth: false, duePrevMonth: false, dueCustom: false, dateBasis: "", missingDue: false, customFrom: "", customTo: "", customDays: [], missingEst: false, hasTracked: false, deadlineCrossed: false, waitingOthers: false, onlyMe: false, sharedTasks: false, manualOrder: false, statuses: [], priorities: [], clients: [], colors: [] };
 const CU_FILTER_KEYS = ["dueWeek", "dueNextWeek", "duePrevWeek", "dueThisMonth", "dueNextMonth", "duePrevMonth", "dueCustom", "missingEst", "missingDue", "hasTracked", "deadlineCrossed", "waitingOthers", "onlyMe", "sharedTasks", "groupSubtasks", "manualOrder"];
 const CU_PRIORITY_ORDER = ["urgent", "high", "normal", "low", "none"];
 // The section under the task list: time you tracked in the period on tasks
@@ -5225,7 +5442,8 @@ function cuActiveFilterCount(f) {
   return CU_FILTER_KEYS.reduce((n, k) => n + (k !== "manualOrder" && f[k] ? 1 : 0), 0)
     + (Array.isArray(f.statuses) ? f.statuses.length : 0)
     + (Array.isArray(f.priorities) ? f.priorities.length : 0)
-    + (Array.isArray(f.clients) ? f.clients.length : 0);
+    + (Array.isArray(f.clients) ? f.clients.length : 0)
+    + (Array.isArray(f.colors) ? f.colors.length : 0);
 }
 
 // Collapse the weekly per-day breakdown into one deduped task list for a range.
@@ -5264,6 +5482,24 @@ function cuWeekRangeLabel(base, b) {
 }
 // The date range the task list is showing (for exports), or null when the
 // filter has no date range (e.g. "Deadline crossed").
+// Drafts (local-tasks.js, not in ClickUp yet) due in a date range. Their time is
+// shown beside every total ("+ 1h in 1 draft") and counted in "to go" - it will
+// count once they're created, so it shouldn't be forgotten until then.
+function cuDraftsIn(range) {
+  const L = window.PcmLocalTasks && window.PcmLocalTasks.list ? window.PcmLocalTasks.list() : [];
+  if (!range || !L.length) return { n: 0, ms: 0 };
+  const day = (ms) => new Date(ms).setHours(0, 0, 0, 0); // by calendar day: a range may end at that day's start or its end
+  const from = day(range.fromTs), to = day(range.toTs);
+  const ds = L.filter((d) => { const at = Number(d.dueDateMs) || Number(d.startDateMs) || 0; return at && day(at) >= from && day(at) <= to; });
+  return { n: ds.length, ms: ds.reduce((a, d) => a + (Number(d.estimateMs) || 0), 0) };
+}
+function cuDraftChip(dr) {
+  const s = document.createElement("span");
+  s.className = "wk-draftest";
+  s.textContent = "+ " + (dr.ms ? fmtDurOpt(dr.ms) + " in " : "") + dr.n + (dr.n === 1 ? " draft" : " drafts");
+  s.title = (dr.n === 1 ? "A draft task" : dr.n + " draft tasks") + " for these dates, not in ClickUp yet" + (dr.ms ? " (" + fmtDurOpt(dr.ms) + " estimated)" : "") + " - counted once created, so it's counted in what's left to plan here too. Delete the draft if it isn't needed.";
+  return s;
+}
 function cuViewRange(st, f) {
   st = st || {}; f = f || {};
   const day = (ms) => { const a = new Date(ms); a.setHours(0, 0, 0, 0); const b = new Date(a); b.setHours(23, 59, 59, 999); return { fromTs: a.getTime(), toTs: b.getTime() }; };
@@ -5460,6 +5696,15 @@ function cuAssignPass(f, t) {
   const solo = (me ? ids.includes(me) : ids.length > 0) && others === 0;
   return f.onlyMe ? solo : !solo;
 }
+// Your colours (task-notes.js 🎨) in the Filter: cuFilter.colors holds the ticked
+// colour ids and "none" (tasks with no colour); a row passes when its colour (or
+// "none") is ticked. Nothing ticked = every task.
+function cuColorPass(f, t) {
+  const cs = Array.isArray(f.colors) ? f.colors : [];
+  if (!cs.length) return true;
+  const c = window.PcmTaskNotes && window.PcmTaskNotes.colorOf ? window.PcmTaskNotes.colorOf(cuId(t)) : null;
+  return cs.includes(c ? c.id : "none");
+}
 function cuRefinePredicate(f) {
   const todayStart = new Date().setHours(0, 0, 0, 0);
   const statuses = Array.isArray(f.statuses) ? f.statuses : [];
@@ -5477,6 +5722,7 @@ function cuRefinePredicate(f) {
     }
     if (statuses.length && !statuses.includes(String(t.status || "").toLowerCase())) return false;
     if (priorities.length && !priorities.includes(String(t.priority || "").toLowerCase() || "none")) return false;
+    if (!cuColorPass(f, t)) return false;
     return true;
   };
 }
@@ -6231,7 +6477,8 @@ let cuAutoPaint = false, cuLastPaintSig = "";
 function cuPaintSig(st) {
   try {
     return JSON.stringify(st, (k, v) => (k === "at" || k === "membersAt" || k === "errorAt" ? undefined : v)) +
-      "|" + JSON.stringify(cuFilter) + "|" + (typeof cuSearchOpt === "string" ? cuSearchOpt : "");
+      "|" + JSON.stringify(cuFilter) + "|" + (typeof cuSearchOpt === "string" ? cuSearchOpt : "") +
+      "|" + JSON.stringify((window.PcmLocalTasks && window.PcmLocalTasks.list ? window.PcmLocalTasks.list() : []).map((d) => [d.id, d.dueDateMs, d.startDateMs, d.estimateMs])); // drafts: their time shows beside the totals
   } catch (e) { return String(Math.random()); }
 }
 function renderClickupPreview(st) {
@@ -6320,7 +6567,7 @@ function renderClickupPreviewBody(st) {
   let viewTasks = Array.isArray(view.tasks) ? view.tasks : [];
   let viewTracked = Array.isArray(view.trackedTasks) ? view.trackedTasks : [];
   const refineOn = cuFilter.missingEst || cuFilter.missingDue || cuFilter.waitingOthers || cuFilter.deadlineCrossed || cuFilter.hasTracked || cuFilter.onlyMe || cuFilter.sharedTasks
-    || (cuFilter.statuses && cuFilter.statuses.length) || (cuFilter.priorities && cuFilter.priorities.length);
+    || (cuFilter.statuses && cuFilter.statuses.length) || (cuFilter.priorities && cuFilter.priorities.length) || (cuFilter.colors && cuFilter.colors.length);
   if (refineOn && view.scope !== "plan") { // an applied plan is an explicit list: shown whole
     const keep = cuRefinePredicate(cuFilter);
     const todayStart = new Date().setHours(0, 0, 0, 0);
@@ -6341,6 +6588,7 @@ function renderClickupPreviewBody(st) {
       }
       if (cuFilter.statuses && cuFilter.statuses.length && !cuFilter.statuses.includes(String(d.status || "").toLowerCase())) return false;
       if (cuFilter.priorities && cuFilter.priorities.length && !cuFilter.priorities.includes(String(d.priority || "").toLowerCase() || "none")) return false;
+      if (!cuColorPass(cuFilter, d)) return false;
       return true;
     });
   }
@@ -6396,6 +6644,8 @@ function renderClickupPreviewBody(st) {
   muted.className = "muted";
   muted.textContent = targetMs > 0 ? "/ " + fmtDurOpt(targetMs) + (met ? "  ·  target met ✓" : "") : "";
   big.appendChild(muted);
+  const drView = cuDraftsIn(cuViewRange(st, cuFilter));
+  if (drView.n) { big.appendChild(document.createTextNode(" ")); big.appendChild(cuDraftChip(drView)); }
   box.appendChild(big);
 
   // Estimated Time + its progress bar, and Tracked Time + its progress bar.
@@ -6522,6 +6772,7 @@ function renderClickupPreviewBody(st) {
     if (cuFilter.deadlineCrossed) tags.push("deadline crossed");
     if (cuFilter.statuses && cuFilter.statuses.length) tags.push("status: " + cuFilter.statuses.join("/"));
     if (cuFilter.priorities && cuFilter.priorities.length) tags.push("priority: " + cuFilter.priorities.join("/"));
+    if (cuFilter.colors && cuFilter.colors.length) { const ls = window.PcmTaskNotes && window.PcmTaskNotes.colorLabels ? window.PcmTaskNotes.colorLabels() : []; tags.push("colour: " + cuFilter.colors.map((k) => (k === "none" ? "no colour" : ((ls.find((l) => l.id === k) || {}).name || "?"))).join("/")); }
     spentBits.push("Filter: " + tags.join(" + "));
   }
   // The client names are listed in the Tasks card header; just count them here.
@@ -6551,8 +6802,12 @@ function renderClickupPreviewBody(st) {
     const chip = $("dashTodayChip");
     if (chip) {
       chip.style.display = targetMs > 0 ? "" : "none";
-      chip.className = "dash-chip" + (met ? " met" : "");
-      chip.textContent = met ? "Target met ✓" : fmtDurOpt(Math.max(0, targetMs - estMs)) + " to go";
+      // Drafts for these dates count as planned: "6h to go" with a 1h draft, not 7h.
+      const drC = cuDraftsIn(cuViewRange(st, cuFilter));
+      const metP = targetMs > 0 && estMs + drC.ms >= targetMs;
+      chip.className = "dash-chip" + (metP ? " met" : "");
+      chip.textContent = metP ? "Target met \u2713" + (met ? "" : " with drafts") : fmtDurOpt(Math.max(0, targetMs - estMs - drC.ms)) + " to go";
+      chip.title = drC.n ? "Counting " + drC.n + (drC.n === 1 ? " draft" : " drafts") + " (" + fmtDurOpt(drC.ms) + ") not in ClickUp yet" : "";
     }
   }
 
@@ -6761,7 +7016,9 @@ function renderClickupPreviewBody(st) {
       const tot = document.createElement("div");
       tot.className = "cu-totals";
       const b = (txt) => { const e = document.createElement("b"); e.textContent = txt; return e; };
-      tot.append("Shown: ", b(String(nShown)), " task" + (nShown === 1 ? "" : "s") + " · estimated ", b(fmtDurOpt(estAll)), " · tracked ", b(fmtDurOpt(trkAll)));
+      tot.append("Shown: ", b(String(nShown)), " task" + (nShown === 1 ? "" : "s") + " · estimated ", b(fmtDurOpt(estAll)));
+      { const dr = cuDraftsIn(cuViewRange(st, cuFilter)); if (dr.n) tot.append(" ", cuDraftChip(dr)); }
+      tot.append(" · tracked ", b(fmtDurOpt(trkAll)));
       if (noEst) { const s = document.createElement("span"); s.className = "cu-totals-warn"; s.textContent = noEst + " without an estimate"; tot.append(" · ", s); }
       {
         const gctx = cuGuessCtx(viewTasks);
@@ -7572,6 +7829,7 @@ function cuSingleClearGroup(el) {
   } else if (el.hasAttribute("data-cf-status")) cuFilter.statuses = [];
   else if (el.hasAttribute("data-cf-priority")) cuFilter.priorities = [];
   else if (el.hasAttribute("data-cf-client")) cuFilter.clients = [];
+  else if (el.hasAttribute("data-cf-color")) cuFilter.colors = [];
 }
 // Switching to single mode: keep only the first ticked box in each group.
 function cuTrimToSingle() {
@@ -7579,7 +7837,7 @@ function cuTrimToSingle() {
     let kept = false;
     for (const k of grp) { if (cuFilter[k]) { if (kept) cuFilter[k] = false; kept = true; } }
   }
-  for (const key of ["statuses", "priorities", "clients"]) {
+  for (const key of ["statuses", "priorities", "clients", "colors"]) {
     if (Array.isArray(cuFilter[key]) && cuFilter[key].length > 1) cuFilter[key] = cuFilter[key].slice(0, 1);
   }
 }
@@ -7593,6 +7851,7 @@ function cuClearAllFilters() {
   cuFilter.statuses = [];
   cuFilter.priorities = [];
   cuFilter.clients = [];
+  cuFilter.colors = [];
   cuFilter.customFrom = "";
   cuFilter.customTo = "";
   cuFilter.customDays = [];
@@ -7604,7 +7863,7 @@ function cuClearAllFilters() {
 }
 // Your own starting point: "Save as my default" remembers the ticked filters
 // and the selection mode; a fresh install (or "Use my default") applies them.
-const CU_FILTER_EXTRAS = ["statuses", "priorities", "clients", "customFrom", "customTo", "dateBasis", "customDays"];
+const CU_FILTER_EXTRAS = ["statuses", "priorities", "clients", "colors", "customFrom", "customTo", "dateBasis", "customDays"];
 function cuSnapshotFilter() {
   const out = { mode: cuFilterSingle ? "single" : "multi" };
   for (const k of CU_FILTER_KEYS) out[k] = !!cuFilter[k];
@@ -7640,7 +7899,8 @@ function cuPaintClearBtn(menu) {
   const on = CU_FILTER_KEYS.some((k) => k !== "manualOrder" && cuFilter[k]) ||
     (cuFilter.statuses && cuFilter.statuses.length) ||
     (cuFilter.priorities && cuFilter.priorities.length) ||
-    (cuFilter.clients && cuFilter.clients.length);
+    (cuFilter.clients && cuFilter.clients.length) ||
+    (cuFilter.colors && cuFilter.colors.length);
   b.disabled = !on;
 }
 function cuPaintModeToggle(menu) {
@@ -7674,6 +7934,25 @@ function optRenderCuFilterMenu() {
   cuAddAllClientsBox($("optCuFilterClientList"), clientVals, clients);
   const sg = $("optCuFilterStatusGroup"); if (sg) sg.hidden = !statusVals.length;
   const pg = $("optCuFilterPriorityGroup"); if (pg) pg.hidden = !priorityVals.length;
+  // Your colours (🎨): a dot and its meaning each, then "No colour". Ticks for a
+  // colour since deleted drop off.
+  {
+    const ls = window.PcmTaskNotes && window.PcmTaskNotes.colorLabels ? window.PcmTaskNotes.colorLabels() : [];
+    const ids = ls.map((l) => l.id);
+    if (Array.isArray(cuFilter.colors) && cuFilter.colors.some((k) => k !== "none" && !ids.includes(k))) { cuFilter.colors = cuFilter.colors.filter((k) => k === "none" || ids.includes(k)); chrome.storage.local.set({ cuFilter }).catch(() => {}); }
+    const box = $("optCuFilterColorList");
+    const vals = ls.length ? ids.concat(["none"]) : [];
+    cuBuildFacetList(box, "data-cf-color", vals, Array.isArray(cuFilter.colors) ? cuFilter.colors : [], (k) => (k === "none" ? "No colour" : (ls.find((l) => l.id === k) || {}).name || k));
+    if (box) box.querySelectorAll("input[data-cf-color]").forEach((inp) => {
+      const l = ls.find((x) => x.id === inp.getAttribute("data-cf-color"));
+      const dot = document.createElement("i");
+      dot.className = "cu-cdot";
+      dot.style.background = l ? l.color : "transparent";
+      if (!l) dot.style.border = "1px dashed var(--muted)";
+      inp.after(dot);
+    });
+    const cg2 = $("optCuFilterColorGroup"); if (cg2) cg2.hidden = !vals.length;
+  }
   const cg = $("optCuFilterClientGroup"); if (cg) cg.hidden = !clientVals.length;
 }
 function optOpenCuFilterMenu(open) {
@@ -8057,9 +8336,11 @@ function insPaintSubNav() {
   var nav = document.getElementById("insSubNav");
   if (!nav) return;
   var labels = { health: "Health", plan: "Plan", performance: "Performance" };
-  nav.innerHTML = INS_SUBS.map(function (s) {
+  // Rebuilt only when the tab changed (every redraw rebuilt it - part of the page's jumping).
+  var navHtml = INS_SUBS.map(function (s) {
     return '<button type="button" role="tab" data-sub="' + s + '" class="' + (s === insSub ? "on" : "") + '" aria-selected="' + (s === insSub) + '">' + labels[s] + "</button>";
   }).join("");
+  if (nav._html !== navHtml) { nav.innerHTML = navHtml; nav._html = navHtml; }
   nav.querySelectorAll("[data-sub]").forEach(function (b) {
     b.onclick = function () { insSetSub(b.getAttribute("data-sub")); history.replaceState(null, "", "#insights" + (insSub === "health" ? "" : "/" + insSub)); renderInsights(); };
   });
@@ -8943,6 +9224,7 @@ function insOpenDrill(drill, client) {
     if (el.hasAttribute("data-cf")) cuFilter[el.getAttribute("data-cf")] = el.checked;
     else if (el.hasAttribute("data-cf-status")) cuToggleArrayVal(cuFilter, "statuses", el.getAttribute("data-cf-status"), el.checked);
     else if (el.hasAttribute("data-cf-priority")) cuToggleArrayVal(cuFilter, "priorities", el.getAttribute("data-cf-priority"), el.checked);
+    else if (el.hasAttribute("data-cf-color")) cuToggleArrayVal(cuFilter, "colors", el.getAttribute("data-cf-color"), el.checked);
     else if (el.hasAttribute("data-cf-client-all")) cuFilter.clients = el.checked
       ? [...menu.querySelectorAll("input[data-cf-client]")].map((x) => x.getAttribute("data-cf-client"))
       : [];
@@ -10933,7 +11215,7 @@ if ($("admCalCard")) {
 // Where the timer shows (Floating window / Taskbar / Both / Neither) is picked once
 // and kept; the Dashboard card invites people to try the taskbar until they pick.
 const DESK_REL = "https://github.com/Dipson-bot/personal-clickup-manager/releases";
-const DESK_TAG = "desktop-v0.4.0";
+const DESK_TAG = "desktop-v0.4.1";
 let deskOs = "";
 async function deskPlatform() {
   if (deskOs) return deskOs;
@@ -11296,3 +11578,6 @@ if ($("cuSplitWeeksOpt")) $("cuSplitWeeksOpt").addEventListener("change", (e) =>
   setTimeout(balance, 300);
   window.pcmBalanceColumns = balance;
 })();
+
+// A task coloured / a colour made or deleted (task-notes.js): the Colour filter and its list follow.
+chrome.storage.onChanged.addListener((ch, area) => { if (area !== "local" || !(ch.taskColors || ch.taskColorLabels)) return; setTimeout(() => { try { optRenderCuFilterMenu(); } catch (e) {} if (Array.isArray(cuFilter.colors) && cuFilter.colors.length) { try { optRepaintCuPreview(); } catch (e) {} } }, 50); });

@@ -145,18 +145,39 @@
   .cu-wkgroup[data-gk].folded::before, .cu-mgroup[data-gk].folded::before { transform: rotate(-90deg); }
   .cu-wkgroup.folded, .cu-mgroup.folded { opacity: .85; }
   .cu-gtot-h { color: var(--indigo, #6366f1); }
+  /* The waiting / subtasks chip column (\u23F3 Waiting: Yagya, Subtasks to Nov 6) took its width on every
+     row once any row had one: its reasons are in the row's \u26A0 and Warnings tab now. */
+  .cu-task .cu-wait, .cu-tasklist:has(.cu-wait.on) .cu-wait { display: none !important; }
+  /* Headings never use a colour a task can have: colour on a row means one of
+     your task colours, on every palette (the accent of Lavender, Forest, Rose,
+     Coral, Ocean, Slate... is one of those colours, and "this week" was Done
+     early's green). Client / month headings and card edges are a neutral shade of
+     the theme's own text; week headings a light band with a dashed top line and
+     no stripe (a stripe looked like a task's colour bar). */
+  :root { --pcm-gedge: color-mix(in srgb, var(--text, #222) 22%, transparent); }
+  .cu-mgroup, .cu-mgroup.ex-client { background: color-mix(in srgb, var(--text, #222) 7%, var(--card, #fff)); color: var(--muted); }
+  .cu-mgroup b { color: var(--text); }
+  html[data-theme="dark"] .cu-mgroup, html[data-theme="dark"] .cu-mgroup.ex-client { background: color-mix(in srgb, var(--text, #eee) 11%, var(--card, #111)); border-color: var(--pcm-gedge); }
+  .cu-wkgroup, .cu-wkgroup.now, .cu-wkgroup.ex-who, .cu-wkgroup.ex-who.shared { border-left: 0; border-top: 1px dashed var(--pcm-gedge); background: color-mix(in srgb, var(--text, #222) 4%, transparent); color: var(--muted); }
+  html[data-theme="dark"] .cu-wkgroup, html[data-theme="dark"] .cu-wkgroup.now, html[data-theme="dark"] .cu-wkgroup.ex-who.shared { background: color-mix(in srgb, var(--text, #eee) 6%, transparent); }
+  .cu-wkgroup b { color: var(--text); }
+  /* Clients as cards (a list grouped by client: Tasks with clients ticked, Explore):
+     the heading is the card's top, its rows the body, a gap before the next client.
+     Still one list - sorting, dragging clients, folding and column widths work as
+     before; a folded client is just its rounded heading. */
+  .cu-tasklist:has(> .cu-mgroup.ex-client) > .cu-mgroup.ex-client { margin: 14px 0 0; border: 1px solid var(--pcm-gedge); border-bottom: 0; border-radius: 10px 10px 0 0; }
+  .cu-tasklist:has(> .cu-mgroup.ex-client) > .cu-mgroup.ex-client:first-child, .cu-tasklist:has(> .cu-mgroup.ex-client) > .pcs-sorthead + .cu-mgroup.ex-client { margin-top: 2px; }
+  .cu-tasklist:has(> .cu-mgroup.ex-client) > .cu-mgroup.ex-client.folded { border-bottom: 1px solid var(--pcm-gedge); border-radius: 10px; }
+  .cu-tasklist:has(> .cu-mgroup.ex-client) > .cu-mgroup.ex-client ~ :is(.cu-task, .pcm-panel, .cu-foldable, .cu-dhead, .pcm-chnote, .cu-wend) { border-left: 1px solid var(--pcm-gedge); border-right: 1px solid var(--pcm-gedge); }
+  .cu-tasklist:has(> .cu-mgroup.ex-client) > .cu-mgroup.ex-client ~ :is(.cu-task, .cu-wkgroup, .pcm-panel, .cu-foldable, .cu-dhead, .pcm-chnote, .cu-wend):has(+ .cu-mgroup.ex-client), .cu-tasklist:has(> .cu-mgroup.ex-client) > .cu-mgroup.ex-client ~ :is(.cu-task, .cu-wkgroup, .pcm-panel, .cu-foldable, .cu-dhead, .pcm-chnote, .cu-wend):has(+ .cu-gend), .cu-tasklist:has(> .cu-mgroup.ex-client) > .cu-mgroup.ex-client ~ :is(.cu-task, .cu-wkgroup, .pcm-panel, .cu-foldable, .cu-dhead, .pcm-chnote, .cu-wend):last-child {
+    border-bottom: 1px solid var(--pcm-gedge) !important; border-radius: 0 0 10px 10px; margin-bottom: 0; }
+  .cu-tasklist:has(> .cu-mgroup.ex-client) > .cu-mgroup.ex-client ~ .cu-wkgroup { margin-left: 0; margin-right: 0; border-radius: 0; border-left: 1px solid var(--pcm-gedge) !important; border-right: 1px solid var(--pcm-gedge); }
+  .cu-tasklist:has(> .cu-mgroup.ex-client) > .cu-mgroup.ex-client ~ .cu-wend:has(+ .cu-mgroup.ex-client), .cu-tasklist:has(> .cu-mgroup.ex-client) > .cu-mgroup.ex-client ~ .cu-wend:last-child { display: block; height: 6px; }
   .cu-mgroup[data-client][draggable="true"] { cursor: grab; }
   .cu-mgroup[data-client][draggable="true"] > b::after { content: " \\283F"; color: var(--muted); font-weight: 400; opacity: .7; }
   .cu-mgroup.cdragging { opacity: .5; }
   .cdrop-before { box-shadow: 0 -3px 0 var(--indigo, #6366f1) !important; }
-  .cdrop-end { box-shadow: 0 3px 0 var(--indigo, #6366f1) !important; }
-  /* Dark themes: the headings stand clearly apart from the rows (they blended in). */
-  html[data-theme="dark"] .cu-mgroup { background: color-mix(in srgb, var(--indigo, #6366f1) 30%, var(--card, #111827)); border: 1px solid color-mix(in srgb, var(--indigo, #6366f1) 55%, transparent); color: #c3cbe0; }
-  html[data-theme="dark"] .cu-mgroup b { color: #fff; }
-  html[data-theme="dark"] .cu-wkgroup { background: color-mix(in srgb, var(--indigo, #6366f1) 17%, transparent); border-left-color: color-mix(in srgb, var(--indigo, #6366f1) 80%, #fff); color: #b6bfd3; }
-  html[data-theme="dark"] .cu-wkgroup b { color: #eef2ff; }
-  html[data-theme="dark"] .cu-wkgroup.now { background: color-mix(in srgb, var(--green, #22c55e) 16%, transparent); border-left-color: var(--green, #22c55e); }
-  html[data-theme="dark"] .cu-wkgroup.ex-who.shared { background: color-mix(in srgb, #a855f7 18%, transparent); border-left-color: #a855f7; }`;
+  .cdrop-end { box-shadow: 0 3px 0 var(--indigo, #6366f1) !important; }`;
   document.head.appendChild(css);
   window.PcmFold = { apply: applyAll, isFolded: (k) => folded.has(k), sortClients };
 })();

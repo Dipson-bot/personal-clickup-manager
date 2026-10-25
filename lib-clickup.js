@@ -1239,6 +1239,7 @@ export async function getTaskPanel(token, taskId, force) {
     startDateMs: t && t.start_date ? Number(t.start_date) : null,
     dueDateMs: t && t.due_date ? Number(t.due_date) : null,
     estimateMs: Number(t && t.time_estimate) || 0,
+    spentMs: Number(t && t.time_spent) || 0, // everyone's tracked time (for the AI briefs)
     list: (t && t.list && t.list.name) || "",
     // The Folder too: a saved client can be named after it (task-panel matches both).
     folder: (t && t.folder && t.folder.hidden !== true && t.folder.name) || "",
@@ -1393,6 +1394,17 @@ export async function setTaskDescription(token, taskId, text, expected) {
 // Create a task in a List (local-tasks.js "Apply to ClickUp"). f = { name, md,
 // dueDateMs, estimateMs, priority ("urgent" | "high" | "normal" | "low"),
 // assignees: [userId] }. Returns { id, url, name } of the new task.
+// Relate two tasks, as ClickUp's "Relate a Task" does - from taskId's side:
+// "related" = a task link (Related), "blocks" = taskId blocks otherId (otherId
+// waits on it), "waits" = taskId is blocked by / waits on otherId.
+export async function relateTasks(token, taskId, otherId, kind) {
+  const a = encodeURIComponent(String(taskId)), b = encodeURIComponent(String(otherId));
+  if (!a || !b || a === b) throw new Error("Pick another task.");
+  if (kind === "related") return cuPost(token, "/task/" + a + "/link/" + b, {});
+  if (kind === "blocks") return cuPost(token, "/task/" + b + "/dependency", { depends_on: String(taskId) });
+  if (kind === "waits") return cuPost(token, "/task/" + a + "/dependency", { depends_on: String(otherId) });
+  throw new Error("Unknown relation.");
+}
 export async function createTask(token, listId, f) {
   const body = { name: String(f.name || "").trim().slice(0, 1000) };
   const md = String(f.md || "").replace(/\r\n/g, "\n").trim();
@@ -1919,12 +1931,26 @@ export async function fetchArchivedMine(token, teamId, userId, sinceMs) {
 }
 // What says whether a task can go ahead yet (Insights "held up"): its name, plain
 // description, status and parent. One small read; the caller caches it.
-export async function getTaskHoldInfo(token, taskId) {
-  const j = await cuFetch(token, "/task/" + encodeURIComponent(String(taskId)));
+// opts.subs: also its subtasks (the parent read once gives all the steps).
+export async function getTaskHoldInfo(token, taskId, opts) {
+  const j = await cuFetch(token, "/task/" + encodeURIComponent(String(taskId)), opts && opts.subs ? [["include_subtasks", "true"]] : undefined);
   const t = j && j.task ? j.task : j;
   if (!t || !t.id) return null;
-  return { id: String(t.id), name: t.name || "", status: (t.status && t.status.status) || "", done: isTaskDone(t),
-    parentId: t.parent != null ? String(t.parent) : "", text: String(t.text_content || t.description || "").slice(0, 3000) };
+  // Who it's with and when it's due (a parent with someone else, due first, has to
+  // come first), and the tasks it waits on in ClickUp (dependencies: this task
+  // "waiting on" another).
+  const id = String(t.id);
+  const waitsOn = (Array.isArray(t.dependencies) ? t.dependencies : [])
+    .filter((d) => d && String(d.task_id) === id && d.depends_on != null && String(d.depends_on) !== id).map((d) => String(d.depends_on));
+  return { id, name: t.name || "", status: (t.status && t.status.status) || "", done: isTaskDone(t),
+    parentId: t.parent != null ? String(t.parent) : "", text: String(t.text_content || t.description || "").slice(0, 3000),
+    dueDateMs: Number(t.due_date) || 0,
+    assignees: (Array.isArray(t.assignees) ? t.assignees : []).map((a) => ({ id: String(a && a.id), name: String((a && (a.username || a.email)) || "") })),
+    waitsOn: [...new Set(waitsOn)].slice(0, 3),
+    // ClickUp links to other tasks in its description (app.clickup.com/t/<id>).
+    linksTo: [...new Set([...String(t.text_content || t.description || "").matchAll(/app\.clickup\.com\/t\/(?:\d+\/)?([a-z0-9]{6,12})\b/gi)].map((m) => m[1]).filter((x) => x !== id))].slice(0, 3),
+    subs: opts && opts.subs && Array.isArray(t.subtasks) ? t.subtasks.slice(0, 40).map((x) => ({ id: String(x.id), name: x.name || "", status: (x.status && x.status.status) || "", done: isTaskDone(x),
+      dueDateMs: Number(x.due_date) || 0, assignees: (Array.isArray(x.assignees) ? x.assignees : []).map((a) => ({ id: String(a && a.id), name: String((a && (a.username || a.email)) || "") })) })) : undefined };
 }
 // Bring an archived task back (ClickUp: update the task with archived false).
 export async function unarchiveTask(token, taskId) {
@@ -2080,6 +2106,9 @@ export async function deleteTimeEntry(token, teamId, entryId) {
 
 // Change a task's due date. hasTime null = leave ClickUp's date-only/timed flag alone.
 // Take one person off a task (the ✕ next to an assignee).
+export async function addTaskAssignee(token, taskId, userId) {
+  return cuPut(token, "/task/" + encodeURIComponent(taskId), { assignees: { add: [Number(userId)], rem: [] } });
+}
 export async function removeTaskAssignee(token, taskId, userId) {
   return cuPut(token, "/task/" + encodeURIComponent(taskId), { assignees: { add: [], rem: [Number(userId)] } });
 }

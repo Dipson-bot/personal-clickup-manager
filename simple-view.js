@@ -21,7 +21,7 @@
 
     /* ---- what Simple view puts away ---- */
     /* explanation text under titles and settings */
-    html.pcm-simple .pcm-expl, html.pcm-simple p.sub, html.pcm-simple .lt-sub, html.pcm-simple .wk-hint { display: none !important; }
+    html.pcm-simple .pcm-expl, html.pcm-simple p.sub, html.pcm-simple .lt-sub, html.pcm-simple .wk-hint, html.pcm-simple .ip-sub { display: none !important; }
     /* status chips under the page title, the "Worth a look" strip, the setup card */
     html.pcm-simple #statusStrip, html.pcm-simple #pcmDashStrip, html.pcm-simple .pcm-setup, html.pcm-simple #deskTry { display: none !important; }
     /* Due today card: the Custom / Meeting choice, its note box, Add missed time */
@@ -31,21 +31,81 @@
     html.pcm-simple #optWeekMode { display: none !important; }
     /* Tasks card: the summary line ("Shown: 14 tasks ...") and the plan-a-task line */
     html.pcm-simple .cu-totals, html.pcm-simple #ltBox .lt-head .lt-sub { display: none !important; }
-    /* Recently completed and Explore tasks cards (Ctrl+K finds any task) */
-    html.pcm-simple #dashDoneCard, html.pcm-simple #dashExploreCard { display: none !important; }
-    /* task rows: parent prefix, guesses, "in all" (the 📌 / 📝 on hover stay: pinning and notes are things you DO) */
+    /* Recently completed (Ctrl+K finds any task). Explore tasks stays: it is a tool (anyone's tasks, by date / client) */
+    html.pcm-simple #dashDoneCard { display: none !important; }
+    /* task rows: parent prefix, "in all" (the ~guesses, 📌 / 📝 / ✓ stay: they are what you plan and act with) */
     html.pcm-simple .cu-task .cu-parent,
-    html.pcm-simple .cu-task .est-guess, html.pcm-simple .cu-task .trk-all, html.pcm-simple .cu-task .cu-kids { display: none !important; }
+    html.pcm-simple .cu-task .trk-all, html.pcm-simple .cu-task .cu-kids { display: none !important; }
     /* popup / side panel: the setup line, the small grey summaries, the switch hint, Drive sync's explanation */
     html.pcm-simple .pcm-setupline, html.pcm-simple #cuSub, html.pcm-simple #weekSub, html.pcm-simple .cu-timer-hint, html.pcm-simple #syncHelp { display: none !important; }
+    /* Dashboard: the Extra task controls (Today card) and the daily chart (This
+       week card) fold away with Show / Hide - see "Show / Hide" below */
+    #cuTodayWrap, #dashWeekCard { display: flex; flex-direction: column; }
+    #cuTodayWrap > #cuAutoExtra, #dashWeekCard > .pcm-foldrow { margin-top: auto; padding-top: 10px; border-top: 1px dashed var(--border, #e4e4e7); }
+    #dashWeekCard > .pcm-foldrow { display: flex; align-items: baseline; gap: 6px; margin-top: auto; font-size: 12.5px; }
+    #dashWeekCard > .pcm-foldrow b { font-weight: 600; }
+    .pcm-foldbtn { margin-left: auto; flex: none; font: inherit; font-size: 11.5px; font-weight: 600; padding: 2px 10px; border-radius: 999px; border: 1px solid var(--border, #d4d4d8); background: transparent; color: var(--indigo, #6366f1); cursor: pointer; }
+    .pcm-foldbtn:hover { background: rgba(99,102,241,.1); }
+    #cuAutoExtra.pcm-folded > :not(.cu-autox-h) { display: none !important; }
+    #dashWeekCard.pcm-folded #optWeekSub, #dashWeekCard.pcm-folded #optWeekMode, #dashWeekCard.pcm-folded #optWeekChart { display: none !important; }
+    #dashWeekCard:not(.pcm-folded) > .pcm-foldrow + #optWeekSub { margin-top: 4px; }
     /* settings pages: the "More" / advanced blocks stay folded and quiet */
     html.pcm-simple details.adv:not([open]) > summary { opacity: .7; }
   `;
   document.head.appendChild(css);
 
+  // ---- Show / Hide: the Extra task controls and the daily chart (dashboard) ----
+  // Simple view starts with them hidden, the full view with them shown; a Show
+  // or Hide is remembered for that view (storage dashFold { simple, full }).
+  const FOLD_KEY = "dashFold";
+  let fold = {};
+  const FOLDS = [
+    { k: "extra", host: "cuAutoExtra", what: "the Extra task's Start tracking, Meeting and Add missed time" },
+    { k: "chart", host: "dashWeekCard", what: "the day-by-day chart" },
+  ];
+  const folded = (k) => { const m = fold[on ? "simple" : "full"] || {}; return typeof m[k] === "boolean" ? m[k] : on; };
+  async function setFold(k, v) {
+    const view = on ? "simple" : "full";
+    fold = { ...fold, [view]: { ...(fold[view] || {}), [k]: v } };
+    paintFolds();
+    try { await chrome.storage.local.set({ [FOLD_KEY]: fold }); } catch (e) {}
+  }
+  function paintFolds() {
+    for (const f of FOLDS) {
+      const host = document.getElementById(f.host);
+      if (!host) continue;
+      let b = host.querySelector(".pcm-foldbtn");
+      if (!b) {
+        b = document.createElement("button");
+        b.type = "button";
+        b.className = "pcm-foldbtn";
+        b.onclick = (e) => { e.stopPropagation(); setFold(f.k, !folded(f.k)); };
+        if (f.k === "extra") { const h = host.querySelector(".cu-autox-h"); if (!h) continue; h.appendChild(b); }
+        else {
+          const sub = document.getElementById("optWeekSub");
+          if (!sub) continue;
+          const row = document.createElement("div");
+          row.className = "pcm-foldrow";
+          const lab = document.createElement("b");
+          lab.textContent = "Daily chart";
+          row.append(lab, b);
+          sub.before(row);
+        }
+      }
+      const hid = folded(f.k);
+      host.classList.toggle("pcm-folded", hid);
+      b.textContent = hid ? "▸ Show" : "▾ Hide";
+      b.title = (hid ? "Show " : "Hide ") + f.what + " (remembered for " + (on ? "Simple view" : "the full view") + ")";
+      b.setAttribute("aria-expanded", String(!hid));
+    }
+  }
+  chrome.storage.local.get(FOLD_KEY).then((g) => { fold = (g && g[FOLD_KEY] && typeof g[FOLD_KEY] === "object") ? g[FOLD_KEY] : {}; paintFolds(); }).catch(() => {});
+  chrome.storage.onChanged.addListener((ch, area) => { if (area === "local" && ch[FOLD_KEY]) { fold = ch[FOLD_KEY].newValue || {}; paintFolds(); } });
+
   const btns = new Set();
   function paint() {
     root.classList.toggle("pcm-simple", on);
+    paintFolds();
     for (const b of btns) {
       b.classList.toggle("on", on);
       b.title = on ? "Simple view is on - click for the full view" : "Simple view: hide the extra text and controls";
@@ -83,8 +143,11 @@
     }
   }
   mark();
-  let mt = 0;
-  new MutationObserver(() => { if (!mt) mt = setTimeout(() => { mt = 0; mark(); }, 300); }).observe(document.body, { childList: true, subtree: true });
+  // Sorted in the same moment the text is drawn, before the browser paints: on a
+  // 300 ms timer every new explanation showed for a moment and was then hidden,
+  // so the page jumped (Insights > Plan / Performance on every tab switch).
+  let mq = false;
+  new MutationObserver(() => { if (mq) return; mq = true; queueMicrotask(() => { mq = false; mark(); }); }).observe(document.body, { childList: true, subtree: true });
 
   // The header switch: next to light / dark.
   function addButton() {

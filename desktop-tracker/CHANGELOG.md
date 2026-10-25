@@ -1,5 +1,8 @@
 # ClickUp Tracker changelog
 
+## 0.4.1
+- The extension can move the files it copied from Slack into a client folder earlier to the Recycle Bin (Trash on Mac) when you ask it to (Clients › Slack › Move to Recycle Bin). Only those files, by exact name, directly in that client's folder, and they can still be restored.
+
 ## 0.3.2
 - The strip shows this task's time today against its share for one day (its estimate over its working days: a 7h task for a week is 1h24 a day) next to today's total; the hover card adds the overall figure ("Overall 11h 39m / 7h · +4h 39m over").
 - Fixed: the hover card could flicker, show squashed or stay open when the pointer moved on and off the strip quickly. It now opens after a short pause and always ends matching where the pointer is.

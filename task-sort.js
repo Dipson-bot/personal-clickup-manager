@@ -94,6 +94,7 @@
 
   const css = document.createElement("style");
   css.textContent = `
+    .pcs-sorthead { overflow: hidden; } /* a label measured at another width never pushes the page sideways */
     .pcs-sorthead { position: relative; height: 18px; margin: 8px 0 3px; padding-bottom: 3px; border-bottom: 1px solid var(--border); font-size: 10.5px; font-weight: 600; text-transform: uppercase; letter-spacing: .04em; color: var(--muted); user-select: none; }
     .pcs-sorthead button { position: absolute; top: 0; background: none; border: 0; padding: 0 2px; font: inherit; letter-spacing: inherit; text-transform: inherit; color: inherit; cursor: pointer; white-space: nowrap; line-height: 18px; overflow: hidden; text-overflow: ellipsis; }
     .pcs-sorthead button:hover, .pcs-sorthead button.on { color: var(--indigo, #6366f1); }
@@ -286,6 +287,10 @@
     busy = true;
     try { for (const l of lists()) setup(l); } finally { mo.takeRecords(); busy = false; }
   }
+  // The side panel / window resized: the columns are measured again (a hidden
+  // panel draws no frames, so the lists' ResizeObserver alone can miss it).
+  let rsz = 0;
+  window.addEventListener("resize", () => { clearTimeout(rsz); rsz = setTimeout(refreshAll, 80); });
 
   // Lists are redrawn often (refresh, filter, timer ticks): set up again shortly
   // after a change (a timer, not a frame: hidden side panels draw no frames).

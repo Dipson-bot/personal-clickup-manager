@@ -1355,6 +1355,22 @@ function cuGuessWords(name) {
     .filter((w) => w.length > 2 && !CU_GUESS_STOP.has(w))
     .map((w) => (w.length > 4 && w.endsWith("s") && !w.endsWith("ss") ? w.slice(0, -1) : w)))];
 }
+// How big a job is, from its name: "quick" (turn off, unset, remove, request
+// indexing, rename, add a tag...), "big" (audit, report, migrate, rewrite, write,
+// build, merge, or 10+ pages / posts at once) or "mid". A quick change is guessed
+// around 30m - never from a client's average, which mixes in reports and audits.
+const CU_KIND_BIG = /\b(?:audit|reports?|reporting|migrat\w*|re-?write|rewrit\w*|writ(?:e|ing)|research|build|creat\w*|design|develop\w*|strateg\w*|analy[sz]\w*|outline|consolidat\w*|merg\w*|overhaul|redesign|implement\w*|blog|article|landing|hub|template)\b|\b(?:across|all)\b.*\b(?:\d{2,}|dozens?)\b|~\s?\d{2,}/i;
+const CU_KIND_QUICK_ANY = /\b(?:request(?:ing)? (?:indexing|re-?crawl)|re-?crawl|turn(?:ed)? (?:off|on)|key event|alt text|typo|meta (?:title|description)|noindex|canonical tag)\b/i;
+const CU_KIND_QUICK_START = /^(?:unset|un-?nest|turn|toggle|disable|enable|mark|rename|label|tag|exclude|hide|unhide|delete|remove|swap|replace|set|change|update|add|correct|check|verify|confirm|re-?run|request|submit|re-?submit|link|unlink|flag|pin|archive|move|clear|purge|ping|fix the|fix a)\b/i;
+const CU_KIND_FEW = /\b(?:[3-9]|three|four|five|six|seven|eight|nine)\s+(?:\w+\s+){0,2}(?:pages?|posts?|urls?|templates?|collections?|products?|sites?|articles?|sections?)\b/i;
+function cuTaskKind(name) {
+  const n = String(name || "").replace(/^\s*[A-Za-z]{1,8}[- ]?\d+(?:\.[A-Za-z0-9]+)?\s*[|:]\s*/, "").replace(/^\s*week \d+\s*[·:-]\s*\w+\s*-\s*/i, "").trim();
+  if (CU_KIND_BIG.test(n)) return "big";
+  if (CU_KIND_QUICK_ANY.test(n)) return "quick";
+  if (CU_KIND_FEW.test(n)) return "mid";
+  if (CU_KIND_QUICK_START.test(n)) return "quick";
+  return "mid";
+}
 function cuGuessHist() {
   const rows = cuGuessRows;
   const key = rows.length + ":" + (rows[0] && (rows[0].id || rows[0].name));
@@ -1366,7 +1382,7 @@ function cuGuessHist() {
     seen.add(id);
     const ms = Number(r.spentMs) > 0 ? Number(r.spentMs) : Number(r.estimateMs || r.totalEstimateMs) || 0;
     if (!(ms >= 120000 && ms <= 12 * 3600000)) continue;
-    hist.push({ words: cuGuessWords(r.name), ck: String(r.client || "").toLowerCase().replace(/[^a-z0-9]+/g, ""), ms });
+    hist.push({ words: cuGuessWords(r.name), ck: String(r.client || "").toLowerCase().replace(/[^a-z0-9]+/g, ""), ms, kind: cuTaskKind(r.name) });
   }
   cuGuessMemo = { key, hist };
   return hist;
@@ -1395,22 +1411,39 @@ function cuGuessEst(t, ctx) {
       if (left >= 300000) return { ms: cuRound5(left / open), covered: true, why: "its share of the parent task's " + fmtDur(pe) + " estimate (already in that total)" };
     }
   }
+  // From your finished tasks, kept to the size of the job (see cuTaskKind): a
+  // quick change stays near 30m (45m at most, and only when very close matches
+  // you finished took that long), a regular task under 1h 30m.
+  const kind = cuTaskKind(t.name);
+  const kindTxt = kind === "quick" ? "a quick change" : kind === "big" ? "a bigger piece of work" : "a regular task";
+  const lo = kind === "quick" ? 600000 : 900000, cap = kind === "quick" ? 1800000 : kind === "mid" ? 5400000 : 4 * 3600000;
+  const fit = (ms) => cuRound5(Math.min(cap, Math.max(lo, ms)));
   const hist = cuGuessHist();
-  if (!hist.length) return null;
   const w = cuGuessWords(t.name);
-  if (w.length) {
-    const sc = hist.map((h) => { const inter = h.words.filter((x) => w.includes(x)).length; return { h, s: (w.length + h.words.length) ? (2 * inter) / (w.length + h.words.length) : 0 }; })
+  if (hist.length && w.length) {
+    const sc = hist.map((h) => { const inter = h.words.filter((x) => w.includes(x)).length; return { h, s: (w.length + h.words.length) ? (2 * inter) / (w.length + h.words.length) : 0 }; }) // shared words against both names' length
       .filter((x) => x.s >= 0.55).sort((a, b) => b.s - a.s).slice(0, 7);
-    if (sc.length) { const ms = cuRound5(cuMedian(sc.map((x) => x.h.ms))); return { ms, why: "usually " + fmtDur(ms) + " - from " + sc.length + " similar task" + (sc.length === 1 ? "" : "s") + " you finished" }; }
+    if (sc.length) {
+      const raw = cuMedian(sc.map((x) => x.h.ms));
+      const strong = sc.filter((x) => x.s >= 0.7).length >= 2;
+      const ms = kind === "quick" && strong ? cuRound5(Math.min(2700000, Math.max(lo, raw))) : fit(raw);
+      return { ms, why: "usually " + fmtDur(ms) + " - from " + sc.length + " similar task" + (sc.length === 1 ? "" : "s") + " you finished" + (ms < cuRound5(raw) ? " (" + kindTxt + ", so kept to " + fmtDur(ms) + ")" : "") };
+    }
   }
+  const same = hist.filter((h) => h.kind === kind);
   const ck = String(t.client || "").toLowerCase().replace(/[^a-z0-9]+/g, "");
-  if (ck) { const same = hist.filter((h) => h.ck === ck); if (same.length >= 3) { const ms = cuRound5(cuMedian(same.map((h) => h.ms))); return { ms, why: "your usual for " + t.client + " (" + same.length + " finished)" }; } }
-  if (hist.length >= 5) { const ms = cuRound5(cuMedian(hist.map((h) => h.ms))); return { ms, why: "your usual task time (" + hist.length + " finished)" }; }
+  if (ck) { const c = same.filter((h) => h.ck === ck); if (c.length >= 3) { const ms = fit(cuMedian(c.map((h) => h.ms))); return { ms, why: "your usual for " + kindTxt + " for " + t.client + " (" + c.length + " finished)" }; } }
+  if (same.length >= (kind === "big" ? 2 : 5)) { const ms = fit(cuMedian(same.map((h) => h.ms))); return { ms, why: "your usual for " + kindTxt + " (" + same.length + " finished)" }; }
+  if (kind === "quick") return { ms: 1800000, why: "a quick change - about 30m" };
+  if (kind === "mid") return { ms: 2700000, why: "a regular task - about 45m" };
+  if (hist.length >= 5) { const ms = fit(cuMedian(hist.map((h) => h.ms))); return { ms, why: "your usual task time (" + hist.length + " finished)" }; }
   return null;
 }
 // What a row adds "with guesses" (its kept or guessed time; not a parent's share).
 function cuGuessMs(t, ctx) {
   if (!t) return 0;
+  // A colour left out of planning (e.g. Can't do yet): its guess isn't added.
+  if (typeof window !== "undefined" && (window.PcmTaskNotes && window.PcmTaskNotes.isSkipped && window.PcmTaskNotes.isSkipped(cuId(t)))) return 0;
   const st = cuEstStaged[cuId(t)];
   if (Number(t.estimateMs) > 0) return st && !st.share ? (Number(st.ms) || 0) - Number(t.estimateMs) : 0;
   if (st) { const g = cuGuessEst(t, ctx); return g && g.covered ? 0 : Number(st.ms) || 0; }
@@ -1431,9 +1464,9 @@ function cuEstGuess(estSpan, t, ctx, keptOnly) {
   } else {
     const g = cuGuessEst(t, ctx);
     if (!g || g.none) { if (g && g.none) estSpan.title = g.why; return; }
-    chip.className = "est-guess";
+    chip.className = "est-guess" + ((window.PcmTaskNotes && window.PcmTaskNotes.isSkipped && window.PcmTaskNotes.isSkipped(cuId(t))) ? " skip" : "");
     chip.textContent = "~" + fmtDur(g.ms) + "?";
-    chip.title = "Guess: " + g.why + ". Click to use it - kept here until you press Apply.";
+    chip.title = (chip.classList.contains("skip") ? "Not counted in your plans (its colour is left out of planning). " : "") + "Guess: " + g.why + ". Click to use it - kept here until you press Apply.";
     chip.onclick = (e) => { e.preventDefault(); e.stopPropagation(); cuEstStaged[id] = { ms: g.ms, name: t.name || "" }; cuEstSave(); cuGuessRepaint(); };
   }
   chip.addEventListener("mousedown", (e) => e.stopPropagation());
@@ -2317,6 +2350,11 @@ function cuLoadWhenIdle() {
   load();
 }
 let cuLiveCardTick = null; // repaints the Due today card's tracked figure
+// A draft added, edited, applied or deleted (local-tasks.js): the totals' "+ 1h in 1 draft" follow.
+{
+  let dt = 0;
+  document.addEventListener("pcm-drafts-changed", () => { clearTimeout(dt); dt = setTimeout(() => { try { renderClickup(); } catch (e) {} }, 150); });
+}
 function renderWeekly() {
   const cu = state.clickup || {};
   const card = $("weekCard");
@@ -2335,6 +2373,7 @@ function renderWeekly() {
   const spent = Number(agg.spentMs) || 0;
   $("weekEst").textContent = fmtDur(est);
   $("weekEstTarget").textContent = targetMs > 0 ? "of " + fmtDur(targetMs) + "/day" : "";
+  { const tg = $("weekEstTarget"); const old = tg && tg.parentNode.querySelector(".wk-draftest"); if (old) old.remove(); const dr = cuDraftsIn({ fromTs: Number(agg.fromTs) || 0, toTs: Number(agg.toTs) || 0 }); if (tg && dr.n) tg.after(cuDraftChip(dr)); }
   $("weekTrk").textContent = fmtDur(spent);
   if (window.PcmBreakdown && PcmBreakdown.fromWeek) {
     const bd = () => PcmBreakdown.fromWeek(w, agg, to === "friday" ? "this week, Monday to Friday" : "this week so far", fmtDur);
@@ -2457,7 +2496,7 @@ function renderWeekDetail(w, agg) {
 // narrow the visible task LIST only; they never change the headline totals or
 // the badge.
 // "Due today" is ticked by default (a saved choice always wins).
-let cuFilter = { dueWeek: false, dueNextWeek: false, duePrevWeek: false, dueThisMonth: false, dueNextMonth: false, duePrevMonth: false, dueCustom: false, dateBasis: "", missingDue: false, customFrom: "", customTo: "", customDays: [], missingEst: false, hasTracked: false, deadlineCrossed: false, waitingOthers: false, onlyMe: false, sharedTasks: false, manualOrder: false, statuses: [], priorities: [], clients: [] };
+let cuFilter = { dueWeek: false, dueNextWeek: false, duePrevWeek: false, dueThisMonth: false, dueNextMonth: false, duePrevMonth: false, dueCustom: false, dateBasis: "", missingDue: false, customFrom: "", customTo: "", customDays: [], missingEst: false, hasTracked: false, deadlineCrossed: false, waitingOthers: false, onlyMe: false, sharedTasks: false, manualOrder: false, statuses: [], priorities: [], clients: [], colors: [] };
 const CU_FILTER_KEYS = ["dueWeek", "dueNextWeek", "duePrevWeek", "dueThisMonth", "dueNextMonth", "duePrevMonth", "dueCustom", "missingEst", "missingDue", "hasTracked", "deadlineCrossed", "waitingOthers", "onlyMe", "sharedTasks", "groupSubtasks", "manualOrder"];
 const CU_PRIORITY_ORDER = ["urgent", "high", "normal", "low", "none"];
 
@@ -2499,6 +2538,24 @@ function cuWeekRangeLabel(base, b) {
 }
 // The date range the task list is showing (for exports), or null when the
 // filter has no date range (e.g. "Deadline crossed").
+// Drafts (local-tasks.js, not in ClickUp yet) due in a date range. Their time is
+// shown beside every total ("+ 1h in 1 draft") and counted in "to go" - it will
+// count once they're created, so it shouldn't be forgotten until then.
+function cuDraftsIn(range) {
+  const L = window.PcmLocalTasks && window.PcmLocalTasks.list ? window.PcmLocalTasks.list() : [];
+  if (!range || !L.length) return { n: 0, ms: 0 };
+  const day = (ms) => new Date(ms).setHours(0, 0, 0, 0); // by calendar day: a range may end at that day's start or its end
+  const from = day(range.fromTs), to = day(range.toTs);
+  const ds = L.filter((d) => { const at = Number(d.dueDateMs) || Number(d.startDateMs) || 0; return at && day(at) >= from && day(at) <= to; });
+  return { n: ds.length, ms: ds.reduce((a, d) => a + (Number(d.estimateMs) || 0), 0) };
+}
+function cuDraftChip(dr) {
+  const s = document.createElement("span");
+  s.className = "wk-draftest";
+  s.textContent = "+ " + (dr.ms ? fmtDur(dr.ms) + " in " : "") + dr.n + (dr.n === 1 ? " draft" : " drafts");
+  s.title = (dr.n === 1 ? "A draft task" : dr.n + " draft tasks") + " for these dates, not in ClickUp yet" + (dr.ms ? " (" + fmtDur(dr.ms) + " estimated)" : "") + " - counted once created, so it's counted in what's left to plan here too. Delete the draft if it isn't needed.";
+  return s;
+}
 function cuViewRange(st, f) {
   st = st || {}; f = f || {};
   const day = (ms) => { const a = new Date(ms); a.setHours(0, 0, 0, 0); const b = new Date(a); b.setHours(23, 59, 59, 999); return { fromTs: a.getTime(), toTs: b.getTime() }; };
@@ -2687,6 +2744,15 @@ function cuAssignPass(f, t) {
   const solo = (me ? ids.includes(me) : ids.length > 0) && others === 0;
   return f.onlyMe ? solo : !solo;
 }
+// Your colours (task-notes.js 🎨) in the Filter: cuFilter.colors holds the ticked
+// colour ids and "none" (tasks with no colour); a row passes when its colour (or
+// "none") is ticked. Nothing ticked = every task.
+function cuColorPass(f, t) {
+  const cs = Array.isArray(f.colors) ? f.colors : [];
+  if (!cs.length) return true;
+  const c = window.PcmTaskNotes && window.PcmTaskNotes.colorOf ? window.PcmTaskNotes.colorOf(cuId(t)) : null;
+  return cs.includes(c ? c.id : "none");
+}
 function cuRefinePredicate(f) {
   const todayStart = new Date().setHours(0, 0, 0, 0);
   const statuses = Array.isArray(f.statuses) ? f.statuses : [];
@@ -2704,6 +2770,7 @@ function cuRefinePredicate(f) {
     }
     if (statuses.length && !statuses.includes(String(t.status || "").toLowerCase())) return false;
     if (priorities.length && !priorities.includes(String(t.priority || "").toLowerCase() || "none")) return false;
+    if (!cuColorPass(f, t)) return false;
     return true;
   };
 }
@@ -2984,7 +3051,8 @@ function cuActiveFilterCount(f) {
   return CU_FILTER_KEYS.reduce((n, k) => n + (k !== "manualOrder" && f[k] ? 1 : 0), 0)
     + (Array.isArray(f.statuses) ? f.statuses.length : 0)
     + (Array.isArray(f.priorities) ? f.priorities.length : 0)
-    + (Array.isArray(f.clients) ? f.clients.length : 0);
+    + (Array.isArray(f.clients) ? f.clients.length : 0)
+    + (Array.isArray(f.colors) ? f.colors.length : 0);
 }
 
 // ---------- Custom (drag) task order ----------
@@ -3148,6 +3216,8 @@ function cuSetupDrag(container) {
   card.appendChild(title);
   for (const id of ["cuNow", "ltBox", "cuTaskList"]) { const el = document.getElementById(id); if (el) card.appendChild(el); }
   stats.after(card);
+  // its header holds "+ New task" now (local-tasks.js): draw that again
+  try { if (window.PcmLocalTasks && window.PcmLocalTasks.repaint) window.PcmLocalTasks.repaint(); } catch (e) {}
   // shown and hidden with the day card
   new MutationObserver(() => { if (card.style.display !== stats.style.display) card.style.display = stats.style.display; }).observe(stats, { attributes: true, attributeFilter: ["style"] });
 })();
@@ -3191,6 +3261,9 @@ function renderClickup() {
   if (st && window.pcmCountTo) window.pcmCountTo($("cuTotal"), "cuTotal", estMs, fmtDur);
   else $("cuTotal").textContent = st ? fmtDur(estMs) : "-";
   $("cuTarget").textContent = targetMs > 0 ? "/ " + fmtDur(targetMs) : "";
+  // Drafts for these dates, beside the total (they count once created).
+  const drView = cuDraftsIn(cuViewRange(st, cuFilter));
+  { const tg = $("cuTarget"); const old = tg && tg.parentNode.querySelector(".wk-draftest"); if (old) old.remove(); if (tg && drView.n) tg.after(cuDraftChip(drView)); }
 
   const fill = $("cuFill");
   const pct = targetMs > 0 ? Math.min(100, Math.round((estMs / targetMs) * 100)) : 0;
@@ -3278,7 +3351,7 @@ function renderClickup() {
   // date scope). deadlineCrossed = not done AND due date on a day before today;
   // rows without a due date (some week-scope rows) simply never match.
   const refineOn = cuFilter.missingEst || cuFilter.missingDue || cuFilter.waitingOthers || cuFilter.deadlineCrossed || cuFilter.hasTracked || cuFilter.onlyMe || cuFilter.sharedTasks
-    || (cuFilter.statuses && cuFilter.statuses.length) || (cuFilter.priorities && cuFilter.priorities.length);
+    || (cuFilter.statuses && cuFilter.statuses.length) || (cuFilter.priorities && cuFilter.priorities.length) || (cuFilter.colors && cuFilter.colors.length);
   if (refineOn && view.scope !== "plan") { // an applied plan is an explicit list: shown whole
     const keep = cuRefinePredicate(cuFilter);
     const todayStart = new Date().setHours(0, 0, 0, 0);
@@ -3297,6 +3370,7 @@ function renderClickup() {
       }
       if (cuFilter.statuses && cuFilter.statuses.length && !cuFilter.statuses.includes(String(d.status || "").toLowerCase())) return false;
       if (cuFilter.priorities && cuFilter.priorities.length && !cuFilter.priorities.includes(String(d.priority || "").toLowerCase() || "none")) return false;
+      if (!cuColorPass(cuFilter, d)) return false;
       return true;
     });
   }
@@ -3318,8 +3392,10 @@ function renderClickup() {
   if (view.scope && view.scope !== "extended") bits.push(view.label || CU_SCOPE_LABEL[view.scope]);
   bits.push(taskCount + (taskCount === 1 ? " task" : " tasks"));
   bits.push("est " + fmtDur(estMs) + (targetMs > 0 ? " / " + fmtDur(targetMs) : ""));
-  if (met) bits.push("met ✓");
-  else if (targetMs > 0) bits.push(fmtDur(Math.max(0, targetMs - estMs)) + " to go");
+  if (drView.n) bits.push("+ " + (drView.ms ? fmtDur(drView.ms) + " in " : "") + drView.n + (drView.n === 1 ? " draft" : " drafts"));
+  if (met) bits.push("met \u2713");
+  else if (targetMs > 0 && estMs + drView.ms >= targetMs) bits.push("met \u2713 with drafts");
+  else if (targetMs > 0) bits.push(fmtDur(Math.max(0, targetMs - estMs - drView.ms)) + " to go");
   if (spentTot > 0) bits.push("tracked " + fmtDur(spentTot));
   const deadlineMs = deadlineList.reduce((a, d) => a + (Number(d.dayEstimateMs) || 0), 0);
   if (deadlineMs > 0) bits.push("deadline +" + fmtDur(deadlineMs));
@@ -3335,6 +3411,7 @@ function renderClickup() {
     if (cuFilter.deadlineCrossed) tags.push("deadline crossed");
     if (cuFilter.statuses && cuFilter.statuses.length) tags.push("status: " + cuFilter.statuses.join("/"));
     if (cuFilter.priorities && cuFilter.priorities.length) tags.push("priority: " + cuFilter.priorities.join("/"));
+    if (cuFilter.colors && cuFilter.colors.length) { const ls = window.PcmTaskNotes && window.PcmTaskNotes.colorLabels ? window.PcmTaskNotes.colorLabels() : []; tags.push("colour: " + cuFilter.colors.map((k) => (k === "none" ? "no colour" : ((ls.find((l) => l.id === k) || {}).name || "?"))).join("/")); }
     bits.push("filter: " + tags.join(" + "));
   }
   if (clientsSel.length) bits.push("client: " + clientsSel.join("/"));
@@ -4190,6 +4267,7 @@ function cuSingleClearGroup(el) {
   } else if (el.hasAttribute("data-cf-status")) cuFilter.statuses = [];
   else if (el.hasAttribute("data-cf-priority")) cuFilter.priorities = [];
   else if (el.hasAttribute("data-cf-client")) cuFilter.clients = [];
+  else if (el.hasAttribute("data-cf-color")) cuFilter.colors = [];
 }
 // Switching to single mode: keep only the first ticked box in each group.
 function cuTrimToSingle() {
@@ -4197,7 +4275,7 @@ function cuTrimToSingle() {
     let kept = false;
     for (const k of grp) { if (cuFilter[k]) { if (kept) cuFilter[k] = false; kept = true; } }
   }
-  for (const key of ["statuses", "priorities", "clients"]) {
+  for (const key of ["statuses", "priorities", "clients", "colors"]) {
     if (Array.isArray(cuFilter[key]) && cuFilter[key].length > 1) cuFilter[key] = cuFilter[key].slice(0, 1);
   }
 }
@@ -4211,6 +4289,7 @@ function cuClearAllFilters() {
   cuFilter.statuses = [];
   cuFilter.priorities = [];
   cuFilter.clients = [];
+  cuFilter.colors = [];
   cuFilter.customFrom = "";
   cuFilter.customTo = "";
   cuFilter.customDays = [];
@@ -4222,7 +4301,7 @@ function cuClearAllFilters() {
 }
 // Your own starting point: "Save as my default" remembers the ticked filters
 // and the selection mode; a fresh install (or "Use my default") applies them.
-const CU_FILTER_EXTRAS = ["statuses", "priorities", "clients", "customFrom", "customTo", "dateBasis", "customDays"];
+const CU_FILTER_EXTRAS = ["statuses", "priorities", "clients", "colors", "customFrom", "customTo", "dateBasis", "customDays"];
 // Calendar (calendar.js): clicking a day lists that day's tasks (saved like any
 // filter, so the dashboard and badge follow).
 // The filter you had before is kept, and a bar over the list says which day is
@@ -4299,7 +4378,8 @@ function cuPaintClearBtn(menu) {
   const on = CU_FILTER_KEYS.some((k) => k !== "manualOrder" && cuFilter[k]) ||
     (cuFilter.statuses && cuFilter.statuses.length) ||
     (cuFilter.priorities && cuFilter.priorities.length) ||
-    (cuFilter.clients && cuFilter.clients.length);
+    (cuFilter.clients && cuFilter.clients.length) ||
+    (cuFilter.colors && cuFilter.colors.length);
   b.disabled = !on;
 }
 function cuPaintModeToggle(menu) {
@@ -4386,6 +4466,25 @@ function renderCuFilterMenu() {
   cuAddAllClientsBox($("cuFilterClientList"), clientVals, clients);
   const sg = $("cuFilterStatusGroup"); if (sg) sg.hidden = !statusVals.length;
   const pg = $("cuFilterPriorityGroup"); if (pg) pg.hidden = !priorityVals.length;
+  // Your colours (🎨): a dot and its meaning each, then "No colour". Ticks for a
+  // colour since deleted drop off.
+  {
+    const ls = window.PcmTaskNotes && window.PcmTaskNotes.colorLabels ? window.PcmTaskNotes.colorLabels() : [];
+    const ids = ls.map((l) => l.id);
+    if (Array.isArray(cuFilter.colors) && cuFilter.colors.some((k) => k !== "none" && !ids.includes(k))) { cuFilter.colors = cuFilter.colors.filter((k) => k === "none" || ids.includes(k)); chrome.storage.local.set({ cuFilter }).catch(() => {}); }
+    const box = $("cuFilterColorList");
+    const vals = ls.length ? ids.concat(["none"]) : [];
+    cuBuildFacetList(box, "data-cf-color", vals, Array.isArray(cuFilter.colors) ? cuFilter.colors : [], (k) => (k === "none" ? "No colour" : (ls.find((l) => l.id === k) || {}).name || k));
+    if (box) box.querySelectorAll("input[data-cf-color]").forEach((inp) => {
+      const l = ls.find((x) => x.id === inp.getAttribute("data-cf-color"));
+      const dot = document.createElement("i");
+      dot.className = "cu-cdot";
+      dot.style.background = l ? l.color : "transparent";
+      if (!l) dot.style.border = "1px dashed var(--muted)";
+      inp.after(dot);
+    });
+    const cg2 = $("cuFilterColorGroup"); if (cg2) cg2.hidden = !vals.length;
+  }
   const cg = $("cuFilterClientGroup"); if (cg) cg.hidden = !clientVals.length;
 }
 function openCuFilterMenu(open) {
@@ -4500,6 +4599,7 @@ function openCuFilterMenu(open) {
     if (el.hasAttribute("data-cf")) cuFilter[el.getAttribute("data-cf")] = el.checked;
     else if (el.hasAttribute("data-cf-status")) cuToggleArrayVal(cuFilter, "statuses", el.getAttribute("data-cf-status"), el.checked);
     else if (el.hasAttribute("data-cf-priority")) cuToggleArrayVal(cuFilter, "priorities", el.getAttribute("data-cf-priority"), el.checked);
+    else if (el.hasAttribute("data-cf-color")) cuToggleArrayVal(cuFilter, "colors", el.getAttribute("data-cf-color"), el.checked);
     else if (el.hasAttribute("data-cf-client-all")) cuFilter.clients = el.checked
       ? [...menu.querySelectorAll("input[data-cf-client]")].map((x) => x.getAttribute("data-cf-client"))
       : [];
@@ -4684,3 +4784,6 @@ setInterval(() => {
     }
   } catch (e) {}
 }, 30000);
+
+// A task coloured / a colour made or deleted (task-notes.js): the Colour filter and its list follow.
+chrome.storage.onChanged.addListener((ch, area) => { if (area !== "local" || !(ch.taskColors || ch.taskColorLabels)) return; setTimeout(() => { try { renderCuFilterMenu(); } catch (e) {} if (Array.isArray(cuFilter.colors) && cuFilter.colors.length) { try { renderClickup(); } catch (e) {} } }, 50); });

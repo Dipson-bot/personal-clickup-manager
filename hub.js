@@ -56,6 +56,37 @@
     .hb-rolesel { font: inherit; font-size: 11.5px; padding: 2px 6px; width: auto; }
     .hb-msgs { display: flex; flex-direction: column; gap: 12px; margin: 8px 0 12px; }
     .hb-m { display: flex; gap: 10px; }
+    .hb-avw { position: relative; display: inline-block; line-height: 0; }
+    .hb-avw.hb-click, .hb-uname.hb-click { cursor: pointer; }
+    .hb-uname.hb-click:hover { color: var(--indigo, #6366f1); text-decoration: underline; }
+    .hb-daypop { position: fixed; z-index: 2147483000; width: 320px; max-width: calc(100vw - 24px); box-sizing: border-box; padding: 14px 16px; border-radius: 14px; border: 1px solid var(--border); background: var(--card, #fff); color: var(--text); box-shadow: 0 16px 40px rgba(0,0,0,.24); font-size: 12.5px; }
+    .hb-daypop .dh { display: flex; align-items: center; gap: 10px; margin-bottom: 10px; }
+    .hb-daypop .dh b { font-size: 14px; }
+    .hb-daypop .dh .sp { flex: 1; }
+    .hb-daypop .dx { border: 0; background: none; color: var(--muted); cursor: pointer; font-size: 13px; }
+    .hb-daypop .dsub { color: var(--muted); font-size: 11.5px; }
+    .hb-daypop .drun { padding: 8px 10px; border-radius: 9px; background: color-mix(in srgb, #22c55e 12%, var(--card, #fff)); border: 1px solid color-mix(in srgb, #22c55e 35%, transparent); margin-bottom: 10px; line-height: 1.45; }
+    .hb-daypop .drun a { color: var(--text); font-weight: 600; }
+    .hb-daypop .drun.none { background: var(--bg2); border-color: var(--border); color: var(--muted); }
+    .hb-daypop .dsec { margin-top: 8px; padding-top: 8px; border-top: 1px dashed var(--border); }
+    .hb-daypop .dsec:first-of-type { border-top: 0; }
+    .hb-daypop .dt { display: flex; align-items: baseline; gap: 6px; margin-bottom: 4px; }
+    .hb-daypop .dt b { font-size: 13px; white-space: nowrap; }
+    .hb-daypop .dt .dsub { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .hb-daypop .dt .chip { white-space: nowrap; flex: none; }
+    .hb-daypop .dt .chip { margin-left: auto; font-size: 11px; font-weight: 700; padding: 2px 8px; border-radius: 999px; background: rgba(217,119,6,.13); color: var(--amber, #b45309); }
+    .hb-daypop .dt .chip.met { background: rgba(22,163,74,.13); color: var(--green, #16a34a); }
+    .hb-daypop .dl { display: flex; justify-content: space-between; font-size: 11.5px; margin-top: 6px; }
+    .hb-daypop .db { height: 8px; border-radius: 6px; background: var(--bg2, #e5e7eb); overflow: hidden; margin-top: 3px; }
+    .hb-daypop .db i { display: block; height: 100%; border-radius: 6px; background: #d97706; }
+    .hb-daypop .db.trk i { background: #3b82f6; }
+    .hb-daypop .db i.met { background: #16a34a; }
+    .hb-dot { position: absolute; right: -1px; bottom: -1px; width: 10px; height: 10px; border-radius: 50%; border: 2px solid var(--card, #fff); box-sizing: content-box; }
+    .hb-dot.on { background: #22c55e; }
+    .hb-dot.away { background: #eab308; }
+    .hb-dot.off { background: #9ca3af; }
+    .hb-act-on { color: #16a34a; font-weight: 700; }
+    html[data-theme="dark"] .hb-act-on { color: #4ade80; }
     .hb-av { width: 30px; height: 30px; border-radius: 50%; flex: none; object-fit: cover; display: grid; place-items: center; font: 700 11px sans-serif; color: #fff; background: #6366f1; overflow: hidden; }
     .hb-m .hb-b { flex: 1; min-width: 0; }
     .hb-m .hb-who { font-size: 12px; display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
@@ -518,6 +549,35 @@
       say("Connected ✓ " + (r.shared ? "Everyone's extension gets it on its next check (within a few minutes)." : "Saved on this computer only: " + r.shareError + "."), !r.shared);
       loadUsers();
     };
+    // The hub script's editor link (storage hubScriptUrl, this computer only): open
+    // it, or copy the latest team-hub.gs and open it in one go to update the hub.
+    const sIn = $("hubAdmScript");
+    if (sIn) {
+      const SCRIPT_RE = /^https:\/\/script\.google\.com\/(home\/projects|d)\/[A-Za-z0-9_-]{20,}(\/edit)?\/?$/;
+      const sMsg = $("hubAdmScriptMsg");
+      const sSay = (t, bad) => { sMsg.style.display = t ? "inline" : "none"; sMsg.textContent = t || ""; sMsg.style.color = bad ? "var(--red, #dc2626)" : ""; };
+      const link = () => { const v = sIn.value.trim(); return SCRIPT_RE.test(v) ? v : ""; };
+      const paintBtns = () => { $("hubAdmOpen").disabled = $("hubAdmUpd").disabled = !link(); };
+      try { const g = await chrome.storage.local.get("hubScriptUrl"); if (g && g.hubScriptUrl) sIn.value = g.hubScriptUrl; } catch (e) {}
+      paintBtns();
+      sIn.addEventListener("input", () => { paintBtns(); sSay(""); });
+      sIn.addEventListener("change", async () => {
+        const v = sIn.value.trim();
+        if (v && !SCRIPT_RE.test(v)) { sSay("That isn't an Apps Script editor link (https://script.google.com/home/projects/…/edit).", true); return; }
+        try { if (v) await chrome.storage.local.set({ hubScriptUrl: v }); else await chrome.storage.local.remove("hubScriptUrl"); sSay(v ? "Saved ✓" : "Removed"); } catch (e) { sSay("Couldn't save it: " + e.message, true); }
+      });
+      $("hubAdmOpen").onclick = () => { const v = link(); if (v) window.open(v, "_blank", "noopener"); };
+      $("hubAdmUpd").onclick = async () => {
+        const v = link();
+        if (!v) return;
+        try {
+          const code = await (await fetch(chrome.runtime.getURL("team-hub.gs"))).text();
+          await navigator.clipboard.writeText(code);
+          sSay("Script copied ✓ In the editor: Code.gs, Ctrl+A, Ctrl+V, Ctrl+S, then Deploy › Manage deployments › ✏️ › New version › Deploy.");
+        } catch (e) { sSay("Couldn't copy it: " + e.message + " - the editor opens anyway.", true); }
+        window.open(v, "_blank", "noopener");
+      };
+    }
     if (i && i.adminKey) { $("hubAdmKey").placeholder = "Saved ✓ (enter a new key only to change it)"; loadUsers(); }
   }
   // One person, several rows. The hub's Users sheet is keyed by INSTALL id, not by
@@ -528,6 +588,111 @@
   // removed rather than quietly hidden. A row with no ClickUp id yet (the
   // extension checked in before ClickUp was connected) matches nobody, so it
   // stands on its own instead of being folded into someone else.
+  // Active now / away / offline, from the hub's presence (an older hub script has none).
+  // on: the copy's last call (every 3-10 min while Chrome runs); act: the person's
+  // last keyboard / mouse use. Last active: the later of that and the check-in.
+  const ONLINE_MS = 12 * 60000, ACTIVE_MS = 15 * 60000;
+  function presence(u) {
+    const t = Date.now(), on = Number(u && u.onAt) || 0, act = Number(u && u.actAt) || 0;
+    const last = Math.max(act, Number(u && u.lastSeen) || 0);
+    if (!on) return { k: "", last };
+    if (t - on < ONLINE_MS && act && t - act < ACTIVE_MS) return { k: "on", last, label: "Active now" };
+    if (t - on < ONLINE_MS) return { k: "away", last, label: "Away" + (act ? " - last active " + ago(act) : "") + " (Chrome is open)" };
+    return { k: "off", last, label: "Offline - last active " + (last ? ago(last) : "never") };
+  }
+  // ---- One person's day: click their picture or name in Admin › Users ----
+  // From what their own copy last reported (u.day, with the presence): the task
+  // with a timer running, Due today and This week - the same numbers as their
+  // dashboard cards. An older copy or hub sends none: the card says so.
+  const durS = (ms) => { const m = Math.round((Number(ms) || 0) / 60000); const h = Math.floor(m / 60); return h ? h + "h" + (m % 60 ? " " + (m % 60) + "m" : "") : m + "m"; };
+  let dayPop = null;
+  function closeDayPop() { if (dayPop) { dayPop.remove(); dayPop = null; } }
+  document.addEventListener("mousedown", (e) => { if (dayPop && !dayPop.contains(e.target) && !(e.target.closest && e.target.closest(".hb-click"))) closeDayPop(); }, true);
+  document.addEventListener("keydown", (e) => { if (e.key === "Escape") closeDayPop(); });
+  // The page scrolls: it follows its row, and closes once the row is off screen.
+  window.addEventListener("scroll", (e) => { if (dayPop && dayPop._place && !(e.target && e.target.nodeType === 1 && dayPop.contains(e.target))) dayPop._place(); }, true);
+  function bars(box, title, est, trk, tgt, sub) {
+    const s = el("div", "dsec");
+    const t = el("div", "dt");
+    t.appendChild(el("b", "", title));
+    if (sub) t.appendChild(el("span", "dsub", sub));
+    if (tgt > 0) { const left = tgt - est; t.appendChild(el("span", "chip" + (left <= 0 ? " met" : ""), left <= 0 ? "Target met \u2713" : durS(left) + " to go")); }
+    s.appendChild(t);
+    for (const [lab, v, cls] of [["Estimated", est, ""], ["Tracked", trk, " trk"]]) {
+      const l = el("div", "dl");
+      l.append(el("span", "", lab), el("span", "", durS(v) + (tgt > 0 ? " of " + durS(tgt) : "")));
+      const b = el("div", "db" + cls);
+      const f = el("i", tgt > 0 && v >= tgt ? "met" : "");
+      f.style.width = (tgt > 0 ? Math.min(100, Math.round((v / tgt) * 100)) : 0) + "%";
+      b.appendChild(f);
+      s.append(l, b);
+    }
+    box.appendChild(s);
+  }
+  function openDayPop(u, anchor) {
+    const same = dayPop && dayPop._for === u.install;
+    closeDayPop();
+    if (same) return;
+    const p = presence(u), d = u.day;
+    const box = el("div", "hb-daypop");
+    box._for = u.install;
+    const h = el("div", "dh");
+    h.appendChild(presenceAvatar({ ...u, _noClick: true }));
+    const nm = el("div");
+    nm.appendChild(el("b", "", u.name || "(no name)"));
+    nm.appendChild(el("div", "dsub", p.label || (p.last ? "Last active " + ago(p.last) : "")));
+    const x = el("button", "dx", "\u2715"); x.type = "button"; x.title = "Close"; x.onclick = closeDayPop;
+    h.append(nm, el("span", "sp"), x);
+    box.appendChild(h);
+    const mid = new Date().setHours(0, 0, 0, 0);
+    if (!d || !(Number(d.at) >= mid)) {
+      box.appendChild(el("div", "drun none", !d ? "Their day isn't reported yet. It comes with their copy's next check-in, once they're on v4.2.9 (and the hub script is up to date)." : "Nothing reported today yet - their copy last sent numbers " + ago(d.at) + "."));
+    } else {
+      const run = el("div", "drun" + (d.run ? "" : " none"));
+      if (d.run) {
+        run.append("\u25B6 Working on ");
+        const a = el("a", "", d.run.name || "a task");
+        a.href = "https://app.clickup.com/t/" + encodeURIComponent(d.run.id); a.target = "_blank"; a.rel = "noopener";
+        a.title = "Open it in ClickUp";
+        run.appendChild(a);
+        if (d.run.since) run.appendChild(el("div", "dsub", "Timer running for " + durS(Date.now() - d.run.since) + " (since " + new Date(d.run.since).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" }) + ")"));
+      } else run.textContent = "No timer running";
+      box.appendChild(run);
+      // The timer keeps counting after the report: add the minutes since.
+      const extra = d.run ? Math.max(0, Date.now() - Number(d.at)) : 0;
+      bars(box, "Due today", Number(d.est) || 0, (Number(d.trk) || 0) + extra, Number(d.tgt) || 0, (d.n || 0) + (d.n === 1 ? " task" : " tasks") + (d.ne ? " \u00b7 " + d.ne + " without an estimate" : ""));
+      if (d.w) {
+        const f = (ms) => new Date(ms).toLocaleDateString([], { month: "short", day: "numeric" });
+        bars(box, "This week", Number(d.w.est) || 0, (Number(d.w.trk) || 0) + extra, Number(d.w.tgt) || 0, d.w.from && d.w.to ? f(d.w.from) + " \u2013 " + f(d.w.to) : "");
+      }
+      box.appendChild(el("div", "dsub", "As reported by their extension " + ago(d.at) + (d.run ? " (tracked time includes the minutes since)" : "") + ".")).style.marginTop = "10px";
+    }
+    document.body.appendChild(box);
+    dayPop = box;
+    box._place = () => {
+      const r = anchor.getBoundingClientRect();
+      if (!anchor.isConnected || r.bottom < 0 || r.top > window.innerHeight) { closeDayPop(); return; }
+      const left = Math.max(12, Math.min(window.innerWidth - box.offsetWidth - 12, r.left));
+      let top = r.bottom + 6;
+      if (top + box.offsetHeight > window.innerHeight - 12) top = Math.max(12, r.top - box.offsetHeight - 6);
+      box.style.left = left + "px"; box.style.top = top + "px";
+    };
+    box._place();
+  }
+  function presenceAvatar(u) {
+    const p = presence(u);
+    const w = el("span", "hb-avw");
+    w.appendChild(avatar(u));
+    if (p.k) { const d = el("span", "hb-dot " + p.k); w.title = p.label; d.setAttribute("aria-label", p.label); w.appendChild(d); }
+    if (!u._noClick) {
+      w.classList.add("hb-click");
+      w.title = (p.label ? p.label + " - " : "") + "click to see their day";
+      w.tabIndex = 0; w.setAttribute("role", "button");
+      w.onclick = (e) => { e.stopPropagation(); openDayPop(u, w); };
+      w.onkeydown = (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); openDayPop(u, w); } };
+    }
+    return w;
+  }
   function dedupeUsers(list) {
     const seen = new Map(), out = [];
     for (const u of Array.isArray(list) ? list : []) {
@@ -542,11 +707,13 @@
     // too important to depend on a hand-deployed script for: decide it here.
     for (const g of out) {
       if (!g.dupes.length) continue;
-      const all = [g.row].concat(g.dupes).sort((a, b) => (Number(b.lastSeen) || 0) - (Number(a.lastSeen) || 0));
+      const all = [g.row].concat(g.dupes).sort((a, b) => presence(b).last - presence(a).last);
       g.row = all[0];
       g.dupes = all.slice(1);
     }
-    return out.sort((a, b) => (Number(b.row.lastSeen) || 0) - (Number(a.row.lastSeen) || 0));
+    // Active now first, then away, then by last active.
+    const rank = (g) => ({ on: 2, away: 1 })[presence(g.row).k] || 0;
+    return out.sort((a, b) => rank(b) - rank(a) || presence(b.row).last - presence(a.row).last);
   }
   // The hub script is pasted into Apps Script and deployed by hand, so a copy of
   // the extension can be newer than the script behind it. An older script doesn't
@@ -658,17 +825,18 @@
     note = el("div", "hint hb-usersnote");
     note.style.cssText = "display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:6px;";
     note.appendChild(el("span", "", "Checked " + new Date().toLocaleTimeString([], { hour: "numeric", minute: "2-digit" }) +
-      ". A version here is what that copy last reported, not what it is running right now: a copy checks in when someone opens it (at most hourly), at least once a day, and straight after it updates. So a version can lag by up to a day - ↻ re-reads the row, 🔔 asks the person to open their extension."));
+      ". A version here is what that copy last reported, not what it is running right now: a copy checks in when someone opens it (at most hourly), at least once a day, and straight after it updates. So a version can lag by up to a day - ↻ re-reads the row, 🔔 asks the person to open their extension." +
+      (r.presence ? " The dot on a picture: green = active now, yellow = away (Chrome open, no keyboard or mouse for 15 min), grey = offline. It's only a time - nothing about what they're doing." : " To see who is active now (a green dot on each picture), copy team-hub.gs again and deploy a new version of the hub.")));
     const rf = el("button", "hb-mini", "↻ Refresh"); rf.type = "button"; rf.onclick = () => loadUsers();
     note.appendChild(rf);
     box.appendChild(note);
     const st = r.settings || {};
     const stats = el("div", "hb-stats");
     const day = 86400000, nowMs = Date.now();
-    const since = (g) => nowMs - (Number(g.row.lastSeen) || 0);
+    const since = (g) => nowMs - presence(g.row).last;
     const oldV = people.filter((g) => g.row.version && cmpV(g.row.version, VERSION) < 0).length;
-    const nums = [[people.length, "people"], [people.filter((g) => since(g) < day).length, "active today"],
-      [people.filter((g) => since(g) < 7 * day).length, "active this week"], [oldV, "on an older version"]];
+    const nums = [[people.length, "people"]].concat(r.presence ? [[people.filter((g) => presence(g.row).k === "on").length, "active now"]] : []).concat([[people.filter((g) => since(g) < day).length, "active today"],
+      [people.filter((g) => since(g) < 7 * day).length, "active this week"], [oldV, "on an older version"]]);
     if (extra) nums.push([extra, extra === 1 ? "older copy" : "older copies"]);
     for (const [n, l] of nums) { const s = el("span"); s.appendChild(el("b", "", String(n))); s.append(l); stats.appendChild(s); }
     box.appendChild(stats);
@@ -733,9 +901,12 @@
     const dupRow = el("tr"); dupRow.style.display = "none";
     const noteRow = el("tr"); noteRow.style.display = "none";
     const tr = el("tr", "hb-urow");
-    const c0 = el("td"); c0.appendChild(avatar(u)); tr.appendChild(c0);
+    const c0 = el("td"); c0.appendChild(presenceAvatar(u)); tr.appendChild(c0);
     const cn = el("td");
-    cn.appendChild(el("div", "", u.name || "(no name)"));
+    const un = el("div", "hb-uname hb-click", u.name || "(no name)");
+    un.title = "See their day: the task they're on, Due today and This week";
+    un.onclick = (e) => { e.stopPropagation(); openDayPop(u, un); };
+    cn.appendChild(un);
     if (g.dupes.length) {
       const label = () => g.dupes.length + " older cop" + (g.dupes.length === 1 ? "y" : "ies");
       const more = el("button", "hb-mini", "▸ " + label());
@@ -795,7 +966,9 @@
     const cv = el("td", "", u.version ? "v" + u.version : "-"); if (u.version && cmpV(u.version, VERSION) < 0) cv.style.color = "#b45309";
     if (u.lastSeen) cv.title = "Reported " + ago(u.lastSeen) + " (" + new Date(u.lastSeen).toLocaleString() + ")";
     tr.appendChild(cv);
-    const cl = el("td", "", u.lastSeen ? ago(u.lastSeen) : "-");
+    const pz = presence(u);
+    const cl = el("td", pz.k === "on" ? "hb-act-on" : "", pz.k === "on" ? "Active now" : pz.k === "away" ? "Away" : pz.last ? ago(pz.last) : "-");
+    if (pz.label) cl.title = pz.label;
     tr.appendChild(cl);
     tr.appendChild(el("td", "", u.state === "banned" ? "Banned" : u.state === "muted" ? "Muted until " + new Date(u.mutedUntil).toLocaleString([], { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" }) : ""));
     const ca = el("td");
@@ -816,7 +989,14 @@
       cv.textContent = fresh.version ? "v" + fresh.version : "-";
       cv.style.color = fresh.version && cmpV(fresh.version, VERSION) < 0 ? "#b45309" : "";
       cv.title = fresh.lastSeen ? "Reported " + ago(fresh.lastSeen) + " (" + new Date(fresh.lastSeen).toLocaleString() + ")" : "";
-      cl.textContent = fresh.lastSeen ? ago(fresh.lastSeen) : "-";
+      {
+        const pz2 = presence(u);
+        cl.textContent = pz2.k === "on" ? "Active now" : pz2.k === "away" ? "Away" : pz2.last ? ago(pz2.last) : "-";
+        cl.className = pz2.k === "on" ? "hb-act-on" : "";
+        cl.title = pz2.label || "";
+        const ow = c0.querySelector(".hb-avw");
+        if (ow) ow.replaceWith(presenceAvatar(u));
+      }
       const who = u.name || "That copy";
       say(moved
         ? who + " now reports " + (fresh.version ? "v" + fresh.version : "no version") + "."

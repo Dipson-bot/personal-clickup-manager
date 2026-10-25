@@ -17,6 +17,15 @@
 (() => {
   "use strict";
   let notes = {}, pins = {};
+  // ✓ Done early (storage taskEarly { [taskId]: { at, name } }): a task of a later
+  // week you've already finished, still open in ClickUp until its week - marked
+  // here only, so it reads as done in your plan (dimmed, ✓ done early).
+  let early = {};
+  let colors = {}, colorLabels = []; // 🎨 (see "your own colours on tasks" below)
+  // Earlier colour swatches -> their new shade (same meaning, easier to see on every palette).
+  // Older shades of the colours, moved to today's (TN_SWATCH): each one straight to its current shade.
+  const TN_RESHADE = { "#dc2626": "#e5383b", "#ea580c": "#df6e0c", "#d97706": "#eab308", "#16a34a": "#1e8a44", "#0d9488": "#17a19a", "#2563eb": "#3474f4", "#7c3aed": "#9b4dec", "#db2777": "#d65cad", "#64748b": "#757575",
+    "#d9480f": "#df6e0c", "#0f8a7e": "#17a19a", "#3b6fe8": "#3474f4", "#8b5cf6": "#9b4dec", "#d6338a": "#d65cad", "#6b7a90": "#757575" };
   const subs = [];
   const esc = (s) => String(s == null ? "" : s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;").replace(/'/g, "&#39;");
   const uid = () => Date.now().toString(36) + Math.random().toString(36).slice(2, 7);
@@ -55,17 +64,44 @@
   let rems = [];
   function load() {
     try {
-      chrome.storage.local.get(["taskNotes", "taskPins", "reminders"]).then((g) => {
+      chrome.storage.local.get(["taskNotes", "taskPins", "reminders", "taskEarly", "taskColors", "taskColorLabels"]).then((g) => {
+        colors = g.taskColors && typeof g.taskColors === "object" ? g.taskColors : {};
+        colorLabels = Array.isArray(g.taskColorLabels) ? g.taskColorLabels : [];
+        if (colorLabels.some((l) => l && TN_RESHADE[String(l.color).toLowerCase()])) {
+          colorLabels = colorLabels.map((l) => (l && TN_RESHADE[String(l.color).toLowerCase()] ? { ...l, color: TN_RESHADE[String(l.color).toLowerCase()] } : l));
+          chrome.storage.local.set({ taskColorLabels: colorLabels }).catch(() => {});
+        }
         notes = g.taskNotes && typeof g.taskNotes === "object" ? g.taskNotes : {};
         pins = g.taskPins && typeof g.taskPins === "object" ? g.taskPins : {};
+        early = g.taskEarly && typeof g.taskEarly === "object" ? g.taskEarly : {};
         rems = Array.isArray(g.reminders) ? g.reminders : [];
+        // "Done early" is one of the colours now (built in, green): earlier marks move over once.
+        if (Object.keys(early).length) {
+          const next = { ...colors };
+          for (const [k, v] of Object.entries(early)) if (!next[k]) next[k] = { l: "early", note: "", at: Number(v && v.at) || Date.now(), name: String((v && v.name) || "") };
+          colors = next; early = {};
+          chrome.storage.local.set({ taskColors: next, taskEarly: {} }).catch(() => {});
+        }
+        // An older colour's "why" text becomes that task's note in My notes (once).
+        const olds = Object.entries(colors).filter(([, v]) => v && v.note && !v.nid);
+        if (olds.length) {
+          const nextC = { ...colors }, nextN = { ...notes };
+          for (const [k, v] of olds) {
+            const nid = uid();
+            const cur = nextN[k] && Array.isArray(nextN[k].notes) ? nextN[k].notes : [];
+            nextN[k] = { name: String((nextN[k] && nextN[k].name) || v.name || ""), client: String((nextN[k] && nextN[k].client) || ""), notes: cur.map((n) => (n.c ? (({ c, ...r }) => r)(n) : n)).concat([{ id: nid, text: String(v.note), at: Number(v.at) || Date.now(), files: [], c: v.l }]) };
+            nextC[k] = { l: v.l, nid, at: v.at, name: v.name || "" };
+          }
+          colors = nextC; notes = nextN;
+          chrome.storage.local.set({ taskColors: nextC, taskNotes: nextN }).catch(() => {});
+        }
         changed();
       }).catch(() => {});
     } catch (e) {}
   }
   try { chrome.storage.onChanged.addListener((ch, area) => {
     if (area !== "local") return;
-    if (ch.taskNotes || ch.taskPins || ch.reminders) load();
+    if (ch.taskNotes || ch.taskPins || ch.reminders || ch.taskEarly || ch.taskColors || ch.taskColorLabels) load();
     // A reminder from a teammate (or one being read / dismissed here) redraws the
     // open panels too, so the list is right the moment it arrives.
     if (ch.nudgesIn || ch.nudgeSeen) loadNudges();
@@ -87,6 +123,7 @@
   loadNudges();
   const notesOf = (id) => (notes[String(id)] && Array.isArray(notes[String(id)].notes)) ? notes[String(id)].notes : [];
   const isPinned = (id) => !!pins[String(id)];
+  const isEarly = (id) => !!(colors[String(id)] && colors[String(id)].l === "early");
 
   // ---------- reminders sent to teammates, and the ones they sent you ----------
   // SENDING: a saved note can go to a co-assignee. It travels through the Team hub
@@ -162,6 +199,13 @@
   async function clearNudges() {
     await setNudges([], {});
   }
+  // Done early = the built-in green colour (see "your own colours on tasks").
+  function setEarly(id, on, name) {
+    const cur = colors[String(id)];
+    if (on) return setColor(id, "early", cur ? cur.note : "", name);
+    if (cur && cur.l === "early") return setColor(id, null);
+    return Promise.resolve();
+  }
   async function setPin(id, on) {
     const g = await chrome.storage.local.get("taskPins").catch(() => ({}));
     const p = g.taskPins && typeof g.taskPins === "object" ? g.taskPins : {};
@@ -191,10 +235,50 @@
   .tn-b { border: 0; background: none; cursor: pointer; padding: 0 3px; font-size: 11px; line-height: 16px; border-radius: 5px; color: var(--muted); opacity: 0; transition: opacity .12s; font-family: inherit; }
   .cu-task:hover .tn-b, .tn-b:focus-visible, .tn-b.on { opacity: 1; }
   .tn-b:hover { background: var(--bg2, rgba(0,0,0,.06)); color: var(--text); }
+  .cu-task:has(> .tn-cbar) { position: relative; }
+  /* the bar sits in the gap after the drag grip (or at the very left without one); 8px wide to hover, 4px drawn */
+  .tn-cbar { position: absolute; top: 3px; bottom: 3px; left: 0; width: 8px; z-index: 1; cursor: help; }
+  /* thin (3px, a hairline edge so yellow still shows on white); the 8px around it is what you hover */
+  .tn-cbar::before { content: ""; position: absolute; top: 0; bottom: 0; left: 2px; width: 3px; border-radius: 2px; background: var(--tn-c); box-shadow: 0 0 0 0.5px rgba(0,0,0,.35); }
+  html[data-theme="dark"] .tn-cbar::before { box-shadow: 0 0 0 0.5px rgba(255,255,255,.35); }
+  .cu-task:has(> .cu-drag) > .tn-cbar { left: 15px; }
+  /* the tint: visible on every palette - stronger on dark ones, where a light wash disappears */
+  .cu-task.tn-colored { background-image: linear-gradient(90deg, color-mix(in srgb, var(--tn-c) 18%, transparent), color-mix(in srgb, var(--tn-c) 8%, transparent)); }
+  html[data-theme="dark"] .cu-task.tn-colored { background-image: linear-gradient(90deg, color-mix(in srgb, var(--tn-c) 30%, transparent), color-mix(in srgb, var(--tn-c) 14%, transparent)); }
+  .tn-cls { border: 1px solid var(--border); background: none; color: var(--muted); cursor: pointer; font: inherit; font-size: 10.5px; padding: 1px 6px; border-radius: 999px; white-space: nowrap; }
+  .tn-cls.on { color: #b45309; border-color: rgba(217,119,6,.5); background: rgba(245,158,11,.1); }
+  .tn-note-i.tn-note-col { border-left: 4px solid var(--tn-c) !important; background-image: linear-gradient(90deg, color-mix(in srgb, var(--tn-c) 10%, transparent), transparent 70%); }
+  .tn-ncl { display: flex; align-items: center; gap: 6px; font-size: 11px; font-weight: 700; color: var(--muted); margin-bottom: 3px; }
+  .tn-ncl i { width: 9px; height: 9px; border-radius: 50%; background: var(--tn-c); }
+  textarea.tn-cpnote { resize: vertical; min-height: 38px; font-family: inherit; }
+  .tn-cpskip { display: flex; align-items: center; gap: 6px; font-size: 11.5px; color: var(--muted); cursor: pointer; }
+  .tn-cpop { position: fixed; z-index: 2147483000; width: 250px; box-sizing: border-box; padding: 10px; border-radius: 12px; border: 1px solid var(--border); background: var(--card, #fff); color: var(--text); box-shadow: 0 14px 34px rgba(0,0,0,.22); font-size: 12px; display: flex; flex-direction: column; gap: 6px; }
+  .tn-cph { display: flex; align-items: center; font-weight: 700; }
+  .tn-cph .sp { flex: 1; }
+  .tn-cpx { border: 0; background: none; color: var(--muted); cursor: pointer; font-size: 12px; }
+  .tn-cphint { color: var(--muted); font-size: 11.5px; }
+  .tn-cl { display: flex; align-items: center; gap: 4px; }
+  .tn-clb { flex: 1; display: flex; align-items: center; gap: 7px; text-align: left; border: 1px solid transparent; background: none; color: var(--text); font: inherit; font-size: 12px; padding: 4px 6px; border-radius: 7px; cursor: pointer; }
+  .tn-clb:hover, .tn-cl.on .tn-clb { background: var(--bg2, rgba(0,0,0,.05)); border-color: var(--border); }
+  .tn-cl.on .tn-clb { font-weight: 700; }
+  .tn-clb i { width: 11px; height: 11px; border-radius: 50%; flex: none; }
+  .tn-cle { border: 0; background: none; color: var(--muted); cursor: pointer; font-size: 12px; padding: 2px 5px; border-radius: 5px; }
+  .tn-cle:hover { color: var(--indigo, #6366f1); background: rgba(99,102,241,.1); }
+  .tn-cledit { display: flex; flex-direction: column; gap: 6px; padding: 6px; border: 1px solid var(--indigo, #6366f1); border-radius: 8px; }
+  .tn-cledit .tn-cename { width: 100%; box-sizing: border-box; font: inherit; font-size: 12px; padding: 5px 7px; border: 1px solid var(--border); border-radius: 7px; background: var(--bg, #fff); color: var(--text); }
+  .tn-cledit .tn-cprow { align-items: center; flex-wrap: wrap; }
+  .tn-cld { border: 0; background: none; color: var(--muted); cursor: pointer; font-size: 11px; padding: 2px 5px; border-radius: 5px; }
+  .tn-cld:hover { color: var(--red, #dc2626); background: rgba(220,38,38,.08); }
+  .tn-cpnote, .tn-cpname { width: 100%; box-sizing: border-box; font: inherit; font-size: 12px; padding: 5px 7px; border: 1px solid var(--border); border-radius: 7px; background: var(--bg, #fff); color: var(--text); }
+  .tn-cpnew { border-top: 1px solid var(--border); padding-top: 7px; display: flex; flex-direction: column; gap: 6px; }
+  .tn-sw { display: flex; gap: 5px; flex-wrap: wrap; }
+  .tn-sw button { width: 18px; height: 18px; border-radius: 50%; border: 2px solid transparent; cursor: pointer; padding: 0; }
+  .tn-sw button.on { border-color: var(--text); box-shadow: 0 0 0 2px var(--card, #fff) inset; }
+  .tn-cprow { display: flex; gap: 6px; }
+  .tn-cpoff { align-self: flex-start; }
   .tn-pin { filter: grayscale(1); }
   .tn-pin.on { filter: none; }
   .tn-note.on { color: var(--indigo, #6366f1); font-weight: 700; }
-  .cu-task.tn-pinned { box-shadow: inset 3px 0 0 var(--amber, #d97706); }
   .tn-sec { display: flex; flex-direction: column; gap: 8px; }
   .tn-sec .tn-h { display: flex; align-items: center; gap: 8px; }
   .tn-sec .tn-h .sp { flex: 1; }
@@ -273,6 +357,164 @@
   } catch (e) {}
   window.PcmComments = { unreadOf, unreadAll, markRead: (ids) => new Promise((ok) => { try { chrome.runtime.sendMessage({ type: "COMMENTS_SEEN", taskIds: [].concat(ids) }, () => { void chrome.runtime.lastError; ok(); }); } catch (e) { ok(); } }) };
 
+
+  // ---------- 🎨 your own colours on tasks ----------
+  // A colour with a meaning you give it once ("Can't do yet", "Waiting on the
+  // client"...), put on any task with an optional note of why - a bar down the row
+  // and a chip with the colour's name (the note on hover). Only in this extension.
+  // storage taskColorLabels: [{ id, color, name }] · taskColors: { [taskId]: { l, note, at, name } }
+  // Picked to show on every palette: each (but yellow) stands out at least 3:1 on
+  // every light and dark palette's cards (Nord, the lightest dark one, included); every bar also gets a thin edge (dark on
+  // light themes, light on dark ones), which carries the bright yellow. No amber -
+  // it looked like the old pinned mark. And as far apart from each other as that
+  // allows (no two closer than about 37 in CIELAB; red and orange were 21), so
+  // two colours are never mistaken for each other. A colour already given a
+  // meaning (Done early's green included) isn't offered again.
+  const TN_SWATCH = ["#e5383b", "#df6e0c", "#eab308", "#1e8a44", "#17a19a", "#3474f4", "#9b4dec", "#d65cad", "#9b6e3b", "#757575"];
+  const TN_SWNAME = { "#e5383b": "Red", "#df6e0c": "Orange", "#eab308": "Yellow", "#1e8a44": "Green", "#17a19a": "Teal", "#3474f4": "Blue", "#9b4dec": "Violet", "#d65cad": "Pink", "#9b6e3b": "Brown", "#757575": "Grey" };
+  // The swatches no other colour uses yet (except: the one being edited keeps its own).
+  const freeSwatches = (except) => {
+    const used = new Set(allLabels().filter((l) => l && l.id !== except).map((l) => String(l.color).toLowerCase()));
+    return TN_SWATCH.filter((c) => !used.has(c));
+  };
+  const swatchRow = (list, attr, cur) => '<div class="tn-sw">' + list.map((c) => '<button type="button" ' + attr + '="' + c + '" style="background:' + c + '"' + (c === cur ? ' class="on"' : "") + ' title="' + (TN_SWNAME[c] || c) + '" aria-label="' + (TN_SWNAME[c] || c) + '"></button>').join("") + "</div>";
+  // A colour with skip: true is left out of planning: its tasks' guessed time isn't
+  // added to "with guesses", the 7h day gauge or Fill to 7h (they can't be done yet).
+  const TN_PRESETS = [["#e5383b", "Can't do yet", true], ["#eab308", "Waiting on the client", true], ["#3474f4", "Ask the team", false]];
+  const TN_EARLY = { id: "early", color: "#1e8a44", name: "Done early", builtin: true, skip: false };
+  const allLabels = () => [TN_EARLY].concat(colorLabels.filter((l) => l && l.id !== "early"));
+  const labelOf = (lid) => allLabels().find((l) => l.id === lid) || null;
+  let colorPop = null;
+  function closeColorPop() { if (colorPop) { colorPop.remove(); colorPop = null; } }
+  async function saveColors(next) { colors = next; await chrome.storage.local.set({ taskColors: next }); changed(); }
+  async function saveLabels(next) { colorLabels = next; await chrome.storage.local.set({ taskColorLabels: next }); changed(); }
+  // A colour's reason is one of the task's My notes (one and the same note): the
+  // task's entry links it (nid) and the note carries the colour (c). text: the
+  // reason typed in the 🎨 box (undefined = leave the note as it is); opts.nid: link
+  // this existing note (its 🎨 in My notes). Removing the colour keeps the note.
+  async function setColor(id, labelId, text, name, opts) {
+    id = String(id);
+    const next = { ...colors };
+    const prev = next[id];
+    let list = notesOf(id).slice();
+    const has = (n) => !!n && list.some((x) => x.id === n);
+    let nid = opts && has(opts.nid) ? opts.nid : prev && has(prev.nid) ? prev.nid : "";
+    let touched = false;
+    // Only one note carries the task's colour.
+    if (list.some((n) => n.c && n.id !== nid)) { list = list.map((n) => (n.c && n.id !== nid ? (({ c, ...r }) => r)(n) : n)); touched = true; }
+    const taskName = String(name || (prev && prev.name) || (notes[id] && notes[id].name) || "");
+    if (labelId) {
+      const t = typeof text === "string" ? text.trim() : "";
+      if (t && nid) { const cur = list.find((n) => n.id === nid); if (cur.text !== t || cur.c !== labelId) { list = list.map((n) => (n.id === nid ? { ...n, text: t.slice(0, 20000), c: labelId, editedAt: cur.text !== t ? Date.now() : n.editedAt } : n)); touched = true; } }
+      else if (t) { nid = uid(); list.push({ id: nid, text: t.slice(0, 20000), at: Date.now(), files: [], c: labelId }); touched = true; }
+      else if (nid && list.find((n) => n.id === nid).c !== labelId) { list = list.map((n) => (n.id === nid ? { ...n, c: labelId } : n)); touched = true; }
+      next[id] = { l: labelId, nid, at: Date.now(), name: taskName };
+    } else {
+      if (nid) { list = list.map((n) => (n.id === nid ? (({ c, ...r }) => r)(n) : n)); touched = true; }
+      delete next[id];
+    }
+    if (touched) await saveNotes({ id, name: taskName }, list);
+    return saveColors(next);
+  }
+  // The note that gives a task's colour its reason (or null).
+  const colorNote = (id) => { const c = colors[String(id)]; return c && c.nid ? notesOf(id).find((n) => n.id === c.nid) || null : null; };
+  function openColorPop(btn, id, task, opts) {
+    opts = opts || {};
+    closeColorPop();
+    const pop = document.createElement("div");
+    pop.className = "tn-cpop";
+    let picked = TN_SWATCH[0];
+    // ✎ on one of your colours: rename it / pick another colour, in place.
+    let editing = "", editColor = "";
+    const draw = () => {
+      const cur = colors[String(id)];
+      const labels = colorLabels;
+      // What's typed in the Why box stays when the picker redraws (an edit, a toggle).
+      const typed = pop.querySelector(".tn-cpnote") ? pop.querySelector(".tn-cpnote").value : null;
+      const free = freeSwatches();
+      if (!free.includes(picked)) picked = free[0] || "";
+      pop.innerHTML = '<div class="tn-cph">Colour this task <span class="sp"></span><button type="button" class="tn-cpx" data-x title="Close">✕</button></div>' +
+        allLabels().map((l) => editing === l.id
+          ? '<div class="tn-cledit"><input type="text" class="tn-cename" maxlength="40" value="' + esc(l.name) + '" aria-label="The colour\u2019s meaning" />' +
+            swatchRow(freeSwatches(l.id), "data-esw", editColor) +
+            '<div class="tn-cprow"><button type="button" class="tn-btn pri" data-esave>Save</button><button type="button" class="tn-btn" data-ecancel>Cancel</button><span class="tn-cphint">Every task in this colour changes with it.</span></div></div>'
+          : '<div class="tn-cl' + (cur && cur.l === l.id ? " on" : "") + '"><button type="button" class="tn-clb" data-l="' + esc(l.id) + '"><i style="background:' + esc(l.color) + '"></i>' + esc(l.name) + (cur && cur.l === l.id ? " \u2713" : "") + "</button>" +
+          (l.builtin ? "" : '<button type="button" class="tn-cls' + (l.skip ? " on" : "") + '" data-skip="' + esc(l.id) + '" title="' + (l.skip ? "Left out of planning: its tasks\u2019 guessed time isn\u2019t counted (with guesses, the 7h gauge, Fill to 7h). Click to count them again." : "Counted in planning. Click to leave its tasks\u2019 guessed time out (for tasks that can\u2019t be done yet).") + '">' + (l.skip ? "\u2298 not counted" : "counted") + "</button>" +
+          '<button type="button" class="tn-cle" data-edit="' + esc(l.id) + '" title="Edit this colour: its name or colour (every task in it follows)">\u270E</button>' +
+          '<button type="button" class="tn-cld" data-del="' + esc(l.id) + '" title="Delete this colour (it comes off every task)">\u2715</button>') + "</div>").join("") +
+        (labels.length ? "" : '<div class="tn-cphint">Or make one for what it means, e.g.</div>' + TN_PRESETS.map(([c, n, sk]) => '<button type="button" class="tn-clb tn-pre" data-pre="' + esc(c) + "|" + esc(n) + "|" + (sk ? 1 : 0) + '"><i style="background:' + c + '"></i>' + esc(n) + (sk ? ' <span class="tn-cphint">(not counted in plans)</span>' : "") + "</button>").join("")) +
+        '<textarea class="tn-cpnote" rows="2" maxlength="20000" placeholder="Why - saved as a note in My notes (optional)">' + esc(opts.nid ? ((notesOf(id).find((n) => n.id === opts.nid) || {}).text || "") : colorNote(id) ? colorNote(id).text : "") + "</textarea>" +
+        '<div class="tn-cphint">' + (opts.nid || colorNote(id) ? "This is the task\u2019s note in My notes - edit it here or there." : "What you type becomes a note in My notes, in this colour.") + "</div>" +
+        (free.length
+          ? '<div class="tn-cpnew">' + swatchRow(free, "data-sw", picked) +
+            '<div class="tn-cprow"><input type="text" class="tn-cpname" maxlength="40" placeholder="New colour\u2019s meaning" /><button type="button" class="tn-btn pri" data-add>Add</button></div>' +
+            '<label class="tn-cpskip"><input type="checkbox" class="tn-cpsk" /> Leave its tasks out of planning (can\u2019t be done yet)</label>' +
+            (free.length < TN_SWATCH.length ? '<div class="tn-cphint">Colours that already have a meaning aren\u2019t offered again.</div>' : "") + "</div>"
+          : '<div class="tn-cpnew"><div class="tn-cphint">Every colour has a meaning now. To add another, \u270E change one of yours or \u2715 delete one you don\u2019t use.</div></div>') +
+        (cur ? '<button type="button" class="tn-btn tn-cpoff" data-off>Remove the colour</button>' : "");
+      if (typed != null && pop.querySelector(".tn-cpnote")) pop.querySelector(".tn-cpnote").value = typed;
+      if (editing) { const ei = pop.querySelector(".tn-cename"); if (ei) { ei.focus(); ei.select(); } }
+    };
+    const saveEdit = async () => {
+      const ei = pop.querySelector(".tn-cename");
+      const nm = ei ? ei.value.trim() : "";
+      if (!nm) { if (ei) ei.focus(); return; }
+      const lid = editing;
+      editing = "";
+      await saveLabels(colorLabels.map((l) => (l.id === lid ? { ...l, name: nm.slice(0, 40), color: editColor || l.color } : l)));
+      draw();
+    };
+    const noteOf = () => { const n = pop.querySelector(".tn-cpnote"); return n ? n.value.trim() : ""; };
+    const name = (task && task.name) || "";
+    pop.addEventListener("mousedown", (e) => e.stopPropagation());
+    pop.addEventListener("click", async (e) => {
+      e.stopPropagation();
+      const b = e.target.closest("button");
+      if (!b) return;
+      if (b.hasAttribute("data-x")) { closeColorPop(); return; }
+      if (b.dataset.sw) { picked = b.dataset.sw; pop.querySelectorAll("[data-sw]").forEach((x) => x.classList.toggle("on", x.dataset.sw === picked)); return; }
+      if (b.dataset.l) { await setColor(id, b.dataset.l, noteOf(), name, opts); closeColorPop(); return; }
+      if (b.dataset.edit) { const l = colorLabels.find((x) => x.id === b.dataset.edit); if (l) { editing = l.id; editColor = l.color; draw(); } return; }
+      if (b.dataset.esw) { editColor = b.dataset.esw; pop.querySelectorAll("[data-esw]").forEach((x) => x.classList.toggle("on", x.dataset.esw === editColor)); return; }
+      if (b.hasAttribute("data-esave")) { await saveEdit(); return; }
+      if (b.hasAttribute("data-ecancel")) { editing = ""; draw(); return; }
+      if (b.dataset.skip) { const lid = b.dataset.skip; await saveLabels(colorLabels.map((l) => (l.id === lid ? { ...l, skip: !l.skip } : l))); draw(); return; }
+      if (b.dataset.del) {
+        const lid = b.dataset.del;
+        await saveLabels(colorLabels.filter((l) => l.id !== lid));
+        const next = { ...colors }; for (const k of Object.keys(next)) if (next[k] && next[k].l === lid) delete next[k];
+        for (const k of Object.keys(notes)) { const ls = notesOf(k); if (ls.some((n) => n.c === lid)) await saveNotes({ id: k, name: notes[k].name }, ls.map((n) => (n.c === lid ? (({ c, ...r }) => r)(n) : n))); }
+        await saveColors(next); draw(); return;
+      }
+      const make = async (c, n, sk) => { const l = { id: "c" + Date.now().toString(36), color: c, name: n, skip: !!sk }; await saveLabels(colorLabels.concat([l])); await setColor(id, l.id, noteOf(), name, opts); closeColorPop(); };
+      if (b.dataset.pre) { const [c, n, sk] = b.dataset.pre.split("|"); if (!freeSwatches().includes(c)) { draw(); return; } await make(c, n, sk === "1"); return; }
+      if (b.hasAttribute("data-add")) { const n = pop.querySelector(".tn-cpname").value.trim(); if (!n) { pop.querySelector(".tn-cpname").focus(); return; } if (!picked || !freeSwatches().includes(picked)) { draw(); return; } await make(picked, n, pop.querySelector(".tn-cpsk") && pop.querySelector(".tn-cpsk").checked); return; }
+      if (b.hasAttribute("data-off")) { await setColor(id, null); closeColorPop(); }
+    });
+    pop.addEventListener("keydown", async (e) => {
+      // In an edit: Enter saves it, Esc cancels just the edit (the picker stays).
+      if (editing && e.target.classList.contains("tn-cename")) {
+        if (e.key === "Enter") { e.preventDefault(); await saveEdit(); return; }
+        if (e.key === "Escape") { e.preventDefault(); e.stopPropagation(); editing = ""; draw(); return; }
+      }
+      if (e.key === "Escape") { closeColorPop(); return; }
+      if (e.key !== "Enter") return;
+      if (e.target.classList.contains("tn-cpname")) pop.querySelector("[data-add]").click();
+      else if (e.target.classList.contains("tn-cpnote") && (e.ctrlKey || e.metaKey)) { e.preventDefault(); const cur = colors[String(id)]; if (cur) { await setColor(id, cur.l, noteOf(), name, opts); closeColorPop(); } }
+    });
+    // A changed note on a task that already has a colour is kept when you leave the box.
+    pop.addEventListener("change", (e) => { if (e.target.classList.contains("tn-cpnote")) { const cur = colors[String(id)]; if (cur) setColor(id, cur.l, noteOf(), name, opts); } });
+    draw();
+    document.body.appendChild(pop);
+    colorPop = pop;
+    const r = btn.getBoundingClientRect();
+    pop.style.left = Math.max(8, Math.min(window.innerWidth - pop.offsetWidth - 8, r.left - 20)) + "px";
+    pop.style.top = (r.bottom + pop.offsetHeight + 8 > window.innerHeight ? Math.max(8, r.top - pop.offsetHeight - 6) : r.bottom + 6) + "px";
+    const f = pop.querySelector(colorLabels.length ? ".tn-cpnote" : ".tn-pre"); if (f) f.focus();
+  }
+  document.addEventListener("mousedown", () => closeColorPop());
+  document.addEventListener("keydown", (e) => { if (e.key === "Escape") closeColorPop(); });
+
   // ---------- task rows: 📌 + 📝 ----------
   let focusNotesFor = "";
   function decorate(row) {
@@ -284,10 +526,12 @@
     if (!box) {
       box = document.createElement("span");
       box.className = "tn-marks";
-      box.innerHTML = '<button type="button" class="tn-b tn-cmt" hidden></button><button type="button" class="tn-b tn-pin"></button><button type="button" class="tn-b tn-note"></button>';
+      box.innerHTML = '<button type="button" class="tn-b tn-cmt" hidden></button><button type="button" class="tn-b tn-color"></button><button type="button" class="tn-b tn-pin"></button><button type="button" class="tn-b tn-note"></button>';
       const nm = wrap.querySelector(".nm");
       if (nm && nm.nextSibling) wrap.insertBefore(box, nm.nextSibling); else wrap.appendChild(box);
       box.querySelector(".tn-pin").addEventListener("click", (e) => { e.preventDefault(); e.stopPropagation(); setPin(id, !isPinned(id)); });
+      box.querySelector(".tn-color").addEventListener("click", (e) => { e.preventDefault(); e.stopPropagation(); if (colorPop) { closeColorPop(); return; } openColorPop(e.currentTarget, id, row._cuTask); });
+      box.querySelector(".tn-color").addEventListener("mousedown", (e) => e.stopPropagation());
       // 💬: open the task's details - its comments are there (and that marks them read).
       box.querySelector(".tn-cmt").addEventListener("click", (e) => {
         e.preventDefault(); e.stopPropagation();
@@ -321,6 +565,30 @@
     nb.classList.toggle("on", n > 0);
     nb.title = n ? n + " personal note" + (n === 1 ? "" : "s") + " - click to read or add (only in this extension, not in ClickUp)" : "Add a personal note (only in this extension, not in ClickUp)";
     row.classList.toggle("tn-pinned", pinOn);
+    {
+      // 🎨 your colour (Done early included): no chip on the row - a bar between the
+      // grip and ▸ with the meaning and note on hover, and a faint tint. A pinned
+      // task without a colour gets an amber bar (pinned).
+      const c = colors[id], lab = c ? labelOf(c.l) : null;
+      const cb2 = box.querySelector(".tn-color");
+      if (cb2) {
+        if (cb2.textContent !== "\uD83C\uDFA8") cb2.textContent = "\uD83C\uDFA8";
+        const tt = lab ? "Colour: " + lab.name + ". Click to change it or its note." : "Colour this task with a meaning of your own (Done early, Can't do yet...) and a note - only in this extension";
+        if (cb2.title !== tt) cb2.title = tt;
+      }
+      // (A pinned task shows its 📌; it has no bar, so no colour means "pinned".)
+      const cn = lab ? colorNote(id) : null, reason = cn ? plain(cn.text).replace(/\s+/g, " ").trim().slice(0, 160) : c && c.note ? c.note : "";
+      const why = lab ? lab.name + (reason ? " - " + reason : "") + (lab.skip ? " (left out of planning)" : "") + " \u00b7 your colour, only in this extension" : "";
+      const colour = lab ? lab.color : "";
+      let bar = row.querySelector(":scope > .tn-cbar");
+      if (colour) {
+        if (!bar) { bar = document.createElement("span"); bar.className = "tn-cbar"; row.appendChild(bar); }
+        if (bar.title !== why) bar.title = why;
+        bar.style.setProperty("--tn-c", colour);
+      } else if (bar) bar.remove();
+      row.classList.toggle("tn-colored", !!lab);
+      if (lab) row.style.setProperty("--tn-c", lab.color); else row.style.removeProperty("--tn-c");
+    }
     const u = unreadOf(id), cb = box.querySelector(".tn-cmt");
     if (cb) {
       const ct = u.n ? (u.mention ? "@" : "💬") + " " + u.n : "";
@@ -653,13 +921,14 @@
         // send to - a local task (a panel built without assigneePeople) or a task
         // you alone are on shows nothing rather than a dead button.
         const canSend = teammatesOf(d).length > 0;
-        h += '<div class="tn-note-i" data-nid="' + esc(n.id) + '"><div class="tn-txt md">' + (window.PcmMd ? window.PcmMd.render(n.text) : linkify(n.text)) + "</div>" + filesHtml(n.files || [], false) +
+        const nl2 = n.c ? labelOf(n.c) : null;
+        h += '<div class="tn-note-i' + (nl2 ? " tn-note-col" : "") + '" data-nid="' + esc(n.id) + '"' + (nl2 ? ' style="--tn-c:' + esc(nl2.color) + '"' : "") + ">" + (nl2 ? '<div class="tn-ncl"><i></i>' + esc(nl2.name) + (nl2.skip ? " \u00b7 not counted in plans" : "") + "</div>" : "") + '<div class="tn-txt md">' + (window.PcmMd ? window.PcmMd.render(n.text) : linkify(n.text)) + "</div>" + filesHtml(n.files || [], false) +
           '<div class="tn-meta"><span>' + esc(day(n.at)) + (n.editedAt ? " · edited" : "") + "</span>" +
           (remAt ? '<button type="button" class="tn-remchip" data-remlist title="A reminder about this note is set - click to see your reminders">⏰ ' + esc(day(remAt)) + "</button>" : "") +
           sentChip(n) +
           '<span class="sp"></span>' +
           (canSend ? '<button type="button" class="tn-btn" data-send title="Send this note to a teammate on this task - it appears in their extension">🔔 Send</button>' : "") +
-          '<button type="button" class="tn-btn" data-copy title="Copy this note (keeps its formatting)">⧉ Copy</button><button type="button" class="tn-btn" data-rem title="Get reminded about this note at a date and time you pick">⏰ Remind me</button><button type="button" class="tn-btn" data-edit-btn>Edit</button><button type="button" class="tn-btn" data-del title="Delete this note">✕</button></div></div>';
+          '<button type="button" class="tn-btn" data-ncolor title="' + (nl2 ? "Change this note\u2019s colour (it\u2019s the task\u2019s colour)" : "Colour the task with this note as the reason") + '">\uD83C\uDFA8</button><button type="button" class="tn-btn" data-copy title="Copy this note (keeps its formatting)">⧉ Copy</button><button type="button" class="tn-btn" data-rem title="Get reminded about this note at a date and time you pick">⏰ Remind me</button><button type="button" class="tn-btn" data-edit-btn>Edit</button><button type="button" class="tn-btn" data-del title="Delete this note">✕</button></div></div>';
       }
     }
     h += '<div class="tn-new"><div data-newhost></div>' + filesHtml(st.draftFiles, true) +
@@ -766,6 +1035,9 @@
         const t2 = window.PcmMd.toggleTask(note.text, idx);
         if (t2 !== note.text) saveNotes(d, notesOf(id).map((x) => x.id === nid ? { ...x, text: t2 } : x));
       });
+      const ncb = box.querySelector("[data-ncolor]");
+      if (ncb) ncb.onclick = (e) => { e.stopPropagation(); if (colorPop) { closeColorPop(); return; } openColorPop(ncb, id, d, { nid }); };
+      if (ncb) ncb.addEventListener("mousedown", (e) => e.stopPropagation());
       const rb = box.querySelector("[data-rem]");
       if (rb) rb.onclick = (e) => {
         e.stopPropagation(); // the page's outside-click would close the card at once
@@ -859,5 +1131,6 @@
   // way. It's exported rather than passed because the two scripts load in
   // different orders on the two pages - callers must tolerate it being missing.
   window.PcmNudgeInbox = { list: readNudges, render: renderNudges, dismiss: dismissNudge, markRead: markNudgesRead, clear: clearNudges, key: nudgeKey, unread: nudgeUnread, count: nudgeCount, onChange: (fn) => { nudgeSubs.push(fn); return () => { const i = nudgeSubs.indexOf(fn); if (i >= 0) nudgeSubs.splice(i, 1); }; } };
-  window.PcmTaskNotes = { notesOf, isPinned, setPin, renderPanel, onChange: (fn) => subs.push(fn), _decorateAll: decorateAll, _teammatesOf: teammatesOf };
+  window.PcmTaskNotes = { notesOf, isPinned, setPin, isEarly, setEarly, colorLabels: () => allLabels(), colorOf: (id) => { const c = colors[String(id)]; const l = c && labelOf(c.l); const cn = l ? colorNote(id) : null; return l ? { ...l, note: cn ? plain(cn.text) : c.note || "" } : null; },
+    isSkipped: (id) => { const c = colors[String(id)]; const l = c && labelOf(c.l); return !!(l && l.skip); }, renderPanel, onChange: (fn) => subs.push(fn), _decorateAll: decorateAll, _teammatesOf: teammatesOf };
 })();

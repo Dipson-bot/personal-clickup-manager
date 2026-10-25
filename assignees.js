@@ -38,6 +38,25 @@
   .asg-pop .asg-f .asg-fm { margin-top: 5px; font-size: 11.5px; color: var(--muted, #71717a); }
   .asg-pop .asg-f .asg-fm.err { color: var(--red, #dc2626); }
   .asg-pop .asg-f .asg-fm.ok { color: #16a34a; }
+  .asg-pop .asg-add { border-top: 1px solid var(--border, #e4e4e7); margin-top: 4px; padding: 6px 6px 2px; }
+  .asg-pop .asg-add input { box-sizing: border-box; width: 100%; font: inherit; font-size: 12px; padding: 5px 7px; border: 1px solid var(--border, #d4d4d8); border-radius: 7px; background: var(--bg2, transparent); color: inherit; }
+  .asg-pop .asg-res { display: flex; flex-direction: column; margin-top: 4px; max-height: 190px; overflow: auto; }
+  .asg-pop .asg-res button { display: flex; align-items: center; gap: 8px; padding: 4px 6px; border: 0; border-radius: 7px; background: transparent; color: inherit; font: inherit; font-size: 12px; text-align: left; cursor: pointer; }
+  .asg-pop .asg-res button:hover:not(:disabled) { background: rgba(99,102,241,.12); }
+  .asg-pop .asg-res button:disabled { opacity: .5; cursor: default; }
+  .asg-pop .asg-hit { display: flex; align-items: center; }
+  .asg-pop .asg-hit > button.main { flex: 1; min-width: 0; }
+  .asg-pop .asg-hit > button.sch { flex: none; width: 24px; height: 24px; padding: 0; justify-content: center; font-size: 12px; border-radius: 50%; }
+  .asg-pop .asg-sf { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; padding: 4px 6px 8px 34px; font-size: 11.5px; }
+  .asg-pop .asg-sf input { font: inherit; font-size: 11.5px; padding: 3px 6px; border: 1px solid var(--border, #d4d4d8); border-radius: 6px; background: var(--bg2, transparent); color: inherit; }
+  .asg-pop .asg-sf button, .asg-pop .asg-sched button { font: inherit; font-size: 11px; font-weight: 600; padding: 2px 9px; border-radius: 6px; border: 1px solid var(--border, #d4d4d8); background: transparent; color: inherit; cursor: pointer; }
+  .asg-pop .asg-sf button.go { background: var(--indigo, #6366f1); border-color: var(--indigo, #6366f1); color: #fff; }
+  .asg-pop .asg-sched { border-top: 1px dashed var(--border, #e4e4e7); margin-top: 4px; padding: 4px 6px; }
+  .asg-pop .asg-sched .asg-sr { display: flex; align-items: center; gap: 6px; padding: 2px 0; font-size: 11.5px; }
+  .asg-pop .asg-sched .asg-sr span { flex: 1; min-width: 0; }
+  .asg-pop .asg-sched .asg-sr.bad span { color: var(--red, #dc2626); }
+  .asg-pop .asg-sched .asg-sr button { padding: 0 6px; }
+  .asg-pop .asg-res .asg-none { padding: 4px 6px; font-size: 11.5px; color: var(--muted, #71717a); }
   .asg-pop .asg-msg { padding: 6px; font-size: 11.5px; color: var(--muted, #71717a); }
   .asg-pop .asg-msg.err { color: var(--red, #dc2626); }
   .asg-pop .asg-ask { padding: 6px; border-top: 1px solid var(--border, #e4e4e7); margin-top: 4px; font-size: 11.5px; }
@@ -159,7 +178,7 @@
       r.after(f);
       ta.focus();
     };
-    for (const a of list) {
+    const addRow = (a) => {
       const r = document.createElement("div");
       r.className = "asg-r";
       const av = document.createElement("span");
@@ -183,7 +202,130 @@
       bell.title = "Send " + nameOf(a) + " a reminder about this task";
       bell.onclick = () => remind(a, r);
       r.append(av, n, bell, x);
-      pop.appendChild(r);
+      const addBox = pop.querySelector(".asg-sched, .asg-add");
+      if (addBox) pop.insertBefore(r, addBox); else pop.appendChild(r);
+    };
+    for (const a of list) addRow(a);
+    // People scheduled onto this task (⏰): when, with ✕ to cancel.
+    const sched = document.createElement("div");
+    sched.className = "asg-sched";
+    const whenTxt = (ms) => new Date(ms).toLocaleString(undefined, { weekday: "short", month: "short", day: "numeric", hour: "numeric", minute: "2-digit" });
+    const paintSched = async () => {
+      const g = await chrome.storage.local.get("asgSchedule").catch(() => ({}));
+      const jobs = (Array.isArray(g && g.asgSchedule) ? g.asgSchedule : []).filter((j) => j && String(j.taskId) === String(t.id) && !j.done);
+      sched.textContent = "";
+      sched.hidden = !jobs.length;
+      for (const j of jobs) {
+        const r = document.createElement("div");
+        r.className = "asg-sr" + (j.failed ? " bad" : "");
+        const s = document.createElement("span");
+        s.textContent = j.failed ? "\u26A0 Couldn't add " + j.name + " (" + (j.error || "ClickUp refused") + ")" : "\u23F0 " + j.name + " \u00b7 " + whenTxt(j.at) + (j.tries ? " \u00b7 trying again" : "");
+        s.title = j.failed ? "Add them from the list below instead" : j.name + " will be added to this task in ClickUp at " + whenTxt(j.at) + " (by this extension, while Chrome is open - or as soon as it opens)";
+        const x = document.createElement("button");
+        x.type = "button"; x.textContent = "\u2715"; x.title = j.failed ? "Remove this note" : "Cancel - don't add them";
+        x.onclick = async () => { x.disabled = true; await send({ type: "ASG_CANCEL", id: j.id }, 10000); paintSched(); };
+        r.append(s, x);
+        sched.appendChild(r);
+      }
+    };
+    pop.appendChild(sched);
+    paintSched();
+    // + Add someone: type part of a name, pick from your team (the member list the
+    // extension already keeps - nothing extra is read from ClickUp to search).
+    {
+      const box = document.createElement("div");
+      box.className = "asg-add";
+      const inp = document.createElement("input");
+      inp.type = "search";
+      inp.placeholder = "+ Add someone - type a name";
+      inp.setAttribute("aria-label", "Add someone to this task");
+      const res = document.createElement("div");
+      res.className = "asg-res";
+      box.append(inp, res);
+      pop.appendChild(box);
+      let members = null;
+      const load = async () => {
+        if (members) return members;
+        const r = await send({ type: "CLICKUP_DEPT_DATA" }, 15000);
+        members = r && Array.isArray(r.members) ? r.members.filter((m) => m && m.id != null) : [];
+        return members;
+      };
+      const paintRes = async () => {
+        const q = inp.value.trim().toLowerCase();
+        res.textContent = "";
+        if (!q) return;
+        const all = await load();
+        if (inp.value.trim().toLowerCase() !== q) return; // typed on meanwhile
+        const on = new Set((t.assignees || []).map((a) => String(a.id)));
+        const hits = all.filter((m) => !on.has(String(m.id)) && (String(m.name || "").toLowerCase().includes(q) || String(m.email || "").toLowerCase().includes(q))).slice(0, 8);
+        if (!hits.length) { const nn = document.createElement("div"); nn.className = "asg-none"; nn.textContent = all.length ? "Nobody else matches \u201C" + inp.value.trim() + "\u201D." : "The team list isn't loaded yet - try again in a moment."; res.appendChild(nn); return; }
+        for (const m of hits) {
+          const hit = document.createElement("div");
+          hit.className = "asg-hit";
+          const b = document.createElement("button");
+          b.type = "button";
+          b.className = "main";
+          const av = document.createElement("span");
+          av.className = "asg-av";
+          av.textContent = initials(m.name || m.email);
+          av.style.background = color(m.id || m.name);
+          const nm = document.createElement("span");
+          nm.className = "asg-n";
+          nm.textContent = m.name || m.email || ("User " + m.id);
+          b.append(av, nm);
+          b.title = "Add " + (m.name || m.email) + " to this task (in ClickUp)";
+          b.onclick = async () => {
+            b.disabled = true;
+            say("Adding " + (m.name || m.email) + "\u2026");
+            const r = await send({ type: "CLICKUP_ADD_ASSIGNEE", taskId: String(t.id), userId: String(m.id), name: m.name || m.email || "" }, 20000);
+            if (!r || !r.ok) { b.disabled = false; say("Couldn't add them: " + ((r && r.error) || "no answer from ClickUp"), true); return; }
+            const a = { id: m.id, username: m.name || m.email || "" };
+            t.assignees = (t.assignees || []).concat([a]);
+            addRow(a);
+            inp.value = ""; res.textContent = "";
+            say((m.name || m.email) + " is on the task in ClickUp." + (r.self ? " It joins your lists on the next refresh." : ""));
+          };
+          // ⏰: add them at a time you pick (the extension's own calendar), e.g. when
+          // their part starts. Next working day 9:00 AM to start with.
+          const sc = document.createElement("button");
+          sc.type = "button"; sc.className = "sch"; sc.textContent = "\u23F0";
+          sc.title = "Add " + (m.name || m.email) + " at a time you pick";
+          sc.onclick = () => {
+            const had = res.querySelector(".asg-sf");
+            if (had) { const same = had._for === m.id; had.remove(); if (same) return; }
+            const f = document.createElement("div");
+            f.className = "asg-sf"; f._for = m.id;
+            const d = new Date(); d.setDate(d.getDate() + 1);
+            while (d.getDay() === 0 || d.getDay() === 6) d.setDate(d.getDate() + 1);
+            d.setHours(9, 0, 0, 0);
+            const pad = (n) => String(n).padStart(2, "0");
+            const when = document.createElement("input");
+            when.type = "datetime-local";
+            when.value = d.getFullYear() + "-" + pad(d.getMonth() + 1) + "-" + pad(d.getDate()) + "T09:00";
+            when.setAttribute("aria-label", "When to add them");
+            const go = document.createElement("button"); go.type = "button"; go.className = "go"; go.textContent = "Schedule";
+            const no = document.createElement("button"); no.type = "button"; no.textContent = "Cancel";
+            no.onclick = () => f.remove();
+            go.onclick = async () => {
+              const at = when.value ? new Date(when.value).getTime() : 0;
+              go.disabled = true;
+              const r = await send({ type: "ASG_SCHEDULE", taskId: String(t.id), taskName: t.name || "", url: t.url || "", userId: String(m.id), name: m.name || m.email || "", at }, 15000);
+              if (!r || !r.ok) { go.disabled = false; say((r && r.error) || "Couldn't schedule it.", true); return; }
+              f.remove(); inp.value = ""; res.textContent = "";
+              say((m.name || m.email) + " will be added at " + whenTxt(at) + ".");
+              paintSched();
+            };
+            f.append(when, go, no);
+            hit.after(f);
+          };
+          hit.append(b, sc);
+          res.appendChild(hit);
+        }
+      };
+      let qt = 0;
+      inp.addEventListener("input", () => { clearTimeout(qt); qt = setTimeout(paintRes, 120); });
+      inp.addEventListener("keydown", (e) => { if (e.key === "Enter") { const first = res.querySelector("button:not(:disabled)"); if (first) { e.preventDefault(); first.click(); } } });
+      load();
     }
     document.body.appendChild(pop);
     const b = slot.getBoundingClientRect();
@@ -195,17 +337,18 @@
 
   document.addEventListener("click", (e) => {
     const slot = e.target && e.target.closest && e.target.closest(".cu-task .cu-who");
-    if (!slot) { if (pop && !pop.contains(e.target)) close(); return; }
+    // (a click in the calendar opened from ⏰ is part of this box, not outside it)
+    if (!slot) { if (pop && !pop.contains(e.target) && !(e.target.closest && e.target.closest(".pcal-pop"))) close(); return; }
     const row = slot.closest(".cu-task");
     const t = row && row._cuTask;
-    if (!t || t.id == null || t.local || /^rev-/.test(String(t.id)) || !(t.assignees || []).length) return;
+    if (!t || t.id == null || t.local || /^rev-/.test(String(t.id))) return;
     e.preventDefault();
     e.stopPropagation();
     if (pop && pop._slot === slot) { close(); return; }
     open(slot, row, t);
     pop._slot = slot;
   }, true);
-  document.addEventListener("keydown", (e) => { if (e.key === "Escape" && pop) close(); });
-  window.addEventListener("scroll", close, true);
+  document.addEventListener("keydown", (e) => { if (e.key === "Escape" && pop && !document.querySelector(".pcal-pop")) close(); });
+  window.addEventListener("scroll", (e) => { if (pop && e.target && e.target.nodeType === 1 && pop.contains(e.target)) return; close(); }, true);
   window.addEventListener("resize", close);
 })();

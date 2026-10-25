@@ -128,6 +128,7 @@ function doPost(e) {
     const lock = LockService.getScriptLock();
     lock.waitLock(20000);
     try {
+      if (me) touchPresence(me, q.act, q.day);
       switch (q.action) {
         case "hello": return out(hello(q));
         case "threads": return out(threads(q, admin));
@@ -164,6 +165,28 @@ function flowOk() {
 function cleanInstall(q) { return String(q.install || "").replace(/[^a-z0-9]/gi, "").slice(0, 40); }
 function pub() { return { slowMin: Number(setting("SLOW_MIN", "0")) || 0, filesPublic: setting("FILES_PUBLIC", "0") === "1" }; }
 
+// ---------- presence ----------
+// Every call a copy makes (notices every 10 min, reminders every 3) says it is
+// running (on) and when its person last used the computer (act). Kept in Script
+// Properties (pres_<install>), written at most every 5 minutes per copy - sooner
+// only when they came back after a break or started another task - so it costs
+// no extra requests. day: their Due today / This week numbers and running task
+// (for the admin's card when a picture is clicked).
+function touchPresence(install, act, day) {
+  try {
+    const c = CacheService.getScriptCache(), k = "pres_" + install, t = now();
+    const a = Math.min(t, Number(act) || 0);
+    const prev = js(c.get(k) || "", null);
+    const d = typeof day === "string" && day.length <= 2000 ? js(day, null) : null;
+    const runId = (x) => String((x && x.run && x.run.id) || "");
+    const runMoved = !!d && !!prev && runId(d) !== runId(prev.day);
+    if (prev && !runMoved && t - prev.on < 5 * 60000 && a - (Number(prev.act) || 0) < 5 * 60000) return;
+    const v = JSON.stringify({ on: t, act: Math.max(a, (prev && Number(prev.act)) || 0), day: d || (prev && prev.day) || null });
+    props().setProperty(k, v);
+    c.put(k, v, 21600);
+  } catch (e) {}
+}
+
 // ---------- users ----------
 function findUser(install) { return readAll("Users").find((u) => String(u.install) === install) || null; }
 function userState(u) {
@@ -191,14 +214,18 @@ function hello(q) {
 }
 function users() {
   const t = now();
+  let pr = {};
+  try { pr = props().getProperties() || {}; } catch (e) {} // presence is an extra: the list works without it
+  const pres = (u) => js(pr["pres_" + String(u.install)] || "", null) || {};
   const list = readAll("Users").map((u) => ({
+    onAt: Number(pres(u).on) || 0, actAt: Number(pres(u).act) || 0, day: pres(u).day || null,
     install: String(u.install), cuUserId: String(u.cuUserId), name: String(u.name), avatar: String(u.avatar), color: String(u.color), initials: String(u.initials),
     version: String(u.version), firstSeen: Number(u.firstSeen) || 0, lastSeen: Number(u.lastSeen) || 0, state: userState(u), mutedUntil: Number(u.mutedUntil) || 0,
     role: String(u.install) === setting("OWNER_INSTALL", "") ? "owner" : (u.role === "admin" ? "admin" : "user"),
     perf: js(String(u.perf || ""), null),
   })).sort((a, b) => b.lastSeen - a.lastSeen);
   const day = 86400000;
-  return { ok: true, users: list, total: list.length, activeToday: list.filter((u) => t - u.lastSeen < day).length, activeWeek: list.filter((u) => t - u.lastSeen < 7 * day).length, settings: pub() };
+  return { ok: true, presence: true, users: list, total: list.length, activeToday: list.filter((u) => t - u.lastSeen < day).length, activeWeek: list.filter((u) => t - u.lastSeen < 7 * day).length, settings: pub() };
 }
 
 // ---------- threads / messages ----------

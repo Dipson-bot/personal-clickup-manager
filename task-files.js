@@ -282,6 +282,186 @@
     });
     if (!r.isDefault) btn("Use default", "Back to Documents › Personal ClickUp Manager › Clients", async () => { await F.desk({ op: "resetRoot" }); paintFolders(); });
   }
+  // ---- Slack downloads -> the client's files ----
+  // The switch (storage slackAutoFile) and the "From Slack" box: background.js
+  // copies a document downloaded from Slack into the client's folder when the
+  // taskbar app runs; otherwise it waits here (IndexedDB pcm-slackinbox) - filed
+  // at once when the client is known, or after you pick it.
+  function slackDb() {
+    return new Promise((ok, bad) => {
+      const r = indexedDB.open("pcm-slackinbox", 1);
+      r.onupgradeneeded = () => { if (!r.result.objectStoreNames.contains("files")) r.result.createObjectStore("files", { keyPath: "id" }); };
+      r.onsuccess = () => ok(r.result); r.onerror = () => bad(r.error);
+    });
+  }
+  async function slackDo(mode, fn) {
+    const d = await slackDb();
+    return new Promise((ok, bad) => { const tx = d.transaction("files", mode); const q = fn(tx.objectStore("files")); tx.oncomplete = () => { d.close(); ok(q && q.result); }; tx.onerror = () => { d.close(); bad(tx.error); }; });
+  }
+  const slackAll = async () => ((await slackDo("readonly", (s) => s.getAll())) || []).sort((a, b) => a.at - b.at);
+  const slackDel = (id) => slackDo("readwrite", (s) => s.delete(id));
+  // Into the client's folder (taskbar app) or the client's files here.
+  async function fileSlack(rec, client) {
+    const file = new File([rec.blob], rec.name || "file", { type: rec.type || (rec.blob && rec.blob.type) || "" });
+    if (deskOk && F.desk) {
+      const r = await F.desk({ op: "clientFile", client, name: F.safeName(rec.name), b64: await F.b64(file) }, 60000).catch(() => null);
+      if (r && r.ok) return;
+    }
+    await F.add(client, [file]);
+  }
+  let slackBusy = false;
+  async function paintSlack() {
+    const box = $("tfSlack");
+    if (!box || slackBusy) return;
+    slackBusy = true;
+    try {
+      const g = await chrome.storage.local.get("slackAutoFile").catch(() => ({}));
+      const on = !!(g && g.slackAutoFile);
+      let items = await slackAll().catch(() => []);
+      // Known client: filed now.
+      const known = items.filter((r) => r.client && r.blob);
+      let filed = 0;
+      for (const r of known) { try { await fileSlack(r, r.client); await slackDel(r.id); filed++; } catch (e) {} }
+      if (filed) {
+        items = await slackAll().catch(() => []);
+        say(filed + (filed === 1 ? " file" : " files") + " from Slack added to " + [...new Set(known.map((r) => r.client))].join(", ") + ".");
+        files = await F.all().catch(() => files);
+        render();
+      }
+      const names = [...new Set(clientsShown().map((e) => (Array.isArray(e) ? e[1] : e)).filter(Boolean))].sort((a, b) => String(a).localeCompare(String(b)));
+      box.innerHTML = '<label class="tf-slackon"><input type="checkbox" id="tfSlackOn"' + (on ? " checked" : "") + ' /> \uD83D\uDCE5 <b>Slack downloads go to the client\u2019s files</b></label>' +
+        '<span class="hint"> - download an audit (or any document) in Slack and a copy goes into the client it\u2019s for, picked from the channel you\u2019re in and the file name. Your own download stays where it is.</span>' +
+        (items.length ? '<div class="tf-slackin"><div class="hint" style="margin:6px 0 4px;"><b>From Slack</b> - which client is each one for?</div>' +
+          items.map((r) => '<div class="tf-slackrow" data-id="' + esc(r.id) + '"><span>\uD83D\uDCC4</span><div class="tf-slackn"><div class="tf-fn" title="' + esc(r.name) + '">' + esc(r.name) + '</div><div class="tf-fm">' + fmtSize(r.size || 0) + " \u00b7 " + day(r.at) + (r.channel ? " \u00b7 from #" + esc(r.channel) : "") + "</div></div>" +
+            '<input type="text" class="tf-slackc" list="tfSlackClients" placeholder="Client" value="' + esc(r.client || "") + '" />' +
+            '<button type="button" class="tf-btn tf-slackgo">File it</button><button type="button" class="tf-btn tf-slackno" title="Don\u2019t add it (your download stays)">Discard</button></div>').join("") +
+          '<datalist id="tfSlackClients">' + names.map((n) => '<option value="' + esc(n) + '"></option>').join("") + "</datalist></div>" : "");
+      box.appendChild(await slackAutoBox());
+      $("tfSlackOn").onchange = async (e) => { await chrome.storage.local.set({ slackAutoFile: !!e.target.checked }); say(e.target.checked ? "On: documents you download from Slack are copied into the client they\u2019re for." : "Off: Slack downloads are left alone."); };
+      for (const row of box.querySelectorAll(".tf-slackrow")) {
+        const rec = items.find((r) => r.id === row.dataset.id);
+        const inp = row.querySelector(".tf-slackc");
+        row.querySelector(".tf-slackgo").onclick = async () => {
+          const typed = inp.value.trim();
+          const client = names.find((n) => F.key(n) === F.key(typed)) || typed;
+          if (!client) { inp.focus(); return; }
+          try { await fileSlack(rec, client); await slackDel(rec.id); say("\u201C" + rec.name + "\u201D added to " + client + "."); files = await F.all().catch(() => files); render(); }
+          catch (e) { say("Couldn\u2019t add it: " + ((e && e.message) || e), "var(--red, #dc2626)"); }
+          slackBusy = false; paintSlack();
+        };
+        inp.onkeydown = (e) => { if (e.key === "Enter") row.querySelector(".tf-slackgo").click(); };
+        row.querySelector(".tf-slackno").onclick = async () => { await slackDel(rec.id).catch(() => {}); slackBusy = false; paintSlack(); };
+      }
+    } finally { slackBusy = false; }
+  }
+  // Slack channels -> clients, automatically (background.js slackPoll): Connect
+  // borrows the Slack sign-in already in Chrome; Match channels pairs each client
+  // with its channel; then new documents arrive every 20 minutes.
+  const ago = (ms) => { const m = Math.round((Date.now() - ms) / 60000); return m < 1 ? "just now" : m < 60 ? m + " min ago" : m < 1440 ? Math.round(m / 60) + " h ago" : day(ms); };
+  async function slackAutoBox() {
+    const g = await chrome.storage.local.get(["slackSession", "slackChannels", "slackPoll"]).catch(() => ({}));
+    const s = g.slackSession, map = g.slackChannels || {}, poll = g.slackPoll || {};
+    const n = Object.keys(map).length;
+    const w = document.createElement("div");
+    w.className = "tf-slackauto";
+    const head = document.createElement("div");
+    head.className = "tf-slackhead";
+    const btn = (label, title, fn, pri) => { const b = document.createElement("button"); b.type = "button"; b.className = "tf-btn" + (pri ? " pri" : ""); b.textContent = label; b.title = title; b.onclick = fn; return b; };
+    const line = document.createElement("span");
+    if (!s) {
+      line.innerHTML = "\uD83D\uDD04 <b>Slack channels \u2192 clients</b>" + '<span class="hint"> - Copy for AI, Explain and Plan with AI look in the client\u2019s Slack channel for files and messages about the task. Only what a brief needs is fetched, and only its text is kept (cleaned up by itself). It uses the Slack sign-in already in this Chrome (no password). First open <b>app.slack.com</b> in a tab and sign in.</span>';
+      head.append(line, btn("Connect Slack", "Reads the sign-in from your open Slack tab (app.slack.com)", async (e) => {
+        e.target.disabled = true; e.target.textContent = "Connecting\u2026";
+        const r = await chrome.runtime.sendMessage({ type: "SLACK_CONNECT" }).catch((x) => ({ ok: false, error: String(x && x.message || x) }));
+        if (!r || !r.ok) { say((r && r.error) || "Couldn't connect.", "var(--red, #dc2626)"); slackBusy = false; paintSlack(); return; }
+        say("Connected to " + r.team + (r.user ? " as " + r.user : "") + ". Now match your channels to clients.");
+        slackBusy = false; await paintSlack(); slackMatch();
+      }, true));
+      w.appendChild(head);
+      return w;
+    }
+    line.innerHTML = "\uD83D\uDD04 <b>Slack channels \u2192 clients</b>" + '<span class="hint"> - ' + esc(s.name) + (s.user ? " as " + esc(s.user) : "") + " \u00b7 " + (n ? n + (n === 1 ? " channel" : " channels") + " matched" : "no channels matched yet") +
+      (poll.listed ? " \u00b7 " + poll.listed.toLocaleString() + " files listed" : "") + (poll.at ? " \u00b7 list updated " + ago(poll.at) : "") +
+      " \u00b7 nothing is downloaded until a brief needs it</span>";
+    head.append(line,
+      btn("Refresh list", "Update the list of files in the matched channels now (nothing is downloaded)", async (e) => {
+        e.target.disabled = true; e.target.textContent = "Refreshing\u2026";
+        const r = await chrome.runtime.sendMessage({ type: "SLACK_POLL_NOW" }).catch((x) => ({ ok: false, error: String(x && x.message || x) }));
+        say(r && r.ok ? (r.listed || 0).toLocaleString() + " files listed in the matched channels. Copy for AI, Explain and Plan with AI fetch the ones a task needs." + (r.error ? " (" + r.error + ")" : "") : "Couldn't update it: " + ((r && r.error) || "no answer"), r && r.ok ? "" : "var(--red, #dc2626)");
+        slackBusy = false; paintSlack();
+      }),
+      btn(n ? "Match channels" : "Match channels to clients", "Pick each client's Slack channel", () => slackMatch(), !n),
+      btn(poll.authErr ? "Reconnect" : "Disconnect", poll.authErr ? "Read the Slack sign-in again from your open Slack tab" : "Stop using Slack (the matches are kept)", async () => {
+        if (poll.authErr) { const r = await chrome.runtime.sendMessage({ type: "SLACK_CONNECT" }).catch(() => null); say(r && r.ok ? "Reconnected." : (r && r.error) || "Couldn't reconnect.", r && r.ok ? "" : "var(--red, #dc2626)"); }
+        else await chrome.runtime.sendMessage({ type: "SLACK_DISCONNECT" }).catch(() => {});
+        slackBusy = false; paintSlack();
+      }));
+    w.appendChild(head);
+    if (poll.err) { const e = document.createElement("div"); e.className = "hint tf-slackerr"; e.textContent = "\u26A0 " + poll.err; w.appendChild(e); }
+    // Copies an earlier version pulled from Slack into client folders: to the Recycle Bin.
+    w.appendChild(slackCopiesBox());
+    const m = document.createElement("div"); m.id = "tfSlackMap"; w.appendChild(m);
+    return w;
+  }
+  let copiesCache = null;
+  function slackCopiesBox() {
+    const box = document.createElement("div");
+    box.className = "tf-slackcopies";
+    const paint = (r) => {
+      box.textContent = "";
+      if (!r || !r.ok || !r.total) return;
+      const mb = (r.bytes / 1048576).toFixed(r.bytes > 10485760 ? 0 : 1);
+      const line = document.createElement("span");
+      line.className = "hint";
+      line.textContent = "\uD83D\uDDD1 " + r.total + (r.total === 1 ? " file" : " files") + " (" + mb + " MB) in client folders were copied from Slack by an earlier version: " + r.clients.map((c) => c.client + " (" + c.names.length + ")").join(", ") + ".";
+      const go = document.createElement("button"); go.type = "button"; go.className = "tf-btn"; go.textContent = "Move to Recycle Bin";
+      go.title = "Only these Slack copies (named \u201CSlack screenshot \u2026\u201D or \u201C\u2026 (date)\u201D, saved by this extension). They can be restored from the Recycle Bin.";
+      go.onclick = async () => {
+        const list = r.clients.map((c) => c.client + " (" + c.names.length + "):\n  " + c.names.slice(0, 12).map((f) => f.name).join("\n  ") + (c.names.length > 12 ? "\n  \u2026 and " + (c.names.length - 12) + " more" : "")).join("\n\n");
+        if (!confirm("Move these " + r.total + " Slack copies to the Recycle Bin? Your own files aren't touched, and these can be restored from the Recycle Bin.\n\n" + list)) return;
+        go.disabled = true; go.textContent = "Moving\u2026";
+        const res = await chrome.runtime.sendMessage({ type: "SLACK_COPIES", op: "trash", clients: r.clients.map((c) => ({ client: c.client, names: c.names.map((f) => f.name) })) }).catch((x) => ({ ok: false, error: String(x && x.message || x) }));
+        say(res && res.ok ? res.moved + (res.moved === 1 ? " file" : " files") + " moved to the Recycle Bin." + (res.failed ? " " + res.failed + " couldn\u2019t be moved (open, or in use?)." : "") : (res && res.error) || "Couldn\u2019t move them.", res && res.ok ? "" : "var(--red, #dc2626)");
+        copiesCache = null;
+        for (const k of Object.keys(folderList)) delete folderList[k];
+        await load();
+      };
+      box.append(line, " ", go);
+    };
+    if (copiesCache && Date.now() - copiesCache.at < 120000) paint(copiesCache.r);
+    else chrome.runtime.sendMessage({ type: "SLACK_COPIES", op: "list" }).then((r) => { copiesCache = { at: Date.now(), r }; paint(r); }).catch(() => {});
+    return box;
+  }
+  // One row per client: its channel (pre-picked where the names match).
+  async function slackMatch() {
+    const box = $("tfSlackMap");
+    if (!box) return;
+    box.innerHTML = '<div class="hint" style="padding:6px 0;">Reading your Slack channels\u2026</div>';
+    const r = await chrome.runtime.sendMessage({ type: "SLACK_CHANNELS" }).catch((x) => ({ ok: false, error: String(x && x.message || x) }));
+    if (!r || !r.ok) { box.innerHTML = '<div class="hint tf-slackerr">Couldn\u2019t read the channels: ' + esc((r && r.error) || "no answer") + (r && r.auth ? " - open Slack in Chrome and press Reconnect." : "") + "</div>"; return; }
+    const g = await chrome.storage.local.get("slackChannels").catch(() => ({}));
+    const map = g.slackChannels || {};
+    const byClient = {};
+    for (const [cid, v] of Object.entries(map)) if (v && v.client) byClient[F.key(v.client)] = cid;
+    const clients = [...new Set(r.clients.concat(Object.values(map).map((v) => v.client)))].filter(Boolean);
+    const opts = (sel) => '<option value="">\u2014 no channel \u2014</option>' + r.channels.map((c) => '<option value="' + esc(c.id) + '"' + (c.id === sel ? " selected" : "") + ">" + (c.private ? "\uD83D\uDD12 " : "#") + esc(c.name) + (c.member ? "" : " (not joined)") + "</option>").join("");
+    box.innerHTML = '<div class="tf-slackmap"><div class="hint" style="margin:6px 0;">Pick each client\u2019s channel (the obvious ones are pre-picked - check them). Only these channels are read.</div>' +
+      clients.map((c) => { const sel = byClient[F.key(c)] || r.suggest[c] || ""; return '<div class="tf-slackmr"><span class="tf-slackmc" title="' + esc(c) + '">' + esc(c) + '</span><select data-client="' + esc(c) + '">' + opts(sel) + "</select></div>"; }).join("") +
+      '<div class="tf-slackmr"><button type="button" class="tf-btn pri" id="tfSlackMapSave">Save matches</button><button type="button" class="tf-btn" id="tfSlackMapNo">Cancel</button></div></div>';
+    $("tfSlackMapNo").onclick = () => { box.textContent = ""; };
+    $("tfSlackMapSave").onclick = async () => {
+      const next = {};
+      for (const sel of box.querySelectorAll("select[data-client]")) {
+        if (!sel.value) continue;
+        const ch = r.channels.find((c) => c.id === sel.value);
+        next[sel.value] = { name: ch ? ch.name : "", client: sel.dataset.client };
+      }
+      const res = await chrome.runtime.sendMessage({ type: "SLACK_MAP_SET", map: next }).catch(() => null);
+      say(res && res.ok ? res.count + (res.count === 1 ? " channel" : " channels") + " matched. Briefs for their tasks now look in those channels (Refresh list updates the file list now)." : "Couldn't save the matches.", res && res.ok ? "" : "var(--red, #dc2626)");
+      slackBusy = false; paintSlack();
+    };
+  }
+  try { chrome.storage.onChanged.addListener((ch, area) => { if (area === "local" && (ch.slackInboxAt || ch.slackPoll || ch.slackSession)) { if (!$("tfSlackMap") || !$("tfSlackMap").childElementCount) paintSlack().catch(() => {}); } }); } catch (e) {}
   // Per client: AI briefs look up related tasks (on unless switched off here).
   let relatedOff = new Set();
   async function load() {
@@ -293,6 +473,7 @@
     pinned = await readPins();
     added = await readAdded();
     render();
+    paintSlack().catch(() => {});
   }
 
   function clientsShown() {

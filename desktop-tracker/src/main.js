@@ -479,6 +479,20 @@ async function filesOp(m) {
     if (p) { settings.clientLinks = { ...links, [clientdirs.key(m.client)]: p }; saveSettings(); }
     return { ok: true, dir: p || "", picked: !!p };
   }
+  // Files the extension copied there earlier (from Slack): to the Recycle Bin /
+  // Trash, so they can still be restored. Only by exact name, directly inside
+  // this client's own folder - never a sub-folder or anything outside it.
+  if (op === "trashFiles") {
+    const dir = clientdirs.clientDir(clientsRoot(), m.client, links, false);
+    const moved = [], missing = [], failed = [];
+    for (const name of (Array.isArray(m.names) ? m.names : []).slice(0, 500)) {
+      let p = "";
+      try { p = clientdirs.inside(dir, String(name || "")); } catch (e) { failed.push(String(name)); continue; }
+      if (path.dirname(p) !== dir || !fs.existsSync(p) || !fs.statSync(p).isFile()) { missing.push(String(name)); continue; }
+      try { await shell.trashItem(p); moved.push(String(name)); } catch (e) { failed.push(String(name)); }
+    }
+    return { ok: true, dir, moved, missing, failed };
+  }
   if (op === "unlinkClient") { const l = { ...links }; delete l[clientdirs.key(m.client)]; settings.clientLinks = l; saveSettings(); return { ok: true }; }
   if (op === "task") {
     const r = await clientdirs.writeTask(clientsRoot(), links, m, (u, o) => fetch(u, o), getToken());

@@ -199,6 +199,14 @@
   // ---------- shared data loading (no spinners after the first time) ----------
   let perf = null, perfLoaded = false, perfAsked = 0, perfErr = "";
   const view = { el: null, sub: "" };
+  // Write the tab only when what it shows changed: background updates (every few
+  // minutes) rebuilt it with the same content, and each rebuild made the page jump.
+  function put(el, html) {
+    if (el._ipHtml === html && el.childNodes.length) return false;
+    el.innerHTML = html;
+    el._ipHtml = html;
+    return true;
+  }
   function repaint() {
     if (!view.el || view.el.hidden || !view.sub) return;
     // Not while a time is being typed in (it would vanish); the edit repaints when done.
@@ -234,6 +242,7 @@
   // Developers' open "dev" tasks (background PLAN_DEV_TASKS, cached 30 min): each
   // will come back to the tech team as a short review task once it's done.
   let dev = null, devLoaded = false, devAsked = 0;
+  const devStoredP = chrome.storage.local.get("devPipeline").then((g) => { if (!dev && g && g.devPipeline) dev = g.devPipeline; devLoaded = true; }).catch(() => {});
   function loadDev() {
     if (!devLoaded) {
       devLoaded = true;
@@ -249,9 +258,9 @@
   // planOverrides { [taskId or "rev-<devId>"]: { ms, spent, est, at } }. Time
   // tracked since the edit still counts down from it; a changed ClickUp estimate
   // wins over it (newer information). Kept 60 days.
-  let planOv = {};
+  let planOv = {}, planOvP = Promise.resolve();
   try {
-    chrome.storage.local.get("planOverrides").then((g) => { planOv = (g && g.planOverrides && typeof g.planOverrides === "object") ? g.planOverrides : {}; repaint(); }).catch(() => {});
+    planOvP = chrome.storage.local.get("planOverrides").then((g) => { planOv = (g && g.planOverrides && typeof g.planOverrides === "object") ? g.planOverrides : {}; repaint(); }).catch(() => {});
     chrome.storage.onChanged.addListener((ch, area) => { if (area === "local" && ch.planOverrides) { planOv = ch.planOverrides.newValue || {}; repaint(); } });
   } catch (e) {}
   function applyOv(t) {
@@ -589,9 +598,9 @@
     const head = '<div class="ip-head"><h2>Plan</h2><span class="sp"></span>' +
       '<span class="ip-seg"><button type="button" data-week="this" class="' + (planWeek === "this" ? "on" : "") + '">This week</button><button type="button" data-week="next" class="' + (planWeek === "next" ? "on" : "") + '">Next week</button></span></div>' +
       '<p class="ip-sub">How much work is due in the week against your target, what that total is made of, and an order for each day that respects dependencies. Nothing is changed in ClickUp.</p>';
-    if (!openRows()) { el.innerHTML = head + '<div class="ip-empty">Loading your open tasks (first time only)…</div>'; wire(el); return; }
+    if (!openRows()) { if (put(el, head + '<div class="ip-empty">Loading your open tasks (first time only)…</div>')) wire(el); return; }
     const p = buildPlan();
-    if (!p.days.length) { el.innerHTML = head + '<div class="ip-card"><h3>No working days left ' + (planWeek === "this" ? "this week" : "that week") + '</h3><p class="hint">' + (p.holidays.length ? "Company holidays: " + p.holidays.map(dShort).join(", ") + ". " : "") + 'Switch to <b>Next week</b> to plan ahead.</p></div>'; wire(el); return; }
+    if (!p.days.length) { if (put(el, head + '<div class="ip-card"><h3>No working days left ' + (planWeek === "this" ? "this week" : "that week") + '</h3><p class="hint">' + (p.holidays.length ? "Company holidays: " + p.holidays.map(dShort).join(", ") + ". " : "") + 'Switch to <b>Next week</b> to plan ahead.</p></div>')) wire(el); return; }
     const diff = p.plannedMs - p.capacityMs;
     const status = Math.abs(diff) <= p.capacityMs * 0.1 ? { cls: "good", k: "On target", v: diff >= 0 ? "+" + fmt(diff) : "−" + fmt(-diff) }
       : diff < 0 ? { cls: "warn", k: "Short by", v: fmt(-diff) } : { cls: "bad", k: "Over by", v: fmt(diff) };
@@ -670,8 +679,7 @@
     lastPlan = p;
     h += '<div class="ip-card"><h3>Day by day</h3><p class="hint">Each day is filled up to ' + fmt(Math.max(0, p.tMs - p.cfgPerDay)) + " of tasks" + (p.cfgPerDay ? " (+ " + fmt(p.cfgPerDay) + " Extra Task)" : "") + ". Order: what a task depends on comes first (ClickUp dependencies, earlier steps of the same audit item like ACT-066.S2 before .S3), then overdue, then by due date and priority; tasks waiting on someone go last.</p>" + d + "</div>";
     h += '<p class="ip-meta">Tasks from ' + (typeof insCache !== "undefined" && insCache && insCache.at ? ago(insCache.at) : "—") + (perf ? " · history from " + ago(perf.at) : "") + ".</p>";
-    el.innerHTML = h;
-    wire(el);
+    if (put(el, h)) wire(el);
   }
 
   // ---------- Performance ----------
@@ -764,7 +772,7 @@
   function renderPerf(el) {
     const head = '<div class="ip-head"><h2>Performance</h2></div>' +
       '<p class="ip-sub">Your tracked time, deadlines and workload over the last 12 weeks (your rating can also look back 6 or 12 months, for a review).' + " Weekends and company holidays don't count against you. Click any number, bar or day to see what's behind it. Your overall score and Health counts are shared with your admin.</p>";
-    if (!perf) { el.innerHTML = head + '<div class="ip-empty">' + (perfErr ? "Couldn't read your history: " + esc(perfErr) : "Reading your last 12 weeks from ClickUp (first time only, one short read)…") + "</div>"; wire(el); return; }
+    if (!perf) { if (put(el, head + '<div class="ip-empty">' + (perfErr ? "Couldn't read your history: " + esc(perfErr) : "Reading your last 12 weeks from ClickUp (first time only, one short read)…") + "</div>")) wire(el); return; }
     const tMs = targetMs(), today = dayStart(Date.now());
     const weeks = [];
     const firstMon = Math.max(monday(perf.fromTs), addDays(monday(Date.now()), -7 * 11));
@@ -973,7 +981,7 @@
       h += '<div class="ip-card"><h3>Where your time went</h3><p class="hint">Tracked time per client over the last ' + (perf.weeks || 12) + ' weeks ("Other": tasks no longer in your lists). Click a client for its tasks.</p>' + cl + clDrill + "</div>";
     }
     h += '<p class="ip-meta">History updated ' + ago(perf.at) + " (refreshes by itself every few hours)." + (perfErr ? " Last refresh failed: " + esc(perfErr) : "") + "</p>";
-    el.innerHTML = h;
+    if (!put(el, h)) return;
     wire(el);
     el.querySelectorAll("[data-ring-sel]").forEach((s) => { s.onchange = () => { ringP = RING_P[s.value] ? s.value : "week"; try { localStorage.setItem("pcmRingP", ringP); } catch (e) {} repaint(); }; });
     // Bring an opened detail into view (it sits under the thing that was clicked).
@@ -1086,8 +1094,23 @@
     el.querySelectorAll("[data-close-drill]").forEach((b) => { b.onclick = () => { drill = null; repaint(); }; });
   }
 
+  // First paint waits for what's kept on this computer (history, the developers'
+  // tasks, times typed into Plan, your open tasks - a few milliseconds) so it draws
+  // once, instead of "Reading..." / a partial page that then changed under you.
+  let localReady = false, localP = null;
+  function loadLocal() {
+    if (!localP) localP = Promise.all([loadPerfStored(), devStoredP, planOvP, typeof insHydrate === "function" ? insHydrate() : null].map((p) => Promise.resolve(p).catch(() => {}))).then(() => { localReady = true; });
+    return localP;
+  }
   function render(sub, el) {
     view.el = el; view.sub = sub;
+    if (!localReady) {
+      // Keep the space it will take (no collapse), draw when the stored copies are in.
+      if (el._ipSub !== sub) { el.style.minHeight = Math.max(el.offsetHeight, 480) + "px"; el.innerHTML = ""; el._ipHtml = ""; el._ipSub = sub; }
+      loadLocal().then(() => { el.style.minHeight = ""; if (view.el === el && view.sub === sub) render(sub, el); });
+      return;
+    }
+    el._ipSub = sub;
     needOpenTasks();
     if (sub === "plan") loadDev();
     if (!perfLoaded) { loadPerfStored().then(() => { maybeRefreshPerf(false); repaint(); }); }

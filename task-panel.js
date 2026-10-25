@@ -72,13 +72,22 @@
   .pcm-tabs button.on { color: var(--indigo); border-bottom-color: var(--indigo); }
   .pcm-tabs button[data-pt="warn"] { color: #b45309; }
   .pcm-tabs button[data-pt="warn"].on { border-bottom-color: #d97706; }
+  .pcm-tlink { color: inherit; text-decoration: underline; text-decoration-color: color-mix(in srgb, currentColor 40%, transparent); text-underline-offset: 2px; }
+  .pcm-tlink:hover { color: var(--indigo, #6366f1); text-decoration-color: currentColor; }
   .pcm-tabs .n.w { background: rgba(217,119,6,.18); color: #b45309; }
   .pcm-tabs .n { display: inline-block; min-width: 16px; margin-left: 4px; padding: 0 5px; border-radius: 999px; background: rgba(99,102,241,.15); color: var(--indigo); font-size: 10.5px; line-height: 16px; text-align: center; }
   .pcm-pane[hidden] { display: none !important; }
   .pcm-pane { display: flex; flex-direction: column; gap: 10px; }
-  html.pcm-simple .pcm-tabs button[data-pt="ai"], html.pcm-simple .pcm-tabs button[data-pt="time"] { display: none; }
   .pcm-desc.pcm-clamp { max-height: 9.5em; overflow: hidden; -webkit-mask-image: linear-gradient(#000 70%, transparent); mask-image: linear-gradient(#000 70%, transparent); }
   .pcm-desc.pcm-open { max-height: none; }
+  /* Under a long description: the same bar as under the task list - click it to
+     show the whole description, click again for the normal height. */
+  .pcm-descgrip { display: flex; flex-direction: column; align-items: center; gap: 2px; padding: 4px 0 2px; margin-top: 2px; border-radius: 6px; cursor: pointer; user-select: none; }
+  .pcm-descgrip::before { content: ""; width: 42px; height: 4px; border-radius: 3px; background: var(--border); transition: background .15s, width .15s; }
+  .pcm-descgrip span { font-size: 10.5px; font-weight: 600; color: var(--muted); }
+  .pcm-descgrip:hover::before, .pcm-descgrip:focus-visible::before { background: var(--indigo); width: 64px; }
+  .pcm-descgrip:hover span { color: var(--indigo); }
+  .pcm-descgrip:focus-visible { outline: 2px solid var(--indigo); outline-offset: 1px; }
   .pcm-more { align-self: flex-start; background: none; border: 0; padding: 0; color: var(--indigo); font: inherit; font-size: 11.5px; font-weight: 600; cursor: pointer; }
   .pcm-desc { white-space: pre-wrap; line-height: 1.5; max-height: 220px; overflow: auto; padding-right: 4px; }
   .pcm-edit { font: inherit; font-size: 11.5px; font-weight: 600; letter-spacing: 0; text-transform: none; padding: 2px 10px; border-radius: 999px; border: 1px solid var(--indigo); background: rgba(99,102,241,.12); color: var(--indigo); cursor: pointer; }
@@ -87,6 +96,10 @@
   .pcm-desc.pcm-editable:hover { outline: 1px dashed var(--border); }
   .pcm-empty { color: var(--muted); font-style: italic; }
   .pcm-files { display: flex; flex-wrap: wrap; gap: 6px; }
+  .pcm-attw { display: inline-flex; align-items: center; gap: 2px; }
+  .pcm-attx { border: 0; background: none; color: var(--muted); cursor: pointer; font-size: 11px; padding: 0 4px; border-radius: 6px; line-height: 1.4; }
+  .pcm-attx:hover:not(:disabled) { color: var(--red, #dc2626); background: rgba(220,38,38,.08); }
+  .pcm-attw.gone .pcm-file { opacity: .5; text-decoration: line-through; }
   .pcm-file { font-size: 11px; padding: 2px 8px; border: 1px solid var(--border); border-radius: 10px; background: var(--card); text-decoration: none; max-width: 240px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; word-break: normal !important; }
   .pcm-te { margin: 4px 0 8px; display: grid; gap: 4px; }
   .pcm-family { margin: 0; padding: 8px 12px; border-radius: 8px; border: 1px solid var(--border); background: var(--card); font-size: 12px; display: grid; gap: 6px; }
@@ -128,9 +141,18 @@
   .pcm-btn:hover:not(:disabled) { border-color: var(--indigo); color: var(--indigo); }
   .pcm-btn.pri { background: var(--indigo); border-color: var(--indigo); color: #fff; }
   .pcm-btn.pri:hover:not(:disabled) { color: #fff; filter: brightness(1.1); }
+  .pcm-btn.pcm-copyai { color: var(--indigo); border: 1.5px solid var(--indigo); background: color-mix(in srgb, var(--indigo) 12%, var(--card)); font-weight: 700; }
+  .pcm-btn.pcm-copyai:hover:not(:disabled) { background: color-mix(in srgb, var(--indigo) 22%, var(--card)); }
+  html[data-theme="dark"] .pcm-btn.pcm-copyai { color: color-mix(in srgb, var(--indigo) 55%, #fff); background: color-mix(in srgb, var(--indigo) 22%, var(--card)); }
   .pcm-btn:disabled { opacity: .5; cursor: default; }
   .pcm-chtools { display: inline-flex; gap: 6px; flex-shrink: 0; align-self: center; }
   .pcm-chtools .pcm-btn { font-size: 10.5px; padding: 2px 8px; }
+  .pcm-planmenu { position: fixed; z-index: 2147483000; display: flex; flex-direction: column; gap: 5px; padding: 8px; border-radius: 10px; border: 1px solid var(--border); background: var(--card, #fff); box-shadow: 0 12px 30px rgba(0,0,0,.2); }
+  .pcm-planmenu .pcm-btn { text-align: left; white-space: nowrap; }
+  .pcm-pick { flex: none; width: 15px; height: 15px; margin: 0 6px 0 4px; accent-color: var(--indigo, #6366f1); cursor: pointer; }
+  .cu-task.pcm-picking:not(:has(> .pcm-pick:checked)) { opacity: .5; }
+  .pcm-pickbar { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; padding: 6px 10px; font-size: 11.5px; color: var(--text); background: color-mix(in srgb, var(--indigo, #6366f1) 8%, var(--card, #fff)); border-bottom: 1px dashed var(--border); }
+  .pcm-pickbar .pcm-btn { font-size: 11px; padding: 2px 9px; }
   .pcm-chnote { margin: 0 0 6px; font-size: 11.5px; font-weight: 400; }
   .pcm-chnote .pcm-btn { margin-left: 4px; }
   .pcm-link { background: none; border: 0; padding: 0; color: var(--indigo); font-size: 11px; cursor: pointer; }
@@ -179,6 +201,11 @@
   .pcm-held-h { font-size: 11px; font-weight: 700; color: var(--amber, #d97706); margin-bottom: 4px; }
   .pcm-held-bar { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; margin-top: 6px; }
   .pcm-held-bar .sp { flex: 1; }
+  .pcm-held-it.bad .pcm-held-h { color: var(--red, #dc2626); }
+  .pcm-sendat { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; justify-content: flex-end; margin-top: 6px; font-size: 11.5px; }
+  .pcm-sendat[hidden] { display: none; }
+  .pcm-sendat select { font: inherit; font-size: 11.5px; padding: 3px 6px; border: 1px solid var(--border); border-radius: 6px; background: var(--card); color: var(--text); max-width: 200px; }
+  .pcm-sendat input { font: inherit; font-size: 11.5px; padding: 3px 6px; border: 1px solid var(--border); border-radius: 6px; background: var(--card); color: var(--text); }
   .pcm-held-mode { width: auto !important; flex: none; font: inherit; font-size: 11.5px; padding: 3px 6px; border: 1px solid var(--border); border-radius: 6px; background: var(--card); color: var(--text); }
   .pcm-theirs { border: 1px dashed var(--border); border-radius: 6px; padding: 6px 8px; opacity: .85; }
   .pcm-compose-row .pcm-note { margin-right: auto; }
@@ -305,8 +332,10 @@
     const cm = (d.comments || []).slice(0, full ? 15 : 5).map((c) => "- " + c.who + (full && c.at ? " (" + fmtDay(c.at) + ")" : "") + ": " + (full ? cut(c.text, 1500) : c.text)).join("\n");
     const files = (d.attachments || []).map((a) => full && safeUrl(a.url) ? a.title + " (" + a.url + ")" : a.title).join(", ");
     const list = (a) => Array.isArray(a) && a.length ? a.join(", ") : "";
-    const subs = full && Array.isArray(d.subtasks) ? d.subtasks : [];
-    const subText = subs.length ? "\n\nSubtasks (" + subs.filter((s) => s.done).length + " of " + subs.length + " done):\n" + subs.map((s) =>
+    const subs = Array.isArray(d.subtasks) ? d.subtasks : [];
+    // Explain (not full): each subtask on one line, without its description.
+    const subText = subs.length && !full ? "\n\nSubtasks (" + subs.filter((s) => s.done).length + " of " + subs.length + " done):\n" + subs.slice(0, 25).map((s) =>
+      "- [" + (s.done ? "done" : "open") + "] " + s.name + (list(s.assignees) ? " · " + list(s.assignees) : "") + (s.dueDateMs ? " · due " + fmtDay(s.dueDateMs) : "")).join("\n") : subs.length ? "\n\nSubtasks (" + subs.filter((s) => s.done).length + " of " + subs.length + " done):\n" + subs.map((s) =>
       "- [" + (s.done ? "done" : "open") + "] " + s.name + (s.status ? " · status: " + s.status : "") +
       (list(s.assignees) ? " · " + list(s.assignees) : "") + (s.dueDateMs ? " · due " + fmtDay(s.dueDateMs) : "") +
       (s.url ? "\n  " + s.url : "") +
@@ -318,21 +347,25 @@
       (full && list(d.assignees) ? "\nAssigned to: " + list(d.assignees) : "") +
       (full && d.priority ? "\nPriority: " + d.priority : "") +
       (full && list(d.tags) ? "\nTags: " + list(d.tags) : "") +
+      (d.startDateMs ? "\nStart date: " + fmtDay(d.startDateMs) : "") +
       (d.dueDateMs ? "\nDue: " + fmtDay(d.dueDateMs) : "") +
       (d.estimateMs ? "\nTime estimate: " + fmtDur(d.estimateMs) : "") +
+      (d.spentMs ? "\nTime tracked so far: " + fmtDur(d.spentMs) : "") +
       (full && d.parentId ? "\nThis is a subtask of: " + relLine(d, d.parentId) : "") +
       (full && list(d.waitsOn) ? "\nWaits on (ClickUp dependencies): " + d.waitsOn.map((x) => relLine(d, x)).join("; ") : "") +
       (full && list(d.blocks) ? "\nBlocks: " + d.blocks.map((x) => relLine(d, x)).join("; ") : "") +
       (full && list(d.linked) ? "\nRelated tasks in ClickUp (linked): " + d.linked.map((x) => relLine(d, x)).join("; ") : "") +
-      "\n\nDescription:\n" + (d.description || (list(d.linked) || list(d.waitsOn) || d.parentId
+      "\n\nDescription:\n" + (d.description ? (full ? d.description : cut(d.description, 2500)) : (list(d.linked) || list(d.waitsOn) || d.parentId
         ? "(no description - its details are in the related task(s) below: read their descriptions and comments)"
         : "(no description)")) +
       subText +
+      connectedText(d) +
+      myNotesText(d, full) +
       (full ? relatedText(d) : "") +
       (files ? "\n\nFiles attached in ClickUp: " + files : "") +
       (cm ? "\n\n" + (full ? "Comments (newest first):\n" : "Recent comments:\n") + cm : "") +
+      slackText(d, full) +
       (Array.isArray(d._notes) && d._notes.length ? "\n\nNotes the user keeps about this client:\n" + d._notes.map((n) => "- " + n.text).join("\n") : "") +
-      myNotesText(d, full) +
       auditText(d);
     const max = full ? MAX_VERIFY_INPUT : MAX_AI_INPUT;
     if (body.length > max) body = body.slice(0, max) + "\n...(cut short)";
@@ -398,11 +431,108 @@
   function myNotes(d) {
     try { return window.PcmTaskNotes ? window.PcmTaskNotes.notesOf(d.id).slice().sort((a, b) => b.at - a.at) : []; } catch (e) { return []; }
   }
+  // All of them in a brief (Copy for AI, Plan with AI); the newest 8 for Explain,
+  // whose on-device model reads less. A note that is a colour's reason says so.
   function myNotesText(d, full) {
-    const list = myNotes(d).slice(0, 10);
+    const all = myNotes(d);
+    const list = full ? all : all.slice(0, 8);
     if (!list.length) return "";
     const cut = (t, n) => { t = String(t || ""); return t.length > n ? t.slice(0, n) + "…" : t; };
-    return "\n\nMy own notes on this task (newest first):\n" + list.map((n) => "- " + fmtDay(n.at) + ": " + cut(n.text, full ? 2000 : 600).replace(/\n/g, "\n  ")).join("\n");
+    let labels = [];
+    try { labels = window.PcmTaskNotes && window.PcmTaskNotes.colorLabels ? window.PcmTaskNotes.colorLabels() : []; } catch (e) {}
+    return "\n\nMy own notes on this task (kept in this extension, newest first):\n" + list.map((n) => {
+      const l = n.c ? labels.find((x) => x && x.id === n.c) : null;
+      const fl = (n.files || []).map((f) => f && f.name).filter(Boolean);
+      return "- " + fmtDay(n.at) + (l ? " [colour: " + l.name + (l.skip ? " - left out of plans and the 7h day" : "") + "]" : "") + ": " +
+        cut(n.text, full ? 4000 : 500).replace(/\n/g, "\n  ") + (fl.length ? "\n  Files on this note (on this computer only): " + fl.join(", ") : "");
+    }).join("\n") + (all.length > list.length ? "\n(+" + (all.length - list.length) + " older notes)" : "");
+  }
+  // ---- Slack (Clients › Slack channels): what the client's channel has for this task ----
+  // Asked only when a brief is made (Copy for AI, Ask, Explain, Plan with AI), not
+  // when a task opens. The files that fit the task are fetched then and only their
+  // TEXT is kept, here (IndexedDB pcm-slacktext): at most 30 MB, and text not used
+  // for 30 days is dropped - the files themselves are never stored.
+  const SLACK_TEXT_MAX = 30 * 1048576, SLACK_TEXT_DAYS = 30;
+  function stDb() {
+    return new Promise((ok, bad) => {
+      const r = indexedDB.open("pcm-slacktext", 1);
+      r.onupgradeneeded = () => { if (!r.result.objectStoreNames.contains("t")) r.result.createObjectStore("t", { keyPath: "id" }); };
+      r.onsuccess = () => ok(r.result); r.onerror = () => bad(r.error);
+    });
+  }
+  async function stDo(mode, fn) { const db = await stDb(); return new Promise((ok, bad) => { const tx = db.transaction("t", mode); const q = fn(tx.objectStore("t")); tx.oncomplete = () => { db.close(); ok(q && q.result); }; tx.onerror = () => { db.close(); bad(tx.error); }; }); }
+  const stGet = (id) => stDo("readonly", (st) => st.get(id)).catch(() => null);
+  const stPut = (rec) => stDo("readwrite", (st) => st.put(rec)).catch(() => {});
+  // Unused for 30 days: gone. Over 30 MB: the least recently used go first.
+  async function stTrim() {
+    const all = ((await stDo("readonly", (st) => st.getAll()).catch(() => [])) || []).sort((a, b) => (b.used || 0) - (a.used || 0));
+    let total = 0;
+    const drop = [];
+    for (const r of all) {
+      const size = String(r.text || "").length + String(r.html || "").length;
+      if (Date.now() - (r.used || 0) > SLACK_TEXT_DAYS * 864e5 || total + size > SLACK_TEXT_MAX) drop.push(r.id); else total += size;
+    }
+    if (drop.length) await stDo("readwrite", (st) => { for (const id of drop) st.delete(id); }).catch(() => {});
+  }
+  const slackBase = (n) => String(n || "").toLowerCase().replace(/\s*\(\d{4}-\d\d-\d\d\)(?=\.[a-z0-9]+$)/, "").replace(/\s+\(from slack[^)]*\)$/, "");
+  async function slackFor(d, have, opts) {
+    if (d._slack !== undefined) return d._slack;
+    const client = d._client || d.list;
+    if (!client) { d._slack = null; return null; }
+    const hasAudit = (have || []).some((f) => /audit|technical|report/i.test(f.name || "")) || !!d._audit;
+    const r = await send({ type: "SLACK_TASK_LOOKUP", client, name: d.name || "", opts: { ...(opts || {}), hasAudit } });
+    if (!r || !r.ok) { d._slack = null; return null; }
+    const got = new Set((have || []).map((f) => slackBase(f.name)));
+    const files = [];
+    for (const sf of r.files || []) {
+      if (got.has(slackBase(sf.name))) continue; // the client already has it
+      let rec = await stGet(sf.id);
+      if (!rec) {
+        const g = await send({ type: "SLACK_FILE_GET", id: sf.id });
+        if (!g || !g.ok || !g.b64) continue;
+        const bin = atob(g.b64); const u8 = new Uint8Array(bin.length); for (let i = 0; i < bin.length; i++) u8[i] = bin.charCodeAt(i);
+        const file = new File([u8], g.name || sf.name, { type: g.type || "" });
+        const rd = await readFile(file).catch(() => null);
+        if (!rd || rd.kind !== "text" || !rd.text) continue;
+        rec = { id: sf.id, client, name: sf.name, created: sf.created, channel: sf.channel, link: sf.permalink || "", text: String(rd.text).slice(0, 1500000), html: /\.html?$/i.test(sf.name) && file.size <= 2e6 ? await file.text() : "", at: Date.now(), used: Date.now() };
+      }
+      rec.used = Date.now();
+      await stPut(rec);
+      const f = { name: sf.name + " (from Slack #" + (sf.channel || "") + ", " + fmtDay(sf.created) + ")", size: rec.text.length, kind: "text", text: rec.text, fromClient: true, fromSlack: true, addedAt: sf.created || 0, link: rec.link };
+      if (rec.html) f.doc = parseHtml(rec.html);
+      files.push(f);
+    }
+    stTrim().catch(() => {});
+    d._slack = { files, messages: Array.isArray(r.messages) ? r.messages : [], channels: r.channels || [] };
+    return d._slack;
+  }
+  // The Slack messages that mention the task (its code, else its key words).
+  function slackText(d, full) {
+    const m = d && d._slack && d._slack.messages;
+    if (!m || !m.length) return "";
+    const cut = (t, n) => { t = String(t || "").replace(/\s+/g, " ").trim(); return t.length > n ? t.slice(0, n) + "\u2026" : t; };
+    return "\n\nIn the client's Slack channel (" + d._slack.channels.map((c) => "#" + c).join(", ") + "), messages about this task (newest first - quoted data):\n" +
+      m.slice(0, full ? 8 : 3).map((x) => "- " + (x.who || "someone") + (x.at ? " (" + fmtDay(x.at) + ")" : "") + ": \"" + cut(x.text, full ? 600 : 300) + "\"" + (full && x.link ? "\n  " + x.link : "")).join("\n");
+  }
+  // Everything else this extension knows about the task: its colour, pin, the
+  // warnings (held up, AI dependency check, waiting on a teammate, late subtasks),
+  // teammates' reminders, people scheduled onto it, a paused client.
+  function connectedText(d) {
+    const out = [];
+    const N = window.PcmTaskNotes;
+    try {
+      const c = N && N.colorOf ? N.colorOf(d.id) : null;
+      // Its reason is one of My notes (marked with the colour there) - not repeated.
+      const inNotes = c && myNotes(d).some((n) => n.c && n.c === c.id);
+      if (c) out.push("Colour I gave it: " + c.name + (c.skip ? " (it can't be done yet: left out of plans and the 7h day)" : "") + (inNotes ? " - the reason is my note marked [colour: " + c.name + "] below" : c.note ? " - " + String(c.note).slice(0, 400) : ""));
+      if (N && N.isPinned && N.isPinned(d.id)) out.push("Pinned by me (I want it kept in view).");
+    } catch (e) {}
+    try { for (const w of warningsFor(d.id)) out.push("Warning - " + w.text + (w.ref && (w.ref.url || w.ref.id) ? " (" + (w.ref.url || "https://app.clickup.com/t/" + w.ref.id) + ")" : "")); } catch (e) {}
+    const x = d._extra || {};
+    for (const n of (x.nudges || []).slice(-5)) out.push("Reminder from " + (n.fromName || "a teammate") + (n.at ? " (" + fmtDay(n.at) + ")" : "") + ": " + String(n.text || "(no text)").slice(0, 500));
+    for (const j of x.sched || []) out.push(j.failed ? "Couldn't add " + j.name + " to it as scheduled (" + (j.error || "ClickUp refused") + ")" : j.name + " is scheduled to be added to it on " + new Date(j.at).toLocaleString(undefined, { weekday: "short", month: "short", day: "numeric", hour: "numeric", minute: "2-digit" }));
+    if (x.paused) out.push("The client " + x.paused.name + " has paused work with us" + (x.paused.since ? " since " + x.paused.since : "") + (x.paused.note ? " (" + x.paused.note + ")" : "") + " - don't track time on it unless told to.");
+    return out.length ? "\n\nAlso known about this task (from this extension):\n" + out.map((s) => "- " + s).join("\n") : "";
   }
   // The client's remembered audit (saved from the Export menu's Client report):
   // what it says about this task's code, so the AI gets the full picture without
@@ -856,10 +986,12 @@
     ask.type = "button";
     ask.title = "Open the chosen AI with everything about this task - subtasks, dependencies, comments, your notes, the client's notes, audit and files - asking whether it's done, whether it has to wait for something, and how to do it (that text is sent to that AI).";
     const COPY_LABEL = "📋 Copy for AI";
-    const copy = el("button", "pcm-btn", COPY_LABEL);
+    // A main action, next to Explain (it sat among the plain Ask-with controls and blended in).
+    const copy = el("button", "pcm-btn pcm-copyai", COPY_LABEL);
     copy.type = "button";
     copy.title = "Copies everything about this task - subtasks, what it waits on, comments, your notes, the client's notes, the audit and files - with what to ask: is it already done (checked live), wait or go, how and where to do it, and the live-site safety rules. Paste it into Claude Code, ChatGPT or any AI. With the ClickUp Tracker app it's also saved, with the task's files, in the client's folder (tasks › <task>).";
-    row2.append(lab, sel, ask, copy);
+    row2.append(lab, sel, ask);
+    stop.after(copy);
 
     const chips = el("div", "pcm-files pcm-att");
     const note = el("div", "pcm-note");
@@ -984,6 +1116,7 @@
       if (myNotes(d).length) bits.push("your notes on it");
       if (Array.isArray(d._notes) && d._notes.length) bits.push("the client notes");
       if (auditText(d)) bits.push("the audit (" + ((d._audit && d._audit.fileName) || "saved") + ")");
+      if (d._slack && d._slack.messages.length) bits.push(d._slack.messages.length + " Slack message" + (d._slack.messages.length === 1 ? "" : "s") + " about it");
       const used = [], skipped = [];
       for (const f of files) {
         if (f.kind !== "text" || !f.text) continue;
@@ -1068,7 +1201,16 @@
     }
     // Related tasks are looked up first (once per open panel), with a status
     // line meanwhile; if the browser then refuses the late copy, a Copy now button.
+    const gatherSlack = async (btn, label) => {
+      if (d._slack !== undefined) return;
+      btn.disabled = true; btn.textContent = "Checking Slack\u2026";
+      note.className = "pcm-note"; note.textContent = "\u23F3 Looking in the client's Slack channel for files and messages about this task\u2026";
+      try { const sl = await slackFor(d, files); if (sl && sl.files.length) { files.push(...sl.files); paintChips(); } } catch (e) {}
+      btn.disabled = false; btn.textContent = label;
+      if (note.textContent.startsWith("\u23F3 Looking in the client's Slack")) note.textContent = "";
+    };
     const gatherRelated = async (btn, label) => {
+      await gatherSlack(btn, label);
       if (d._related !== undefined) return;
       btn.disabled = true; btn.textContent = "Gathering\u2026";
       note.className = "pcm-note"; note.textContent = "\u23F3 Looking up related tasks in ClickUp (dependencies, parent, siblings, tasks it mentions - finished ones too)\u2026 not ready to paste yet.";
@@ -1179,6 +1321,7 @@
     }
     go.onclick = async () => {
       await stateReady; // a click right after opening mustn't skip the online fallback
+      await gatherSlack(go, go.textContent);
       if (online) { explainOnline(); return; }
       go.disabled = true; stop.hidden = false; generating = true; aiMeta.textContent = "";
       if (note.className !== "pcm-err") note.textContent = "";
@@ -1427,8 +1570,49 @@
     const later = el("button", "pcm-btn", "Send when I complete it");
     later.type = "button";
     later.title = "Keep this comment and post it when you mark the task complete in the extension (you're reminded when you start the task)";
-    r.append(msg, later, post);
-    box.append(ta, r);
+    // ⏰ Send at…: posted at a day and time you pick (the extension's own calendar),
+    // for a comment that has to go out later on a task that won't be completed yet.
+    const atBtn = el("button", "pcm-btn", "⏰ Send at…");
+    atBtn.type = "button";
+    atBtn.title = "Post this comment in ClickUp at a day and time you pick (by the extension, while Chrome is open - or as soon as it opens)";
+    r.append(msg, atBtn, later, post);
+    const atRow = el("div", "pcm-sendat");
+    atRow.hidden = true;
+    const when = el("input");
+    when.type = "datetime-local";
+    when.setAttribute("aria-label", "When to post it");
+    const goAt = el("button", "pcm-btn pri", "Schedule"); goAt.type = "button";
+    const noAt = el("button", "pcm-btn", "Cancel"); noAt.type = "button";
+    // ...and set the task's status at the same time (e.g. roadblock with a comment
+    // that says why). Set first, then the comment is posted.
+    const stSel = el("select", "pcm-sendat-st");
+    stSel.title = "Change the task's status in ClickUp at the same time (first the status, then the comment)";
+    stSel.setAttribute("aria-label", "And set the status to");
+    const fillSt = async (want) => {
+      const cur = String(d.status || "").trim().toLowerCase();
+      const seen = await knownStatuses();
+      seen.delete(cur);
+      if (want) seen.add(want);
+      stSel.textContent = "";
+      const keep = el("option", "", "Keep the status" + (cur ? " (" + cur + ")" : "")); keep.value = ""; stSel.appendChild(keep);
+      for (const s of [...seen].sort((a, b) => a.localeCompare(b))) { const o = el("option", "", "Set status: " + s); o.value = s; stSel.appendChild(o); }
+      stSel.value = want || "";
+    };
+    atRow.append(el("span", "", "Post it on"), when, stSel, goAt, noAt);
+    box.append(ta, r, atRow);
+    const pad = (n) => String(n).padStart(2, "0");
+    const localVal = (ms) => { const x = new Date(ms); return x.getFullYear() + "-" + pad(x.getMonth() + 1) + "-" + pad(x.getDate()) + "T" + pad(x.getHours()) + ":" + pad(x.getMinutes()); };
+    const whenTxt = (ms) => new Date(ms).toLocaleString(undefined, { weekday: "short", month: "short", day: "numeric", hour: "numeric", minute: "2-digit" });
+    let editAt = 0, editSt = ""; // the time and status of the scheduled comment being edited
+    atBtn.onclick = () => {
+      if (!atRow.hidden) { atRow.hidden = true; return; }
+      fillSt(editSt);
+      let v = editAt > Date.now() ? editAt : 0;
+      if (!v) { const x = new Date(); x.setDate(x.getDate() + 1); while (x.getDay() === 0 || x.getDay() === 6) x.setDate(x.getDate() + 1); x.setHours(9, 0, 0, 0); v = x.getTime(); }
+      when.value = localVal(v);
+      atRow.hidden = false;
+    };
+    noAt.onclick = () => { atRow.hidden = true; };
     // The comments waiting for the task to be completed.
     const heldBox = el("div", "pcm-held");
     sec.append(list, more, heldBox, box);
@@ -1436,8 +1620,10 @@
     const paintHeld = (items) => {
       heldBox.textContent = "";
       for (const c of items || []) {
-        const it = el("div", "pcm-held-it");
-        const h = el("div", "pcm-held-h", "\uD83D\uDCAC Waiting - posted when you complete this task");
+        const it = el("div", "pcm-held-it" + (c.sendAt && c.failed ? " bad" : ""));
+        const h = el("div", "pcm-held-h", !c.sendAt ? "\uD83D\uDCAC Waiting - posted when you complete this task"
+          : c.failed ? "⚠ Couldn't post it on " + whenTxt(c.sendAt) + " (" + (c.error || "ClickUp refused") + ") - press Send now"
+          : "⏰ Scheduled - posted on " + whenTxt(c.sendAt) + (c.status ? " · status \u2192 " + c.status : "") + (c.tries ? " · ClickUp refused, trying again" : ""));
         const t = el("div", "pcm-cm-t");
         if (window.PcmMd) { t.classList.add("md"); t.innerHTML = window.PcmMd.render(c.text); } else t.textContent = c.text;
         const bar = el("div", "pcm-held-bar");
@@ -1454,9 +1640,10 @@
           else { now.disabled = false; now.textContent = "Send now"; msg.className = "pcm-err"; msg.textContent = "Couldn't post: " + ((res && res.error) || "no reply"); }
         };
         const edit = el("button", "pcm-btn", "Edit"); edit.type = "button";
-        edit.onclick = () => { ta.value = c.text; editing = c.id; later.textContent = "Save for when I complete it"; ta.focus(); };
+        edit.onclick = () => { ta.value = c.text; editing = c.id; editAt = c.sendAt || 0; editSt = c.status || ""; later.textContent = "Save for when I complete it"; if (c.sendAt) atBtn.onclick(); ta.focus(); };
         const del = el("button", "pcm-btn", "Delete"); del.type = "button";
         del.onclick = async () => { if (!confirm("Delete this waiting comment?")) return; const res = await send({ type: "HELD_COMMENTS", op: "delete", taskId: d.id, id: c.id }); if (res && res.ok) paintHeld(res.list); };
+        if (c.sendAt) mode.hidden = true; // it goes at its time (completing the task first still asks)
         bar.append(mode, el("span", "sp"), copyBtn("pcm-btn", "Copy this comment", () => c.text, () => t.innerHTML), del, edit, now);
         it.append(h, t, bar);
         heldBox.appendChild(it);
@@ -1468,10 +1655,25 @@
       if (!text) { msg.className = "pcm-err"; msg.textContent = "Write a comment first."; ta.focus(); return; }
       const res = await send({ type: "HELD_COMMENTS", op: "save", taskId: d.id, id: editing || undefined, text });
       if (res && res.ok) {
-        ta.value = ""; editing = ""; later.textContent = "Send when I complete it";
+        ta.value = ""; editing = ""; editAt = 0; editSt = ""; atRow.hidden = true; later.textContent = "Send when I complete it";
         paintHeld(res.list);
         msg.className = "pcm-note"; msg.textContent = "Kept ✓ - posted when you complete this task";
       } else { msg.className = "pcm-err"; msg.textContent = "Couldn't keep it: " + ((res && res.error) || "no reply"); }
+    };
+    goAt.onclick = async () => {
+      const text = ta.value.trim();
+      if (!text) { msg.className = "pcm-err"; msg.textContent = "Write a comment first."; ta.focus(); return; }
+      const sendAt = when.value ? new Date(when.value).getTime() : 0;
+      if (!sendAt) { msg.className = "pcm-err"; msg.textContent = "Pick a day and time."; return; }
+      goAt.disabled = true;
+      const res = await send({ type: "HELD_COMMENTS", op: "save", taskId: d.id, id: editing || undefined, text, sendAt, status: stSel.value, taskName: d.name || "", url: d.url || "" });
+      goAt.disabled = false;
+      if (res && res.ok) {
+        ta.value = ""; editing = ""; editAt = 0; editSt = ""; atRow.hidden = true; later.textContent = "Send when I complete it";
+        paintHeld(res.list);
+        msg.className = "pcm-note"; msg.textContent = "Scheduled ✓ - posted on " + whenTxt(sendAt) + (stSel.value ? ", and the status set to " + stSel.value : "");
+        editSt = "";
+      } else { msg.className = "pcm-err"; msg.textContent = "Couldn't schedule it: " + ((res && res.error) || "no reply"); }
     };
     const submit = async () => {
       const text = ta.value.trim();
@@ -1481,7 +1683,7 @@
       post.disabled = false; post.textContent = "Comment";
       if (res && res.ok && res.data) {
         ta.value = "";
-        if (editing) { const was = editing; editing = ""; later.textContent = "Send when I complete it"; send({ type: "HELD_COMMENTS", op: "delete", taskId: d.id, id: was }).then((x) => { if (x && x.ok) paintHeld(x.list); }).catch(() => {}); }
+        if (editing) { const was = editing; editing = ""; editAt = 0; editSt = ""; atRow.hidden = true; later.textContent = "Send when I complete it"; send({ type: "HELD_COMMENTS", op: "delete", taskId: d.id, id: was }).then((x) => { if (x && x.ok) paintHeld(x.list); }).catch(() => {}); }
         comments = res.data.comments || [];
         paintComments(list, more, comments, false);
         msg.className = "pcm-note"; msg.textContent = "Posted to ClickUp ✓";
@@ -1495,6 +1697,34 @@
     ta.oninput = () => { if (msg.className === "pcm-err") { msg.className = "pcm-note"; msg.textContent = "Ctrl+Enter to post"; } };
   }
 
+  // ---------- removing an attachment ----------
+  // The description without the file's link: a Markdown link to it, an image of it,
+  // or the bare address (with ClickUp's own "?view=open" and the like).
+  function withoutLink(md, url) {
+    const esc = (t) => t.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    const u = esc(String(url).split("?")[0]) + "(?:\\?[^\\s)\"]*)?";
+    return String(md || "")
+      .replace(new RegExp("!?\\[[^\\]]*\\]\\(" + u + "\\)", "g"), "")
+      .replace(new RegExp("<?" + u + ">?", "g"), "")
+      .replace(/[ \t]+$/gm, "").replace(/\n{3,}/g, "\n\n").trim();
+  }
+  async function removeAttachment(d, a, wrap, btn, p) {
+    const inDesc = !!d.description && withoutLink(d.description, a.url) !== String(d.description).trim();
+    if (!confirm("Remove \u201C" + a.title + "\u201D?\n\n" + (inDesc ? "1. Its link is taken out of the task's description (in ClickUp).\n2. " : "") +
+      "The task opens in ClickUp: delete the file there (its \u22EF menu \u203A Delete). ClickUp doesn't let other apps delete attachments, so that step is yours.")) return;
+    btn.disabled = true;
+    if (inDesc) {
+      const res = await send({ type: "CLICKUP_TASK_DESCRIPTION", taskId: d.id, text: withoutLink(d.description, a.url), expected: d.description });
+      if (!res || !res.ok) { btn.disabled = false; alert(res && res.changed ? "The description was changed in ClickUp meanwhile - open the task again (\u21BB Refresh) and try once more." : "Couldn't update the description: " + ((res && res.error) || "no answer")); return; }
+      if (res.data && res.data.description != null) d.description = res.data.description;
+    }
+    wrap.classList.add("gone");
+    wrap.title = "Its link is out of the description - delete the file itself in ClickUp";
+    if (safeUrl(d.url)) window.open(d.url, "_blank", "noopener");
+    // The description shown here follows.
+    const ds = p && p.querySelector(".pcm-desc.pcm-editable");
+    if (inDesc && ds && ds.parentNode) { try { buildDescription(ds.parentNode, d); } catch (e) {} }
+  }
   // ---------- description: read, or ✎ Edit to write it ----------
   // Saved to ClickUp as markdown (formatting kept). 📎 / paste / drop uploads a
   // file to the task and puts its link where the cursor is (e.g. inside File: "").
@@ -1543,6 +1773,10 @@
     if (d.description) renderRichText(desc, d.description);
     else desc.appendChild(el("span", "pcm-empty", "No description in ClickUp."));
     ds.appendChild(desc);
+    // Folded to about six lines when long. Measured once it can be seen: Details
+    // can be a hidden tab when the panel opens (show() asks again).
+    desc._fold = () => foldDesc(desc);
+    setTimeout(desc._fold, 0);
     desc.addEventListener("dblclick", (e) => { if (!e.target.closest("a")) { const s = window.getSelection && window.getSelection(); if (s) s.removeAllRanges(); edit.click(); } });
     edit.onclick = () => {
       const from = d.description || "";
@@ -1627,8 +1861,9 @@
   const closeStMenu = () => { if (stMenu) { stMenu.remove(); stMenu = null; } };
   document.addEventListener("mousedown", (e) => { if (stMenu && !stMenu.contains(e.target)) closeStMenu(); }, true);
   document.addEventListener("keydown", (e) => { if (e.key === "Escape") closeStMenu(); }, true);
-  async function statusMenu(anchor, p, d) {
-    closeStMenu();
+  // The statuses seen on your tasks, plus the usual ones (the status menu, and a
+  // scheduled comment's "and set status to").
+  async function knownStatuses() {
     const seen = new Set();
     try {
       const g = await chrome.storage.local.get(["clickupState", "insOpenCache"]);
@@ -1636,6 +1871,11 @@
       for (const b of [st, st.todayFilter, st.tomorrow, st.thisWeek, st.nextWeek, st.custom, g.insOpenCache]) for (const t of (b && b.tasks) || []) if (t && t.status) seen.add(String(t.status).trim().toLowerCase());
     } catch (e) {}
     for (const s of ["to do", "in progress", "roadblock", "review", "complete"]) seen.add(s);
+    return seen;
+  }
+  async function statusMenu(anchor, p, d) {
+    closeStMenu();
+    const seen = await knownStatuses();
     const cur = String(d.status || "").trim().toLowerCase();
     seen.delete(cur);
     stMenu = el("div", "pcm-st-menu");
@@ -1665,31 +1905,109 @@
   // a live/schema step on an unwritten page, a PENDING parent, "only build if...")
   // and who it's waiting on (clickupState.waiting). One icon per row; the reasons
   // are in the task's ⚠ Warnings tab, where "Not a problem" hides them for good.
-  let warnFound = {}, warnWait = {}, warnOff = {};
-  chrome.storage.local.get(["holdFound", "clickupState", "warnDismissed"]).then((g) => {
-    warnFound = g.holdFound || {}; warnWait = (g.clickupState && g.clickupState.waiting) || {}; warnOff = g.warnDismissed || {};
+  let warnFound = {}, warnWait = {}, warnOff = {}, warnAI = {};
+  chrome.storage.local.get(["holdFound", "clickupState", "warnDismissed", "holdAI"]).then((g) => {
+    warnFound = g.holdFound || {}; warnWait = (g.clickupState && g.clickupState.waiting) || {}; warnOff = g.warnDismissed || {}; warnAI = g.holdAI || {};
     markStopped();
   }).catch(() => {});
   chrome.storage.onChanged.addListener((ch, area) => {
     if (area !== "local") return;
     if (ch.holdFound) warnFound = ch.holdFound.newValue || {};
+    if (ch.holdAI) warnAI = ch.holdAI.newValue || {};
     if (ch.clickupState) warnWait = (ch.clickupState.newValue && ch.clickupState.newValue.waiting) || {};
     if (ch.warnDismissed) warnOff = ch.warnDismissed.newValue || {};
-    if (ch.holdFound || ch.clickupState || ch.warnDismissed) markStopped();
+    if (ch.holdFound || ch.clickupState || ch.warnDismissed || ch.holdAI) markStopped();
   });
   function warningsFor(id) {
     id = String(id || "");
     const out = [];
     const f = warnFound[id];
-    if (f && f.why) out.push({ k: "hold", text: "Held up: " + f.why });
+    if (f && f.why) out.push({ k: "hold", text: "Held up: " + f.why, ref: f.ref || null });
+    const ai = warnAI[id];
+    if (ai && ai.wait && ai.v >= 2) out.push({ k: "ai", ref: ai.ref || null, text: "AI: needs " + (ai.waitFor ? "\u201C" + String(ai.waitFor).slice(0, 90) + "\u201D" : "something else") + " first" + (ai.reason ? " - " + String(ai.reason).slice(0, 220) : "") });
     const w = warnWait[id];
     if (w && Array.isArray(w.blockers) && w.blockers.length) {
       const b = w.blockers[0];
-      out.push({ k: "wait", text: "Waiting on a teammate: " + (b.who || "someone") + "'s subtask \u201C" + String(b.name || "").slice(0, 80) + "\u201D" + (b.overdue ? " (overdue)" : "") + (w.blockers.length > 1 ? " + " + (w.blockers.length - 1) + " more" : "") });
+      out.push({ k: "wait", ref: { id: b.id != null ? String(b.id) : "", name: String(b.name || "").slice(0, 90), url: b.url || "" }, text: "Waiting on a teammate: " + (b.who || "someone") + "'s subtask \u201C" + String(b.name || "").slice(0, 90) + "\u201D" + (b.due ? " (due " + fmtDay(b.due) + ")" : "") + (b.overdue ? " (overdue)" : "") + (w.blockers.length > 1 ? " + " + (w.blockers.length - 1) + " more" : "") });
     }
-    if (w && w.selfBlock && w.selfBlock.parentOverdue) out.push({ k: "subs", text: "Its own subtasks: " + (w.selfBlock.open || "some") + " still open, and the task is past its due date" });
+    // Its own subtasks keep it from closing - this used to be a chip in its own
+    // column ("\u23F3 Subtasks to Nov 6"), which took that width on every row.
+    const sb = w && w.selfBlock;
+    if (sb && sb.parentOverdue) out.push({ k: "subs", text: "Its own subtasks: " + (sb.open || "some") + " still open, and the task is past its due date" });
+    else if (sb && sb.later) out.push({ k: "subs", text: "Its own subtasks run " + (sb.latestDueMs ? "until " + fmtDay(sb.latestDueMs) : "past its due date") + ", after its own due date: " + sb.later + " of " + (sb.open || sb.later) + " open subtask" + ((sb.open || sb.later) === 1 ? "" : "s") + " due later - it can't be closed before them" });
     const sig = out.map((x) => x.text).join("|");
     return sig && warnOff[id] === sig ? [] : out;
+  }
+  // ---- AI dependency check ----
+  // The rules above catch the common shapes; anything else ("make X the primary
+  // conversion" when X doesn't exist yet) needs reading. The AI gets the task, its
+  // parent and the parent's other steps (names, statuses, who, due, descriptions)
+  // and answers: can it be done now, or what has to be finished first. Kept per
+  // task until something in that picture changes (storage holdAI).
+  const AI_HOLD_SYS = "You check whether a work task can be done now or must wait for other work. Use only the facts given. Reply as JSON: {\"wait\": true or false, \"waitFor\": the exact name of the task it needs first, or \"\", \"reason\": one short sentence}. Say wait only when this task clearly needs the result of another task that is not finished (something it builds on, uses, publishes, measures or changes). Two tasks for the same client or page are not a dependency by themselves. Tasks listed under the same schedule, plan or container are separate pieces of work - one is not waiting for another, or for the container itself, unless a description says so.";
+  const aiSig = (c) => [c.t, c.p].concat((c.p && c.p.subs) || []).filter(Boolean).map((x) => x.id + ":" + (x.done ? 1 : 0) + (x.status || "")).join("|");
+  async function aiHoldCheck(id, opts) {
+    opts = opts || {};
+    const c = await send({ type: "HOLD_CONTEXT", id: String(id) }).catch(() => null);
+    if (!c || !c.ok || !c.t) return { error: (c && c.error) || "couldn't read the task" };
+    if (c.t.done) return { wait: false, reason: "it's done" };
+    const sig = aiSig(c);
+    const prev = warnAI[String(id)];
+    if (!opts.manual && prev && prev.v >= 2 && prev.sig === sig && Date.now() - (prev.at || 0) < 3 * 864e5) return prev;
+    const who = (x) => (x.assignees || []).map((a) => a.name).filter(Boolean).join(", ") || "nobody";
+    const dd = (ms) => (ms ? new Date(ms).toISOString().slice(0, 10) : "no date");
+    const line = (x) => "- " + x.name + " | " + (x.done ? "done" : x.status || "open") + " | with " + who(x) + " | due " + dd(x.dueDateMs);
+    const cont = c.p && isContainer(c.p.name, c.p.subs);
+    const prompt = "TASK TO CHECK:\n" + line(c.t) + "\nIts description: " + (String(c.t.text || "").slice(0, 1500) || "(none)") +
+      (c.p ? "\n\nITS PARENT TASK:\n" + line(c.p) + "\nParent description: " + (String(c.p.text || "").slice(0, 1800) || "(none)") +
+        (cont ? "\nNOTE: this parent is a container (a schedule / plan / list of separate tasks), not one job in steps. Its other subtasks are separate pieces of work; they are not steps of this task." : "") +
+        "\n\nTHE PARENT'S OTHER SUBTASKS:\n" + (((c.p.subs || []).filter((s) => s.id !== c.t.id).map(line).join("\n")) || "(none)") : "\n\n(It has no parent task.)") +
+      "\n\nCan the task to check be done now? JSON only.";
+    const schema = { type: "object", properties: { wait: { type: "boolean" }, waitFor: { type: "string" }, reason: { type: "string" } }, required: ["wait", "waitFor", "reason"] };
+    let text = "";
+    try { text = await window.PcmAI.generate(AI_HOLD_SYS, prompt, { engine: opts.manual ? "auto" : "builtin", schema }); }
+    catch (e) { if (e && e.code === "consent") return { consent: true }; return { error: String((e && e.message) || e) }; }
+    let j = null;
+    try { j = JSON.parse(String(text).slice(String(text).indexOf("{"), String(text).lastIndexOf("}") + 1)); } catch (e) {}
+    if (!j || typeof j.wait !== "boolean") return { error: "the AI's answer couldn't be read" };
+    // Waiting "for the container" (the schedule itself) is never a real reason.
+    if (j.wait && cont && String(j.waitFor || "").trim() && String(c.p.name || "").toLowerCase().replace(/[^a-z0-9]+/g, "").includes(String(j.waitFor).toLowerCase().replace(/[^a-z0-9]+/g, "").slice(0, 30))) { j.wait = false; j.reason = "its parent is only a schedule / list of separate tasks"; }
+    const v = { v: 2, sig, wait: !!j.wait, waitFor: String(j.waitFor || "").slice(0, 160), reason: String(j.reason || "").slice(0, 300), at: Date.now() };
+    { // link it when it is one of the tasks it read (parent or a step)
+      const k = (s) => String(s || "").toLowerCase().replace(/[^a-z0-9]+/g, "");
+      const wf = k(v.waitFor);
+      const hit = wf && [c.p].concat((c.p && c.p.subs) || []).filter(Boolean).find((x) => k(x.name) === wf || (wf.length > 12 && (k(x.name).includes(wf) || wf.includes(k(x.name)))));
+      if (hit) { v.ref = { id: String(hit.id), name: hit.name }; v.waitFor = hit.name.slice(0, 160); }
+    }
+    const g = await chrome.storage.local.get("holdAI").catch(() => ({}));
+    const next = { ...((g && g.holdAI) || {}), [String(id)]: v };
+    await chrome.storage.local.set({ holdAI: Object.fromEntries(Object.entries(next).sort((a, b) => (b[1].at || 0) - (a[1].at || 0)).slice(0, 400)) }).catch(() => {});
+    warnAI = { ...warnAI, [String(id)]: v };
+    return v;
+  }
+  // On its own: Chrome's built-in AI only (on this computer - nothing is sent out),
+  // for open tasks on screen due in the next 2 weeks that have a parent, 3 at a
+  // time, at most every 10 minutes; an answer is kept until its picture changes.
+  let aiRoundAt = 0;
+  async function aiHoldRound() {
+    if (Date.now() - aiRoundAt < 10 * 60000 || !window.PcmAI) return;
+    aiRoundAt = Date.now();
+    let ok = false;
+    try { ok = (await aiState(false)) === "available"; } catch (e) {}
+    if (!ok) return;
+    const soon = Date.now() + 14 * 864e5, seen = new Set(), ids = [];
+    for (const row of document.querySelectorAll(".cu-task")) {
+      const t = row._cuTask;
+      if (!t || t.done || t.id == null || t.local || !t.parentId || seen.has(String(t.id))) continue;
+      seen.add(String(t.id));
+      if (!(Number(t.dueDateMs) > 0) || Number(t.dueDateMs) > soon) continue;
+      const prev = warnAI[String(t.id)];
+      if (prev && prev.v >= 2 && Date.now() - (prev.at || 0) < 864e5) continue;
+      ids.push(String(t.id));
+      if (ids.length >= 3) break;
+    }
+    for (const id of ids) { try { await aiHoldCheck(id, {}); } catch (e) {} }
+    if (ids.length) markStopped();
   }
   // Rows on screen that haven't been checked lately: asked in one go (the
   // background reads at most 30, each kept 6 hours) - never on every redraw.
@@ -1702,10 +2020,12 @@
         const t = row._cuTask;
         if (!t || t.done || t.id == null || t.local || /^rev-/.test(String(t.id)) || stTone(t.status) === "t-bad") continue;
         const id = String(t.id), f = warnFound[id];
-        if ((f && now - (f.at || 0) < 6 * 3600000) || now - (asked[id] || 0) < 30 * 60000 || ids.includes(id)) continue;
+        // (checked under older rules = not checked: asked again once)
+        if ((f && (f.r || 1) >= 5 && now - (f.at || 0) < 6 * 3600000) || now - (asked[id] || 0) < 30 * 60000 || ids.includes(id)) continue;
         ids.push(id);
         if (ids.length >= 30) break;
       }
+      setTimeout(() => { aiHoldRound().catch(() => {}); }, 4000);
       if (!ids.length) return;
       for (const id of ids) asked[id] = now;
       try { chrome.runtime.sendMessage({ type: "INS_HOLD_HINTS", ids }, () => void chrome.runtime.lastError); } catch (e) {}
@@ -1941,8 +2261,21 @@
       const fs = el("div");
       fs.appendChild(el("div", "pcm-sec-h", "Attachments"));
       const row = el("div", "pcm-files");
-      for (const a of d.attachments) if (safeUrl(a.url)) { const f = link(a.url, a.title); f.className = "pcm-file"; f.title = a.title; row.appendChild(f); }
+      for (const a of d.attachments) {
+        if (!safeUrl(a.url)) continue;
+        const w = el("span", "pcm-attw");
+        const f = link(a.url, a.title); f.className = "pcm-file"; f.title = a.title;
+        // ✕: ClickUp doesn't let other apps delete an attachment (its API has no
+        // way to), so: its link comes out of the description, and the task opens in
+        // ClickUp to delete the file itself there.
+        const x = el("button", "pcm-attx", "\u2715"); x.type = "button";
+        x.title = "Remove this file: its link comes out of the description here, then the task opens in ClickUp to delete the file itself (ClickUp only lets you delete files there)";
+        x.onclick = (e) => { e.preventDefault(); e.stopPropagation(); removeAttachment(d, a, w, x, p); };
+        w.append(f, x);
+        row.appendChild(w);
+      }
       fs.appendChild(row);
+      fs.appendChild(el("div", "pcm-note", "\u2715 takes a file's link out of the description; the file itself is deleted in ClickUp (it opens for you)."));
       p.appendChild(fs);
     }
 
@@ -1974,10 +2307,28 @@
   let wantTab = "";
   function warnPane(p, d, warns) {
     const box = el("div", "pcm-warn-list");
-    for (const w of warns) { const i = el("div", "pcm-warn-i"); i.append(el("b", "", "\u26A0"), el("span", "", w.text)); box.appendChild(i); }
+    for (const w of warns) { const i = el("div", "pcm-warn-i"); i.append(el("b", "", "\u26A0"), linkIn(w.text, w.ref)); box.appendChild(i); }
+    if (!warns.length) box.appendChild(el("div", "pcm-note", "Nothing found that holds this task up. Ask the AI to read it with its parent and the other steps if you want to be sure."));
     const acts = el("div", "pcm-warn-acts");
     const msg = el("span", "hint", "");
-    if (stTone(d.status) !== "t-bad") {
+    // Check with AI: reads the task with its parent and the parent's other steps and
+    // says whether it can be done now or needs another first (and which).
+    const aib = el("button", "pcm-btn", "\uD83E\uDD16 Check with AI"); aib.type = "button";
+    aib.title = "Read this task with its parent and the other steps and say whether it can be done now, or what has to happen first";
+    aib.onclick = async (e) => {
+      e.stopPropagation(); aib.disabled = true; aib.textContent = "Reading\u2026"; msg.textContent = "";
+      const r = await aiHoldCheck(String(d.id), { manual: true }).catch((x) => ({ error: String((x && x.message) || x) }));
+      aib.disabled = false; aib.textContent = "\uD83E\uDD16 Check with AI";
+      if (r && r.consent) {
+        if (confirm("This computer can't run Chrome's built-in AI, so the free online AI would read this task, its parent and the other steps (names and descriptions). Use it?")) { window.PcmAI && window.PcmAI.allowOnline(); aib.click(); }
+        return;
+      }
+      msg.textContent = !r || r.error ? "Couldn't check: " + ((r && r.error) || "no answer") : r.wait ? "" : "AI: it can go ahead" + (r.reason ? " - " + r.reason : "") + ".";
+      if (r && r.wait) load(p, d.id, true);
+    };
+    acts.appendChild(aib);
+    // Set roadblock / Not a problem only when something was found.
+    if (warns.length && stTone(d.status) !== "t-bad") {
       const rb = el("button", "pcm-btn", "\u26D4 Set roadblock"); rb.type = "button";
       rb.title = "Set this task's status to roadblock in ClickUp";
       rb.onclick = async (e) => {
@@ -1999,7 +2350,8 @@
       await chrome.storage.local.set({ warnDismissed: Object.fromEntries(keep) }).catch(() => {});
       load(p, d.id, true);
     };
-    acts.append(ok, msg);
+    if (warns.length) acts.append(ok);
+    acts.append(msg);
     const w = el("div");
     w.append(box);
     // Under a parent: its steps the way ClickUp lists them, so it is plain what has
@@ -2013,6 +2365,30 @@
     w.appendChild(acts);
     return w;
   }
+  // A container parent (same test as background.js holdContainer): a schedule /
+  // plan / month or week list, or 6+ subtasks with no numbered steps - a list of
+  // separate tasks, not one job in steps.
+  const CONTAINER_RE = /\b20\d\d-\d\d\b|\bweeks?\s*\d|\bweek of\b|\bweekly\b|\bmonthly\b|\bschedule\b|\bproduction\b|\bsprint\b|\bretainer\b|\bbacklog\b|\broadmap\b|\bq[1-4]\b|\s-\s*seo\s*-|\[(?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\b|\b(?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\.?\s+20\d\d\b/i;
+  const stepNo = (n) => /^\s*[A-Za-z]{1,8}[- ]?\d+\.S\d{1,2}\b|\b(?:step|phase|part|stage)\s*\d{1,2}\b|^\s*\d{1,2}[.)]\s+\S/i.test(String(n || ""));
+  const isContainer = (name, subs) => CONTAINER_RE.test(String(name || "")) || (Array.isArray(subs) && subs.length >= 6 && !subs.some((s) => stepNo(s.name)));
+  // A task's name as a link that opens it in ClickUp (its address only - nothing is read).
+  const taskLink = (x, label) => {
+    const a = el("a", "pcm-tlink", label || x.name || "(task)");
+    a.href = x.url || "https://app.clickup.com/t/" + encodeURIComponent(String(x.id));
+    a.target = "_blank"; a.rel = "noopener";
+    a.title = "Open \u201C" + String(x.name || "this task").slice(0, 80) + "\u201D in ClickUp";
+    a.addEventListener("click", (e) => e.stopPropagation());
+    return a;
+  };
+  // Text with the task it is about turned into that link ("…its parent “X” is…").
+  const linkIn = (text, ref) => {
+    const sp = el("span");
+    const nm = ref && ref.name ? "\u201C" + String(ref.name).trim().slice(0, 90) + "\u201D" : "";
+    const i = nm ? String(text).indexOf(nm) : -1;
+    if (i < 0) { sp.textContent = text; return sp; }
+    sp.append(String(text).slice(0, i), "\u201C", taskLink(ref, String(ref.name).trim().slice(0, 90)), "\u201D", String(text).slice(i + nm.length));
+    return sp;
+  };
   async function fillSteps(box, d) {
     const res = await send({ type: "CLICKUP_TASK_PANEL", taskId: String(d.parentId) });
     const par = res && res.ok && res.data;
@@ -2025,13 +2401,17 @@
     const today = new Date().setHours(0, 0, 0, 0);
     const late = (s) => !s.done && Number(s.dueDateMs) > 0 && new Date(Number(s.dueDateMs)).setHours(0, 0, 0, 0) < today;
     const nm = (s) => "\u201C" + String(s.name || "").slice(0, 60) + "\u201D";
+    const container = isContainer(par.name || (d.related || []).map((x) => x.kind === "parent" && x.name).find(Boolean), subs);
     // The reason, in one sentence.
     const why = el("div", "pcm-steps-why");
     const parRel = (d.related || []).find((x) => x.kind === "parent");
     const parName = (parRel && parRel.name) || par.name || "its parent task";
-    if (me >= 0 && before.length) {
-      why.textContent = "This is step " + (me + 1) + " of " + subs.length + " under \u201C" + parName + "\u201D, and " + before.length + " step" + (before.length === 1 ? "" : "s") + " before it " + (before.length === 1 ? "is" : "are") + " still open: " +
-        before.slice(0, 4).map((s) => nm(s) + (late(s) ? " (overdue)" : "")).join(", ") + (before.length > 4 ? " and " + (before.length - 4) + " more" : "") + ". It can't be done before " + (before.length === 1 ? "that is" : "they are") + " finished.";
+    if (container) {
+      why.textContent = "\u201C" + parName + "\u201D is a schedule / list of separate tasks, not one job in steps - the other tasks in it don't have to come first.";
+    } else if (me >= 0 && before.length) {
+      why.append("This is step " + (me + 1) + " of " + subs.length + " under \u201C" + parName + "\u201D, and " + before.length + " step" + (before.length === 1 ? "" : "s") + " before it " + (before.length === 1 ? "is" : "are") + " still open: ");
+      before.slice(0, 4).forEach((s, k2) => { if (k2) why.append(", "); why.append("\u201C", taskLink(s, String(s.name || "").slice(0, 60)), "\u201D" + (late(s) ? " (overdue)" : "")); });
+      why.append((before.length > 4 ? " and " + (before.length - 4) + " more" : "") + ". It can't be done before " + (before.length === 1 ? "that is" : "they are") + " finished.");
     } else if (others.length) {
       why.textContent = "\u201C" + parName + "\u201D still has " + others.length + " other open step" + (others.length === 1 ? "" : "s") + " - check none of them has to come first.";
     } else {
@@ -2043,10 +2423,10 @@
     tbl.innerHTML = "<thead><tr><th>#</th><th>Step</th><th>Status</th><th>Who</th><th>Due</th></tr></thead>";
     const tb = el("tbody");
     subs.forEach((s, i) => {
-      const tr = el("tr", (i === me ? "me" : "") + (!s.done && i < me ? " open-before" : "") + (s.done ? " done" : ""));
+      const tr = el("tr", (i === me ? "me" : "") + (!container && !s.done && i < me ? " open-before" : "") + (s.done ? " done" : ""));
       tr.appendChild(el("td", "", String(i + 1)));
       const nc = el("td", "n");
-      nc.append(s.name || "(step)");
+      if (i === me) nc.append(s.name || "(step)"); else nc.appendChild(taskLink(s, s.name || "(step)"));
       if (i === me) nc.appendChild(el("span", "me-tag", "this task"));
       tr.appendChild(nc);
       const sc = el("td"); sc.appendChild(stChip(s.status, s.done, "pcm-fam-st" + (s.done ? " done" : ""))); tr.appendChild(sc);
@@ -2062,7 +2442,8 @@
   }
   function tabify(p, d, det, ai, tn, te, cs) {
     const warns = warningsFor(d.id);
-    const wpane = warns.length ? [warnPane(p, d, warns)] : [];
+    // Every open task has the tab: "Check with AI" is there even when nothing was found.
+    const wpane = warns.length ? [warnPane(p, d, warns)] : d && !d.done ? [warnPane(p, d, [])] : [];
     // Client notes: a tab of their own (they were buried under the description).
     const cnote = det.find((n) => n && n.dataset && n.dataset.cnotes);
     if (cnote) det = det.filter((n) => n !== cnote);
@@ -2092,27 +2473,50 @@
     p.appendChild(bar);
     for (const [k] of panes) p.appendChild(wraps[k]);
     function show(k, remember) {
-      const simple = document.documentElement.classList.contains("pcm-simple");
-      if (!wraps[k] || (simple && (k === "ai" || k === "time"))) k = "det";
+      // Simple view keeps every tab: AI (explain, copy for AI) and Time are things you DO.
+      if (!wraps[k]) k = "det";
       for (const b of bar.children) b.classList.toggle("on", b.dataset.pt === k);
       for (const key in wraps) wraps[key].hidden = key !== k;
-      if (remember) { try { localStorage.setItem("pcmPanelTab", k); } catch (e) {} }
+      if (k === "det") { const dd = wraps.det.querySelector(".pcm-desc.pcm-editable"); if (dd && dd._fold) dd._fold(); }
+      // Warnings is never the tab a task opens on by itself (every open task has it now):
+      // it opens from the row's ⚠ or a click on the tab, and isn't remembered.
+      if (remember && k !== "warn") { try { localStorage.setItem("pcmPanelTab", k); } catch (e) {} }
     }
     let k0 = "det";
     try { k0 = localStorage.getItem("pcmPanelTab") || "det"; } catch (e) {}
+    if (k0 === "warn") k0 = "det"; // remembered before this rule: Details
     if (wantTab) { k0 = wantTab; wantTab = ""; } // opened by the row's 📝 / 💬 / ⚠: that section first
     show(k0, false);
     p._showTab = (k) => show(k, false);
-    // A long description: about six lines, then "Show more".
-    const desc = wraps.det && wraps.det.querySelector(".pcm-desc");
-    if (desc) requestAnimationFrame(() => {
-      if (desc.scrollHeight < 170) return;
-      desc.classList.add("pcm-clamp");
-      const more = el("button", "pcm-more", "Show more \u25BE");
-      more.type = "button";
-      more.onclick = (e) => { e.stopPropagation(); const c = desc.classList.toggle("pcm-clamp"); desc.classList.toggle("pcm-open", !c); more.textContent = c ? "Show more \u25BE" : "Show less \u25B4"; };
-      desc.after(more);
-    });
+  }
+  // A long description: about six lines, then a bar like the task list's - click
+  // it for the whole description, again for the normal height (never a small
+  // scroll box). Hidden (another tab is open) measures 0: tried again on Details.
+  function foldDesc(desc) {
+    if (!desc || !desc.isConnected || desc.dataset.fold) return;
+    const h = desc.scrollHeight;
+    if (!h) return;
+    desc.dataset.fold = "1";
+    if (h < 170) return;
+    desc.classList.add("pcm-clamp");
+    const bar = el("div", "pcm-descgrip");
+    bar.tabIndex = 0;
+    bar.setAttribute("role", "button");
+    const lab = el("span");
+    bar.appendChild(lab);
+    const paint = () => {
+      const open = !desc.classList.contains("pcm-clamp");
+      const t = open ? "Click to go back to the normal height" : "Click to show the full description";
+      bar.title = t;
+      bar.setAttribute("aria-label", t);
+      bar.setAttribute("aria-expanded", String(open));
+      lab.textContent = open ? "Show less \u25B4" : "Show full description \u25BE";
+    };
+    const flip = (e) => { e.stopPropagation(); const c = desc.classList.toggle("pcm-clamp"); desc.classList.toggle("pcm-open", !c); paint(); };
+    bar.onclick = flip;
+    bar.onkeydown = (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); flip(e); } };
+    paint();
+    desc.after(bar);
   }
 
   // Which saved client a loaded task is, its remembered audit and the client notes.
@@ -2127,6 +2531,22 @@
       }
     }
     if (window.PcmFiles && window.PcmFiles.notesFor && data._client) { try { data._notes = (await window.PcmFiles.notesFor(data._client)).filter((n) => !(n && n.report)); } catch (e) {} }
+    // What the extension keeps about this task outside ClickUp, for the AI briefs:
+    // teammates' reminders about it, people scheduled onto it, a paused client.
+    try {
+      const g = await chrome.storage.local.get(["nudgesIn", "asgSchedule", "pausedClients", "myPausedClients", "myResumedClients"]);
+      const id = String(data.id);
+      const k = (n) => String(n || "").toLowerCase().replace(/[^a-z0-9]+/g, "");
+      const resumed = Array.isArray(g.myResumedClients) ? g.myResumedClients : [];
+      const paused = (Array.isArray(g.pausedClients) ? g.pausedClients : []).filter((p) => p && !resumed.includes(k(p.name)))
+        .concat(Array.isArray(g.myPausedClients) ? g.myPausedClients : []);
+      const names = [data._client, data.list, rowClient, data.folder].map(k).filter(Boolean);
+      data._extra = {
+        nudges: (Array.isArray(g.nudgesIn) ? g.nudgesIn : []).filter((n) => n && String(n.taskId) === id),
+        sched: (Array.isArray(g.asgSchedule) ? g.asgSchedule : []).filter((j) => j && String(j.taskId) === id && !j.done),
+        paused: paused.find((p) => p && names.includes(k(p.name))) || null,
+      };
+    } catch (e) {}
     return data;
   }
   const PLAN_MAX = 150000; // characters in the whole plan brief
@@ -2161,7 +2581,12 @@
     const byClient = new Map();
     for (const d of ds) { const k = d._client || d.list || ""; if (!byClient.has(k)) byClient.set(k, d); }
     const filesOf = new Map();
-    for (const [k, d] of byClient) filesOf.set(k, await clientFiles(d).catch(() => []));
+    for (const [k, d] of byClient) {
+      const have = await clientFiles(d).catch(() => []);
+      // Slack (Clients › Slack channels): the client's newest audits / reports, fetched now, text cached.
+      const sl = await slackFor({ _client: d._client, list: d.list, name: "" }, have, { noSearch: true, max: 2 }).catch(() => null);
+      filesOf.set(k, have.concat((sl && sl.files) || []));
+    }
     const fileFor = (d) => filesOf.get(d._client || d.list || "") || [];
     const files = [].concat(...filesOf.values());
     const states = ds.map((d) => auditState(d, fileFor(d)).s);
@@ -2196,6 +2621,14 @@
   }
   // The 🧭 Plan with AI button for a client's group heading.
   // opts.day: a day of This week by day (its label) - copied only (several clients).
+  // Plan with AI on a client: all its tasks, or only the ones you tick. "Pick
+  // tasks..." puts a tick box at the start of each of the client's rows (all
+  // ticked); untick what to leave out, then Plan these. Kept across the list's
+  // redraws (planPick), so a refresh doesn't undo the ticks.
+  let planPick = null; // { client, off: Set(task ids left out) }
+  const tidOf = (t) => String(t && (t.id != null ? t.id : t.taskId));
+  function closePlanMenu() { const m = document.querySelector(".pcm-planmenu"); if (m) m.remove(); }
+  document.addEventListener("mousedown", (e) => { if (!e.target.closest || !e.target.closest(".pcm-planmenu")) closePlanMenu(); }, true);
   function clientTools(client, tasks, opts) {
     opts = opts || {};
     const wrap = el("span", "pcm-chtools");
@@ -2203,7 +2636,7 @@
     // where the status line goes (a fixed spot, so a redraw can't drop it).
     const plan = opts.button || el("button", "pcm-btn", "🧭 Plan with AI");
     plan.type = "button";
-    plan.title = "All of " + client + "'s tasks here (descriptions, subtasks, dependencies, comments, notes and the audit for each) with questions for the AI: which to do first, which can be done now and which must wait (and for what), where a task differs from the audit, duplicates, and what to ask for before starting. With the ClickUp Tracker app it's saved in " + client + "'s folder and a short prompt for Claude Code is copied (Copy full plan is there for other AIs); without it the whole plan is copied.";
+    plan.title = "All of " + client + "'s tasks here (descriptions, subtasks, dependencies, comments, notes and the audit for each) with questions for the AI: which to do first, which can be done now and which must wait (and for what), where a task differs from the audit, duplicates, and what to ask for before starting. The whole plan is copied - paste it into Claude, ChatGPT or any AI. With the ClickUp Tracker app it's also saved in " + client + "'s folder.";
     wrap.append(plan);
     let note = null;
     const say = (t, err) => {
@@ -2231,12 +2664,13 @@
         setTimeout(() => { b.textContent = "📋 Copy again"; }, 1600);
       };
       n.appendChild(b);
+      return n;
     };
-    const run = async (btn) => {
+    const run = async (btn, only) => {
       const label = btn.textContent;
       plan.disabled = true;
       try {
-        const p = await clientPlan(client, tasks, (n, of, what) => {
+        const p = await clientPlan(client, only || tasks, (n, of, what) => {
           btn.textContent = (what === "related" ? "Related " : "Gathering ") + n + "/" + of + "…";
           say(what === "related"
             ? "Looking up related tasks - finished ones too (" + n + " of " + of + ")… not ready to paste yet - this line says when it is."
@@ -2256,15 +2690,16 @@
           btn.textContent = "Saving…";
           const r = await P.desk({ op: "task", client: p.client, folder, brief: "# " + client + " - all open tasks (" + ymd + ")\n\n" + p.text, files: out, attach: [] }, 120000);
           if (r && r.ok) {
+            // The whole plan is what's copied (one paste works in any AI, for anyone);
+            // the folder copy is an extra, with a short prompt for Claude Code on a button.
+            const n = await ready(p, r.made ? madeNote(client).textContent : "", tail + " \uD83D\uDCC2 Also saved in " + r.taskDir + ".");
             const prompt = "Read \"tasks/" + folder + "/brief.md\" in this folder and plan these tasks: the order, GO or WAIT for each, the audit check and duplicates. Ask me before anything risky on the live site.";
-            await navigator.clipboard.writeText(prompt).catch(() => {});
-            const n = say((r.made ? madeNote(client).textContent + " " : "") + "✓ " + p.count + (p.count === 1 ? " task" : " tasks") + " saved to " + r.taskDir + ". A prompt is copied: open Claude Code in " + r.dir + " (a new chat or the one you have open there) and paste it (Ctrl+V)." + tail + " ");
-            const full = el("button", "pcm-btn", "📋 Copy full plan"); full.type = "button";
-            full.title = "The whole plan, to paste into ChatGPT, Claude.ai or any other AI instead";
-            full.onclick = async () => { try { await navigator.clipboard.writeText(p.text); full.textContent = "Copied ✓"; } catch (e) { full.textContent = "Couldn't copy"; } setTimeout(() => { full.textContent = "📋 Copy full plan"; }, 1600); };
-            const open = el("button", "pcm-btn", "📂 Open folder"); open.type = "button";
+            const short = el("button", "pcm-btn", "\uD83D\uDCCB Copy short prompt (Claude Code)"); short.type = "button";
+            short.title = "For Claude Code opened in " + r.dir + ": a one-line prompt that reads the saved plan from the folder, instead of pasting the whole plan";
+            short.onclick = async () => { try { await navigator.clipboard.writeText(prompt); short.textContent = "Copied \u2713"; } catch (e) { short.textContent = "Couldn't copy"; } setTimeout(() => { short.textContent = "\uD83D\uDCCB Copy short prompt (Claude Code)"; }, 1600); };
+            const open = el("button", "pcm-btn", "\uD83D\uDCC2 Open folder"); open.type = "button";
             open.onclick = () => P.desk({ op: "open", client: p.client, task: folder });
-            n.append(full, open);
+            n.append(short, open);
             return;
           }
           // No app (or an old one): the whole plan to paste anywhere. Only an
@@ -2278,7 +2713,76 @@
         say("Couldn't make the plan: " + ((e && e.message) || e), true);
       } finally { plan.disabled = false; btn.textContent = label; }
     };
-    if (!opts.button) plan.onclick = (e) => { e.stopPropagation(); run(plan); };
+    // The client's rows in this list: after its heading, up to the next heading.
+    const rowsOf = () => {
+      const head = wrap.closest(".cu-mgroup, .cu-clienthead");
+      if (!head || !head.parentElement) return [];
+      const ids = new Set(tasks.map(tidOf)), out = [];
+      for (let n = head.nextElementSibling; n && !n.matches(".cu-mgroup, .cu-clienthead"); n = n.nextElementSibling) if (n.matches(".cu-task") && n._cuTask && ids.has(tidOf(n._cuTask))) out.push(n);
+      return out;
+    };
+    const stopPick = () => {
+      planPick = null;
+      document.querySelectorAll(".pcm-pick").forEach((x) => x.remove());
+      document.querySelectorAll(".pcm-picking").forEach((x) => x.classList.remove("pcm-picking"));
+      document.querySelectorAll(".pcm-pickbar").forEach((x) => x.remove());
+    };
+    const paintPick = () => {
+      if (!planPick || planPick.client !== client) return;
+      const head = wrap.closest(".cu-mgroup, .cu-clienthead");
+      if (!head) return;
+      const rows = rowsOf();
+      for (const r of rows) {
+        const id = tidOf(r._cuTask);
+        let cb = r.querySelector(":scope > .pcm-pick");
+        if (!cb) {
+          cb = el("input", "pcm-pick"); cb.type = "checkbox";
+          cb.title = "Include this task in the plan";
+          cb.addEventListener("mousedown", (e) => e.stopPropagation());
+          cb.addEventListener("click", (e) => { e.stopPropagation(); if (cb.checked) planPick.off.delete(id); else planPick.off.add(id); paintPick(); });
+          r.prepend(cb);
+        }
+        cb.checked = !planPick.off.has(id);
+        r.classList.add("pcm-picking");
+      }
+      let bar = head.nextElementSibling && head.nextElementSibling.classList.contains("pcm-pickbar") ? head.nextElementSibling : null;
+      if (!bar) {
+        bar = el("div", "pcm-pickbar cu-foldable");
+        bar.addEventListener("mousedown", (e) => e.stopPropagation());
+        head.after(bar);
+      }
+      const on = tasks.filter((t) => !planPick.off.has(tidOf(t)));
+      bar.textContent = "";
+      const all = el("button", "pcm-btn", "All"); all.type = "button";
+      all.onclick = (e) => { e.stopPropagation(); planPick.off.clear(); paintPick(); };
+      const none = el("button", "pcm-btn", "None"); none.type = "button";
+      none.onclick = (e) => { e.stopPropagation(); tasks.forEach((t) => planPick.off.add(tidOf(t))); paintPick(); };
+      const go = el("button", "pcm-btn pri", "\uD83E\uDDED Plan these (" + on.length + ")"); go.type = "button"; go.disabled = !on.length;
+      go.onclick = (e) => { e.stopPropagation(); const only = tasks.filter((t) => !planPick.off.has(tidOf(t))); stopPick(); run(plan, only); };
+      const no = el("button", "pcm-btn", "Cancel"); no.type = "button";
+      no.onclick = (e) => { e.stopPropagation(); stopPick(); };
+      bar.append(el("b", "", "Plan with AI: "), on.length + " of " + tasks.length + " tasks picked - untick the ones to leave out ", all, none, go, no);
+    };
+    const startPick = () => { stopPick(); planPick = { client, off: new Set() }; paintPick(); };
+    // A redraw made new rows: put the boxes back (same picks).
+    if (planPick && planPick.client === client && !opts.day) queueMicrotask(paintPick);
+    if (!opts.button) plan.onclick = (e) => {
+      e.stopPropagation();
+      // A day's plan (This week by day) or a single task: no question.
+      if (opts.day || tasks.length < 2 || !wrap.closest(".cu-mgroup, .cu-clienthead")) { run(plan); return; }
+      closePlanMenu();
+      const m = el("div", "pcm-planmenu");
+      const a = el("button", "pcm-btn pri", "Plan all " + tasks.length + " tasks"); a.type = "button";
+      a.onclick = (ev) => { ev.stopPropagation(); closePlanMenu(); stopPick(); run(plan); };
+      const b = el("button", "pcm-btn", "Pick tasks\u2026"); b.type = "button";
+      b.title = "Tick boxes appear on " + client + "'s tasks, all ticked - untick the ones to leave out, then Plan these";
+      b.onclick = (ev) => { ev.stopPropagation(); closePlanMenu(); startPick(); };
+      m.append(a, b);
+      document.body.appendChild(m);
+      const r = plan.getBoundingClientRect();
+      m.style.left = Math.max(8, Math.min(window.innerWidth - m.offsetWidth - 8, r.right - m.offsetWidth)) + "px";
+      m.style.top = (r.bottom + 4) + "px";
+    };
     wrap._run = () => run(plan); // an outside button starts it itself
     return wrap;
   }

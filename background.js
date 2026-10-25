@@ -27,7 +27,7 @@ import {
   linkifySheet,
 } from "./lib-drive.js";
 import { runAllAccounts, runAccountLogin, readAgentRouterLogin, URLS, GITHUB_KEEP_COOKIES } from "./lib-automation.js";
-import { getTaskHoldInfo, fetchArchivedMine, unarchiveTask, getLatestCommentBy, getTaskCommentsLite, getTaskTimeEntries, deleteTimeEntry, getUserGroups, getUser, verifyToken, getTeams, fetchTodayEstimate, fetchWeeklySummary, fetchDateRangeEstimate, createTaskCache, fetchTeamMembers, fetchWorkspaceTags, cuTagNames, fmtDuration, findExtraTaskByName, parseTaskIdFromUrl, getCurrentTimeEntry, getRunningTaskProgress, startTimer, stopTimer, getTaskById, setTaskStatus, setTaskDates, taskUrlFor, clientLabelFromContainer, resolveSpaceNamesFor, taskContainer, cuPriorityName, isTaskDone, getSubtasksOfParent, getTaskTree, getTaskDetail, updateTimeEntry, setTaskDueDate, clearTaskTreeCache, listWorkspaceClients, cuRowAssignees, fetchDoneBetween, fetchDoneLite, fetchTrackedHistory, getTaskPanel, addTaskComment, postTaskComment, setTaskDescription, getTaskCommentLinks, createTask, removeTaskAssignee, postAssignedComment, addTimeEntry, weeklyWithToday, listClientFieldOptions, listReachableClients, bgToken, patientToken, cuRawFetch, getRelatedTasks, slimIndexTask, fetchTeamTasksPage, listAllLists, setPausedClients } from "./lib-clickup.js";
+import { getTaskHoldInfo, fetchArchivedMine, unarchiveTask, getLatestCommentBy, getTaskCommentsLite, getTaskTimeEntries, deleteTimeEntry, getUserGroups, getUser, verifyToken, getTeams, fetchTodayEstimate, fetchWeeklySummary, fetchDateRangeEstimate, createTaskCache, fetchTeamMembers, fetchWorkspaceTags, cuTagNames, fmtDuration, findExtraTaskByName, parseTaskIdFromUrl, getCurrentTimeEntry, getRunningTaskProgress, startTimer, stopTimer, getTaskById, setTaskStatus, setTaskDates, taskUrlFor, clientLabelFromContainer, resolveSpaceNamesFor, taskContainer, cuPriorityName, isTaskDone, getSubtasksOfParent, getTaskTree, getTaskDetail, updateTimeEntry, setTaskDueDate, clearTaskTreeCache, listWorkspaceClients, cuRowAssignees, fetchDoneBetween, fetchDoneLite, fetchTrackedHistory, getTaskPanel, addTaskComment, postTaskComment, setTaskDescription, getTaskCommentLinks, createTask, relateTasks, removeTaskAssignee, addTaskAssignee, postAssignedComment, addTimeEntry, weeklyWithToday, listClientFieldOptions, listReachableClients, bgToken, patientToken, cuRawFetch, getRelatedTasks, slimIndexTask, fetchTeamTasksPage, listAllLists, setPausedClients } from "./lib-clickup.js";
 import { resolveRelayKey, pickProbeModel, probeRelay } from "./lib-availability.js";
 import { tidyCollect, tidyLines, tidyResolved, tidyDayOk, tidyUrgent, tidyDateShort } from "./lib-tidy.js";
 import "./lib-rules.js"; // globalThis.PcmRules - the Automation tab's rule blocks
@@ -260,6 +260,25 @@ async function tixPut(rows) {
 async function tixClear() {
   const d = await tixDb();
   await new Promise((res, rej) => { const tx = d.transaction("tasks", "readwrite"); tx.objectStore("tasks").clear(); tx.oncomplete = res; tx.onerror = () => rej(tx.error); });
+}
+// A task by its code ("ACT-025", "AP-14.S2"): the index row whose name starts with
+// it. Kept per code for the session. "" when there's no index or no such task.
+const tixCodeMemo = new Map();
+async function tixFindByCode(code) {
+  code = String(code || "").toUpperCase();
+  if (!code) return "";
+  if (tixCodeMemo.has(code)) return tixCodeMemo.get(code);
+  const { cuTaskIndex: m } = await chrome.storage.local.get("cuTaskIndex");
+  if (!m || m.state !== "ready") return "";
+  const d = await tixDb();
+  const re = new RegExp("^\\s*" + code.replace(/[.*+?^${}()|[\]\\]/g, "\\$&") + "(?![\\w.])", "i");
+  const id = await new Promise((res) => {
+    const q = d.transaction("tasks").objectStore("tasks").openCursor();
+    q.onsuccess = () => { const c = q.result; if (!c) return res(""); const v = c.value; if (v && re.test(String(v.name || v.n || ""))) return res(String(v.id)); c.continue(); };
+    q.onerror = () => res("");
+  });
+  tixCodeMemo.set(code, id);
+  return id;
 }
 async function tixCount() {
   const d = await tixDb();
@@ -1831,6 +1850,66 @@ function dropAssigneeIn(node, taskId, userId, depth) {
   for (const k in node) { const v = node[k]; if (v && typeof v === "object") n += dropAssigneeIn(v, taskId, userId, depth + 1); }
   return n;
 }
+// Someone added to a task: put them on every saved copy of it at once (no ClickUp
+// calls; the next refresh confirms it).
+function addAssigneeIn(node, taskId, person, depth) {
+  if (!node || typeof node !== "object" || depth > 9) return 0;
+  let n = 0;
+  if (!Array.isArray(node) && String(node.id) === taskId && Array.isArray(node.assignees) && !node.assignees.some((a) => String(a && a.id) === person.id)) {
+    node.assignees = node.assignees.concat([{ id: person.id, username: person.username }]);
+    n++;
+    if (typeof node.assigneeCount === "number") node.assigneeCount = node.assignees.length;
+  }
+  for (const k in node) { const v = node[k]; if (v && typeof v === "object") n += addAssigneeIn(v, taskId, person, depth + 1); }
+  return n;
+}
+async function addAssigneeEverywhere(taskId, person) {
+  const id = String(taskId);
+  try { const st = await getClickupState(); if (st && addAssigneeIn(st, id, person, 0)) await setClickupState(st); } catch (e) {}
+  await hydrateFilterCache();
+  for (const v of filterCache.values()) if (v && v.data) addAssigneeIn(v.data, id, person, 0);
+  for (const c of [overdueCache, openTasksCache, ...overdueScopeCache.values()]) if (c) addAssigneeIn(c, id, person, 0);
+  await persistFilterCache();
+}
+// ---- Scheduled assignments ("+ Add someone" > ⏰) ----
+// storage asgSchedule: [{ id, taskId, taskName, url, userId, name, at, tries, nextTry, done, failed, error }]
+// Checked every minute (UPDATE_ALARM), so a time missed while Chrome was closed
+// runs as soon as it's open again. ClickUp busy: tried again in 5 minutes, up to 6
+// times, then you're told. Finished ones are kept 7 days (shown, then dropped).
+const ASG_KEY = "asgSchedule";
+let asgRunning = false;
+async function runScheduledAssigns() {
+  if (asgRunning) return;
+  asgRunning = true;
+  try {
+    const g = await chrome.storage.local.get(ASG_KEY);
+    const jobs = Array.isArray(g[ASG_KEY]) ? g[ASG_KEY] : [];
+    const now = Date.now();
+    const due = jobs.filter((j) => j && !j.done && !j.failed && j.at <= now && (!j.nextTry || j.nextTry <= now));
+    const old = jobs.some((j) => j && (j.done || j.failed) && now - (j.done || j.failed) > 7 * 864e5);
+    if (!due.length && !old) return;
+    const cfg = await getClickupConfig();
+    const st = await getClickupState().catch(() => null);
+    const busy = !cfg || !cfg.token || (st && st.rateLimitedUntil > now);
+    for (const j of busy ? [] : due) {
+      try {
+        await addTaskAssignee(cfg.token, j.taskId, j.userId);
+        j.done = Date.now();
+        if (cfg.userId && String(cfg.userId) === String(j.userId)) { clearFilterCache(); refreshClickup({ includeTasks: true, forceWeeks: true }).catch(() => {}); }
+        else await addAssigneeEverywhere(j.taskId, { id: String(j.userId), username: String(j.name || "") });
+        await notify("asg-" + j.id, "Assigned as scheduled", (j.name || "They") + " is now on \u201C" + (j.taskName || "the task") + "\u201D in ClickUp.", undefined, j.url || taskUrlFor(j.taskId)).catch(() => {});
+      } catch (e) {
+        j.tries = (j.tries || 0) + 1;
+        j.error = String((e && e.message) || e).slice(0, 200);
+        if (j.tries >= 6) {
+          j.failed = Date.now();
+          await notify("asg-" + j.id, "Couldn't assign " + (j.name || "them"), "\u201C" + (j.taskName || "the task") + "\u201D - ClickUp said: " + j.error + ". Add them from the task row instead.", undefined, j.url || taskUrlFor(j.taskId)).catch(() => {});
+        } else j.nextTry = Date.now() + 5 * 60000;
+      }
+    }
+    await chrome.storage.local.set({ [ASG_KEY]: jobs.filter((j) => j && !((j.done || j.failed) && now - (j.done || j.failed) > 7 * 864e5)) });
+  } finally { asgRunning = false; }
+}
 async function dropAssigneeEverywhere(taskId, userId) {
   const id = String(taskId), uid = String(userId);
   let n = 0;
@@ -3070,9 +3149,11 @@ async function deskTryNotice() {
 }
 
 // ---------- comments kept until a task is completed ----------
-// storage heldComments: { taskId: [{ id, text, auto, at }] }. Written in a task's
-// ▸ details with "Send when I complete it"; posted (with @mentions) when the task
-// is completed from the extension - after asking, or by itself when "auto".
+// storage heldComments: { taskId: [{ id, text, auto, at, sendAt, taskName, url, tries, nextTry, failed, error }] }.
+// Written in a task's ▸ details with "Send when I complete it"; posted (with
+// @mentions) when the task is completed from the extension - after asking, or by
+// itself when "auto". With sendAt ("⏰ Send at…") it's also posted at that time
+// by the every-minute check below, whether or not the task is completed.
 async function heldList(taskId) {
   const { heldComments } = await chrome.storage.local.get("heldComments");
   const l = heldComments && Array.isArray(heldComments[taskId]) ? heldComments[taskId] : [];
@@ -3087,17 +3168,55 @@ async function heldUpdate(taskId, fn) {
 }
 // Posts them in order; each one is removed as soon as it's posted, so a failure
 // part-way never posts the same comment twice.
-async function sendHeldComments(cfg, taskId, list) {
+// withStatus: a scheduled comment's status change (c.status) goes first - posted at
+// its time or with Send now; not when the task is being completed anyway. Setting
+// the same status twice is harmless, so a retry never posts the comment twice.
+async function sendHeldComments(cfg, taskId, list, withStatus) {
   let data = null;
   const members = ((await getClickupState().catch(() => null)) || {}).members;
   for (const c of list) {
+    if (withStatus && c.status) await setTaskStatus(cfg.token, taskId, c.status);
     data = await addTaskComment(cfg.token, taskId, c.text.slice(0, 5000), members);
     await heldUpdate(taskId, (l) => l.filter((x) => x.id !== c.id));
   }
   return data;
 }
+// Comments scheduled for a time (sendAt): checked every minute (UPDATE_ALARM), so a
+// time missed while Chrome was closed is posted as soon as it opens. ClickUp
+// refusing: tried again in 5 minutes, up to 6 times, then you're told (it stays in
+// the task's ▸ details, marked, with Send now).
+let heldSchedRunning = false;
+async function runScheduledComments() {
+  if (heldSchedRunning) return;
+  heldSchedRunning = true;
+  try {
+    const { heldComments } = await chrome.storage.local.get("heldComments");
+    const now = Date.now();
+    const due = [];
+    for (const [taskId, l] of Object.entries(heldComments || {})) for (const c of Array.isArray(l) ? l : []) {
+      if (c && c.text && c.sendAt && c.sendAt <= now && !c.failed && (!c.nextTry || c.nextTry <= now)) due.push([taskId, c]);
+    }
+    if (!due.length) return;
+    const cfg = await getClickupConfig();
+    const st = await getClickupState().catch(() => null);
+    if (!cfg || !cfg.token || (st && st.rateLimitedUntil > now)) return;
+    for (const [taskId, c] of due) {
+      const url = c.url || taskUrlFor(taskId);
+      try {
+        await sendHeldComments(cfg, taskId, [c], true);
+        if (c.status) { clearFilterCache(); refreshClickup({ includeTasks: true }).catch(() => {}); }
+        await notify("hcs-" + c.id, "💬 Comment posted as scheduled", (c.status ? "Status set to " + c.status + ". " : "") + "On “" + (c.taskName || "the task") + "”: “" + c.text.replace(/\s+/g, " ").slice(0, 120) + "”", undefined, url).catch(() => {});
+      } catch (e) {
+        const tries = (c.tries || 0) + 1, error = String((e && e.message) || e).slice(0, 200);
+        const failed = tries >= 6 ? Date.now() : 0;
+        await heldUpdate(taskId, (l) => l.map((x) => x.id === c.id ? { ...x, tries, error, failed, nextTry: failed ? 0 : Date.now() + 5 * 60000 } : x));
+        if (failed) await notify("hcs-" + c.id, "💬 Scheduled comment not posted", "“" + (c.taskName || "the task") + "” - ClickUp said: " + error + ". It's still in the task's ▸ details: press Send now there.", "danger", url).catch(() => {});
+      }
+    }
+  } finally { heldSchedRunning = false; }
+}
 async function heldStartReminder(taskId) {
-  const held = taskId ? await heldList(taskId) : [];
+  const held = taskId ? (await heldList(taskId)).filter((c) => !c.sendAt) : [];
   if (!held.length) return;
   const first = held[0].text.replace(/\s+/g, " ");
   await notify("held-" + taskId, "\uD83D\uDCAC " + (held.length === 1 ? "A comment is" : held.length + " comments are") + " waiting on this task",
@@ -3236,14 +3355,83 @@ const HOLD_NAME_RE = /\b(pending|on hold|waiting|awaiting|blocked)\b/i;
 const HOLD_TEXT_RE = /(only (?:build|do|start|proceed|publish|create|implement)[^.\n]{0,60}?\bif\b[^.\n]{0,80}|once (?:the )?[^.\n]{0,50}?\b(?:published|live|approved|confirmed|ready|signed off)\b|after (?:the )?[^.\n]{0,50}?\b(?:is |are |gets? )?(?:published|live|approved|confirmed)\b|waiting (?:for|on) [^.\n]{3,60}|depends on [^.\n]{3,60}|blocked by [^.\n]{3,60}|not (?:yet )?(?:published|live|approved|confirmed)[^.\n]{0,40}|pending (?:client|approval|confirmation|review|sign[- ]?off)[^.\n]{0,40})/i;
 function holdStopped(st) { return /road\s*-?block|block|on hold|\bhold\b|stuck|waiting|pending|halt|paused/i.test(String(st || "")); }
 function holdFinished(st, done) { return !!done || /\b(complete|completed|done|closed|approved|resolved|published|live|in review|review|qa)\b/i.test(String(st || "")); }
-function holdReason(t, p) {
+// A plan / container parent (a month, a week, a schedule, "Client - SEO - 2026-10"):
+// its subtasks don't wait on it.
+const HOLD_CONTAINER_RE = /\b20\d\d-\d\d\b|\bweeks?\s*\d|\bweek of\b|\bweekly\b|\bmonthly\b|\bschedule\b|\bproduction\b|\bsprint\b|\bretainer\b|\bbacklog\b|\broadmap\b|\bq[1-4]\b|\s-\s*seo\s*-|\[(?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\b|\b(?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\.?\s+20\d\d\b/i;
+const HOLD_RULES = 5; // bump when holdReason learns something new: every task is checked again
+// A container parent: a schedule / plan / month or week list (by its name), or one
+// holding 6+ subtasks none of which is a numbered step - a list of separate tasks,
+// not one job in steps. Its subtasks don't wait on it or on each other.
+function holdContainer(p) {
+  if (!p) return false;
+  if (HOLD_CONTAINER_RE.test(p.name || "")) return true;
+  return Array.isArray(p.subs) && p.subs.length >= 6 && !p.subs.some((s) => holdStep(s.name));
+}
+// A step number in a name: "ACT-066.S3", "Step 2", "Phase 2", "Part 3", "2. Write...".
+// (Not "Week 2" - that's when, not an order.)
+function holdStep(name) {
+  const n = String(name || "");
+  let m = /^\s*([A-Za-z]{1,8}[- ]?\d+)\.S(\d{1,2})\b/i.exec(n);
+  if (m) return { base: m[1].toUpperCase(), n: +m[2] };
+  m = /\b(?:step|phase|part|stage)\s*(\d{1,2})\b/i.exec(n);
+  if (m) return { base: "", n: +m[1] };
+  m = /^\s*(\d{1,2})[.)]\s+\S/.exec(n);
+  if (m) return { base: "", n: +m[1] };
+  return null;
+}
+// The task's code ("ACT-066.S3" -> "ACT-066.S3", "AP-14 | ..." -> "AP-14").
+const HOLD_CODE_RE = /\b([A-Z]{2,8}-\d{1,4}(?:\.S\d{1,2})?)\b/g;
+// Earlier steps (same parent, a lower step number) that aren't finished yet.
+function holdEarlierSteps(t, sibs) {
+  const me = holdStep(t.name);
+  if (!me || me.n < 2 || !Array.isArray(sibs)) return [];
+  return sibs.filter((s) => s && s.id !== t.id && !holdFinished(s.status, s.done)).filter((s) => {
+    const o = holdStep(s.name);
+    return o && o.n < me.n && o.base === me.base;
+  }).sort((a, b) => holdStep(a.name).n - holdStep(b.name).n);
+}
+// The task the last reason is about ({ id, name }), so the Warnings tab can link it.
+let holdRef = null;
+function holdReason(t, p, me, deps, more) {
+  more = more || {};
+  holdRef = null;
+  const about = (x) => { holdRef = x && x.id ? { id: String(x.id), name: String(x.name || "") } : null; };
   const q = (s) => "\u201C" + String(s || "").trim().slice(0, 90) + "\u201D";
+  const who = (x) => (Array.isArray(x && x.assignees) ? x.assignees : []).map((a) => String(a.name || "").split(" ")[0]).filter(Boolean).join(", ");
+  const dd = (ms) => (ms ? new Date(ms).toLocaleDateString(undefined, { month: "short", day: "numeric" }) : "");
+  // A dependency set in ClickUp ("waiting on") that isn't finished.
+  const dep = (Array.isArray(deps) ? deps : []).find((x) => x && !holdFinished(x.status, x.done));
+  if (dep) about(dep);
+  if (dep) return "it waits on " + q(dep.name) + " (" + (dep.status || "open") + (who(dep) ? ", with " + who(dep) : "") + (dep.dueDateMs ? ", due " + dd(dep.dueDateMs) : "") + ") - a dependency in ClickUp";
+  // Under a container parent (a schedule, a month's list...) the parent says
+  // nothing about whether this task can go ahead: none of the parent rules apply.
+  if (holdContainer(p)) p = null;
+  // An earlier numbered step of the same work isn't done yet.
+  const early = Array.isArray(more.earlier) ? more.earlier : [];
+  if (early.length) { const e = early[0]; about(e); return "an earlier step isn't done yet: " + q(e.name) + " is " + (e.status || "open") + (who(e) ? " with " + who(e) : "") + (early.length > 1 ? " (+" + (early.length - 1) + " more)" : ""); }
+  // Its description points to another task that's still open.
+  const ref = (Array.isArray(more.refs) ? more.refs : []).find((x) => x && !holdFinished(x.status, x.done));
+  if (ref) about(ref);
+  if (ref) return "its description points to " + q(ref.name) + ", still " + (ref.status || "open") + (who(ref) ? " with " + who(ref) : "");
+  if (p && !p.done && holdStopped(p.status)) about(p);
   if (p && !p.done && holdStopped(p.status)) return "its parent task is " + p.status + " (" + q(p.name) + ")";
+  if (p && HOLD_NAME_RE.test(p.name || "") && !p.done) about(p);
   if (p && HOLD_NAME_RE.test(p.name || "") && !p.done) return "its parent is marked " + (String(p.name).match(HOLD_NAME_RE)[0]).toUpperCase() + " (" + q(p.name) + ")";
   if (HOLD_NAME_RE.test(t.name || "")) return "its name says " + (String(t.name).match(HOLD_NAME_RE)[0]).toUpperCase();
+  if (p && HOLD_STEP_RE.test(t.name || "") && !holdFinished(p.status, p.done)) about(p);
   if (p && HOLD_STEP_RE.test(t.name || "") && !holdFinished(p.status, p.done)) return "a " + String(t.name).match(HOLD_STEP_RE)[0].toLowerCase() + " step, but the work it goes on isn't finished yet (" + q(p.name) + " is " + (p.status || "open") + ")";
   const m = String(t.text || "").match(HOLD_TEXT_RE);
   if (m) return "its description says " + q(m[0]);
+  // Its parent is real work (not a month / week plan), still open, with someone
+  // else, and due no later than this task: that work most likely comes first
+  // (e.g. "Make booking completion the primary conversion" under "Track completed
+  // bookings as a conversion", which first has to create the event).
+  const mine = (x) => me != null && (Array.isArray(x && x.assignees) ? x.assignees : []).some((a) => String(a.id) === String(me));
+  if (p && !holdFinished(p.status, p.done) && Array.isArray(p.assignees) && p.assignees.length && !mine(p) &&
+    (!p.dueDateMs || !t.dueDateMs || new Date(p.dueDateMs).setHours(0, 0, 0, 0) <= new Date(t.dueDateMs).setHours(0, 0, 0, 0))) {
+    about(p);
+    return "its parent " + q(p.name) + " is still " + (p.status || "open") + " with " + who(p) + (p.dueDateMs ? " (due " + dd(p.dueDateMs) + ")" : "") + " - its work most likely has to be done first";
+  }
   return "";
 }
 async function holdHints(ids) {
@@ -3256,24 +3444,40 @@ async function holdHints(ids) {
   const now = Date.now();
   const st = (await getClickupState().catch(() => null)) || {};
   const busy = st.rateLimitedUntil > now;
-  const info = async (id) => {
-    const c = cache["i" + id];
-    if (c && now - c.at < HOLD_TTL) return c.v;
+  const info = async (id, subs) => {
+    const key = (subs ? "s" : "i") + id;
+    const c = cache[key];
+    if (c && now - c.at < HOLD_TTL && (!c.v || Array.isArray(c.v.assignees))) return c.v;
     if (busy) return undefined;
-    const v = await getTaskHoldInfo(cfg.token, id).catch((e) => { if (e && e.status === 429) throw e; return null; });
-    cache["i" + id] = { at: now, v };
+    const v = await getTaskHoldInfo(cfg.token, id, { subs: !!subs }).catch((e) => { if (e && e.status === 429) throw e; return null; });
+    cache[key] = { at: now, v };
     await new Promise((r) => setTimeout(r, 120));
     return v;
   };
   const done = []; // the tasks actually read (a busy ClickUp leaves the rest unchecked)
+  const refOf = {}; // id -> the task its reason is about
   try {
     for (const id of ids) {
       const t = await info(id);
       if (!t) continue;
       done.push(id);
-      const p = t.parentId ? await info(t.parentId) : null;
-      const why = holdReason(t, p);
-      if (why) out[id] = why;
+      const p = t.parentId ? await info(t.parentId, true) : null;
+      const deps = [];
+      for (const did of Array.isArray(t.waitsOn) ? t.waitsOn.slice(0, 2) : []) { const x = await info(did); if (x) deps.push(x); }
+      const earlier = holdEarlierSteps(t, p && p.subs);
+      // Tasks its description points to: ClickUp links, and other tasks' codes
+      // ("after ACT-025") looked up in the task index (no ClickUp request).
+      const refs = [];
+      const refIds = new Set(Array.isArray(t.linksTo) ? t.linksTo : []);
+      const own = new Set([...String(t.name || "").matchAll(HOLD_CODE_RE)].map((m) => m[1]));
+      for (const m of String(t.text || "").matchAll(HOLD_CODE_RE)) {
+        if (refIds.size >= 3 || own.has(m[1])) continue;
+        const hit = await tixFindByCode(m[1]).catch(() => "");
+        if (hit && hit !== String(t.id) && hit !== String(t.parentId || "")) refIds.add(hit);
+      }
+      for (const rid of [...refIds].slice(0, 3)) { const x = await info(rid); if (x) refs.push(x); }
+      const why = holdReason(t, p, cfg.userId, deps, { earlier, refs });
+      if (why) { out[id] = why; if (holdRef) refOf[id] = holdRef; }
     }
   } catch (e) { /* ClickUp busy: what we have so far */ }
   // Per task, what was found (why = "" when nothing holds it up): the task rows'
@@ -3281,7 +3485,7 @@ async function holdHints(ids) {
   try {
     const { holdFound } = await chrome.storage.local.get("holdFound");
     const found = holdFound && typeof holdFound === "object" ? { ...holdFound } : {};
-    for (const id of done) found[id] = { why: out[id] || "", at: now };
+    for (const id of done) found[id] = { why: out[id] || "", at: now, r: HOLD_RULES, ref: refOf[id] || null };
     const keepF = Object.entries(found).sort((a, b) => (b[1].at || 0) - (a[1].at || 0)).slice(0, 400);
     await chrome.storage.local.set({ holdFound: Object.fromEntries(keepF) });
   } catch (e) {}
@@ -3832,6 +4036,13 @@ function draftCreateFields(d, cfg) {
     : (d.assignMe !== false && cfg.userId != null ? [cfg.userId] : []);
   return { name: d.name, md: d.md, dueDateMs: d.dueDateMs, startDateMs: d.startDateMs, estimateMs: d.estimateMs, priority: d.priority, assignees: ids, parentId: d.parentId || "" };
 }
+// A draft with "Relate to a task" picked: once it's created it's related to that
+// task (ClickUp's Relate a Task). A failure doesn't undo the new task - it's said.
+async function relateDraft(cfg, d, task) {
+  if (!d || !d.relateId || !task || !task.id) return "";
+  try { await relateTasks(cfg.token, String(task.id), String(d.relateId), "related"); return ""; }
+  catch (e) { return "\u201C" + (d.name || task.name || "The task") + "\u201D is in ClickUp, but couldn't be related to \u201C" + (d.relateName || "the task") + "\u201D: " + String(e && e.message ? e.message : e) + " - relate it in ClickUp."; }
+}
 // Drafts set to "Send to ClickUp on <date, time>": created when that time comes
 // (checked every minute), then their notes / pin / reminders move to the real
 // task and the draft goes away - the same as pressing Apply to ClickUp.
@@ -3857,6 +4068,8 @@ async function sendScheduledDrafts() {
         await notify("draft-fail-" + d.id, "Draft task not sent", "“" + (d.name || "Untitled") + "” couldn't be created in ClickUp: " + err, "danger", chrome.runtime.getURL("options.html#dashboard"));
         continue;
       }
+      const relErr = await relateDraft(cfg, d, task);
+      if (relErr) await notify("draft-rel-" + d.id, "Task sent - not related", relErr, "danger", task.url).catch(() => {});
       const ex = await chrome.storage.local.get(["taskNotes", "taskPins", "reminders"]);
       const out = { localTasks: cur.filter((y) => y.id !== d.id) };
       const to = String(task.id);
@@ -6660,6 +6873,34 @@ const CU_WEEK_MODES = {
   "mon-fri": { start: 1, days: 5, label: "Mon-Fri" },
   "sun-thu": { start: 0, days: 5, label: "Sun-Thu" },
 };
+// ---- This week by day: another week (the card's ‹ / ›) ----
+// The same per-day breakdown as this week (fetchWeeklySummary: one paginated
+// read of the week's tasks + one of its tracked time), built only when asked and
+// kept 30 minutes per week, so paging back and forth costs nothing more. From 8
+// weeks back to 12 ahead. While ClickUp has asked us to slow down, nothing is read.
+const WEEK_AT_TTL = 30 * 60000;
+const weekAtMem = new Map(); // "fromTs:rule" -> weekly
+async function weekAtOffset(offset, force) {
+  const off = Math.max(-8, Math.min(12, Math.round(Number(offset) || 0)));
+  const cfg = await getClickupConfig();
+  if (!cfg || !cfg.token || !cfg.teamId || cfg.userId == null) return { ok: false, error: "ClickUp isn't set up." };
+  const settings = await getSettings();
+  const b = cuWeekBounds(settings.clickupWeekMode || "sun-sat", off);
+  const extendedMode = extendedModeOf(settings), spread = spreadOf(settings), multiDay = multiDayOf(settings);
+  const rule = WEEKLY_RULE + ":" + multiDay;
+  const key = b.fromTs + ":" + rule;
+  const hit = weekAtMem.get(key);
+  if (!force && hit && Date.now() - hit.at < WEEK_AT_TTL) return { ok: true, weekly: hit, cached: true };
+  const st = await getClickupState().catch(() => null);
+  if (st && st.rateLimitedUntil > Date.now()) return hit ? { ok: true, weekly: hit, cached: true } : { ok: false, error: "ClickUp asked us to slow down - try again in a minute." };
+  const taskUrls = mergeExtraTaskUrl(Array.isArray(settings.clickupDeadlineTaskUrls) ? settings.clickupDeadlineTaskUrls : [], st && st.extraTask);
+  const weekly = await fetchWeeklySummary({ token: cfg.token, teamId: cfg.teamId, userId: cfg.userId, taskUrls, fromTs: b.fromTs, toTs: b.toTs, extendedMode, taskCache: createTaskCache(), spread });
+  weekly.at = Date.now(); weekly.rule = rule; weekly.offset = off;
+  try { await annotateClients(cfg.token, { weekly }, settings.cuClientLevel || "auto"); } catch (e) {}
+  weekAtMem.set(key, weekly);
+  if (weekAtMem.size > 12) weekAtMem.delete(weekAtMem.keys().next().value);
+  return { ok: true, weekly };
+}
 function cuWeekBounds(mode, offsetWeeks, now) {
   const m = CU_WEEK_MODES[mode] || CU_WEEK_MODES["sun-sat"];
   const d = new Date(now == null ? Date.now() : now);
@@ -7553,10 +7794,35 @@ async function hubPost(url, body) {
     return { ok: false, error: e && e.name === "AbortError" ? "The hub didn't answer in time - try again." : "Couldn't reach the hub (" + ((e && e.message) || e) + ")." };
   } finally { clearTimeout(timer); }
 }
+// This person's day for the admin's card in Admin › Users (click a picture): what
+// the Due today and This week cards show and the task with a timer running. Read
+// from the last refresh (no ClickUp calls); the running timer's time since that
+// refresh is added, as the pages do. Nothing when the numbers are from yesterday.
+async function hubDaySnap() {
+  try {
+    const st = await getClickupState();
+    if (!st || !(Number(st.at) > 0)) return null;
+    const now = Date.now(), mid = new Date(now).setHours(0, 0, 0, 0);
+    if (Number(st.at) < mid) return null;
+    const run = st.running && st.running.taskId ? st.running : null;
+    const live = run && run.startMs ? Math.max(0, now - Math.max(Number(run.startMs) || 0, Number(st.at) || 0, mid)) : 0;
+    const tgt = Number(st.targetMs) || 0;
+    const w = st.weekly && st.weekly.friday;
+    return {
+      at: now, est: Number(st.estimateMs) || 0, trk: (Number(st.spentMs) || 0) + live, tgt, n: Number(st.taskCount) || 0, ne: Number(st.noEstimateCount) || 0,
+      w: w ? { est: Number(w.estimateMs) || 0, trk: (Number(w.spentMs) || 0) + live, tgt: tgt * (Number(w.count) || 0), from: Number(w.fromTs) || 0, to: Number(w.toTs) || 0 } : null,
+      run: run ? { id: String(run.taskId), name: String(run.taskName || "").slice(0, 160), since: Number(run.startMs) || 0 } : null,
+    };
+  } catch (e) { return null; }
+}
 async function hubCall(action, payload, asAdmin) {
   const url = await hubUrl();
   if (!url) return { ok: false, reason: "not-set-up", error: "Help & issues isn't set up yet - ask your admin." };
-  const body = { ...(payload || {}), action, install: await installId() };
+  // act: when this person last used the computer (presence for the admin's
+  // Users list: active now / away / offline) - a time, nothing about what they did.
+  const { userActiveAt } = await chrome.storage.local.get("userActiveAt");
+  const day = await hubDaySnap();
+  const body = { ...(payload || {}), action, install: await installId(), act: Number(userActiveAt) || 0, ...(day ? { day: JSON.stringify(day) } : {}) };
   if (asAdmin) {
     const key = await hubAdminKey();
     // Made an admin by the owner: the hub knows this copy by its install id.
@@ -8286,6 +8552,443 @@ async function downloadUpdate() {
   await chrome.storage.local.set({ updateDownload: { id, version: ui.latest, at: Date.now(), done: false } });
   return { ok: true, downloadId: id };
 }
+// ---------- Slack downloads -> the client's files ----------
+// Clients › "Slack downloads go to the client's files" (storage slackAutoFile; the
+// extension can already read files.slack.com - host *://*/* for Site monitor): a document you
+// download from Slack is copied into the client's files too. The client comes from
+// the Slack channel you're in (the Slack tab's title) and the file name. With the
+// taskbar app: straight into the client's folder; otherwise it waits in the
+// "From Slack" box (IndexedDB pcm-slackinbox) and the Clients tab files it - or
+// asks which client when it can't tell. Your own download stays where it is.
+const SLACK_DOC_RE = /\.(pdf|docx?|xlsx?|csv|html?|md|txt|pptx?|json|rtf|odt|ods)$/i;
+const SLACK_GENERIC = new Set(["seo", "client", "clients", "audit", "audits", "website", "services", "service", "group", "digital", "marketing", "company", "agency", "solutions", "media", "local", "report", "the", "and", "daily", "tracking", "team", "alert", "task", "tasks", "update", "general"]);
+const sKey = (s) => String(s || "").toLowerCase().replace(/[^a-z0-9]+/g, "");
+function slackInboxDb() {
+  return new Promise((ok, bad) => {
+    const r = indexedDB.open("pcm-slackinbox", 1);
+    r.onupgradeneeded = () => { if (!r.result.objectStoreNames.contains("files")) r.result.createObjectStore("files", { keyPath: "id" }); };
+    r.onsuccess = () => ok(r.result); r.onerror = () => bad(r.error);
+  });
+}
+async function slackInboxPut(rec) {
+  const d = await slackInboxDb();
+  await new Promise((ok, bad) => { const tx = d.transaction("files", "readwrite"); tx.objectStore("files").put(rec); tx.oncomplete = ok; tx.onerror = () => bad(tx.error); });
+  d.close();
+}
+// Every client name the extension knows: on your tasks, saved in Clients, or with notes.
+async function slackClientNames() {
+  const names = new Set();
+  try {
+    const st = (await getClickupState()) || {};
+    for (const b of [st, st.todayFilter, st.thisWeek, st.nextWeek, st.custom]) for (const t of (b && b.tasks) || []) if (t && t.client) names.add(String(t.client));
+  } catch (e) {}
+  try {
+    const g = await chrome.storage.local.get(["clientNotes", "settings", "insOpenCache"]);
+    for (const l of Object.values(g.clientNotes || {})) if (Array.isArray(l) && l[0] && l[0].client) names.add(String(l[0].client));
+    for (const n of (g.settings && g.settings.tfAdded) || []) if (typeof n === "string") names.add(n);
+    for (const t of (g.insOpenCache && g.insOpenCache.tasks) || []) if (t && t.client) names.add(String(t.client));
+  } catch (e) {}
+  return [...names].filter((n) => sKey(n).length >= 3);
+}
+// The one client the hints (channel name, file name) point to, or "".
+// How well a client name fits one hint (a channel or file name): 100 the same
+// name ("Acme Co SEO" / #acme-co), 50+ the hint holds the whole name -
+// the longer, the more specific (so #acme-co beats "Acme SEO"), 30+ the
+// name holds the hint (#blue-sky-roofing for "Blue Sky Roofing Pros SEO"), 1 only a
+// shared word (never enough to pick a channel by itself).
+function slackMatchScore(n, h) {
+  const full = sKey(n), k = full.replace(/seo$/, ""), hk = sKey(h);
+  if (k.length < 4 || hk.length < 3) return 0;
+  if (hk === k || hk === full) return 100;
+  if (hk.includes(k)) return 50 + k.length;
+  if (hk.length >= 5 && k.includes(hk)) return 30 + hk.length;
+  const words = String(n).toLowerCase().split(/[^a-z0-9]+/).filter((w) => w.length >= 4 && !SLACK_GENERIC.has(w));
+  return words.some((w) => hk.includes(w)) ? 1 : 0;
+}
+// Channel suggestions for Match channels: best pairs first, each client and each
+// channel used once; a shared word alone never suggests a channel (Daily Tracking
+// is not #daily-alert-team-c).
+function slackSuggest(names, chans) {
+  const pairs = [];
+  for (const c of chans) for (const n of names) { const sc = slackMatchScore(n, c.name); if (sc >= 30) pairs.push([sc, n, c.id]); }
+  pairs.sort((x, y) => y[0] - x[0]);
+  const suggest = {}, used = new Set();
+  for (const [, n, id] of pairs) if (!suggest[n] && !used.has(id)) { suggest[n] = id; used.add(id); }
+  return suggest;
+}
+// The one client the hints (channel name, file name) point to best, or "" on a tie.
+function guessSlackClient(names, hints) {
+  let best = 0, pick = [];
+  for (const n of names) {
+    const s = Math.max(0, ...hints.map((h) => slackMatchScore(n, h)));
+    if (s > best) { best = s; pick = [n]; } else if (s && s === best && !pick.some((p) => sKey(p) === sKey(n))) pick.push(n);
+  }
+  return pick.length === 1 ? pick[0] : "";
+}
+// The channel of the Slack tab used last ("acme-dental (Channel) - Team - Slack").
+async function slackChannelHint() {
+  try {
+    const tabs = await chrome.tabs.query({ url: ["https://app.slack.com/*", "https://*.slack.com/*"] });
+    const t = tabs.sort((a, b) => (b.lastAccessed || 0) - (a.lastAccessed || 0))[0];
+    if (!t || !t.title) return "";
+    return String(t.title).replace(/^[*!]\s*/, "").split(" - ")[0].replace(/\s*\((channel|private channel|dm|direct message)\)\s*$/i, "").trim().slice(0, 80);
+  } catch (e) { return ""; }
+}
+const abToB64 = (ab) => { const u = new Uint8Array(ab); let s = ""; for (let i = 0; i < u.length; i += 0x8000) s += String.fromCharCode.apply(null, u.subarray(i, i + 0x8000)); return btoa(s); };
+async function onSlackDownload(id) {
+  const { slackAutoFile } = await chrome.storage.local.get("slackAutoFile");
+  if (!slackAutoFile) return;
+  const [it] = await chrome.downloads.search({ id }).catch(() => []);
+  const url = (it && (it.finalUrl || it.url)) || "";
+  if (!/^https:\/\/files\.slack\.com\//.test(url)) return;
+  const name = String(it.filename || "").split(/[\\/]/).pop() || "file";
+  if (!SLACK_DOC_RE.test(name)) return; // documents only (screenshots and the like stay out)
+  const open = chrome.runtime.getURL("options.html#files");
+  let blob = null, why = "";
+  try {
+    const res = await fetch(url, { credentials: "include", cache: "no-store" });
+    if (!res.ok) why = "Slack answered " + res.status;
+    else {
+      blob = await res.blob();
+      if (/text\/html/i.test(blob.type) && !/\.html?$/i.test(name)) { blob = null; why = "Slack sent its sign-in page"; }
+    }
+  } catch (e) { why = String((e && e.message) || e); }
+  if (blob && blob.size > 25 * 1048576) { blob = null; why = "over 25 MB"; }
+  if (!blob) {
+    await notify("slack-" + id, "Slack file not copied", "\u201C" + name + "\u201D (" + why + "). Add it from Clients \u203A + Add files instead.", undefined, open).catch(() => {});
+    return;
+  }
+  const channel = await slackChannelHint();
+  const client = guessSlackClient(await slackClientNames(), [channel, name.replace(/\.[a-z0-9]+$/i, "")]);
+  const where = await saveSlackFile(blob, name, client, channel, String(id));
+  if (where.startsWith("dup:")) await notify("slack-" + id, "Already in " + client + "\u2019s files", "\u201C" + name + "\u201D is the same file as \u201C" + where.slice(4) + "\u201D - not saved again.", undefined, open).catch(() => {});
+  else if (where === "folder") await notify("slack-" + id, "Slack file saved for " + client, "\u201C" + name + "\u201D is in " + client + "\u2019s folder" + (channel ? " (from #" + channel + ")" : "") + ".", undefined, open).catch(() => {});
+  else await notify("slack-" + id, client ? "Slack file for " + client : "Slack file: which client?",
+    "\u201C" + name + "\u201D" + (client ? " - it's added to " + client + "\u2019s files when the extension's page is open (click to open it)." : " - pick the client in Clients \u203A From Slack (click to open it)."), undefined, open).catch(() => {});
+}
+// Into the client's folder with the taskbar app ("folder"), otherwise the From
+// Slack box, which the Clients page files (known client) or asks about ("inbox").
+// Already there? The same content under any name ("dup"): checked by a
+// fingerprint (SHA-256) against what Slack brought before (storage slackHashes,
+// per client), the files in the client's folder and the ones kept in the
+// extension or waiting in From Slack - only files of the same size are read.
+const sha256 = async (ab) => [...new Uint8Array(await crypto.subtle.digest("SHA-256", ab))].map((b) => b.toString(16).padStart(2, "0")).join("");
+async function deskFiles(body, ms) {
+  try {
+    const ctl = new AbortController(); const tm = setTimeout(() => ctl.abort(), ms || 20000);
+    const res = await fetch("http://127.0.0.1:47615/pcm/files", { method: "POST", headers: { "Content-Type": "text/plain" }, body: JSON.stringify(body), signal: ctl.signal, cache: "no-store" });
+    clearTimeout(tm);
+    return res.ok ? await res.json() : null;
+  } catch (e) { return null; }
+}
+async function slackHasSame(client, size, hash) {
+  const ck = sKey(client);
+  const { slackHashes } = await chrome.storage.local.get("slackHashes");
+  if (slackHashes && slackHashes[ck] && slackHashes[ck][hash]) return slackHashes[ck][hash];
+  const b64Hash = async (b64) => { const bin = atob(b64); const u8 = new Uint8Array(bin.length); for (let i = 0; i < bin.length; i++) u8[i] = bin.charCodeAt(i); return sha256(u8.buffer); };
+  // the client's folder (taskbar app)
+  const ls = await deskFiles({ op: "list", client }, 8000);
+  for (const f of ((ls && ls.ok && ls.files) || []).filter((x) => Number(x.size) === size).slice(0, 8)) {
+    const rd = await deskFiles({ op: "read", client, rel: f.rel }, 30000);
+    if (rd && rd.ok && rd.b64 && (await b64Hash(rd.b64)) === hash) return f.rel;
+  }
+  // kept in the extension (Clients files) and waiting in From Slack
+  const sameIn = (dbName, idx) => new Promise((ok) => {
+    const rq = indexedDB.open(dbName);
+    rq.onerror = () => ok([]);
+    rq.onsuccess = () => {
+      const d = rq.result;
+      try {
+        if (!d.objectStoreNames.contains("files")) { d.close(); return ok([]); }
+        const st = d.transaction("files").objectStore("files");
+        const q = idx && st.indexNames.contains(idx) ? st.index(idx).getAll(ck) : st.getAll();
+        q.onsuccess = () => { d.close(); ok((q.result || []).filter((r) => r && r.blob && r.blob.size === size && (!r.client || sKey(r.client) === ck))); };
+        q.onerror = () => { d.close(); ok([]); };
+      } catch (e) { d.close(); ok([]); }
+    };
+  });
+  for (const r of (await sameIn("pcm-taskfiles", "ck")).concat(await sameIn("pcm-slackinbox")).slice(0, 8)) {
+    if ((await sha256(await r.blob.arrayBuffer())) === hash) return r.name || "a file";
+  }
+  return "";
+}
+async function rememberSlackHash(client, hash, name) {
+  const ck = sKey(client);
+  const { slackHashes } = await chrome.storage.local.get("slackHashes");
+  const all = slackHashes && typeof slackHashes === "object" ? slackHashes : {};
+  const mine = { ...(all[ck] || {}), [hash]: String(name).slice(0, 120) };
+  const keys = Object.keys(mine);
+  if (keys.length > 1500) for (const k of keys.slice(0, keys.length - 1500)) delete mine[k];
+  await chrome.storage.local.set({ slackHashes: { ...all, [ck]: mine } });
+}
+async function saveSlackFile(blob, name, client, channel, tag) {
+  const ab = await blob.arrayBuffer();
+  const hash = await sha256(ab);
+  if (client) {
+    const same = await slackHasSame(client, blob.size, hash).catch(() => "");
+    if (same) { await rememberSlackHash(client, hash, same); return "dup:" + same; }
+    const r = await deskFiles({ op: "clientFile", client, name: name.replace(/[\\/:*?"<>|]+/g, " ").slice(0, 120), b64: abToB64(ab) }, 60000);
+    if (r && r.ok) { await rememberSlackHash(client, hash, name); return "folder"; }
+  }
+  await slackInboxPut({ id: "s" + tag + "-" + Date.now().toString(36), name, type: blob.type || "", size: blob.size, blob, channel, client, at: Date.now() });
+  await chrome.storage.local.set({ slackInboxAt: Date.now() });
+  if (client) await rememberSlackHash(client, hash, name);
+  return "inbox";
+}
+
+// ---------- Slack channels -> client files, automatically (Clients › Slack) ----------
+// Uses the Slack sign-in already in this Chrome (no password): Connect reads the
+// Slack web page's own session from an open app.slack.com tab. Then every 20
+// minutes the channels matched to clients are checked for new documents (read
+// only - nothing is posted or changed in Slack), and each new one is saved like a
+// download above. Not an official Slack app: it may need a fix if Slack changes.
+// storage slackSession { team, name, domain, token, user, mode, at } - this
+// computer only (not in the Drive backup, not in settings).
+// storage slackChannels { [channelId]: { name, client } } · slackPoll { at, err, since: { [channelId]: ms }, seen: { [fileId]: ms } }
+const SLACK_POLL_MS = 20 * 60000;
+const SLACK_AUTH_ERR = /^(invalid_auth|not_authed|account_inactive|token_revoked|token_expired|no_permission)$/;
+async function slackTab() {
+  const tabs = await chrome.tabs.query({ url: "https://app.slack.com/*" }).catch(() => []);
+  return tabs.sort((a, b) => (b.lastAccessed || 0) - (a.lastAccessed || 0))[0] || null;
+}
+// A call to Slack's web API with the session. mode "tab": made from inside a Slack
+// tab (when Chrome doesn't send Slack's cookie with the extension's own request).
+async function slackApi(method, params, s) {
+  const body = { token: s.token, ...(params || {}) };
+  const url = "https://" + (s.domain || "slack.com") + "/api/" + method;
+  if (s.mode !== "tab") {
+    const res = await fetch(url, { method: "POST", credentials: "include", body: new URLSearchParams(body) });
+    return res.json();
+  }
+  const tab = await slackTab();
+  if (!tab) return { ok: false, error: "no_slack_tab" };
+  const [r] = await chrome.scripting.executeScript({ target: { tabId: tab.id }, args: [url, body],
+    func: async (u, b) => { try { const x = await fetch(u, { method: "POST", credentials: "include", body: new URLSearchParams(b) }); return await x.json(); } catch (e) { return { ok: false, error: String(e && e.message || e) }; } } });
+  return (r && r.result) || { ok: false, error: "no answer from the Slack tab" };
+}
+// Slack's sign-in page where a file was expected (also for an .html file, so a
+// login page is never saved as an audit): a redirect to sign in, or an HTML page
+// that is Slack's own.
+async function slackLooksSignin(res, blob) {
+  if (res && res.redirected && !/^https:\/\/files\.slack\.com\//.test(res.url || "")) return true;
+  if (!/text\/html/i.test((blob && blob.type) || "")) return false;
+  const head = (await blob.slice(0, 20000).text().catch(() => "")).toLowerCase();
+  return /<title>[^<]*slack[^<]*<\/title>/.test(head) && /sign ?in|signin|redir=/.test(head);
+}
+// The file itself. The extension's own request first; if Slack answers with its
+// sign-in page (its cookie isn't sent with that request for some files), the same
+// download from inside an open Slack tab, where the sign-in always is.
+async function slackFetchFile(url, s) {
+  if (s.mode !== "tab") {
+    let why = "";
+    try {
+      const res = await fetch(url, { credentials: "include", headers: { Authorization: "Bearer " + s.token } });
+      if (!res.ok) why = "Slack answered " + res.status;
+      else { const b = await res.blob(); if (!(await slackLooksSignin(res, b))) return b; why = "Slack sent its sign-in page"; }
+    } catch (e) { why = String((e && e.message) || e); }
+    if (!(await slackTab())) throw new Error(why + (/sign-in/.test(why) ? " (open Slack in a Chrome tab and it's fetched from there)" : ""));
+  }
+  const tab = await slackTab();
+  if (!tab) throw new Error("no Slack tab open");
+  const [r] = await chrome.scripting.executeScript({ target: { tabId: tab.id }, args: [url],
+    func: async (u) => { const x = await fetch(u, { credentials: "include" }); if (!x.ok) return { error: "Slack answered " + x.status }; const b = await x.blob(); const d = await new Promise((ok) => { const fr = new FileReader(); fr.onload = () => ok(String(fr.result)); fr.readAsDataURL(b); }); return { type: b.type, b64: d.replace(/^data:[^,]*,/, "") }; } });
+  const v = r && r.result;
+  if (!v || v.error) throw new Error((v && v.error) || "no answer from the Slack tab");
+  const bin = atob(v.b64); const u8 = new Uint8Array(bin.length); for (let i = 0; i < bin.length; i++) u8[i] = bin.charCodeAt(i);
+  const blob = new Blob([u8], { type: v.type || "" });
+  if (await slackLooksSignin(null, blob)) throw new Error("Slack sent its sign-in page");
+  return blob;
+}
+async function slackConnect(teamId) {
+  const tab = await slackTab();
+  if (!tab) return { ok: false, error: "Open Slack in Chrome first (app.slack.com), signed in, then press Connect again." };
+  let raw = null;
+  try { const [r] = await chrome.scripting.executeScript({ target: { tabId: tab.id }, func: () => { try { return localStorage.getItem("localConfig_v2"); } catch (e) { return null; } } }); raw = r && r.result; } catch (e) {}
+  let cfg = null; try { cfg = JSON.parse(raw || "null"); } catch (e) {}
+  const teams = Object.values((cfg && cfg.teams) || {}).filter((t) => t && t.token && t.id);
+  if (!teams.length) return { ok: false, error: "Couldn't find a Slack sign-in in that tab. Sign in to Slack in Chrome (app.slack.com), let it load, then press Connect again." };
+  const t = teams.find((x) => x.id === teamId) || teams.find((x) => x.id === (cfg && cfg.lastActiveTeamId)) || teams[0];
+  let domain = "slack.com";
+  try { if (t.url) domain = new URL(t.url).host; } catch (e) {}
+  const s = { team: t.id, name: String(t.name || t.domain || "Slack"), domain, token: String(t.token), mode: "bg", at: Date.now() };
+  let a = await slackApi("auth.test", {}, s).catch((e) => ({ ok: false, error: String(e && e.message || e) }));
+  if (!a || !a.ok) { s.mode = "tab"; a = await slackApi("auth.test", {}, s).catch((e) => ({ ok: false, error: String(e && e.message || e) })); }
+  if (!a || !a.ok) return { ok: false, error: "Slack didn't accept the sign-in (" + ((a && a.error) || "no answer") + "). Reload the Slack tab and press Connect again." };
+  s.user = String(a.user || ""); s.userId = String(a.user_id || "");
+  await chrome.storage.local.set({ slackSession: s, slackPoll: { ...((await chrome.storage.local.get("slackPoll")).slackPoll || {}), err: "" } });
+  return { ok: true, team: s.name, user: s.user, mode: s.mode, teams: teams.map((x) => ({ id: x.id, name: x.name })) };
+}
+async function slackChannelList() {
+  const { slackSession: s } = await chrome.storage.local.get("slackSession");
+  if (!s) return { ok: false, error: "Connect Slack first." };
+  const out = [];
+  let cursor = "";
+  for (let i = 0; i < 10; i++) {
+    const r = await slackApi("conversations.list", { types: "public_channel,private_channel", exclude_archived: "true", limit: "1000", ...(cursor ? { cursor } : {}) }, s);
+    if (!r || !r.ok) return { ok: false, error: (r && r.error) || "no answer", auth: SLACK_AUTH_ERR.test((r && r.error) || "") };
+    for (const c of r.channels || []) out.push({ id: c.id, name: c.name, member: !!c.is_member, private: !!c.is_private });
+    cursor = (r.response_metadata && r.response_metadata.next_cursor) || "";
+    if (!cursor) break;
+  }
+  out.sort((a, b) => (b.member - a.member) || a.name.localeCompare(b.name));
+  // A suggestion per client: the one channel its name points to.
+  const names = await slackClientNames();
+  const suggest = slackSuggest(names, out);
+  return { ok: true, channels: out, clients: names.sort((a, b) => a.localeCompare(b)), suggest };
+}
+// Every 20 minutes (and on Refresh): the LIST of files in the matched channels -
+// names, dates, sizes, links; nothing is downloaded. A file is fetched only when
+// a brief needs it (SLACK_TASK_LOOKUP / SLACK_FILE_GET: Copy for AI, Explain,
+// Plan with AI), its text kept in a small cache in the page (task-panel.js), and
+// the file itself never stored - so no client folder fills up with Slack files.
+// storage slackIndex { [channelId]: { at, since, files: [{ id, name, size, created, url, permalink, user, img }] } }
+const SLACK_IMG_RE = /\.(png|jpe?g|webp|gif)$/i;
+const SLACK_INDEX_MAX = 400; // per channel, newest first
+let slackPolling = false;
+async function slackPoll(force) {
+  if (slackPolling) return { ok: false, error: "already checking" };
+  const g = await chrome.storage.local.get(["slackSession", "slackChannels", "slackPoll", "slackIndex"]);
+  const s = g.slackSession, map = g.slackChannels || {}, poll = g.slackPoll || {};
+  const ids = Object.keys(map).filter((k) => map[k] && map[k].client);
+  if (!s || !ids.length) return { ok: false, error: !s ? "Connect Slack first." : "Match at least one channel to a client." };
+  if (!force && (poll.authErr || Date.now() - (Number(poll.at) || 0) < SLACK_POLL_MS)) return { ok: true, skipped: true };
+  slackPolling = true;
+  const index = { ...(g.slackIndex || {}) };
+  for (const k of Object.keys(index)) if (!map[k]) delete index[k]; // channels no longer matched
+  let err = "", authErr = false;
+  try {
+    for (const cid of ids.slice(0, 60)) {
+      const cur = index[cid] || { files: [] };
+      const from = Number(cur.since) || 0; // 0: the first look - all of it
+      const known = new Map((cur.files || []).map((f) => [f.id, f]));
+      let newest = from, page = 1, pages = 1, ok = true;
+      do {
+        const r = await slackApi("files.list", { channel: cid, count: "100", page: String(page), ...(from ? { ts_from: String(Math.floor(from / 1000)) } : {}) }, s).catch((e) => ({ ok: false, error: String(e && e.message || e) }));
+        if (!r || !r.ok) { err = (r && r.error) || "no answer"; if (SLACK_AUTH_ERR.test(err)) authErr = true; ok = false; break; }
+        pages = Math.min(20, Number(r.paging && r.paging.pages) || 1);
+        for (const f of r.files || []) {
+          if (!f || !f.id) continue;
+          newest = Math.max(newest, (Number(f.created) || 0) * 1000 + 1000);
+          const name = String(f.name || f.title || "file");
+          const img = SLACK_IMG_RE.test(name);
+          if (!SLACK_DOC_RE.test(name) && !img) continue;
+          if (f.is_external || f.mode === "external" || f.mode === "tombstone" || f.is_hidden_by_limit) continue; // nothing to download there
+          known.set(f.id, { id: f.id, name: name.slice(0, 160), size: Number(f.size) || 0, created: (Number(f.created) || 0) * 1000, url: f.url_private_download || f.url_private || "", permalink: f.permalink || "", user: String(f.user || ""), img });
+        }
+        page++;
+      } while (page <= pages);
+      if (authErr) break;
+      index[cid] = { at: Date.now(), since: ok ? newest : from, files: [...known.values()].sort((a, b) => b.created - a.created).slice(0, SLACK_INDEX_MAX) };
+    }
+  } finally { slackPolling = false; }
+  const count = Object.values(index).reduce((n, c) => n + ((c && c.files) || []).length, 0);
+  await chrome.storage.local.set({ slackIndex: index, slackPoll: { at: Date.now(), err: authErr ? "Slack signed out - open Slack in Chrome and press Reconnect" : err, authErr, listed: count } });
+  if (authErr && !poll.authErr) await notify("slack-auth", "Slack needs reconnecting", "Slack signed this browser out, so the briefs can't look in your Slack channels. Open Slack in Chrome, then Clients › Slack › Reconnect.", undefined, chrome.runtime.getURL("options.html#files")).catch(() => {});
+  return { ok: !authErr, listed: count, error: authErr ? "Slack signed out - open Slack in Chrome and press Reconnect" : err };
+}
+// What Slack has for one task: its client's channel(s), the files that fit it
+// (the task's code or words in the name; the newest audits) and the messages
+// that mention it (Slack's search: the code, else its key words). Nothing is
+// downloaded here - SLACK_FILE_GET fetches the ones the brief asks for.
+const SLACK_AUDITISH = /audit|technical|report|finding|analysis|strategy|plan|brief|onboard/i;
+function slackTaskWords(name) {
+  const stop = new Set(["with", "from", "that", "this", "your", "page", "pages", "site", "website", "make", "only", "then", "never", "add", "fix", "the", "and", "for", "into", "each", "all", "new", "update", "check", "remove", "change", "task", "tasks", "client"]);
+  return [...new Set(String(name || "").toLowerCase().replace(/[^a-z0-9\s-]+/g, " ").split(/[\s-]+/).filter((w) => w.length >= 4 && !stop.has(w) && !SLACK_GENERIC.has(w)))].slice(0, 8);
+}
+function slackPickFiles(files, taskName, max, hasAudit) {
+  const code = (String(taskName || "").match(/\b([A-Z]{2,6}-\d{1,4})/) || [])[1] || "";
+  const words = slackTaskWords(taskName);
+  const scored = (files || []).filter((f) => !f.img).map((f) => {
+    const n = f.name.toLowerCase();
+    let s = 0;
+    if (code && n.includes(code.toLowerCase())) s += 100;
+    for (const w of words) if (n.includes(w)) s += 10;
+    if (SLACK_AUDITISH.test(f.name)) s += 15;
+    return { f, s };
+  }).filter((x) => x.s > (hasAudit ? 15 : 0)).sort((a, b) => b.s - a.s || b.f.created - a.f.created);
+  return scored.slice(0, max || 3).map((x) => ({ ...x.f, why: x.s >= 100 ? "names the task" : x.s > 15 ? "matches the task" : "an audit / report" }));
+}
+async function slackTaskLookup(client, taskName, opts) {
+  opts = opts || {};
+  const g = await chrome.storage.local.get(["slackSession", "slackChannels", "slackIndex"]);
+  const s = g.slackSession, map = g.slackChannels || {};
+  if (!s) return { ok: false, reason: "not-connected" };
+  const ck = sKey(client);
+  const cids = Object.keys(map).filter((k) => map[k] && ck && sKey(map[k].client) === ck);
+  if (!cids.length) return { ok: false, reason: "no-channel" };
+  let idx = g.slackIndex || {};
+  if (cids.some((c) => !idx[c])) { await slackPoll(true).catch(() => {}); idx = (await chrome.storage.local.get("slackIndex")).slackIndex || {}; }
+  const all = [].concat(...cids.map((c) => ((idx[c] && idx[c].files) || []).map((f) => ({ ...f, channel: map[c].name || "", cid: c }))));
+  // An audit-like file only for the name's sake: when the client has no audit yet.
+  const files = slackPickFiles(all, taskName, opts.max || 3, !!opts.hasAudit);
+  let messages = [];
+  if (!opts.noSearch) {
+    const code = (String(taskName || "").match(/\b([A-Z]{2,6}-\d{1,4})/) || [])[1] || "";
+    const q = code || slackTaskWords(taskName).slice(0, 3).join(" ");
+    if (q) {
+      const where = cids.map((c) => "in:#" + (map[c].name || "")).filter((x) => x.length > 4).join(" ");
+      const r = await slackApi("search.messages", { query: q + " " + where, count: "8", sort: "timestamp" }, s).catch(() => null);
+      messages = ((r && r.ok && r.messages && r.messages.matches) || []).map((m) => ({ text: String(m.text || "").slice(0, 600), who: String(m.username || (m.user_profile && m.user_profile.display_name) || ""), at: Math.round(Number(m.ts) * 1000) || 0, link: m.permalink || "", channel: (m.channel && m.channel.name) || "" })).filter((m) => m.text);
+    }
+  }
+  return { ok: true, channels: cids.map((c) => map[c].name || ""), files, messages, known: all.filter((f) => !f.img).length };
+}
+// The copies an earlier version saved from Slack into client folders (when it
+// pulled every channel): named by it ("Slack screenshot 2026-10-13 1956 AB12C.png",
+// "<name> (2026-09-21).pdf") and remembered when saved (slackHashes). Listed for
+// Clients › Slack › Move to Recycle Bin, then moved there by the taskbar app
+// (0.4.1+: op trashFiles - recoverable, only directly in that client's folder).
+const SLACK_SHOT_NAME = /^Slack screenshot \d{4}-\d\d-\d\d \d{4} [A-Za-z0-9]{1,5}\.[a-z0-9]{2,5}$/i;
+const SLACK_DATED_NAME = /^.+ \(\d{4}-\d\d-\d\d\)\.[a-z0-9]{1,6}$/i;
+async function slackCopies() {
+  const g = await chrome.storage.local.get(["slackHashes", "slackChannels"]);
+  const hashes = g.slackHashes || {};
+  const names = {}; // client key -> display name
+  for (const v of Object.values(g.slackChannels || {})) if (v && v.client) names[sKey(v.client)] = v.client;
+  const out = [];
+  let desk = false;
+  for (const [ck, rec] of Object.entries(hashes)) {
+    const remembered = new Set(Object.values(rec || {}).map((n) => String(n)));
+    const client = names[ck] || ck;
+    const ls = await deskFiles({ op: "list", client }, 10000);
+    if (!ls || !ls.ok) continue;
+    desk = true;
+    const hits = (ls.files || []).filter((f) => f && f.rel && !/[\\/]/.test(f.rel) && (SLACK_SHOT_NAME.test(f.rel) || (SLACK_DATED_NAME.test(f.rel) && remembered.has(f.rel))));
+    if (hits.length) out.push({ client, names: hits.map((f) => ({ name: f.rel, size: Number(f.size) || 0 })) });
+  }
+  return { ok: true, desk, clients: out, total: out.reduce((n, c) => n + c.names.length, 0), bytes: out.reduce((n, c) => n + c.names.reduce((m, f) => m + f.size, 0), 0) };
+}
+async function slackTrashCopies(list) {
+  let moved = 0, failed = 0, needUpdate = false;
+  const g = await chrome.storage.local.get("slackHashes");
+  const hashes = { ...(g.slackHashes || {}) };
+  for (const c of Array.isArray(list) ? list : []) {
+    const want = (c.names || []).map((x) => String(x)).filter((n) => SLACK_SHOT_NAME.test(n) || SLACK_DATED_NAME.test(n));
+    if (!want.length) continue;
+    const r = await deskFiles({ op: "trashFiles", client: c.client, names: want }, 120000);
+    if (!r || !r.ok) { if (r && /update the ClickUp Tracker/i.test(r.error || "")) needUpdate = true; failed += want.length; continue; }
+    moved += (r.moved || []).length; failed += (r.failed || []).length;
+    // Gone: not "already there" for a later Slack download any more.
+    const ck = sKey(c.client), gone = new Set((r.moved || []).concat(r.missing || []));
+    if (hashes[ck]) hashes[ck] = Object.fromEntries(Object.entries(hashes[ck]).filter(([, n]) => !gone.has(n)));
+  }
+  await chrome.storage.local.set({ slackHashes: hashes });
+  return { ok: !needUpdate, moved, failed, needUpdate, error: needUpdate ? "Update the ClickUp Tracker app (0.4.1 or later) first - it does the moving." : "" };
+}
+async function slackFileGet(id) {
+  const g = await chrome.storage.local.get(["slackSession", "slackIndex"]);
+  const s = g.slackSession;
+  if (!s) return { ok: false, error: "Slack isn't connected." };
+  let f = null;
+  for (const c of Object.values(g.slackIndex || {})) { f = ((c && c.files) || []).find((x) => x.id === id); if (f) break; }
+  if (!f || !f.url) return { ok: false, error: "not in the list" };
+  if (f.size > 12 * 1048576) return { ok: false, error: "over 12 MB" };
+  const blob = await slackFetchFile(f.url, s);
+  return { ok: true, name: f.name, type: blob.type || "", created: f.created, b64: abToB64(await blob.arrayBuffer()) };
+}
+chrome.downloads.onChanged.addListener((delta) => {
+  if (delta && delta.state && delta.state.current === "complete") onSlackDownload(delta.id).catch(() => {});
+});
 // When OUR update zip finishes: show it in the folder + a "click to reload" notification.
 chrome.downloads.onChanged.addListener((delta) => {
   if (!delta || !delta.state || delta.state.current !== "complete") return;
@@ -8792,8 +9495,14 @@ chrome.alarms.onAlarm.addListener(async (alarm) => {
     if (!movesRunning) { const pm = await pendingMoves().catch(() => ({ items: [] })); if (pm.items.some((x) => x.status === "pending")) runPendingMoves().catch(() => {}); }
     // Backstop for reminder alarms (asleep / missed).
     await fireDueReminders();
+    await runScheduledAssigns().catch(() => {}); // people scheduled onto tasks ("+ Add someone" > ⏰)
+    await runScheduledComments().catch(() => {}); // comments scheduled for a time (▸ details > ⏰ Send at…)
+    await slackPoll(false).catch(() => {}); // Slack channels matched to clients: new documents, every 20 min
     await maybeCompanyHeadsUp().catch(() => {});
     await companyEventReminders().catch(() => {});
+    // Someone at the computer this minute (keyboard / mouse in the last minute):
+    // the hub calls below carry it, for the admin's "active now" dot.
+    try { if ((await chrome.idle.queryState(60)) === "active") await chrome.storage.local.set({ userActiveAt: Date.now() }); } catch (e) {}
     // Team hub: daily check-in, admin replies every 10 min (both no-ops when not set up).
     await hubHello().catch(() => {});
     await hubPollReplies().catch(() => {});
@@ -9080,9 +9789,12 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
           if (msg.op === "save") {
             const text = String(msg.text || "").trim().slice(0, 5000);
             if (!text) { sendResponse({ ok: false, error: "Write a comment first." }); break; }
+            // ⏰ Send at…: a time (at least 30 seconds ahead); without it, a plain "when I complete it" one.
+            const sendAt = Number(msg.sendAt) || 0;
+            if (sendAt && sendAt < Date.now() + 30000) { sendResponse({ ok: false, error: "Pick a time later than now." }); break; }
             await heldUpdate(taskId, (list) => {
               const i = list.findIndex((c) => c.id === msg.id);
-              const c = { id: msg.id || "h" + Date.now().toString(36), text, auto: !!msg.auto, at: Date.now() };
+              const c = { id: msg.id || "h" + Date.now().toString(36), text, auto: !!msg.auto, at: Date.now(), sendAt, taskName: String(msg.taskName || "").slice(0, 200), url: String(msg.url || ""), status: sendAt ? String(msg.status || "").trim().toLowerCase().slice(0, 60) : "", tries: 0, nextTry: 0, failed: 0, error: "" };
               if (i >= 0) list[i] = { ...list[i], ...c }; else list.push(c);
               return list;
             });
@@ -9094,7 +9806,8 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
             const cfg = await getClickupConfig();
             if (!cfg || !cfg.token) { sendResponse({ ok: false, error: "ClickUp isn't connected." }); break; }
             const one = (await heldList(taskId)).filter((c) => c.id === msg.id);
-            const data = await sendHeldComments(cfg, taskId, one);
+            const data = await sendHeldComments(cfg, taskId, one, true);
+            if (one.some((c) => c.status)) { clearFilterCache(); refreshClickup({ includeTasks: true }).catch(() => {}); }
             sendResponse({ ok: true, list: await heldList(taskId), data });
             break;
           }
@@ -10370,10 +11083,11 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         if (!String(d.name || "").trim()) { sendResponse({ ok: false, error: "The task needs a name." }); break; }
         try {
           const task = await createTask(cfg.token, listId, draftCreateFields(d, cfg));
+          const relErr = await relateDraft(cfg, d, task);
           openTasksCache = null;
           clearFilterCache();
           refreshClickup({ includeTasks: true, forceWeeks: true }).catch(() => {});
-          sendResponse({ ok: true, task });
+          sendResponse({ ok: true, task, relErr });
         } catch (e) {
           sendResponse({ ok: false, error: String(e && e.message ? e.message : e), status: e && e.status });
         }
@@ -10430,6 +11144,60 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
           clearFilterCache();
           refreshClickup({ includeTasks: true, forceWeeks: true }).catch(() => {});
           sendResponse({ ok: true, taskName: msg.taskId ? "" : ((st.extraTask && st.extraTask.name) || "the Extra task") });
+        } catch (e) {
+          sendResponse({ ok: false, error: String(e && e.message ? e.message : e) });
+        }
+        break;
+      }
+      case "ASG_SCHEDULE": {
+        // ⏰ next to a person in "+ Add someone": add them to the task at a set time.
+        const taskId = msg.taskId ? String(msg.taskId) : "", userId = msg.userId ? String(msg.userId) : "";
+        const at = Number(msg.at) || 0;
+        if (!taskId || !/^\d+$/.test(userId)) { sendResponse({ ok: false, error: "No task or person." }); break; }
+        if (!(at > Date.now() + 30000)) { sendResponse({ ok: false, error: "Pick a time later than now." }); break; }
+        const g = await chrome.storage.local.get(ASG_KEY);
+        const jobs = Array.isArray(g[ASG_KEY]) ? g[ASG_KEY] : [];
+        const job = { id: Date.now().toString(36) + Math.random().toString(36).slice(2, 6), taskId, taskName: String(msg.taskName || "").slice(0, 200), url: String(msg.url || ""), userId, name: String(msg.name || "").slice(0, 80), at };
+        // One per person and task: a new time replaces the earlier one.
+        await chrome.storage.local.set({ [ASG_KEY]: jobs.filter((j) => !(j && !j.done && !j.failed && j.taskId === taskId && j.userId === userId)).concat([job]).slice(-300) });
+        sendResponse({ ok: true, job });
+        break;
+      }
+      case "SLACK_CONNECT": { sendResponse(await slackConnect(msg.team).catch((e) => ({ ok: false, error: String(e && e.message || e) }))); break; }
+      case "SLACK_DISCONNECT": { await chrome.storage.local.remove(["slackSession"]); await chrome.storage.local.set({ slackPoll: { ...((await chrome.storage.local.get("slackPoll")).slackPoll || {}), authErr: false, err: "" } }); sendResponse({ ok: true }); break; }
+      case "SLACK_CHANNELS": { sendResponse(await slackChannelList().catch((e) => ({ ok: false, error: String(e && e.message || e) }))); break; }
+      case "SLACK_MAP_SET": {
+        // { [channelId]: { name, client } } - only the matched ones are kept.
+        const m = {};
+        for (const [k, v] of Object.entries(msg.map || {})) if (/^[CG][A-Z0-9]{6,}$/.test(k) && v && String(v.client || "").trim()) m[k] = { name: String(v.name || "").slice(0, 80), client: String(v.client).slice(0, 120) };
+        await chrome.storage.local.set({ slackChannels: m });
+        sendResponse({ ok: true, count: Object.keys(m).length });
+        break;
+      }
+      case "SLACK_TASK_LOOKUP": { sendResponse(await slackTaskLookup(msg.client, msg.name, msg.opts).catch((e) => ({ ok: false, error: String(e && e.message || e) }))); break; }
+      case "SLACK_FILE_GET": { sendResponse(await slackFileGet(String(msg.id || "")).catch((e) => ({ ok: false, error: String(e && e.message || e) }))); break; }
+      case "SLACK_COPIES": { sendResponse(await (msg.op === "trash" ? slackTrashCopies(msg.clients) : slackCopies()).catch((e) => ({ ok: false, error: String(e && e.message || e) }))); break; }
+      case "SLACK_POLL_NOW": { sendResponse(await slackPoll(true).catch((e) => ({ ok: false, error: String(e && e.message || e) }))); break; }
+      case "ASG_CANCEL": {
+        const g = await chrome.storage.local.get(ASG_KEY);
+        const jobs = Array.isArray(g[ASG_KEY]) ? g[ASG_KEY] : [];
+        await chrome.storage.local.set({ [ASG_KEY]: jobs.filter((j) => j && j.id !== msg.id) });
+        sendResponse({ ok: true });
+        break;
+      }
+      case "CLICKUP_ADD_ASSIGNEE": {
+        // "+ Add someone" in a task row's WHO list.
+        const cfg = await getClickupConfig();
+        if (!cfg || !cfg.token) { sendResponse({ ok: false, reason: "not-configured", error: "Connect ClickUp first." }); break; }
+        const taskId = msg.taskId ? String(msg.taskId) : "";
+        const userId = msg.userId ? String(msg.userId) : "";
+        if (!taskId || !/^\d+$/.test(userId)) { sendResponse({ ok: false, error: "No task or person." }); break; }
+        try {
+          await addTaskAssignee(cfg.token, taskId, userId);
+          const self = !!(cfg.userId && String(cfg.userId) === userId);
+          if (self) { clearFilterCache(); refreshClickup({ includeTasks: true, forceWeeks: true }).catch(() => {}); } // now yours: it joins your lists
+          else await addAssigneeEverywhere(taskId, { id: userId, username: String(msg.name || "") });
+          sendResponse({ ok: true, self });
         } catch (e) {
           sendResponse({ ok: false, error: String(e && e.message ? e.message : e) });
         }
@@ -11458,6 +12226,23 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         let r = await archiveWatch(!!msg.force).catch(() => null);
         if (!r) r = (await chrome.storage.local.get("cuArchived")).cuArchived || null;
         sendResponse({ ok: true, data: r });
+        break;
+      }
+      case "CLICKUP_WEEK_AT": {
+        // This week by day's ‹ / ›: a week's per-day breakdown (msg.offset weeks from this one).
+        sendResponse(await weekAtOffset(msg.offset, !!msg.force).catch((e) => ({ ok: false, error: String((e && e.message) || e) })));
+        break;
+      }
+      case "HOLD_CONTEXT": {
+        // task-panel.js's AI check: the task, its parent and the parent's other steps.
+        try {
+          const cfg = await getClickupConfig();
+          const st = (await getClickupState().catch(() => null)) || {};
+          if (!cfg || !cfg.token || st.rateLimitedUntil > Date.now()) { sendResponse({ ok: false, error: "ClickUp is busy - try again in a minute." }); break; }
+          const t = await getTaskHoldInfo(cfg.token, String(msg.id));
+          const p = t && t.parentId ? await getTaskHoldInfo(cfg.token, t.parentId, { subs: true }).catch(() => null) : null;
+          sendResponse({ ok: !!t, t, p, me: cfg.userId != null ? String(cfg.userId) : "" });
+        } catch (e) { sendResponse({ ok: false, error: String((e && e.message) || e) }); }
         break;
       }
       case "AR_STATUS": {
