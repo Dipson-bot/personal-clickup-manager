@@ -459,8 +459,47 @@ async function pickFolder(title, at) {
     return r.canceled || !r.filePaths[0] ? "" : r.filePaths[0];
   } finally { owner.destroy(); }
 }
+// PHP versions read through another Chrome profile (the extension's Site monitor ›
+// Read from WordPress): one copy of the extension leaves a list of sites (phpJob);
+// a copy in the profile signed in to the sites' WordPress, ticked as the helper,
+// picks it up when it knocks (phpTake, once a minute), reads each site's Site
+// Health with its own sign-in and hands back only the PHP versions (phpDone); the
+// first copy collects them (phpResults). In memory only; nothing is saved.
+let phpRelay = null, phpHelperAt = 0, phpHelperFrom = "";
+function phpRelayOp(m, op) {
+  const now = Date.now(), from = String(m.install || "").replace(/[^a-z0-9]/gi, "").slice(0, 40);
+  if (op === "phpStatus") return { ok: true, helperAt: phpHelperAt, helperIsYou: !!from && phpHelperFrom === from };
+  if (op === "phpJob") {
+    const urls = (Array.isArray(m.urls) ? m.urls : []).map(String).filter((u) => /^https?:\/\/[^\s]+$/.test(u)).slice(0, 100);
+    if (!urls.length) return { ok: false, error: "no sites" };
+    phpRelay = { id: now.toString(36), from, urls, at: now, takenAt: 0, results: {} };
+    return { ok: true, id: phpRelay.id };
+  }
+  if (op === "phpTake") {
+    phpHelperAt = now; phpHelperFrom = from;
+    if (!phpRelay || phpRelay.from === from || now - phpRelay.at > 3600000) return { ok: true, job: null };
+    if (phpRelay.takenAt && now - phpRelay.takenAt < 15 * 60000) return { ok: true, job: null }; // being read (a helper that stopped: taken again later)
+    phpRelay.takenAt = now;
+    return { ok: true, job: { id: phpRelay.id, urls: phpRelay.urls.filter((u) => !phpRelay.results[u]) } };
+  }
+  if (op === "phpDone") {
+    if (!phpRelay || phpRelay.id !== String(m.id || "")) return { ok: false };
+    for (const [u, r] of Object.entries(m.results || {})) {
+      if (!phpRelay.urls.includes(u) || !r || typeof r !== "object") continue;
+      phpRelay.results[u] = { ok: !!r.ok, php: String(r.php || "").replace(/[^0-9.]/g, "").slice(0, 12), error: String(r.error || "").slice(0, 120), reason: String(r.reason || "").slice(0, 20) };
+    }
+    phpRelay.takenAt = now;
+    return { ok: true };
+  }
+  if (op === "phpResults") {
+    if (!phpRelay || phpRelay.id !== String(m.id || "")) return { ok: true, gone: true };
+    return { ok: true, total: phpRelay.urls.length, takenAt: phpRelay.takenAt, results: phpRelay.results };
+  }
+  return { ok: false, error: "Unknown request - update the ClickUp Tracker app." };
+}
 async function filesOp(m) {
   const op = String(m.op || "");
+  if (op.startsWith("php")) return phpRelayOp(m, op);
   const links = clientLinks();
   if (op === "status") {
     const k = clientdirs.key(m.client);

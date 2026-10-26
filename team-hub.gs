@@ -33,7 +33,11 @@ const SHEETS = {
   Notices: ["id", "title", "text", "level", "createdAt", "until", "ended"],
   // Task reminders one teammate sends another (both on the same task); collected by the recipient's extension.
   Nudges: ["id", "toUser", "fromInstall", "fromUser", "fromName", "taskId", "taskName", "taskUrl", "text", "at", "deliveredAt"],
+  // Client instructions found in the clients' Slack channels by someone's extension
+  // ("hold off changes from Wednesday"...), so the whole team sees them.
+  ClientNotes: ["id", "client", "channel", "at", "text", "permalink", "fromMs", "untilMs", "kind", "summary", "important", "onsite", "ai", "byInstall", "byName", "addedAt"],
 };
+const CNOTES_KEEP_MS = 45 * 86400000;
 const NUDGES_PER_HOUR = 20; // per install
 const REACTIONS = ["👍", "❤️", "😂", "🎉", "😮", "🙏", "✅", "👀"];
 
@@ -138,6 +142,8 @@ function doPost(e) {
         case "deleteOwn": return out(deleteOwn(q));
         case "react": return out(react(q));
         case "notices": return out(notices());
+        case "cnotePost": return out(cnotePost(q));
+        case "cnotes": return out(cnotes(q));
         case "nudge": return out(nudge(q));
         case "nudges": return out(nudges(q));
       }
@@ -500,6 +506,46 @@ function nudges(q) {
   return { ok: true, nudges: list.map((n) => ({ id: String(n.id), fromName: String(n.fromName), taskId: String(n.taskId), taskName: String(n.taskName), taskUrl: String(n.taskUrl), text: String(n.text), at: Number(n.at) || 0 })) };
 }
 
+// ---------- client notices ----------
+// cnotePost { notes: JSON [{ id, client, ... }] }: added once per Slack message (id);
+// a later copy with the AI's reading (ai = when it was read) replaces the fields.
+function cnotePost(q) {
+  const install = cleanInstall(q);
+  const u = install ? findUser(install) : null;
+  if (!u || userState(u) !== "ok") return { ok: false, error: "not allowed" };
+  const list = js(String(q.notes || ""), []);
+  if (!Array.isArray(list)) return { ok: false, error: "bad notes" };
+  const rows = readAll("ClientNotes");
+  const str = (v, n) => { const s = String(v == null ? "" : v).slice(0, n); return /^[=+\-@]/.test(s) ? "'" + s : s; };
+  let added = 0;
+  for (const n of list.slice(0, 10)) {
+    const id = str(n && n.id, 60).replace(/[^A-Za-z0-9-]/g, "");
+    if (!id || !n.client) continue;
+    const row = rows.find((r) => String(r.id) === id);
+    const ai = Number(n.ai) || 0;
+    if (row && !(ai && ai > (Number(row.ai) || 0))) continue;
+    const o = row || { id, byInstall: install, byName: str(u.name, 80), addedAt: now() };
+    Object.assign(o, { client: str(n.client, 120), channel: str(n.channel, 20), at: Number(n.at) || 0, text: str(n.text, 1500),
+      permalink: /^https:\/\/[a-z0-9.-]+\.slack\.com\//.test(String(n.permalink || "")) ? str(n.permalink, 300) : "",
+      fromMs: Number(n.fromMs) || 0, untilMs: Number(n.untilMs) || 0, kind: str(n.kind, 40), summary: str(n.summary, 300),
+      important: n.important === "0" || n.important === "1" ? n.important : "", onsite: str(n.onsite, 900), ai });
+    writeRow("ClientNotes", o);
+    if (!row) { rows.push(o); added++; }
+  }
+  return { ok: true, added };
+}
+// cnotes: the last 45 days' notices (newest first, at most 60).
+function cnotes(q) {
+  const install = cleanInstall(q);
+  const u = install ? findUser(install) : null;
+  if (!u || userState(u) !== "ok") return { ok: false, error: "not allowed" };
+  const t = now();
+  const list = readAll("ClientNotes").filter((r) => t - (Number(r.at) || 0) < CNOTES_KEEP_MS || Number(r.untilMs || r.fromMs) > t)
+    .sort((a, b) => Number(b.at) - Number(a.at)).slice(0, 60)
+    .map((r) => ({ id: String(r.id), client: String(r.client), channel: String(r.channel), at: Number(r.at) || 0, text: String(r.text), permalink: String(r.permalink),
+      fromMs: Number(r.fromMs) || 0, untilMs: Number(r.untilMs) || 0, kind: String(r.kind), summary: String(r.summary), important: String(r.important), onsite: String(r.onsite), ai: Number(r.ai) || 0, byName: String(r.byName) }));
+  return { ok: true, notes: list };
+}
 // Admin: op "post" { title, text, level, until } or op "end" { id }.
 function notice(q) {
   if (q.op === "end") {

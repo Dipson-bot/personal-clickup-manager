@@ -68,6 +68,8 @@
   /* ---- end helpers ---- */
 
   let myClients = [];     // from my tasks
+  let myWhy = new Map();  // client key -> the task that put it on the list (shown on hover)
+  let hidden = [];        // client keys taken off the list by hand (settings.tfHidden)
   let allClients = [];    // whole workspace (loaded on demand)
   let added = [];         // clients the user added by hand (settings.tfAdded) - not assigned to them
   let files = [];         // every stored file
@@ -150,6 +152,7 @@
     .tf-addpop .msg a { color: var(--indigo, #6366f1); cursor: pointer; }
     #tfList .tf-unadd { border: 0; background: none; cursor: pointer; color: var(--muted); font-size: 12px; padding: 2px 5px; border-radius: 6px; }
     #tfList .tf-unadd:hover { color: var(--red, #dc2626); background: var(--bg2); }
+    .tf-unhide { border: 0; background: none; padding: 0; font: inherit; color: var(--indigo, #6366f1); cursor: pointer; text-decoration: underline; }
     #tfList .tf-pin { border: 0; background: none; cursor: pointer; font-size: 14px; line-height: 1; padding: 2px 4px; border-radius: 6px; filter: grayscale(1); opacity: .35; }
     #tfList .tf-pin:hover { opacity: .8; filter: none; }
     #tfList .tf-pin.on { opacity: 1; filter: none; }
@@ -196,16 +199,27 @@
   function mine() {
     return chrome.storage.local.get("clickupState").catch(() => ({})).then((g) => {
       const st = (g && g.clickupState) || {};
-      const names = new Map();
+      const names = new Map(), why = new Map();
+      const where = { tasks: "", deadlineTasks: " (a deadline)", trackedTasks: " (you tracked time on it)" };
       for (const b of [st, st.todayFilter, st.thisWeek, st.nextWeek]) {
         if (!b) continue;
         for (const k of ["tasks", "deadlineTasks", "trackedTasks"]) for (const t of b[k] || []) {
           const c = String((t && (t.client || (t.container && t.container.listName))) || "").trim();
-          if (c && !/extra tasks?|daily tracking/i.test(c)) names.set(F.key(c), c);
+          if (!c || /extra tasks?|daily tracking/i.test(c)) continue;
+          names.set(F.key(c), c);
+          if (!why.has(F.key(c)) || (k === "tasks" && /tracked|deadline/.test(why.get(F.key(c))))) why.set(F.key(c), "\u201C" + String(t.name || "a task").slice(0, 90) + "\u201D" + where[k]);
         }
       }
+      myWhy = why;
       return [...names.values()];
     });
+  }
+  async function readHidden() {
+    try {
+      const g = await chrome.storage.local.get("settings");
+      const h = g && g.settings && g.settings.tfHidden;
+      return Array.isArray(h) ? h.filter((x) => typeof x === "string" && x) : [];
+    } catch (e) { return []; }
   }
 
   async function readPins() {
@@ -472,6 +486,7 @@
     myClients = await mine();
     pinned = await readPins();
     added = await readAdded();
+    hidden = await readHidden();
     render();
     paintSlack().catch(() => {});
   }
@@ -483,6 +498,7 @@
     for (const c of added) if (!byKey.has(F.key(c))) byKey.set(F.key(c), c); // added by hand
     for (const f of files) if (!byKey.has(f.ck)) byKey.set(f.ck, f.client); // clients with files always show
     for (const k of Object.keys(notes)) if (!byKey.has(k) && (notes[k] || []).length) byKey.set(k, notes[k][0].client || k); // and clients with notes
+    if (!$("tfAll").checked) for (const k of hidden) byKey.delete(k); // hidden by hand (All workspace clients still shows them)
     const q = $("tfSearch").value.trim().toLowerCase().replace(/[^a-z0-9]+/g, "");
     return sortClients([...byKey.entries()].filter(([k]) => !q || k.includes(q)), pinned);
   }
@@ -555,6 +571,13 @@
       ? rows.filter(([k]) => withFiles.has(k) || inFolder(k)).length + " of " + rows.length + " clients have files · " +
         (deskOk ? folderTotal + " in client folders" + (files.length ? " + " + files.length + " saved in the extension" : "") : files.length + " file" + (files.length === 1 ? "" : "s") + " in total")
       : "";
+    if (hidden.length && !$("tfAll").checked) {
+      const sh = document.createElement("button");
+      sh.type = "button"; sh.className = "tf-unhide"; sh.textContent = "Show hidden (" + hidden.length + ")";
+      sh.title = "Put the clients you hid back on your list";
+      sh.onclick = () => { hidden = []; send({ type: "SET_SETTINGS", patch: { tfHidden: [] } }); say("Hidden clients are back on your list."); render(); };
+      $("tfSummary").append(rows.length ? " \u00b7 " : "", sh);
+    }
     if (deskOk) setTimeout(() => loadAllFolders(rows), 0);
     if (!rows.length) {
       list.innerHTML = '<div class="hint" style="padding:14px;">' + ($("tfSearch").value ? "No client matches that search." : "No clients found yet. Open the dashboard once so your tasks load, or tick “All workspace clients”.") + "</div>";
@@ -612,11 +635,12 @@
       }
       return '<div class="tf-client' + (isOpen ? " open" : "") + (isPin ? " pinned" : "") + (fs.length || all.length || inFolder(k) ? "" : " empty") + '" data-ck="' + esc(k) + '" data-name="' + esc(name) + '">' +
         '<div class="tf-head"><button type="button" class="tf-tog" aria-expanded="' + isOpen + '">' + (isOpen ? "▾" : "▸") + "</button>" +
-        '<span class="tf-name">' + esc(name) + "</span>" +
+        '<span class="tf-name"' + (myWhy.has(k) ? ' title="' + esc("On your list because of your task " + myWhy.get(k)) + '"' : "") + ">" + esc(name) + "</span>" +
         '<span class="tf-count">' + count + "</span>" +
         '<button type="button" class="tf-pin' + (isPin ? " on" : "") + '" aria-pressed="' + isPin + '" title="' + (isPin ? "Unpin " + esc(name) : "Pin " + esc(name) + " to the top of the list") + '">📌</button>' +
         '<button type="button" class="tf-btn tf-add">+ Add files</button>' +
-        (added.some((c) => F.key(c) === k) && !myClients.some((c) => F.key(c) === k) ? '<button type="button" class="tf-unadd" title="Take ' + esc(name) + ' off your list (its files and notes are kept, and keep it in the list while it has any)">✕</button>' : "") +
+        (added.some((c) => F.key(c) === k) && !myClients.some((c) => F.key(c) === k) ? '<button type="button" class="tf-unadd" title="Take ' + esc(name) + ' off your list (its files and notes are kept, and keep it in the list while it has any)">✕</button>'
+          : '<button type="button" class="tf-unadd tf-hide" title="Hide ' + esc(name) + ' from your list - its files and notes are kept. Show hidden (above the list) brings it back.">✕</button>') +
         "</div>" + body + "</div>";
     }).join("");
     if (focusNid) {
@@ -926,6 +950,14 @@
     if (e.target.closest(".tf-add")) { e.stopPropagation(); pickFor = { ck, name }; picker.click(); return; }
     // Before the .tf-head branch below: the pin sits in the header, and a click
     // on it must not also open or shut the client.
+    if (e.target.closest(".tf-hide")) {
+      e.stopPropagation();
+      if (!hidden.includes(ck)) hidden = hidden.concat(ck).slice(-200);
+      send({ type: "SET_SETTINGS", patch: { tfHidden: hidden } });
+      say(name + " is hidden from your list (its files and notes are kept). Show hidden brings it back.");
+      render();
+      return;
+    }
     if (e.target.closest(".tf-unadd")) {
       e.stopPropagation();
       added = added.filter((c) => F.key(c) !== ck);
@@ -1301,4 +1333,12 @@
   new MutationObserver(maybeLoad).observe(panel, { attributes: true, attributeFilter: ["class"] });
   maybeLoad();
   chrome.storage.onChanged.addListener((ch, area) => { if (area === "local" && (ch.taskFilesChangedAt || ch.clientNotes) && loaded) load(); });
+  // "My clients" as the Clients tab lists them (from my tasks, plus ones added by
+  // hand, minus ones hidden) - Site monitor reads only these sites' WordPress.
+  window.PcmMyClients = async () => {
+    const [m, a, h] = await Promise.all([mine(), readAdded(), readHidden()]);
+    const out = new Map();
+    for (const c of m.concat(a)) if (!h.includes(F.key(c))) out.set(F.key(c), c);
+    return [...out.values()];
+  };
 })();

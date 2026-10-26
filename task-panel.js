@@ -1933,8 +1933,17 @@
     // Its own subtasks keep it from closing - this used to be a chip in its own
     // column ("\u23F3 Subtasks to Nov 6"), which took that width on every row.
     const sb = w && w.selfBlock;
-    if (sb && sb.parentOverdue) out.push({ k: "subs", text: "Its own subtasks: " + (sb.open || "some") + " still open, and the task is past its due date" });
-    else if (sb && sb.later) out.push({ k: "subs", text: "Its own subtasks run " + (sb.latestDueMs ? "until " + fmtDay(sb.latestDueMs) : "past its due date") + ", after its own due date: " + sb.later + " of " + (sb.open || sb.later) + " open subtask" + ((sb.open || sb.later) === 1 ? "" : "s") + " due later - it can't be closed before them" });
+    // Its own subtasks keep it from being completed: which ones are open and with
+    // whom (the first is linked, like the other warnings). Worse when it's already
+    // past due, or they run past its due date.
+    if (sb && sb.open) {
+      const pd = Array.isArray(sb.pending) ? sb.pending : [];
+      const list = pd.map((x) => "\u201C" + x.name + "\u201D" + (x.who ? " (" + x.who + ")" : "")).join(", ") + (sb.open > pd.length && pd.length ? " + " + (sb.open - pd.length) + " more" : "");
+      const head = sb.parentOverdue ? "Past its due date with its own subtasks still open: " + sb.open + (sb.total ? " of " + sb.total : "")
+        : sb.later ? "Its own subtasks run " + (sb.latestDueMs ? "until " + fmtDay(sb.latestDueMs) : "past its due date") + ", after its own due date - it can't be completed before them: " + sb.open + (sb.total ? " of " + sb.total : "") + " open"
+        : "Can't be completed yet - " + (sb.total && sb.total !== sb.open ? sb.open + " of its " + sb.total + " subtasks are" : sb.open === 1 ? "its subtask is" : "its " + sb.open + " subtasks are") + " still open";
+      out.push({ k: "subs", ref: pd[0] ? { id: String(pd[0].id || ""), name: pd[0].name, url: pd[0].url || "" } : null, text: head + (list ? ": " + list : "") });
+    }
     const sig = out.map((x) => x.text).join("|");
     return sig && warnOff[id] === sig ? [] : out;
   }

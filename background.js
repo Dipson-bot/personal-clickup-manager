@@ -1004,6 +1004,30 @@ async function checkOneSite(url, timeoutMs = SITE_MONITOR_CHECK_TIMEOUT_MS, plai
   }
 }
 
+// The PHP version a site's server states in its reply headers ("X-Powered-By:
+// PHP/8.1.27", or in "Server"), noted during the normal check - no extra request.
+// "" when it doesn't say (many hosts hide it). Saved per site (storage sitePhp)
+// for Site monitor's PHP2Shell line (options.js).
+const sitePhpSeen = new Map();
+function phpFromHeaders(res, html) {
+  const xp = String((res && res.headers && res.headers.get("x-powered-by")) || "");
+  const sv = String((res && res.headers && res.headers.get("server")) || "");
+  const m = (xp + " " + sv).match(/PHP\/(\d+\.\d+(?:\.\d+)?)/i);
+  return { php: m ? m[1] : "", powered: xp.slice(0, 80), server: sv.slice(0, 80), platform: sitePlatform(res, html) };
+}
+// What the site is built on, from the page the check already read: a hosted
+// builder (Wix, Shopify, Squarespace, Webflow) runs no PHP of the site's own, so
+// PHP2Shell doesn't apply; "WordPress" when the page is one. "" when unsure.
+function sitePlatform(res, html) {
+  const h = (k) => String((res && res.headers && res.headers.get(k)) || "");
+  const p = String(html || "").slice(0, 300000);
+  if (h("x-wix-request-id") || /pepyaka/i.test(h("server")) || /content="Wix\.com Website Builder"|static\.wixstatic\.com/i.test(p)) return "Wix";
+  if (h("x-shopify-stage") || h("x-shopid") || /cdn\.shopify\.com|Shopify\.theme/i.test(p)) return "Shopify";
+  if (/squarespace/i.test(h("server")) || /static1\.squarespace\.com|<!-- This is Squarespace/i.test(p)) return "Squarespace";
+  if (/content="Webflow"|website-files\.com|data-wf-site=/i.test(p)) return "Webflow";
+  if (/\/wp-content\/|\/wp-includes\/|content="WordPress/i.test(p)) return "WordPress";
+  return "";
+}
 // The readable version of the check (one GET, same as the plain one). Returns
 // null when the page couldn't be read (so the caller falls back), never a false
 // "down" for a read problem; a real outage (no reply / timeout) is still down.
@@ -1024,6 +1048,7 @@ async function readOneSite(url, timeoutMs, confirming = false) {
   }
   try {
     const html = await res.text();
+    try { sitePhpSeen.set(url, phpFromHeaders(res, html)); } catch (e) {}
     clearTimeout(timer);
     const ms = Date.now() - t0;
     // A Cloudflare "checking your browser" page isn't an outage.
@@ -1166,6 +1191,26 @@ function siteDecide(prevIn, result, o) {
 // user's own connection can't mark a site down. opts.url limits it to one site.
 const sleepMs = (ms) => new Promise((r) => setTimeout(r, ms));
 
+// The clients the Clients tab lists - from my tasks (Today, This week, Next week,
+// tracked), plus ones added by hand, minus ones hidden (task-files.js mine()).
+async function smMyClientKeys() {
+  const g = await chrome.storage.local.get(["clickupState", "settings"]);
+  const st = g.clickupState || {}, set = g.settings || {};
+  const k = (n) => String(n || "").toLowerCase().replace(/[^a-z0-9]+/g, "");
+  const keys = new Set();
+  for (const b of [st, st.todayFilter, st.thisWeek, st.nextWeek]) if (b) for (const f of ["tasks", "deadlineTasks", "trackedTasks"]) for (const t of b[f] || []) {
+    const c = String((t && (t.client || (t.container && t.container.listName))) || "").trim();
+    if (c && !/extra tasks?|daily tracking/i.test(c)) keys.add(k(c));
+  }
+  for (const c of Array.isArray(set.tfAdded) ? set.tfAdded : []) keys.add(k(c));
+  for (const h of Array.isArray(set.tfHidden) ? set.tfHidden : []) keys.delete(h);
+  return [...keys].filter((x) => x.length >= 3);
+}
+// The same rule as the page (options.js smNameMatch): equal, or one starts with the other when both have 4+ letters.
+function smSiteIsMine(s, keys) {
+  const b = String((s && s.name) || "").toLowerCase().replace(/[^a-z0-9]+/g, "");
+  return b.length >= 3 && keys.some((a) => a.length >= 3 && (a === b || (a.length >= 4 && b.length >= 4 && (a.startsWith(b) || b.startsWith(a)))));
+}
 async function checkSitesImpl(opts = {}) {
   const cfg = await getSiteMonitorConfig();
   if (!cfg || !Array.isArray(cfg.sites) || cfg.sites.length === 0) return { checked: 0 };
@@ -1185,7 +1230,10 @@ async function checkSitesImpl(opts = {}) {
   const siteOff = (await chrome.storage.local.get("siteOff")).siteOff || {};
   for (const s of cfg.sites) if (s && s.url && siteOff[s.url]) state[s.url] = { ...(state[s.url] || { up: null, fails: 0, lastCheck: 0 }), off: true };
   for (const s of cfg.sites) if (s && s.url && !siteOff[s.url] && state[s.url] && state[s.url].off) { const { off, ...rest } = state[s.url]; state[s.url] = rest; }
-  const sites = cfg.sites.filter((s) => s && s.url && (!opts.url || s.url === opts.url) && !isPausedSite(s) && !siteOff[s.url]);
+  // Site monitor › Only my clients: the other sites aren't checked (a single site's own Check still is).
+  const mine = !opts.url && (await chrome.storage.local.get("smMineOnly")).smMineOnly ? await smMyClientKeys().catch(() => []) : [];
+  const anyMine = mine.length && cfg.sites.some((s) => smSiteIsMine(s, mine));
+  const sites = cfg.sites.filter((s) => s && s.url && (!opts.url || s.url === opts.url) && !isPausedSite(s) && !siteOff[s.url] && (!anyMine || smSiteIsMine(s, mine)));
   // Site monitor shows "Checking now…" on these until each one's own result is in
   // (startSiteCheck clears it when the run ends, however it ends).
   try { await chrome.storage.local.set({ siteMonitorChecking: { startedAt: now, urls: sites.map((s) => s.url) } }); } catch (e) {}
@@ -1253,6 +1301,23 @@ async function checkSitesImpl(opts = {}) {
   // 1) One check per site (30s timeout), a few sites at a time.
   const first = await mapLimit(sites, SITE_MONITOR_PARALLEL, (s) => checkOneSite(s.url));
   sites.forEach((s, i) => results.set(s.url, first[i]));
+  // The PHP versions the sites just stated (Site monitor › PHP2Shell): kept per site.
+  try {
+    const sp = (await chrome.storage.local.get("sitePhp")).sitePhp || {};
+    let n = 0;
+    for (const s of sites) {
+      const h = sitePhpSeen.get(s.url);
+      if (!h) continue;
+      sitePhpSeen.delete(s.url);
+      const prev = sp[s.url];
+      if (prev && prev.src) { // from the team sheet / WordPress itself: more reliable than a header (a CDN can say another PHP)
+        if (h.platform && prev.platform !== h.platform) { sp[s.url] = { ...prev, platform: h.platform }; n++; }
+        continue;
+      }
+      sp[s.url] = { ...(prev || {}), ...h, at: Date.now() }; n++; // keeps a failed WordPress read's reason
+    }
+    if (n) await chrome.storage.local.set({ sitePhp: sp });
+  } catch (e) {}
   let failed = sites.filter((s) => !res(s).ok);
   // Sites that answered are settled: decide and save them now, before the waits.
   await decide(sites.filter((s) => res(s).ok));
@@ -5166,6 +5231,7 @@ async function refreshWaitingInfo() {
     // Candidate parents: my top-level, not-done rows in every bundle the UI shows.
     const ids = new Set();
     const parentDue = {}; // parentId -> its own due date (ms), for the selfBlock pass below
+    const parentName = {}; // parentId -> its name (a schedule / plan "container" isn't flagged)
     const collect = (arr) => {
       for (const t of Array.isArray(arr) ? arr : []) {
         const id = t && (t.id != null ? t.id : t.taskId);
@@ -5174,6 +5240,7 @@ async function refreshWaitingInfo() {
           ids.add(key);
           const d = Number(t.dueDateMs) || 0;
           if (d && !parentDue[key]) parentDue[key] = d;
+          if (!parentName[key]) parentName[key] = String(t.name || "");
         }
       }
     };
@@ -5225,22 +5292,25 @@ async function refreshWaitingInfo() {
         })),
       };
     }
-    // Idea A - "sub-blocked": a parent that cannot realistically be closed because
-    // its OWN subtasks are still open and run PAST the parent's due date (e.g. a
-    // task due today whose subtasks are due weeks out). Independent of assignee, so
-    // it complements the person-based "waiting on others" above. Same cache, no fetch.
+    // Its OWN open subtasks: a parent can't be completed while they're open (a
+    // dependency in all but name), whoever they're with. later / parentOverdue mark
+    // the worse cases (subtasks due after it, or it's already past due); pending says
+    // which ones. A schedule / plan "container" (a month's list, 6+ unnumbered
+    // subtasks) isn't flagged: it's closed when its separate tasks are, by design.
+    // Same cache, no fetch.
     for (const id of ids) {
       const c = cache[id];
       if (!c || !c.subs || !c.subs.length) continue;
+      if (holdContainer({ name: parentName[id] || "", subs: c.subs })) continue;
       const pDue = parentDue[id] || 0;
       const open = c.subs.filter((x) => !x.done);
       if (!open.length) continue;
       const later = pDue ? open.filter((x) => x.due && x.due > pDue) : [];
       const parentOverdue = !!pDue && pDue < todayStart;
-      if (!later.length && !(parentOverdue && open.length)) continue;
       const latestDueMs = open.reduce((m, x) => (x.due && x.due > m ? x.due : m), 0) || null;
+      const pending = open.slice(0, 4).map((x) => ({ id: x.id, name: String(x.name || "(subtask)").slice(0, 90), url: x.url, who: x.who.some((a) => a.id === me) ? "you" : ((x.who[0] && x.who[0].name) || ""), due: x.due || null }));
       const entry = waiting[id] || {};
-      entry.selfBlock = { open: open.length, later: later.length, latestDueMs, parentOverdue };
+      entry.selfBlock = { open: open.length, total: c.subs.length, later: later.length, latestDueMs, parentOverdue, pending };
       waiting[id] = entry;
     }
     const st2 = await getClickupState();
@@ -7861,6 +7931,7 @@ async function hubPollNotices(force) {
   if (!(await hubUrl())) return;
   await chrome.storage.local.set({ hubNoticesAt: Date.now() });
   const r = await hubCall("notices", {});
+  await hubPollClientNotes().catch(() => {}); // client notices teammates' Slack found
   if (!r || !r.ok || !Array.isArray(r.notices)) return; // an older hub script has no notices yet
   await setHubNotices(r.notices, hubNoticesSeen);
 }
@@ -8836,6 +8907,400 @@ async function slackChannelList() {
   const suggest = slackSuggest(names, out);
   return { ok: true, channels: out, clients: names.sort((a, b) => a.localeCompare(b)), suggest };
 }
+// ---------- Client notices (from the clients' Slack channels) ----------
+// A client's instruction posted in its matched Slack channel ("hold off any
+// changes from Wednesday", "focus on backlinks", a launch date...). Read with the
+// 20-minute Slack check: text only, new top-level messages only (the first look
+// goes back 3 days). A message that reads like an instruction - by its shape (a
+// pasted client message, @channel, people tagged, a date) and its words - is
+// kept, shown once as a notification and shared through the team hub, so
+// teammates without Slack connected see it too. The pages (client-notices.js)
+// show the Dashboard card and the ⚠ pills on that client's tasks, and Chrome's
+// built-in AI (where there is one) adds a one-line summary, the dates and which
+// tasks change the site. Nothing changes in ClickUp unless someone clicks.
+// storage clientNotices { at, list: [{ id, client, channel, ts, at, text, permalink, by, fromMs, untilMs, score, kind, summary, important, onsite, ai, src }] }
+//         cnoteSince { [channelId]: oldest ts read next }, cnoteSeen { [id]: at } (notified once)
+const CNOTE_MAX = 60;
+const CNOTE_KEEP_MS = 45 * 86400000;
+const CNOTE_FIRST_MS = 3 * 86400000;
+const CNOTE_MIN_SCORE = 6;
+let cnoteRefreshAt = 0;
+const CNOTE_DAYS = ["sunday", "monday", "tuesday", "wednesday", "thursday", "friday", "saturday"];
+const CNOTE_MONTHS = ["jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec"];
+// Slack's markup as people read it.
+function cnotePlain(s, names) {
+  return String(s || "")
+    .replace(/<!(channel|here|everyone)[^>]*>/g, "@$1")
+    .replace(/<@([UW][A-Z0-9]+)(?:\|([^>]+))?>/g, (m, id, n) => (n || (names && names[id]) ? "@" + (n || names[id]) : ""))
+    .replace(/^[ \t]+/gm, "")
+    .replace(/<#C[A-Z0-9]+\|([^>]*)>/g, "#$1")
+    .replace(/<(https?:[^|>]+)\|([^>]+)>/g, "$2")
+    .replace(/<(https?:[^>]+)>/g, "$1")
+    .replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&amp;/g, "&")
+    .replace(/[ \t]+\n/g, "\n").replace(/\n{3,}/g, "\n\n").trim();
+}
+// The dates a message names, counted from when it was posted: today, tomorrow,
+// a weekday (the next one after that day), or a month and day ("Oct 28",
+// "28th October"). The first one is when it starts; one after until / till /
+// through is when it ends. { fromMs, untilMs } - start of day, 0 when none.
+function cnoteDates(text, postedMs) {
+  const low = String(text || "").toLowerCase();
+  const base = new Date(Number(postedMs) || Date.now());
+  base.setHours(0, 0, 0, 0);
+  const hits = [];
+  const add = (idx, d) => { d.setHours(0, 0, 0, 0); hits.push({ idx, ms: d.getTime() }); };
+  let m;
+  const rel = /\b(today|tonight|tomorrow)\b/g;
+  while ((m = rel.exec(low))) { const d = new Date(base); if (m[1] === "tomorrow") d.setDate(d.getDate() + 1); add(m.index, d); }
+  // Full names, plus the short forms that aren't everyday words ("sat", "sun" are).
+  const wd = /\b(sunday|monday|tuesday|wednesday|thursday|friday|saturday|tues?|wed|thu(?:rs?)?|fri)\b/g;
+  while ((m = wd.exec(low))) {
+    const i = CNOTE_DAYS.findIndex((n) => n.startsWith(m[1].slice(0, 3)));
+    if (i < 0) continue;
+    const d = new Date(base);
+    let diff = (i - d.getDay() + 7) % 7;
+    if (diff === 0) diff = 7;
+    d.setDate(d.getDate() + diff);
+    add(m.index, d);
+  }
+  const mon = "(jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|june?|july?|aug(?:ust)?|sept?(?:ember)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)\\.?(?![a-z])";
+  const md = new RegExp("\\b" + mon + "\\s+(\\d{1,2})(?:st|nd|rd|th)?\\b|\\b(\\d{1,2})(?:st|nd|rd|th)?\\s+(?:of\\s+)?" + mon, "g");
+  while ((m = md.exec(low))) {
+    const mi = CNOTE_MONTHS.indexOf((m[1] || m[4]).slice(0, 3));
+    const day = Number(m[2] || m[3]);
+    if (mi < 0 || !(day >= 1 && day <= 31)) continue;
+    if (m[1] === "may" && String(text || "").slice(m.index, m.index + 3) === "may") continue; // "the client may 5 times..." (lower case) isn't May 5
+    const d = new Date(base.getFullYear(), mi, day);
+    if (d.getTime() < base.getTime() - 60 * 86400000) d.setFullYear(d.getFullYear() + 1);
+    add(m.index, d);
+  }
+  hits.sort((a, b) => a.idx - b.idx);
+  let fromMs = 0, untilMs = 0;
+  for (const h of hits) {
+    const before = low.slice(Math.max(0, h.idx - 14), h.idx);
+    if (/\b(until|till|til|through|thru|to)\s+(?:next\s+|this\s+|the\s+)?$/.test(before) && fromMs) { if (!untilMs) untilMs = h.ms; }
+    else if (!fromMs) fromMs = h.ms;
+  }
+  if (untilMs && untilMs < fromMs) untilMs = 0;
+  return { fromMs, untilMs };
+}
+// How much a message reads like a client instruction (CNOTE_MIN_SCORE and up is
+// kept). Its shape counts most - a pasted client message, everyone or several
+// people tagged, a date - plus words that ask for something to start, stop or
+// change. The AI (in the pages) then drops the ones that aren't.
+function cnoteScore(raw, postedMs) {
+  const t = String(raw || "");
+  const low = cnotePlain(t).toLowerCase();
+  let s = 0;
+  if (/client(?:'s)?\s+(?:message|said|says|wrote|email|request|update|feedback)|(?:message|email|note)\s+from\s+(?:the\s+)?client|from the client|^\s*(?:>|&gt;)/im.test(t)) s += 3;
+  if (/<!(channel|here|everyone)/.test(t)) s += 2;
+  s += Math.min(2, (t.match(/<@[UW][A-Z0-9]+/g) || []).length);
+  if (cnoteDates(t, postedMs).fromMs) s += 2;
+  const words = low.match(/\b(hold off|on hold|hold|pause\w*|stop\w*|don'?t|do not|no (?:more )?changes|freeze|until further notice|focus\w* on|priorit\w*|instead|deadline|launch\w*|go(?:ing)? live|migrat\w*|redesign\w*|rebuild\w*|new (?:website|site|developer|agency|host\w*|domain)|cancel\w*|postpone\w*|urgent\w*|asap|must|approv\w*|access|budget)\b/g) || [];
+  s += Math.min(3, new Set(words).size);
+  if (low.length < 60) s -= 3;
+  return s;
+}
+const cnoteId = (cid, ts) => String(cid) + "-" + String(ts).replace(/[^0-9]/g, "");
+// What a notice says in a line (the notification, the banner): the AI's summary,
+// else the client's own words - the part after "Client message:" when the
+// message quotes one - without the @tags, the greeting and Slack's *bold*.
+function cnoteBrief(n) {
+  if (n && n.summary) return String(n.summary);
+  let t = String((n && n.text) || "");
+  const m = t.match(/client(?:'s)?\s+(?:message|email|said|says|wrote|request)\s*\**\s*:\s*\**([\s\S]+)/i);
+  if (m) t = m[1];
+  return t.replace(/@(channel|here|everyone|someone)\b/g, "").replace(/[*_~]/g, "").replace(/^\s*(hi|hello|hey|dear)\b[^\n]*\n/i, "").replace(/\s+/g, " ").trim();
+}
+// Is this client one I have open tasks for (assigned to me)? Only then a notice
+// pops up for me. null when ClickUp isn't connected.
+const cnoteKey = (s) => String(s || "").toLowerCase().replace(/[^a-z0-9]+/g, "");
+async function cnoteMyClientKeys() {
+  const tasks = await cnoteTasks().catch(() => null);
+  if (!tasks) return null;
+  const keys = new Set();
+  for (const t of tasks) for (const c of [t.client, t.container && t.container.listName]) if (c) keys.add(cnoteKey(c));
+  return [...keys];
+}
+// My open tasks for the notices (who gets one, the card's task list): one copy
+// kept 15 minutes in session storage (cleared when Chrome closes), so opening the
+// popup again and again doesn't ask ClickUp each time.
+const CNOTE_TASKS_MS = 15 * 60000;
+async function cnoteTasks(force) {
+  const area = chrome.storage.session || chrome.storage.local;
+  const { cnoteTasksCache: c } = await area.get("cnoteTasksCache").catch(() => ({}));
+  if (!force && c && Array.isArray(c.tasks) && Date.now() - (Number(c.at) || 0) < CNOTE_TASKS_MS) return c.tasks;
+  const cfg = await getClickupConfig().catch(() => null);
+  if (!cfg || !cfg.token || !cfg.teamId || cfg.userId == null) return null;
+  const r = await getOpenTasks(cfg, false).catch(() => null);
+  if (!r || !r.ok || !r.data) return c && Array.isArray(c.tasks) ? c.tasks : null;
+  const tasks = (r.data.tasks || []).map((t) => ({ id: t.id, name: t.name, url: t.url, dueDateMs: t.dueDateMs, client: t.client, container: t.container ? { listName: t.container.listName } : null, done: false }));
+  await area.set({ cnoteTasksCache: { at: Date.now(), tasks } }).catch(() => {});
+  return tasks;
+}
+function cnoteIsMine(client, keys) {
+  const k = cnoteKey(client);
+  return !!keys && k.length >= 3 && keys.some((x) => x === k || (x.length >= 4 && k.length >= 4 && (x.startsWith(k) || k.startsWith(x))));
+}
+// Slack people's names for the @tags (asked once each, kept).
+async function cnoteNames(ids, s) {
+  const { slackUserNames } = await chrome.storage.local.get("slackUserNames");
+  const names = { ...(slackUserNames || {}) };
+  let asked = 0;
+  for (const id of ids) {
+    if (names[id] || asked >= 15) continue;
+    asked++;
+    const r = await slackApi("users.info", { user: id }, s).catch(() => null);
+    const u = r && r.ok && r.user;
+    if (u) names[id] = String((u.profile && (u.profile.display_name || u.profile.real_name)) || u.real_name || u.name || "").slice(0, 60) || "someone";
+  }
+  if (asked) await chrome.storage.local.set({ slackUserNames: names });
+  return names;
+}
+function cnoteFromMessage(m, cid, client, s) {
+  if (!m || !m.ts || m.bot_id || (m.subtype && m.subtype !== "thread_broadcast")) return null;
+  const att = (Array.isArray(m.attachments) ? m.attachments : []).filter((a) => a && (!a.from_url || a.is_msg_unfurl || a.is_share)).map((a) => [a.pretext, a.title, a.text].filter(Boolean).join("\n"));
+  const raw = [m.text || ""].concat(att).join("\n").trim();
+  const posted = Math.round(Number(m.ts) * 1000);
+  const score = cnoteScore(raw, posted);
+  if (score < CNOTE_MIN_SCORE) return null;
+  const d = cnoteDates(raw, posted);
+  return {
+    id: cnoteId(cid, m.ts), client: String(client).slice(0, 120), channel: cid, ts: String(m.ts), at: posted,
+    raw, text: cnotePlain(raw).slice(0, 1500), permalink: "https://" + (s.domain || "slack.com") + "/archives/" + cid + "/p" + String(m.ts).replace(".", ""),
+    fromMs: d.fromMs, untilMs: d.untilMs, score, kind: "", summary: "", important: null, onsite: [], ai: false, src: "slack",
+  };
+}
+// Merge notices into storage (newest first, kept CNOTE_KEEP_MS). A copy with the
+// AI's reading wins over one without; the dates the AI read win over the guess.
+async function cnoteMerge(items) {
+  const g = await chrome.storage.local.get("clientNotices");
+  const by = new Map(((g.clientNotices && g.clientNotices.list) || []).map((n) => [n.id, n]));
+  const fresh = [];
+  for (const n of items || []) {
+    if (!n || !n.id || !n.client) continue;
+    const had = by.get(n.id);
+    if (!had) { by.set(n.id, n); fresh.push(n); continue; }
+    if (n.ai && !had.ai) by.set(n.id, { ...had, ...n });
+    else if (n.ai && had.ai && Number(n.aiAt || 0) > Number(had.aiAt || 0)) by.set(n.id, { ...had, ...n });
+  }
+  const cut = Date.now() - CNOTE_KEEP_MS;
+  const list = [...by.values()].filter((n) => Number(n.at) > cut || Number(n.untilMs || n.fromMs) > Date.now()).sort((a, b) => b.at - a.at).slice(0, CNOTE_MAX);
+  await chrome.storage.local.set({ clientNotices: { at: Date.now(), list } });
+  return fresh.filter((n) => list.some((x) => x.id === n.id));
+}
+async function cnoteAnnounce(fresh) {
+  if (!fresh.length) return;
+  const { cnoteSeen } = await chrome.storage.local.get("cnoteSeen");
+  const seen = { ...(cnoteSeen || {}) };
+  const mine = await cnoteMyClientKeys().catch(() => null); // only clients I have open tasks for
+  for (const n of fresh) {
+    if (seen[n.id] || n.important === false) continue;
+    seen[n.id] = Date.now();
+    if (!cnoteIsMine(n.client, mine)) continue;
+    if (Date.now() - Number(n.at) > 2 * 86400000) continue; // an old message found on the first look: on the card, no pop-up
+    const when = n.fromMs ? " (from " + new Date(n.fromMs).toLocaleDateString([], { weekday: "short", month: "short", day: "numeric" }) + ")" : "";
+    await notify("cnote-" + n.id, "⚠️ " + n.client + ": client notice" + when, cnoteBrief(n).slice(0, 240), undefined, chrome.runtime.getURL("options.html#dashboard")).catch(() => {});
+  }
+  for (const k of Object.keys(seen)) if (Date.now() - seen[k] > CNOTE_KEEP_MS) delete seen[k];
+  await chrome.storage.local.set({ cnoteSeen: seen });
+}
+// Shared with the team (hub ClientNotes): what was found, and the AI's reading.
+async function cnoteShare(list) {
+  if (!list.length || !(await hubUrl())) return;
+  const pick = (n) => ({ id: n.id, client: n.client, channel: n.channel, at: n.at, text: n.text, permalink: n.permalink, fromMs: n.fromMs || 0, untilMs: n.untilMs || 0, kind: n.kind || "", summary: n.summary || "", important: n.important == null ? "" : n.important ? "1" : "0", onsite: (n.onsite || []).join(","), ai: n.ai ? (n.aiAt || Date.now()) : 0 });
+  await hubCall("cnotePost", { notes: JSON.stringify(list.slice(0, 10).map(pick)) }).catch(() => null);
+}
+async function cnoteFromHub(rows) {
+  const items = (Array.isArray(rows) ? rows : []).map((r) => ({
+    id: String(r.id || ""), client: String(r.client || ""), channel: String(r.channel || ""), ts: "", at: Number(r.at) || 0, text: String(r.text || ""), permalink: /^https:\/\/[a-z0-9.-]+\.slack\.com\//.test(String(r.permalink || "")) ? String(r.permalink) : "",
+    fromMs: Number(r.fromMs) || 0, untilMs: Number(r.untilMs) || 0, kind: String(r.kind || ""), summary: String(r.summary || ""), important: r.important === "1" || r.important === 1 || r.important === true ? true : r.important === "0" || r.important === 0 || r.important === false ? false : null,
+    onsite: String(r.onsite || "").split(",").filter(Boolean), ai: !!Number(r.ai), aiAt: Number(r.ai) || 0, src: "hub", by: String(r.byName || ""),
+  }));
+  await cnoteAnnounce(await cnoteMerge(items));
+}
+// The 20-minute Slack check, messages half: new messages in each matched channel.
+async function cnotePollChannels(ids, map, s) {
+  const { cnoteSince } = await chrome.storage.local.get("cnoteSince");
+  const since = { ...(cnoteSince || {}) };
+  const found = [];
+  let authErr = false;
+  for (const cid of ids.slice(0, 60)) {
+    const oldest = since[cid] || String(Math.floor((Date.now() - CNOTE_FIRST_MS) / 1000));
+    if (found.length || cid !== ids[0]) await new Promise((x) => setTimeout(x, 300));
+    const r = await slackApi("conversations.history", { channel: cid, oldest, limit: "100" }, s).catch(() => null);
+    if (!r || !r.ok) { if (r && SLACK_AUTH_ERR.test(r.error || "")) { authErr = true; break; } continue; }
+    let msgs = r.messages || [];
+    if (r.has_more && r.response_metadata && r.response_metadata.next_cursor) {
+      const r2 = await slackApi("conversations.history", { channel: cid, oldest, limit: "100", cursor: r.response_metadata.next_cursor }, s).catch(() => null);
+      if (r2 && r2.ok) msgs = msgs.concat(r2.messages || []);
+    }
+    let newest = oldest;
+    for (const m of msgs) {
+      if (Number(m.ts) > Number(newest)) newest = String(m.ts);
+      const n = cnoteFromMessage(m, cid, map[cid].client, s);
+      if (n) found.push(n);
+    }
+    since[cid] = newest;
+  }
+  await chrome.storage.local.set({ cnoteSince: since });
+  if (found.length) {
+    const ids = [...new Set(found.flatMap((n) => (String(n.raw).match(/<@([UW][A-Z0-9]+)/g) || []).map((x) => x.slice(2))))];
+    const names = ids.length ? await cnoteNames(ids, s).catch(() => ({})) : {};
+    for (const n of found) { n.text = cnotePlain(n.raw, names).slice(0, 1500); delete n.raw; }
+    const fresh = await cnoteMerge(found);
+    await cnoteAnnounce(fresh);
+    await cnoteShare(fresh);
+  }
+  return { authErr, found: found.length };
+}
+async function hubPollClientNotes() {
+  const r = await hubCall("cnotes", {}).catch(() => null);
+  if (r && r.ok && Array.isArray(r.notes)) await cnoteFromHub(r.notes);
+}
+
+// ---------- PHP version from WordPress itself (Site monitor › PHP2Shell) ----------
+// Most hosts strip the PHP version from their replies, so the header check says
+// "hidden". WordPress always knows it (Tools › Site Health › Info › Server): read
+// that page with the WordPress sign-in already in Chrome - no password is ever
+// typed. One site at a time with a pause, and only when someone presses the
+// button. Not signed in to that site: says so.
+const WP_PHP_PAUSE_MS = 2500;
+let wpPhpRunning = false;
+function wpPhpFromHtml(html) {
+  const h = String(html || "");
+  const m = h.match(/PHP version\s*<\/t[dh]>\s*<td[^>]*>\s*(\d+\.\d+(?:\.\d+)?)/i) || h.match(/php_version:\s*(\d+\.\d+(?:\.\d+)?)/i) || h.match(/<td[^>]*>\s*PHP[^<]{0,40}<\/td>\s*<td[^>]*>\s*(\d+\.\d+\.\d+)/i);
+  return m ? m[1] : "";
+}
+// What a Site Health answer says: the version, or why there isn't one.
+function wpPhpJudge(final, status, html) {
+  if (/wp-login\.php|\/login\b|reauth=1/i.test(final)) return { ok: false, reason: "signin", error: "Not signed in to this site's WordPress in Chrome" };
+  if (status === 404) return { ok: false, reason: "notwp", error: "No WordPress admin found (not a WordPress site?)" };
+  if (status === 403 || status === 401) return { ok: false, reason: "blocked", error: "The site's security turned the request away (HTTP " + status + ")" };
+  if (status >= 400) return { ok: false, error: "The site answered " + status };
+  const php = wpPhpFromHtml(html);
+  if (php) return { ok: true, php };
+  if (/site-health/.test(final)) return { ok: false, reason: "noread", error: "Site Health opened but didn't show the PHP version (your role may not see it)" };
+  return { ok: false, reason: "notwp", error: "No WordPress Site Health page" };
+}
+async function wpPhpReadOne(url) {
+  let base;
+  try { const u = new URL(url); base = u.origin; } catch (e) { return { ok: false, error: "bad address" }; }
+  const ctl = new AbortController();
+  const timer = setTimeout(() => ctl.abort(), 30000);
+  let out;
+  try {
+    const res = await fetch(base + "/wp-admin/site-health.php?tab=debug", { credentials: "include", redirect: "follow", cache: "no-store", signal: ctl.signal });
+    out = wpPhpJudge(String(res.url || ""), res.status, res.ok ? await res.text() : "");
+  } catch (e) {
+    out = { ok: false, error: e && e.name === "AbortError" ? "No answer within 30s" : "Couldn't reach it" };
+  } finally { clearTimeout(timer); }
+  // Turned away (a security plugin or the host's firewall can refuse a request
+  // that isn't from a page) and a tab of that site is open: ask from inside it,
+  // the way the page itself would.
+  if (!out.ok && out.reason !== "notwp") {
+    const inTab = await wpPhpReadInTab(base).catch(() => null);
+    if (inTab) return inTab.ok || inTab.reason === "signin" ? inTab : out;
+  }
+  return out;
+}
+async function wpPhpReadInTab(base) {
+  const host = new URL(base).hostname.replace(/^www\./, "");
+  const tabs = await chrome.tabs.query({ url: ["https://" + host + "/*", "https://www." + host + "/*"] }).catch(() => []);
+  const tab = tabs.find((t) => t && t.id != null && !t.discarded);
+  if (!tab) return null;
+  const [r] = await chrome.scripting.executeScript({ target: { tabId: tab.id }, func: async () => {
+    try { const x = await fetch("/wp-admin/site-health.php?tab=debug", { credentials: "include", cache: "no-store" }); return { url: x.url, status: x.status, html: x.ok ? (await x.text()).slice(0, 3000000) : "" }; } catch (e) { return null; }
+  } }).catch(() => [null]);
+  const v = r && r.result;
+  return v ? wpPhpJudge(String(v.url || ""), Number(v.status) || 0, String(v.html || "")) : null;
+}
+async function wpPhpRead(urls, onEach) {
+  if (wpPhpRunning) return { ok: false, error: "Already reading - wait for it to finish." };
+  wpPhpRunning = true;
+  const out = {};
+  try {
+    const list = [...new Set((urls || []).map(String).filter((u) => /^https?:\/\//.test(u)))].slice(0, 80);
+    for (let i = 0; i < list.length; i++) {
+      if (i) await new Promise((r) => setTimeout(r, WP_PHP_PAUSE_MS));
+      const r = await wpPhpReadOne(list[i]);
+      out[list[i]] = r;
+      const sp = (await chrome.storage.local.get("sitePhp")).sitePhp || {};
+      sp[list[i]] = r.ok ? { php: r.php, src: "wp", at: Date.now() } : { ...(sp[list[i]] || { php: "" }), wpErr: r.error, wpReason: r.reason || "", wpAt: Date.now() };
+      await chrome.storage.local.set({ sitePhp: sp, wpPhpProgress: { done: i + 1, total: list.length, at: Date.now() } });
+      if (onEach) await Promise.resolve(onEach(list[i], r)).catch(() => {});
+      if (r.error === "Couldn't reach it" || /within 30s/.test(r.error || "")) await new Promise((x) => setTimeout(x, WP_PHP_PAUSE_MS)); // a slow site: an extra breather
+    }
+  } finally {
+    wpPhpRunning = false;
+    await chrome.storage.local.set({ wpPhpProgress: null });
+  }
+  return { ok: true, results: out };
+}
+// Read from WordPress through another Chrome profile (the taskbar app as go-between).
+// Often the clients' WordPress sign-ins live in a different Chrome profile from
+// this extension. A second copy of the extension in that profile, ticked as the
+// helper (storage wpHelper), knocks on the taskbar app once a minute; when this
+// copy asks (wpPhpStart), the helper takes the list, reads each site's Site
+// Health with its own sign-ins and hands back only the PHP versions, which this
+// copy collects (wpRelayCollect). Nothing but site addresses and version numbers
+// passes through the app, on this computer only; no sign-in ever leaves a profile.
+// storage wpPhpRelay { id, at, state: waiting|done|gone|timeout, total, got, takenAt }
+const WP_HELPER_FRESH_MS = 5 * 60000;
+async function wpRelayTick() {
+  const g = await chrome.storage.local.get(["wpHelper", "wpPhpRelay"]);
+  if (g.wpHelper) await wpHelperTake();
+  if (g.wpPhpRelay && g.wpPhpRelay.state === "waiting") await wpRelayCollect();
+}
+async function wpHelperTake() {
+  if (wpPhpRunning) return;
+  const r = await deskFiles({ op: "phpTake", install: await installId() }, 3000);
+  if (!r || !r.ok || !r.job) return;
+  const job = r.job;
+  await wpPhpRead(job.urls, (url, res) => deskFiles({ op: "phpDone", install: "", id: job.id, results: { [url]: res } }, 5000));
+}
+async function wpRelayCollect() {
+  const { wpPhpRelay: rl } = await chrome.storage.local.get("wpPhpRelay");
+  if (!rl || rl.state !== "waiting") return rl || null;
+  const r = await deskFiles({ op: "phpResults", id: rl.id }, 3000);
+  const next = { ...rl, checkedAt: Date.now(), note: "" };
+  if (!r) next.note = "The taskbar app isn't answering - is it running?";
+  else if (r.gone) next.state = "gone";
+  else {
+    const res = r.results || {};
+    if (Object.keys(res).length) {
+      const sp = (await chrome.storage.local.get("sitePhp")).sitePhp || {};
+      for (const [u, x] of Object.entries(res)) sp[u] = x.ok ? { php: x.php, src: "wp", at: Date.now() } : { ...(sp[u] || { php: "" }), wpErr: x.error, wpReason: x.reason || "", wpAt: Date.now() };
+      await chrome.storage.local.set({ sitePhp: sp });
+    }
+    next.got = Object.keys(res).length; next.total = Number(r.total) || rl.total; next.takenAt = Number(r.takenAt) || 0;
+    if (next.got >= next.total) next.state = "done";
+  }
+  if (next.state === "waiting" && Date.now() - rl.at > 45 * 60000) next.state = "timeout";
+  if (next.state !== rl.state || next.got !== rl.got || next.note !== (rl.note || "") || next.takenAt !== rl.takenAt) await chrome.storage.local.set({ wpPhpRelay: next });
+  return next;
+}
+// The button: through the helper profile when one checked in lately, otherwise
+// (only when asked: local) with this profile's own WordPress sign-ins.
+async function wpPhpStart(urls, local) {
+  const list = [...new Set((urls || []).map(String).filter((u) => /^https?:\/\//.test(u)))].slice(0, 80);
+  if (!list.length) return { ok: false, error: "No sites to read." };
+  if (local) {
+    if (wpPhpRunning) return { ok: false, error: "Already reading - wait for it to finish." };
+    wpPhpRead(list).catch(() => {});
+    return { ok: true, relay: false };
+  }
+  const me = await installId();
+  const st = await deskFiles({ op: "phpStatus", install: me }, 3000);
+  if (!st) return { ok: false, why: "noapp" };
+  if (!st.ok) return { ok: false, why: "oldapp" };
+  if (st.helperIsYou) return { ok: false, why: "selfhelper" };
+  if (!(Date.now() - (Number(st.helperAt) || 0) < WP_HELPER_FRESH_MS)) return { ok: false, why: "nohelper" };
+  const j = await deskFiles({ op: "phpJob", install: me, urls: list }, 5000);
+  if (!j || !j.ok) return { ok: false, why: "oldapp", error: j && j.error };
+  await chrome.storage.local.set({ wpPhpRelay: { id: j.id, at: Date.now(), state: "waiting", total: list.length, got: 0, takenAt: 0 } });
+  return { ok: true, relay: true };
+}
 // Every 20 minutes (and on Refresh): the LIST of files in the matched channels -
 // names, dates, sizes, links; nothing is downloaded. A file is fetched only when
 // a brief needs it (SLACK_TASK_LOOKUP / SLACK_FILE_GET: Copy for AI, Explain,
@@ -8880,6 +9345,8 @@ async function slackPoll(force) {
       if (authErr) break;
       index[cid] = { at: Date.now(), since: ok ? newest : from, files: [...known.values()].sort((a, b) => b.created - a.created).slice(0, SLACK_INDEX_MAX) };
     }
+    // The messages half: client instructions (Client notices).
+    if (!authErr) { const cr = await cnotePollChannels(ids, map, s).catch(() => null); if (cr && cr.authErr) authErr = true; }
   } finally { slackPolling = false; }
   const count = Object.values(index).reduce((n, c) => n + ((c && c.files) || []).length, 0);
   await chrome.storage.local.set({ slackIndex: index, slackPoll: { at: Date.now(), err: authErr ? "Slack signed out - open Slack in Chrome and press Reconnect" : err, authErr, listed: count } });
@@ -9510,6 +9977,7 @@ chrome.alarms.onAlarm.addListener(async (alarm) => {
     await hubPollNudges().catch(() => {});
     await sendScheduledDrafts().catch((e) => diagLog("drafts", String(e && e.message ? e.message : e)));
     await deskLink(false).catch(() => {});
+    await wpRelayTick().catch(() => {}); // Read from WordPress through the other Chrome profile
     // A timer started or stopped somewhere else (ClickUp, the taskbar app) while
     // no extension page is open: noticed within a minute, so its alerts are set
     // on time (the 5-minute refresh alone could make them up to 5 minutes late).
@@ -11177,6 +11645,53 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       case "SLACK_TASK_LOOKUP": { sendResponse(await slackTaskLookup(msg.client, msg.name, msg.opts).catch((e) => ({ ok: false, error: String(e && e.message || e) }))); break; }
       case "SLACK_FILE_GET": { sendResponse(await slackFileGet(String(msg.id || "")).catch((e) => ({ ok: false, error: String(e && e.message || e) }))); break; }
       case "SLACK_COPIES": { sendResponse(await (msg.op === "trash" ? slackTrashCopies(msg.clients) : slackCopies()).catch((e) => ({ ok: false, error: String(e && e.message || e) }))); break; }
+      case "CNOTE_AI": {
+        // A page's reading of a client notice with Chrome's AI: kept and shared with the team.
+        const g = await chrome.storage.local.get("clientNotices");
+        const n = ((g.clientNotices && g.clientNotices.list) || []).find((x) => x.id === String(msg.id || ""));
+        if (!n) { sendResponse({ ok: false }); break; }
+        const a = msg.ai || {};
+        const day = (v) => { const t = Date.parse(String(v || "") + "T00:00:00"); return Number.isFinite(t) ? t : 0; };
+        const upd = { ...n, ai: true, aiAt: Date.now(), important: a.important !== false, kind: String(a.kind || "").slice(0, 40), summary: String(a.summary || "").slice(0, 300),
+          fromMs: typeof a.from === "string" ? day(a.from) : n.fromMs || 0, untilMs: typeof a.until === "string" ? day(a.until) : n.untilMs || 0, onsite: (Array.isArray(a.onsite) ? a.onsite : []).map(String).slice(0, 60) };
+        await cnoteMerge([upd]);
+        await cnoteShare([upd]).catch(() => {});
+        sendResponse({ ok: true });
+        break;
+      }
+      case "CNOTE_TASKS": { const t = await cnoteTasks(!!msg.force).catch(() => null); sendResponse(t ? { ok: true, tasks: t } : { ok: false }); break; }
+      case "CNOTE_REFRESH": {
+        if (Date.now() - cnoteRefreshAt < 60000) { sendResponse({ ok: true, skipped: true }); break; } // pressed again within a minute
+        cnoteRefreshAt = Date.now();
+        await chrome.storage.local.set({ slackPoll: { ...((await chrome.storage.local.get("slackPoll")).slackPoll || {}), at: 0 } });
+        const r1 = await slackPoll(true).catch((e) => ({ ok: false, error: String(e && e.message || e) }));
+        await hubPollClientNotes().catch(() => {});
+        sendResponse(r1 || { ok: true });
+        break;
+      }
+      case "SHEET_CSV": {
+        // Site monitor › Update from the sheet: a Google Sheet read as CSV with the
+        // Google sign-in already in this Chrome profile (the tab in the link: gid).
+        const sid = String(msg.url || "").match(/docs\.google\.com\/spreadsheets\/d\/([A-Za-z0-9_-]{20,})/);
+        if (!sid) { sendResponse({ ok: false, error: "That isn't a Google Sheets link." }); break; }
+        const gid = (String(msg.url).match(/[#&?]gid=(\d+)/) || [])[1] || "0";
+        try {
+          const res = await fetch("https://docs.google.com/spreadsheets/d/" + sid[1] + "/export?format=csv&gid=" + gid, { credentials: "include", cache: "no-store" });
+          const text = await res.text();
+          if (!res.ok || /text\/html/i.test(res.headers.get("content-type") || "") || /^\s*<!doctype html/i.test(text)) { sendResponse({ ok: false, error: "Google didn't hand over the sheet. Sign in to Chrome's Google account that can open it (in this profile), or share it as \"Anyone with the link can view\"." }); break; }
+          sendResponse({ ok: true, text: text.slice(0, 2000000) });
+        } catch (e) { sendResponse({ ok: false, error: "Couldn't reach Google Sheets (" + String((e && e.message) || e) + ")." }); }
+        break;
+      }
+      case "WP_PHP_START": { sendResponse(await wpPhpStart(msg.urls, !!msg.local).catch((e) => ({ ok: false, error: String(e && e.message || e) }))); break; }
+      case "WP_RELAY_COLLECT": { sendResponse((await wpRelayCollect().catch(() => null)) || { state: "" }); break; }
+      case "WP_HELPER_SET": {
+        await chrome.storage.local.set({ wpHelper: !!msg.on });
+        if (msg.on) await wpHelperTake().catch(() => {}); // say "I'm here" to the app straight away
+        const ps = await deskFiles({ op: "phpStatus", install: await installId() }, 3000);
+        sendResponse({ ok: true, app: !!(ps && ps.ok), oldApp: !!(ps && !ps.ok) });
+        break;
+      }
       case "SLACK_POLL_NOW": { sendResponse(await slackPoll(true).catch((e) => ({ ok: false, error: String(e && e.message || e) }))); break; }
       case "ASG_CANCEL": {
         const g = await chrome.storage.local.get(ASG_KEY);

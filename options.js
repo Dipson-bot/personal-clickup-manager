@@ -9640,7 +9640,7 @@ let smKickNote = ""; // why an automatic catch-up check didn't start, shown in t
 // comes in, and the page redraws (not while you're typing in or editing a row).
 let smLiveT = 0;
 chrome.storage.onChanged.addListener((ch, area) => {
-  if (area !== "local" || !(ch.siteMonitorState || ch.siteMonitorChecking)) return;
+  if (area !== "local" || !(ch.siteMonitorState || ch.siteMonitorChecking || ch.sitePhp || ch.wpPhpRelay || ch.wpPhpProgress || ch.smMineOnly)) return;
   clearTimeout(smLiveT);
   smLiveT = setTimeout(async () => {
     const box = $("siteMonitorStatus");
@@ -9652,6 +9652,97 @@ chrome.storage.onChanged.addListener((ch, area) => {
   }, 400);
 });
 
+// ---- PHP2Shell (CVE-2026-109618 / -109619, PHP's fixes of Oct 21, 2026) ----
+// From the PHP version each site's server states (background sitePhp, read during
+// the normal checks): fixed in 8.5.12, 8.4.27, 8.3.36, 8.2.35. 8.1 and older are
+// past end of life - only a host / vendor backport covers them, so they count as
+// at risk. Hidden = the server doesn't say: unknown, not safe.
+const PHP2SHELL_FIXED = { "8.5": 12, "8.4": 27, "8.3": 36, "8.2": 35 };
+function php2shell(v, platform) {
+  const s = String(v || "").trim();
+  if (!s && platform && !/wordpress/i.test(platform)) return { k: "na", text: platform + " site - no PHP to patch", tip: "Built on " + platform + ", which runs no PHP of the site's own - PHP2Shell doesn't apply (the platform looks after its own servers)." };
+  if (!s) return { k: "hidden", text: "PHP version hidden", tip: "The server doesn't say its PHP version. Check WordPress \u203A Tools \u203A Site Health \u203A Info \u203A Server, or the hosting panel." };
+  const [a, b, c] = s.split(".").map((x) => Number(x));
+  const br = a + "." + b;
+  if (a > 8 || (a === 8 && b > 5)) return { k: "ok", text: "PHP " + s + " - patched" };
+  const need = PHP2SHELL_FIXED[br];
+  if (need != null) {
+    if (!Number.isFinite(c)) return { k: "check", text: "PHP " + s + " - patch level not shown", tip: "Fixed in " + br + "." + need + " - check the exact version in Site Health or the hosting panel." };
+    return c >= need ? { k: "ok", text: "PHP " + s + " - patched" } : { k: "bad", text: "PHP " + s + " - NOT patched (needs " + br + "." + need + "+)" };
+  }
+  return { k: "bad", text: "PHP " + s + " - at risk (end of life)", tip: "PHP " + br + " gets no official fix: upgrade to 8.2.35 or newer, or confirm the host has applied its backport." };
+}
+// Why a site has no version: what the WordPress read found (or that it wasn't tried).
+function phpWhyNot(r) {
+  if (!r || r.php || (r.platform && !/wordpress/i.test(r.platform))) return "";
+  if (r.wpReason === "signin") return "not signed in to its WordPress";
+  if (r.wpReason === "notwp") return "no WordPress admin found";
+  if (r.wpReason === "blocked") return "its security turned the read away";
+  if (r.wpReason === "noread") return "Site Health didn't show it";
+  if (r.wpErr) return String(r.wpErr).replace(/^The site /, "");
+  return "press \uD83D\uDD11 to read it from WordPress";
+}
+const PHP2SHELL_TIP = "PHP2Shell (CVE-2026-109618 / CVE-2026-109619): fixed in PHP 8.5.12, 8.4.27, 8.3.36 and 8.2.35.";
+// The team's sheet pasted in (site URL and PHP version, the way Site Health shows
+// it: "8.2.35 (Supports 64bit values)"): each line's address and version, matched
+// to a Site monitor site by its domain (www. or not, any path).
+const phpHost = (u) => { try { return new URL(/^https?:\/\//i.test(u) ? u : "https://" + u).hostname.toLowerCase().replace(/^www\./, ""); } catch (e) { return ""; } };
+function phpSheetParse(text, sites) {
+  const byHost = new Map((sites || []).filter((s) => s && s.url).map((s) => [phpHost(s.url), s.url]));
+  const found = {}, unknown = [];
+  const URL_RE = /(?:https?:\/\/)?(?:[a-z0-9-]+\.)+[a-z]{2,}(?:\/[^\s\t,"]*)?/i, VER_RE = /\b(\d+\.\d+(?:\.\d+)?)\b/;
+  const cellsOf = (line) => {
+    if (line.includes("\t")) return line.split("\t");
+    const out = []; let cur = "", q = false;
+    for (const ch of line) { if (ch === '"') q = !q; else if (ch === "," && !q) { out.push(cur); cur = ""; } else cur += ch; }
+    out.push(cur);
+    return out;
+  };
+  for (const line of String(text || "").split(/\r?\n/)) {
+    const cells = cellsOf(line);
+    const i = cells.findIndex((c) => URL_RE.test(c) && !VER_RE.test(c.replace(URL_RE, "")));
+    const u = i >= 0 ? cells[i].match(URL_RE) : null;
+    const v = !u ? null : cells.length > 1 ? String(cells[i + 1] || "").match(VER_RE) : cells[i].replace(u[0], " ").match(VER_RE);
+    if (!u || !v) continue;
+    const url = byHost.get(phpHost(u[0]));
+    if (url) found[url] = v[1]; else unknown.push(u[0]);
+  }
+  return { found, unknown };
+}
+// A site's name against a client's (letters and digits only): equal, or one starts
+// with the other when both have 4+ - the same rule as background smSiteIsMine.
+function smNameMatch(a, b) { return a.length >= 3 && b.length >= 3 && (a === b || (a.length >= 4 && b.length >= 4 && (a.startsWith(b) || b.startsWith(a)))); }
+// Read from WordPress: how far it got (here, or through the other profile).
+function wpStatusText(rl, pg) {
+  if (pg && pg.total && Date.now() - (Number(pg.at) || 0) < 120000) return "Reading WordPress Site Health " + pg.done + "/" + pg.total + "\u2026";
+  if (!rl || !rl.state) return "";
+  const ago = Date.now() - (Number(rl.checkedAt || rl.at) || 0);
+  if (rl.state === "waiting") return rl.takenAt ? "Your WordPress profile is reading: " + (rl.got || 0) + "/" + rl.total + " done\u2026" : "Waiting for your WordPress profile to pick it up (within a minute)\u2026" + (rl.note ? " " + rl.note : "");
+  if (ago > 30 * 60000) return "";
+  if (rl.state === "done") return "Read " + rl.total + " site" + (rl.total === 1 ? "" : "s") + " through your WordPress profile \u2713";
+  return "Your WordPress profile didn't finish (" + (rl.got || 0) + "/" + rl.total + ") - press Read from WordPress again.";
+}
+// While a read through the other profile is under way and this page is open:
+// collect every 5 seconds (the background does it once a minute otherwise).
+let wpPollT = 0;
+function wpRelayPoll() {
+  if (wpPollT) return;
+  wpPollT = setInterval(async () => {
+    const r = await send({ type: "WP_RELAY_COLLECT" });
+    if (!r || r.state !== "waiting") { clearInterval(wpPollT); wpPollT = 0; }
+  }, 5000);
+}
+// Site monitor › "This profile is signed in to the clients' WordPress" (the helper).
+(() => {
+  const box = document.getElementById("wpHelperOn"), msg = document.getElementById("wpHelperMsg");
+  if (!box) return;
+  chrome.storage.local.get("wpHelper").then((g) => { box.checked = !!(g && g.wpHelper); }).catch(() => {});
+  box.addEventListener("change", async () => {
+    msg.textContent = "Saving\u2026";
+    const r = await send({ type: "WP_HELPER_SET", on: box.checked });
+    msg.textContent = !box.checked ? "Off - this profile won't read for the other one." : r && r.app ? "On \u2713 This profile now reads PHP versions when your other profile asks (it checks every minute)." : r && r.oldApp ? "On, but your ClickUp Tracker app is older than this - install version 0.4.2 or newer." : "On, but the ClickUp Tracker taskbar app isn't answering - start it (version 0.4.2 or newer).";
+  });
+})();
 function renderSiteMonitorStatus(cfg) {
   const el = $("siteMonitorStatus");
   if (!el) return;
@@ -9664,7 +9755,17 @@ function renderSiteMonitorStatus(cfg) {
     return;
   }
   // Background replies { ok, state } - read the state object, not the wrapper.
-  Promise.all([send({ type: "GET_SITE_MONITOR_STATE" }), chrome.storage.local.get(["siteSnooze", "siteOff", "siteMonitorChecking"]).catch(() => ({}))]).then(([resp, sg]) => {
+  Promise.all([send({ type: "GET_SITE_MONITOR_STATE" }), chrome.storage.local.get(["siteSnooze", "siteOff", "siteMonitorChecking", "sitePhp", "wpPhpRelay", "wpPhpProgress", "phpSheetUrl", "smMineOnly"]).catch(() => ({})),
+    window.PcmMyClients ? window.PcmMyClients().catch(() => []) : Promise.resolve([])]).then(([resp, sg, mineNames]) => {
+    // Only my clients (the Clients tab's list): just their sites are shown, counted
+    // and checked (the background skips the rest too); the others stay saved.
+    const smKey = (n) => String(n || "").toLowerCase().replace(/[^a-z0-9]+/g, "");
+    const isMineSite = (s) => mineNames.some((c) => smNameMatch(smKey(c), smKey(s && s.name)));
+    const mineCount = cfg.sites.filter(isMineSite).length;
+    const mineOnly = !!(sg && sg.smMineOnly) && mineCount > 0;
+    const vSites = mineOnly ? cfg.sites.filter(isMineSite) : cfg.sites;
+    const phpMap = (sg && sg.sitePhp) || {};
+    const phpOf = (url) => php2shell((phpMap[url] || {}).php, (phpMap[url] || {}).platform);
     const state = resp && resp.state && typeof resp.state === "object" ? resp.state : {};
     // A check running right now (background siteMonitorChecking): the sites it
     // hasn't reached yet say "Checking now…" instead of their old "Not checked
@@ -9678,12 +9779,12 @@ function renderSiteMonitorStatus(cfg) {
     // Newest check across the sites actually being watched (a paused client or
     // a site with Monitor off is meant to have an old time, so it never counts).
     let newest = 0;
-    for (const s of cfg.sites) {
+    for (const s of vSites) {
       if (!s || !s.url || offMap[s.url] || (state[s.url] || {}).paused) continue;
       newest = Math.max(newest, Number((state[s.url] || {}).lastCheck) || 0);
     }
     const allStale = newest > 0 && nowTs - newest > SM_STALE_MS;
-    const rows = cfg.sites.map((s) => {
+    const rows = vSites.map((s) => {
       const st = state[s.url] || { up: null, fails: 0, lastCheck: 0 };
       const isOff = !!offMap[s.url];
       // Watched, checked before, but not lately: say so, in amber, instead of
@@ -9695,20 +9796,25 @@ function renderSiteMonitorStatus(cfg) {
         : stale ? '<span class="sm-stale">\u231B Not checked for ' + smGap(nowTs - st.lastCheck) + "</span> \u00B7 was " + was + " at " + smClock(st.lastCheck)
         : st.up === true ? "✅ Up" : st.up === false ? (st.blank || st.kind === "blank" ? "⚠️ Blank page" : st.kind === "5xx" ? "🔥 Server error" + (st.status ? " (HTTP " + st.status + ")" : "") : "🚨 Down") : "⚪ Not checked yet";
       // A stale row already names its own gap and time, so it does not repeat it.
-      const lastCheckText = !st.lastCheck ? "never" : stale ? new Date(st.lastCheck).toLocaleString() : smAgo(nowTs - st.lastCheck) + " (" + new Date(st.lastCheck).toLocaleString() + ")";
+      const lastCheckText = !st.lastCheck ? "never" : stale ? new Date(st.lastCheck).toLocaleString() : '<span title="' + escapeHtml(new Date(st.lastCheck).toLocaleString()) + '">' + smAgo(nowTs - st.lastCheck) + "</span>";
       // The address opens the site (new tab).
       const link = /^https?:\/\//i.test(s.url) ? '<a class="sm-url" href="' + escapeHtml(s.url) + '" target="_blank" rel="noopener" title="Open the site">' + escapeHtml(s.url) + "</a>" : escapeHtml(s.url);
-      const label = s.name && s.name !== s.url ? escapeHtml(s.name) + ' <span class="hint">' + link + "</span>" : link;
+      const label = s.name && s.name !== s.url ? escapeHtml(String(s.name).replace(/^(\p{Extended_Pictographic}\uFE0F?)(?=[^\s\uFE0F\u200D\p{Emoji_Modifier}])/u, "$1 ")) + ' <span class="hint">' + link + "</span>" : link;
       const until = Number(snooze[s.url]) || 0;
       const snoozed = until > Date.now();
       const snoozeTxt = snoozed ? ' · <span class="sm-snoozed">🔕 alerts snoozed until ' + escapeHtml(new Date(until).toLocaleString([], { weekday: "short", month: "short", day: "numeric", hour: "numeric", minute: "2-digit" })) + "</span>" : "";
       const why = st.lastError ? ' · <span class="sm-err">' + escapeHtml(st.lastError) + "</span>"
         : st.blocked ? ' · <span class="sm-err" title="The site is up, but its security is blocking or challenging this computer (it fetches the page every few minutes, which can look like a bot). No alarm is raised for this. If it keeps happening, ask whoever manages the site to allow this office\'s IP.">' + escapeHtml(st.blocked) + " (site is up - not an outage)</span>" : "";
       const speed = !stale && !waitingOn(s.url) && st.up === true && st.lastMs ? " · " + (st.lastMs < 1000 ? st.lastMs + "ms" : (st.lastMs / 1000).toFixed(1) + "s") : "";
+      // PHP2Shell: what this site's server says its PHP version is.
+      const pz = phpOf(s.url), pRec = phpMap[s.url];
+      const wpNo = pRec && !pRec.php && pRec.wpErr ? " (WordPress: " + pRec.wpErr + ")" : "";
+      const phpTxt = isOff ? "" : ' · <span class="sm-php ' + pz.k + '" title="' + escapeHtml((pz.tip ? pz.tip + " " : "") + wpNo + " " + PHP2SHELL_TIP + (pRec && pRec.at ? (pRec.src === "sheet" ? " From the team sheet, " : pRec.src === "wp" ? " From WordPress Site Health, " : " Seen in the server's reply, ") + new Date(pRec.at).toLocaleString() + "." : " Not read yet - it's noted at the next check.")) + '">' + escapeHtml((pRec ? pz.text : "PHP version not read yet") + (pz.k === "hidden" && phpWhyNot(pRec || {}) ? " - " + phpWhyNot(pRec || {}) : "")) + "</span>";
       const u = escapeHtml(s.url);
-      return '<div class="imp-row" data-sm-row="' + u + '"><div class="imp-entry"><b>' + label + '</b><br><span class="hint">' + statusText + speed + " · last check: " + lastCheckText + (st.fails && st.up !== false ? " · " + st.fails + " failed check(s)" : "") + why + snoozeTxt + "</span></div>"
+      return '<div class="imp-row" data-sm-row="' + u + '"><div class="imp-entry"><b>' + label + '</b><br><span class="hint">' + statusText + speed + phpTxt + " · last check: " + lastCheckText + (st.fails && st.up !== false ? " · " + st.fails + " failed check(s)" : "") + why + snoozeTxt + "</span></div>"
         + '<div class="sm-acts"><label class="sm-on" title="Untick to stop checking this site (and its alerts) - whether or not the client is with us. Tick it again to start."><input type="checkbox" data-sm-on="' + u + '"' + (isOff ? "" : " checked") + " /> Monitor</label>"
         + '<button type="button" class="sm-check" data-sm-url="' + u + '" title="Check this site right now"' + (isOff ? " disabled" : "") + ">Check</button>"
+        + '<button type="button" class="sm-check sm-wp1" data-sm-wp="' + u + '" title="Read this site\'s PHP version from its WordPress Site Health page (a WordPress sign-in already in Chrome - this profile or your WordPress profile)"' + (isOff ? " disabled" : "") + ">\uD83D\uDD11</button>"
         + (snoozed
           ? '<button type="button" class="sm-act" data-sm-unsnooze="' + u + '" title="Alert me about this site again">Unsnooze</button>'
           : '<select class="sm-snooze" data-sm-snooze="' + u + '" title="Stop the alerts for this site for a while - it is still checked"><option value="">Snooze…</option><option value="1">1 hour</option><option value="4">4 hours</option><option value="tom">Until tomorrow 9 AM</option><option value="72">3 days</option><option value="168">1 week</option></select>')
@@ -9724,8 +9830,86 @@ function renderSiteMonitorStatus(cfg) {
       ? '<p class="hint sm-stale-banner">\u231B Nothing has been checked for ' + smGap(nowTs - newest) + ' (last check ' + escapeHtml(new Date(newest).toLocaleString()) + '). The statuses below are from then, not now, so a site could have gone down since. ' +
         (smKickNote ? escapeHtml(smKickNote) : "Starting a check now\u2026") + "</p>"
       : "";
-    el.innerHTML = '<div class="sm-headrow"><div class="cu-subhead">Current status</div><button type="button" class="sm-act" data-sm-add="1">+ Add site</button></div>' + banner + '<div id="smBlankLine" class="hint"></div><div id="smAddSlot"></div>' + rows;
-    smPaintBlankLine(cfg.sites);
+    // PHP2Shell, for all the sites at once: how many state an unpatched PHP, and a
+    // list to paste in the team's thread.
+    const watched = vSites.filter((s) => s && s.url && !offMap[s.url]);
+    const cnt = { bad: 0, ok: 0, hidden: 0, check: 0, na: 0 };
+    for (const s of watched) cnt[phpMap[s.url] ? phpOf(s.url).k : "hidden"]++;
+    const phpBox = watched.length ? '<div class="sm-phpsum"><b>\uD83D\uDEE1 PHP2Shell check</b> <span class="hint">(from the PHP version each server states)</span><br>' +
+      (cnt.bad ? '<span class="sm-php bad">' + cnt.bad + " not patched / at risk</span> \u00b7 " : "") + (cnt.check ? '<span class="sm-php check">' + cnt.check + " to check</span> \u00b7 " : "") +
+      '<span class="sm-php ok">' + cnt.ok + " patched</span> \u00b7 " + (cnt.na ? '<span class="sm-php na">' + cnt.na + " not PHP (Wix, Shopify\u2026)</span> \u00b7 " : "") + (cnt.hidden ? '<span class="sm-php hidden">' + cnt.hidden + " unknown (reason on each site)</span> " : "") +
+      '<button type="button" class="sm-act" data-sm-copy="1" title="Copy the sites shown below with their PHP version as two columns (site URL, PHP version), like the team sheet - paste into column A">\uD83D\uDCCB Copy</button> ' +
+      '<button type="button" class="sm-act" data-sm-wpread="1" title="Read the PHP version of your clients\' sites (the clients on your Clients tab) from their WordPress Site Health page, with a WordPress sign-in that is already in Chrome (this profile, or your other profile through the taskbar app)">\uD83D\uDD11 Read from WordPress</button> ' +
+      '<button type="button" class="sm-act" data-sm-phppaste="1" title="Paste the site URL and PHP version columns from the team sheet (as Site Health shows them)">\uD83D\uDCE5 Paste from the sheet</button>' +
+      '<div class="sm-phppaste" hidden><div class="sm-sheetrow"><input type="url" data-sm-sheeturl placeholder="The sheet\'s link (docs.google.com/spreadsheets/...)" value="' + escapeHtml((sg && sg.phpSheetUrl) || "") + '" /> <button type="button" class="sm-act" data-sm-sheetget="1" title="Read the sheet straight from Google, with your Google sign-in in this Chrome profile">Update from the sheet</button></div><div class="hint">or paste the two columns:</div><textarea rows="4" placeholder="Copy the two columns (site URL, PHP version) in the sheet and paste them here, e.g.\nhttps://example.com/\t8.2.35 (Supports 64bit values)"></textarea>' +
+      '<div><button type="button" class="sm-act" data-sm-phpsave="1">Use these versions</button> <span class="hint" data-sm-phpmsg></span></div></div>' +
+      '<div class="hint sm-wpmsg" data-sm-wpmsg>' + wpStatusText(sg && sg.wpPhpRelay, sg && sg.wpPhpProgress) + "</div></div>" : "";
+    const mineBox = mineCount ? '<label class="sm-mine" title="Show, count and check only the sites of the clients on your Clients tab (from your tasks). The other sites stay saved; untick to see and check them again."><input type="checkbox" data-sm-mine="1"' + (mineOnly ? " checked" : "") + " /> Only my clients (" + mineCount + ")</label>" + (mineOnly ? ' <span class="hint">' + (cfg.sites.length - mineCount) + " other site" + (cfg.sites.length - mineCount === 1 ? "" : "s") + " not shown or checked</span>" : "") : "";
+    el.innerHTML = '<div class="sm-headrow"><div class="cu-subhead">Current status</div>' + mineBox + '<button type="button" class="sm-act" data-sm-add="1">+ Add site</button></div>' + banner + phpBox + '<div id="smBlankLine" class="hint"></div><div id="smAddSlot"></div>' + rows;
+    const mb = el.querySelector("[data-sm-mine]");
+    if (mb) mb.onchange = async () => { await chrome.storage.local.set({ smMineOnly: mb.checked }); renderSiteMonitorStatus(cfg); };
+    const pp = el.querySelector("[data-sm-phppaste]"), pbox = el.querySelector(".sm-phppaste");
+    if (pp && pbox) pp.onclick = () => { pbox.hidden = !pbox.hidden; if (!pbox.hidden) pbox.querySelector("textarea").focus(); };
+    const useSheet = async (text) => {
+      const msg = el.querySelector("[data-sm-phpmsg]");
+      const { found, unknown } = phpSheetParse(text, cfg.sites);
+      const n = Object.keys(found).length;
+      if (!n) { msg.textContent = "No line matched a site here (each line needs the site's address and a version like 8.2.35)."; return; }
+      const sp = (await chrome.storage.local.get("sitePhp")).sitePhp || {};
+      for (const [u, v] of Object.entries(found)) sp[u] = { php: v, src: "sheet", at: Date.now() };
+      await chrome.storage.local.set({ sitePhp: sp });
+      msg.textContent = "Read " + n + " site" + (n === 1 ? "" : "s") + " \u2713" + (unknown.length ? " - not in Site monitor: " + unknown.slice(0, 4).join(", ") + (unknown.length > 4 ? " +" + (unknown.length - 4) : "") : "");
+      setTimeout(() => renderSiteMonitorStatus(cfg), 1500);
+    };
+    const ps = el.querySelector("[data-sm-phpsave]");
+    if (ps) ps.onclick = () => useSheet(pbox.querySelector("textarea").value);
+    const sgBtn = el.querySelector("[data-sm-sheetget]");
+    if (sgBtn) sgBtn.onclick = async () => {
+      const link = el.querySelector("[data-sm-sheeturl]").value.trim(), msg = el.querySelector("[data-sm-phpmsg]");
+      if (!link) { msg.textContent = "Paste the sheet's link first."; return; }
+      sgBtn.disabled = true; msg.textContent = "Reading the sheet\u2026";
+      const r = await send({ type: "SHEET_CSV", url: link }, 30000);
+      sgBtn.disabled = false;
+      if (!r || !r.ok) { msg.textContent = (r && r.error) || "Couldn't read the sheet."; return; }
+      await chrome.storage.local.set({ phpSheetUrl: link });
+      useSheet(r.text);
+    };
+    const wpBtn = el.querySelector("[data-sm-wpread]"), wpMsg = el.querySelector("[data-sm-wpmsg]");
+    const wpStart = async (urls, scope, local, btn) => {
+      wpMsg.textContent = (local ? "Reading " + scope + " with this profile's WordPress sign-ins\u2026" : "Asking your WordPress profile to read " + scope + "\u2026");
+      const r = await send({ type: "WP_PHP_START", urls, local });
+      if (btn) { btn.textContent = r && r.ok ? "\u23F3" : "\uD83D\uDD11"; btn.title = r && r.ok ? "Reading - its line updates when the answer comes" : "Couldn't start - see the note in the PHP2Shell box above"; }
+      if (r && r.ok) { wpMsg.textContent = r.relay ? "Sent " + scope + " to your WordPress profile - it picks it up within a minute." : "Reading " + scope + "\u2026"; wpRelayPoll(); return; }
+      const why = (r && r.why) || "";
+      wpMsg.innerHTML = escapeHtml(why === "noapp" ? "The ClickUp Tracker taskbar app isn't running - start it (it's the go-between for your other Chrome profile)."
+        : why === "oldapp" ? "Your ClickUp Tracker app is older than this - install version 0.4.2 or newer."
+        : why === "selfhelper" ? "This profile is ticked as the WordPress helper - press Read from WordPress in your other profile."
+        : why === "nohelper" ? "No WordPress profile has checked in. In the Chrome profile signed in to the clients' WordPress: install this extension, and tick Site monitor \u203A \"This profile is signed in to the clients' WordPress\"."
+        : "Couldn't start: " + ((r && r.error) || "no answer")) + ' <button type="button" class="sm-act" data-sm-wplocal="1">Read with this profile\'s sign-ins</button>';
+      const lb = wpMsg.querySelector("[data-sm-wplocal]");
+      if (lb) lb.onclick = () => wpStart(urls, scope, true, btn);
+    };
+    const wpGo = async () => {
+      // Only my clients' sites (Clients tab: from my tasks, added by hand, minus hidden).
+      const mineNames = window.PcmMyClients ? await window.PcmMyClients().catch(() => []) : [];
+      const ck = (n) => String(n || "").toLowerCase().replace(/[^a-z0-9]+/g, "");
+      const isMine = (s) => mineNames.some((c) => smNameMatch(ck(c), ck(s.name || "")));
+      const pick = (mineNames.length ? watched.filter(isMine) : watched).filter((s) => { const r = phpMap[s.url] || {}; return !(r.platform && !/wordpress/i.test(r.platform)); });
+      if (!pick.length) { wpMsg.textContent = "None of the monitored sites matches a client on your Clients list (Clients tab) - nothing to read."; return; }
+      wpStart(pick.map((s) => s.url), mineNames.length ? pick.length + " site" + (pick.length === 1 ? "" : "s") + " of your clients" : pick.length + " sites", false);
+    };
+    el.querySelectorAll("[data-sm-wp]").forEach((b) => { b.onclick = () => { const s = vSites.find((x) => x.url === b.dataset.smWp); wpStart([b.dataset.smWp], (s && s.name) || b.dataset.smWp, false, b); }; });
+    if (wpBtn) wpBtn.onclick = () => wpGo();
+    if (sg && sg.wpPhpRelay && sg.wpPhpRelay.state === "waiting") wpRelayPoll();
+    // Copy: the sites shown, "site URL<tab>version" like the team sheet (a hosted
+    // builder says so; unknown ones leave the version empty).
+    const cp = el.querySelector("[data-sm-copy]");
+    if (cp) cp.onclick = async () => {
+      const rows = watched.map((s) => { const r = phpMap[s.url] || {}; return s.url.replace(/\/?$/, "/") + "\t" + (r.php || (r.platform && !/wordpress/i.test(r.platform) ? r.platform + " (not PHP)" : "")); });
+      try { await navigator.clipboard.writeText(rows.join("\n")); cp.textContent = "Copied " + rows.length + " \u2713"; } catch (e) { cp.textContent = "Couldn't copy"; }
+      setTimeout(() => { cp.textContent = "\uD83D\uDCCB Copy"; }, 2000);
+    };
+    smPaintBlankLine(vSites);
     // Stale and the user is looking at it: catch up, then redraw with the real
     // answer. Throttled so a re-render cannot pile runs on top of each other.
     if (allStale && !chk && Date.now() - smKickedAt > 60000) {
@@ -10521,7 +10705,7 @@ const ADMIN_FILES = [
   "manifest.json", "background.js", "popup.html", "popup.js", "options.html", "options.js", "phone-timer.js",
   "offscreen.html", "offscreen.js", "update.html", "update.js", "auto-update.html", "auto-update.js", "wrapup.html", "wrapup.js",
   "notify-menu.js", "export-tasks.js", "lib-zip.js", "lib-unzip.js", "lib-automation.js",
-  "lib-availability.js", "lib-clickup.js", "lib-crypto.js", "lib-tidy.js", "lib-drive.js", "find-many.js", "week-fold.js", "ar-status.js", "automation.js", "lib-rules.js", "nav-badges.js", "simple-view.js", "task-panel.js", "lib-updater.js", "offscreen-updater.js", "celebrate.js", "celebrate.html", "celebrate-window.js", "fx.js", "pcm-help.js", "tracker.html", "tracker.js", "bulk-edit.js", "pcm-search.js", "lib-taskfiles.js", "task-files.js", "reminders.js", "hub.js", "task-sort.js", "breakdown.js", "calendar.js", "notices.js", "insights-plus.js", "header-ui.js", "weather.js", "paused-clients.js", "plan-apply.js", "task-notes.js", "task-dupes.js", "rollup-help.js", "md-notes.js", "mention.js", "long-list.js", "local-tasks.js", "ui-extras.js", "assignees.js", "add-time.js", "team-hub.gs", "vendor/pdf.min.js", "vendor/pdf.worker.min.js", "vendor/pdfjs-LICENSE.txt",
+  "lib-availability.js", "lib-clickup.js", "lib-crypto.js", "lib-tidy.js", "lib-drive.js", "find-many.js", "week-fold.js", "ar-status.js", "automation.js", "lib-rules.js", "nav-badges.js", "simple-view.js", "task-panel.js", "lib-updater.js", "offscreen-updater.js", "celebrate.js", "celebrate.html", "celebrate-window.js", "fx.js", "pcm-help.js", "tracker.html", "tracker.js", "bulk-edit.js", "pcm-search.js", "lib-taskfiles.js", "task-files.js", "reminders.js", "hub.js", "task-sort.js", "breakdown.js", "calendar.js", "notices.js", "insights-plus.js", "header-ui.js", "weather.js", "paused-clients.js", "client-notices.js", "plan-apply.js", "task-notes.js", "task-dupes.js", "rollup-help.js", "md-notes.js", "mention.js", "long-list.js", "local-tasks.js", "ui-extras.js", "assignees.js", "add-time.js", "team-hub.gs", "vendor/pdf.min.js", "vendor/pdf.worker.min.js", "vendor/pdfjs-LICENSE.txt",
   "icons/icon16.png", "icons/icon48.png", "icons/icon128.png", "icons/celebrate.png", "icons/sad.png",
   "sounds/notify.wav", "sounds/danger.mp3", "sounds/winner.wav",
   "README.md", "CHANGELOG.md",
@@ -11215,7 +11399,7 @@ if ($("admCalCard")) {
 // Where the timer shows (Floating window / Taskbar / Both / Neither) is picked once
 // and kept; the Dashboard card invites people to try the taskbar until they pick.
 const DESK_REL = "https://github.com/Dipson-bot/personal-clickup-manager/releases";
-const DESK_TAG = "desktop-v0.4.1";
+const DESK_TAG = "desktop-v0.4.2";
 let deskOs = "";
 async function deskPlatform() {
   if (deskOs) return deskOs;
@@ -11247,8 +11431,14 @@ async function deskDownload() {
   deskWatch();
   return os === "win"
     ? "Downloading… Open ClickUp-Tracker-Setup.exe when it finishes. If Windows says \"Windows protected your PC\", click More info › Run anyway (the app isn't from the Microsoft Store). It then appears on your taskbar and signs in by itself within a minute."
-    : "Downloading… Open the .dmg and drag ClickUp Tracker into Applications, then open it from there. The first time, Mac asks if you're sure: right-click it › Open (or System Settings › Privacy & Security › Open Anyway). It then shows in the menu bar and signs in by itself within a minute." +
-      " If your Mac says the app \"is damaged and can't be opened\" (an older download), press Cancel, open Terminal and run:  xattr -cr \"/Applications/ClickUp Tracker.app\"  - then open it again.";
+    // The app isn't notarized by Apple (that needs a paid Apple Developer account),
+    // so macOS stops it once: say exactly what it shows and the way past it.
+    : "Downloading\u2026 Then, once:\n" +
+      "1. Open the .dmg and drag ClickUp Tracker into Applications.\n" +
+      "2. Open it from Applications. If your Mac says \u201CApple could not verify \u2018ClickUp Tracker\u2019 is free of malware\u201D, click Done (not Move to Trash).\n" +
+      "3. Open System Settings \u203A Privacy & Security, scroll down to Security and click Open Anyway next to \u201CClickUp Tracker was blocked\u201D. Enter your Mac password, then click Open.\n" +
+      "That's only needed the first time (the app isn't from the App Store). It then shows in the menu bar and signs in by itself within a minute.\n" +
+      "Or, in Terminal:  xattr -dr com.apple.quarantine \"/Applications/ClickUp Tracker.app\"  - then open it again (this also fixes \u201Cis damaged and can't be opened\u201D from an older download).";
 }
 // After a download: look for the app every 10 s for 10 minutes so Settings and
 // the card flip to "running" as soon as it starts.

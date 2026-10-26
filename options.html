@@ -2230,6 +2230,27 @@
   </section>
 
   <!-- ===================== Site monitor ===================== -->
+  <style>
+    .sm-php { font-weight: 600; }
+    #siteMonitorStatus .imp-row { flex-wrap: wrap; row-gap: 4px; } /* the buttons go under the text only when the window is too narrow for both */
+    #siteMonitorStatus .sm-headrow { flex-wrap: wrap; gap: 6px 10px; }
+    #siteMonitorStatus .sm-headrow .cu-subhead { margin: 0; }
+    .sm-headrow .sm-mine { display: inline-flex; align-items: center; gap: 5px; margin: 0 0 0 auto; font-size: 12px; font-weight: 600; cursor: pointer; white-space: nowrap; }
+    .sm-headrow .sm-mine input { margin: 0; }
+    .sm-headrow .sm-mine + .hint { font-size: 11.5px; white-space: nowrap; }
+    #siteMonitorStatus .imp-row > .imp-entry { flex: 1 1 380px; min-width: 0; }
+    .sm-sheetrow { display: flex; gap: 6px; margin-top: 6px; }
+    .sm-sheetrow input { flex: 1; min-width: 0; font: inherit; font-size: 12px; padding: 4px 8px; border-radius: 7px; border: 1px solid var(--border); background: var(--card); color: var(--text); }
+    .sm-php.bad { color: var(--red, #dc2626); }
+    .sm-php.ok { color: var(--green, #16a34a); }
+    .sm-php.check { color: var(--amber, #b45309); }
+    .sm-php.hidden { color: var(--muted); font-weight: 500; }
+    .sm-php.na { color: var(--muted); font-weight: 600; }
+    #siteMonitorStatus .sm-wp1 { padding: 3px 7px; }
+    .sm-phppaste textarea { width: 100%; box-sizing: border-box; margin: 6px 0 4px; font: inherit; font-size: 12px; padding: 6px 8px; border-radius: 7px; border: 1px solid var(--border); background: var(--card); color: var(--text); }
+    .sm-phppaste[hidden] { display: none !important; }
+    .sm-phpsum { margin: 6px 0 10px; padding: 8px 12px; border: 1px solid var(--border); border-radius: 9px; background: var(--bg2, transparent); font-size: 12.5px; line-height: 1.7; }
+  </style>
   <section class="panel" data-panel="sites">
     <div class="card" id="siteMonitorCard">
       <h2>Client Site Uptime Monitor</h2>
@@ -2299,7 +2320,7 @@
           .desk-try-pic .dt-btn { width: 22px; height: 22px; display: grid; place-items: center; border-radius: 5px; background: rgba(255,255,255,.1); font-size: 11px; }
           .desk-place { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
           #deskStatus .ok { color: var(--green, #16a34a); font-weight: 600; }
-          .desk-note { display: block; padding: 8px 12px !important; border-radius: 8px; border: 1px solid var(--indigo); background: rgba(99,102,241,.1); color: var(--text) !important; font-weight: 600; line-height: 1.5; }
+          .desk-note { display: block; white-space: pre-line; padding: 8px 12px !important; border-radius: 8px; border: 1px solid var(--indigo); background: rgba(99,102,241,.1); color: var(--text) !important; font-weight: 600; line-height: 1.5; }
           .desk-note.warn { border-color: var(--amber, #d97706); background: rgba(217,119,6,.12); }
           #siteMonitorStatus .sm-url:hover { color: var(--indigo); text-decoration: underline; }
           #siteMonitorStatus .sm-snooze { width: auto; font-size: 11px; padding: 2px 6px; flex: none; }
@@ -2316,9 +2337,17 @@
           #siteMonitorStatus .sm-spin { display: inline-block; width: 10px; height: 10px; border: 2px solid currentColor; border-right-color: transparent; border-radius: 50%; animation: cu-spin .7s linear infinite; vertical-align: -1px; flex: none; }
           #siteMonitorStatus .sm-checking-banner { display: flex; align-items: center; gap: 8px; padding: 8px 12px !important; margin: 10px 0 0; border-radius: 8px; border: 1px solid var(--indigo, #4f46e5); background: rgba(79,70,229,.10); color: var(--text) !important; font-weight: 600; line-height: 1.5; }
           #siteMonitorStatus .sm-checking-banner .sm-spin { color: var(--indigo, #4f46e5); }
+          #siteMonitorStatus .sm-wpmsg { margin-top: 4px; }
+          #siteMonitorStatus .sm-wpmsg button { margin-left: 4px; }
           #siteMonitorStatus .sm-stale-banner { display: block; padding: 8px 12px !important; margin: 10px 0 0; border-radius: 8px; border: 1px solid var(--amber, #d97706); background: rgba(217,119,6,.12); color: var(--text) !important; font-weight: 600; line-height: 1.5; }
         </style>
       </div>
+    </div>
+    <div class="card" id="wpHelperCard">
+      <h2>WordPress sign-ins in another Chrome profile</h2>
+      <p class="hint" style="line-height:1.5;margin:0 0 10px;">Tick this in the Chrome profile that is signed in to the clients' WordPress. When the other profile presses <b>Read from WordPress</b> (Site monitor › PHP2Shell check), this profile reads each site's Site Health page with its own sign-in and hands back only the PHP version, through the ClickUp Tracker taskbar app on this computer. No password or sign-in ever leaves this profile. Keep the taskbar app running.</p>
+      <div class="checkbox"><input type="checkbox" id="wpHelperOn" /><label for="wpHelperOn" style="margin:0;font-weight:600;">This profile is signed in to the clients' WordPress (read PHP versions for my other profile)</label></div>
+      <p class="hint" id="wpHelperMsg" style="margin:6px 0 0;"></p>
     </div>
   </section>
 
@@ -2906,6 +2935,7 @@
 <script src="hub.js"></script>
 <script src="weather.js"></script>
 <script src="paused-clients.js"></script>
+<script src="client-notices.js"></script>
 <script src="header-ui.js"></script>
 </body>
 </html>

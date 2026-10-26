@@ -1,5 +1,8 @@
 # ClickUp Tracker changelog
 
+## 0.4.2
+- Helps the extension read PHP versions from WordPress when the WordPress sign-ins are in a different Chrome profile: a copy of the extension in that profile picks up the list of sites through this app and hands back only the versions. Only site addresses and version numbers pass through, on this computer only.
+
 ## 0.4.1
 - The extension can move the files it copied from Slack into a client folder earlier to the Recycle Bin (Trash on Mac) when you ask it to (Clients › Slack › Move to Recycle Bin). Only those files, by exact name, directly in that client's folder, and they can still be restored.
 
