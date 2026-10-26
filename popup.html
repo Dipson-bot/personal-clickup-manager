@@ -400,6 +400,12 @@
   .est-guess { color: var(--muted); border: 1px dashed var(--border); }
   .est-guess:hover { color: var(--indigo, #4f46e5); border-color: currentColor; }
   .est-staged { color: #d97706; border: 1px dashed currentColor; background: rgba(217, 119, 6, .09); }
+  .cu-task .wk-stchip { flex: none; margin: 0; padding: 0 7px; border-radius: 999px; font: inherit; font-size: 10.5px; font-weight: 700; line-height: 1.6; color: var(--amber, #d97706); background: transparent; border: 1px dashed currentColor; white-space: nowrap; cursor: pointer; }
+  .cu-task .wk-stchip:hover { border-style: solid; background: color-mix(in srgb, var(--amber, #d97706) 14%, transparent); }
+  .cu-task .wk-stchip:disabled { cursor: progress; opacity: .8; }
+  .cu-task .wk-stchip.saving::after { content: ""; display: inline-block; width: 8px; height: 8px; margin-left: 5px; border: 2px solid currentColor; border-right-color: transparent; border-radius: 50%; animation: cu-spin .7s linear infinite; vertical-align: -1px; }
+  .est-staged.saving { cursor: progress; border-style: solid; }
+  .est-staged.saving::after { content: ""; display: inline-block; width: 8px; height: 8px; margin-left: 5px; border: 2px solid currentColor; border-right-color: transparent; border-radius: 50%; animation: cu-spin .7s linear infinite; vertical-align: -1px; }
   .pop-estbar { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin: 4px 0 6px; padding: 5px 8px; border: 1px dashed #d97706; border-radius: 7px; background: rgba(217, 119, 6, .08); font-size: 11.5px; font-weight: 600; }
   .pop-estbar.ok { border: 1px solid #16a34a; color: #16a34a; background: rgba(22, 163, 74, .08); }
   .pop-estbar.err { border-color: var(--red, #dc2626); color: var(--red, #dc2626); }

@@ -31,6 +31,7 @@ import { getTaskHoldInfo, fetchArchivedMine, unarchiveTask, getLatestCommentBy, 
 import { resolveRelayKey, pickProbeModel, probeRelay } from "./lib-availability.js";
 import { tidyCollect, tidyLines, tidyResolved, tidyDayOk, tidyUrgent, tidyDateShort } from "./lib-tidy.js";
 import "./lib-rules.js"; // globalThis.PcmRules - the Automation tab's rule blocks
+import "./lib-dailyupdate.js"; // globalThis.PcmDailyUpdate - the Daily Tasks Update text (wrap-up page + scheduled send)
 
 const CHECK_ALARM = "dailyLoginCheck";
 const CLICKUP_ALARM = "clickupRefresh";
@@ -1870,6 +1871,341 @@ function cuScopeToken(cfg, myId, assignee) {
 let doneTodayCache = null; // wrap-up's "closed today" list, kept one minute
 // Every task you closed today, with its client and the links in its description:
 // { ok, tasks } or { ok: false, reason | error }. maxAgeMs: how old a kept copy may be.
+// ---------- Daily Tasks Update to Slack ----------
+// The wrap-up page's Send button, or by itself on weekdays at a set time
+// (settings dailyUpdateAuto / dailyUpdateTime): the update is POSTED in the team's
+// #daily-task-update channel as the user, through the Slack sign-in the extension
+// already has (Clients › Slack). storage dailyUpdateSent { day, at, link, channel,
+// how } - so the scheduled send never posts twice in a day; dailyUpdateDraft
+// { day, text } - the page's edited text, which the scheduled send uses that day.
+const DAILY_UPDATE_CHANNEL = "daily-task-update";
+const ymdLocal = (ms) => { const d = new Date(ms); return d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0") + "-" + String(d.getDate()).padStart(2, "0"); };
+async function dailyUpdateChannel(s) {
+  const want = String((await getSettings()).dailyUpdateChannel || DAILY_UPDATE_CHANNEL).replace(/^#/, "").trim().toLowerCase();
+  const { dailyUpdateChan: c } = await chrome.storage.local.get("dailyUpdateChan");
+  if (c && c.id && c.name === want && c.team === s.team) return c;
+  let cursor = "";
+  for (let i = 0; i < 10; i++) {
+    const r = await slackApi("conversations.list", { types: "public_channel,private_channel", exclude_archived: "true", limit: "1000", ...(cursor ? { cursor } : {}) }, s);
+    if (!r || !r.ok) throw new Error((r && r.error) || "no answer from Slack");
+    const hit = (r.channels || []).find((x) => String(x.name || "").toLowerCase() === want);
+    if (hit) { const v = { id: hit.id, name: want, team: s.team }; await chrome.storage.local.set({ dailyUpdateChan: v }); return v; }
+    cursor = (r.response_metadata && r.response_metadata.next_cursor) || "";
+    if (!cursor) break;
+  }
+  return null;
+}
+async function sendDailyUpdate(text, how) {
+  const { slackSession: s } = await chrome.storage.local.get("slackSession");
+  if (!s) return { ok: false, error: "Connect Slack first (Clients \u203A Slack channels \u203A Connect)." };
+  const t = String(text || "").trim();
+  if (!t) return { ok: false, error: "There's nothing to send." };
+  let ch;
+  try { ch = await dailyUpdateChannel(s); } catch (e) { return { ok: false, error: SLACK_AUTH_ERR.test(String(e && e.message)) ? "Slack signed you out - open Slack in Chrome and press Reconnect (Clients)." : "Couldn't reach Slack (" + String((e && e.message) || e) + ")." }; }
+  if (!ch) return { ok: false, error: "Couldn't find #" + String((await getSettings()).dailyUpdateChannel || DAILY_UPDATE_CHANNEL).replace(/^#/, "") + " in your Slack - join the channel, then try again." };
+  const r = await slackApi("chat.postMessage", { channel: ch.id, text: PcmDailyUpdate.forSlack(t), mrkdwn: "true", unfurl_links: "false", unfurl_media: "false" }, s).catch((e) => ({ ok: false, error: String((e && e.message) || e) }));
+  if (!r || !r.ok) {
+    const err = String((r && r.error) || "no answer");
+    return { ok: false, error: err === "not_in_channel" ? "You're not in #" + ch.name + " - join it in Slack, then try again."
+      : SLACK_AUTH_ERR.test(err) ? "Slack signed you out - open Slack in Chrome and press Reconnect (Clients)." : "Slack said: " + err };
+  }
+  const sent = { day: ymdLocal(Date.now()), at: Date.now(), channel: ch.name, link: "https://" + (s.domain || "slack.com") + "/archives/" + ch.id + "/p" + String(r.ts || "").replace(".", ""), how: how || "button" };
+  await chrome.storage.local.set({ dailyUpdateSent: sent });
+  return { ok: true, ...sent };
+}
+// Every minute (the main tick): on a weekday that isn't a company holiday, once
+// the set time has passed and nothing was sent today, send it - the text edited
+// on the wrap-up page today if any, else today's completed tasks. Nothing
+// completed: not sent (said once). A failure is tried again 15 minutes later, at
+// most 3 times a day, and said once.
+async function maybeAutoDailyUpdate() {
+  // Per computer (storage dailyUpdateAuto { on, time }), not in the synced settings:
+  // the same person on two computers mustn't post it twice.
+  const { dailyUpdateAuto: au } = await chrome.storage.local.get("dailyUpdateAuto");
+  const set = { dailyUpdateAuto: !!(au && au.on), dailyUpdateTime: (au && au.time) || "17:30" };
+  if (!set.dailyUpdateAuto) return;
+  const now = new Date();
+  if (now.getDay() === 0 || now.getDay() === 6) return;
+  try { if (isCompanyHoliday(now.getTime())) return; } catch (e) {}
+  const [h, m] = String(set.dailyUpdateTime || "17:30").split(":").map(Number);
+  const due = new Date(now); due.setHours(Number.isFinite(h) ? h : 17, Number.isFinite(m) ? m : 30, 0, 0);
+  if (now < due) return;
+  const day = ymdLocal(now.getTime());
+  const g = await chrome.storage.local.get(["dailyUpdateSent", "dailyUpdateTry", "dailyUpdateDraft", "slackSession"]);
+  if (g.dailyUpdateSent && g.dailyUpdateSent.day === day) return;
+  const tr = g.dailyUpdateTry && g.dailyUpdateTry.day === day ? g.dailyUpdateTry : { day, n: 0, at: 0 };
+  if (tr.n >= 3 || Date.now() - tr.at < 15 * 60000) return;
+  const next = { day, n: tr.n + 1, at: Date.now() };
+  await chrome.storage.local.set({ dailyUpdateTry: next });
+  let text = g.dailyUpdateDraft && g.dailyUpdateDraft.day === day ? String(g.dailyUpdateDraft.text || "") : "";
+  if (/Couldn't load today's completed tasks|Loading the tasks you completed today/.test(text)) text = ""; // never post an error / loading line
+  if (!text) {
+    const d = await getDoneToday(true).catch(() => null);
+    if (!d || !d.ok) { if (next.n >= 3) await notify("daily-update", "Daily update not sent", "Couldn't read today's completed tasks from ClickUp. Open Wrap up the day and press Send.", undefined, chrome.runtime.getURL("wrapup.html")).catch(() => {}); return; }
+    if (!(d.tasks || []).some((t) => !PcmDailyUpdate.isExtra(t))) {
+      await chrome.storage.local.set({ dailyUpdateSent: { day, at: Date.now(), skipped: "nothing completed", how: "auto" } });
+      await notify("daily-update", "Daily update not sent", "No tasks were completed today, so nothing was posted in #" + DAILY_UPDATE_CHANNEL + ".", undefined, chrome.runtime.getURL("wrapup.html")).catch(() => {});
+      return;
+    }
+    text = PcmDailyUpdate.build(d.tasks || [], {});
+  }
+  const r = await sendDailyUpdate(text, "auto");
+  if (r.ok) await notify("daily-update", "Daily update sent \u2713", "Posted in #" + r.channel + " at " + new Date(r.at).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" }) + ".", undefined, r.link).catch(() => {});
+  else if (next.n >= 3 || !g.slackSession) await notify("daily-update", "Daily update not sent", r.error + " Open Wrap up the day to send it.", undefined, chrome.runtime.getURL("wrapup.html")).catch(() => {});
+}
+// ---------- Automation › Check out in Slack ----------
+// Only while the Automation tab is switched on (storage automationTab): on
+// weekdays (not company holidays) at the set time, post the text ("out") in
+// #rmt-check-in-check-out as the user - once a day, only on a day they worked
+// (time tracked today or at the computer today), and only within 2 hours of the
+// time (a late "out" after the computer slept through it would look odd).
+// storage slackOut { on, time "HH:MM", text, channel }, slackOutSent { day, at, link, channel }, slackOutTry.
+const SLACK_OUT_CHANNEL = "rmt-check-in-check-out";
+async function slackChannelIdByName(s, name) {
+  const want = String(name || "").replace(/^#/, "").trim().toLowerCase();
+  if (!want) return null;
+  const { slackChanIds } = await chrome.storage.local.get("slackChanIds");
+  const ids = { ...(slackChanIds || {}) }, key = s.team + ":" + want;
+  if (ids[key]) return { id: ids[key], name: want };
+  let cursor = "";
+  for (let i = 0; i < 10; i++) {
+    const r = await slackApi("conversations.list", { types: "public_channel,private_channel", exclude_archived: "true", limit: "1000", ...(cursor ? { cursor } : {}) }, s);
+    if (!r || !r.ok) throw new Error((r && r.error) || "no answer from Slack");
+    const hit = (r.channels || []).find((x) => String(x.name || "").toLowerCase() === want);
+    if (hit) { ids[key] = hit.id; await chrome.storage.local.set({ slackChanIds: ids }); return { id: hit.id, name: want }; }
+    cursor = (r.response_metadata && r.response_metadata.next_cursor) || "";
+    if (!cursor) break;
+  }
+  return null;
+}
+// The two posts share one schedule (storage slackOut): kind "out" = check-out
+// { on, time, text }, kind "in" = check-in { inOn, inTime, inText }; days [0-6]
+// (default Mon-Fri) or mode "dates" with dates ["YYYY-MM-DD"]; skipHolidays
+// (default on). slackOutSent / slackInSent { day, at, link, channel, text, how }.
+const SLACK_IN_OUT = {
+  out: { on: "on", time: "time", text: "text", defTime: "17:00", defText: "out", sent: "slackOutSent", tries: "slackOutTry" },
+  in: { on: "inOn", time: "inTime", text: "inText", defTime: "08:00", defText: "in", sent: "slackInSent", tries: "slackInTry" },
+};
+// Is today one of the chosen days (mode "days", default Mon-Fri) or dates (mode "dates")?
+function slackDayChosen(cfg, now) {
+  if (cfg.mode === "dates") return Array.isArray(cfg.dates) && cfg.dates.includes(ymdLocal(now.getTime()));
+  const days = Array.isArray(cfg.days) && cfg.days.length ? cfg.days.map(Number) : [1, 2, 3, 4, 5];
+  return days.includes(now.getDay());
+}
+// ...and not a company holiday, unless that's allowed (skipHolidays false).
+function slackInOutDayOk(cfg, now) {
+  if (!slackDayChosen(cfg, now)) return false;
+  if (cfg.skipHolidays !== false) { try { if (isCompanyHoliday(now.getTime())) return false; } catch (e) {} }
+  return true;
+}
+async function slackOutPost(cfg, how, kind) {
+  const k = SLACK_IN_OUT[kind === "in" ? "in" : "out"];
+  const { slackSession: s } = await chrome.storage.local.get("slackSession");
+  if (!s) return { ok: false, error: "Slack isn't connected (Clients \u203A Slack channels \u203A Connect)." };
+  const text = String((cfg && cfg[k.text]) || k.defText).trim().slice(0, 200) || k.defText;
+  let ch;
+  try { ch = await slackChannelIdByName(s, (cfg && cfg.channel) || SLACK_OUT_CHANNEL); } catch (e) { return { ok: false, error: SLACK_AUTH_ERR.test(String(e && e.message)) ? "Slack signed you out - press Reconnect in Clients." : "Couldn't reach Slack (" + String((e && e.message) || e) + ")." }; }
+  if (!ch) return { ok: false, error: "Couldn't find #" + ((cfg && cfg.channel) || SLACK_OUT_CHANNEL) + " in your Slack." };
+  const r = await slackApi("chat.postMessage", { channel: ch.id, text: text.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;") }, s).catch((e) => ({ ok: false, error: String((e && e.message) || e) }));
+  if (!r || !r.ok) { const err = String((r && r.error) || "no answer"); return { ok: false, error: err === "not_in_channel" ? "You're not in #" + ch.name + "." : SLACK_AUTH_ERR.test(err) ? "Slack signed you out - press Reconnect in Clients." : "Slack said: " + err }; }
+  const sent = { day: ymdLocal(Date.now()), at: Date.now(), channel: ch.name, text, how: how || "auto", kind: kind === "in" ? "in" : "out", link: "https://" + (s.domain || "slack.com") + "/archives/" + ch.id + "/p" + String(r.ts || "").replace(".", "") };
+  await chrome.storage.local.set({ [k.sent]: sent });
+  return { ok: true, ...sent };
+}
+// One of the two, if it's due: only while the Automation tab is on and it's
+// ticked, on a chosen day / date, from its time until 2 hours after, once a day.
+// "out" only on a day worked (time tracked or at the computer today); "in" only
+// when the computer is in use right now (a check-in nobody is there for is worse
+// than none). Retries every 5 minutes, at most 3 times.
+async function slackInOutRun(kind) {
+  const k = SLACK_IN_OUT[kind];
+  const g = await chrome.storage.local.get(["automationTab", "slackOut", k.sent, k.tries, "userActiveAt", "clickupState"]);
+  const cfg = g.slackOut || {};
+  if (!g.automationTab || !cfg[k.on]) return;
+  const now = new Date();
+  if (!slackInOutDayOk(cfg, now)) return;
+  const [h, m] = String(cfg[k.time] || k.defTime).split(":").map(Number);
+  const due = new Date(now); due.setHours(Number.isFinite(h) ? h : 17, Number.isFinite(m) ? m : 0, 0, 0);
+  if (now < due || now - due > 2 * 3600000) return;
+  const day = ymdLocal(now.getTime());
+  if (g[k.sent] && g[k.sent].day === day) return;
+  {
+    const sa = ((await chrome.storage.local.get("slackAhead")).slackAhead || {})[day + ":" + kind];
+    if (sa && !sa.cancelled && sa.postAt <= Date.now()) return; // Slack already posted it today
+    if (cfg.ahead && sa) return; // Slack posts it (or it was cancelled)
+  }
+  const mid = new Date(now).setHours(0, 0, 0, 0);
+  const st = g.clickupState || {};
+  if (kind === "out" && !((Number(st.at) >= mid && Number(st.spentMs) > 0) || Number(g.userActiveAt) >= mid)) return;
+  if (kind === "in" && !(Number(g.userActiveAt) >= Date.now() - 15 * 60000)) return;
+  const tr = g[k.tries] && g[k.tries].day === day ? g[k.tries] : { day, n: 0, at: 0 };
+  if (tr.n >= 3 || Date.now() - tr.at < 5 * 60000) return;
+  const next = { day, n: tr.n + 1, at: Date.now() };
+  await chrome.storage.local.set({ [k.tries]: next });
+  const r = await slackOutPost(cfg, "auto", kind);
+  const word = kind === "in" ? "Checked in" : "Checked out";
+  if (r.ok) await notify("slack-" + kind, word + " in Slack \u2713", "Posted \"" + r.text + "\" in #" + r.channel + " at " + new Date(r.at).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" }) + ".", undefined, r.link).catch(() => {});
+  else if (next.n >= 3) await notify("slack-" + kind, "Couldn't " + word.toLowerCase().replace("checked", "check") + " in Slack", r.error, undefined, "https://app.slack.com").catch(() => {});
+}
+async function maybeSlackCheckOut() {
+  await slackAheadSync(false).catch((e) => diagLog("slack ahead", String(e && e.message ? e.message : e)));
+  await slackInOutRun("in").catch(() => {});
+  await slackInOutRun("out").catch(() => {});
+}
+// ---- Schedule in Slack ahead (slackOut.ahead, off unless ticked) ----
+// Slack's own scheduled messages (chat.scheduleMessage) for the next 7 days of
+// check-in / check-out, so they're posted by Slack even when this computer is
+// off. Topped up every ~30 minutes while the computer is on, and at once when
+// the card changes (SLACK_AHEAD_SYNC). storage slackAhead { "YYYY-MM-DD:in|out":
+// { id, channel, postAt, text, kind, day, cancelled? } }: kept so each one can be
+// cancelled here (chat.deleteScheduledMessage) or replaced when the time / text /
+// days change; one deleted in Slack itself is noticed (chat.scheduledMessages.list)
+// and not scheduled again. Off (or the tab hidden, or the message unticked):
+// every upcoming one is deleted from Slack.
+const SLACK_AHEAD_DAYS = 7;
+let slackAheadBusy = false;
+function slackAheadWanted(cfg, on, nowMs) {
+  const out = {};
+  if (!on) return out;
+  for (let i = 0; i <= SLACK_AHEAD_DAYS; i++) {
+    const d = new Date(nowMs); d.setHours(12, 0, 0, 0); d.setDate(d.getDate() + i);
+    if (!slackInOutDayOk(cfg, d)) continue;
+    for (const kind of ["in", "out"]) {
+      const k = SLACK_IN_OUT[kind];
+      if (!cfg[k.on]) continue;
+      const [h, m] = String(cfg[k.time] || k.defTime).split(":").map(Number);
+      const at = new Date(d); at.setHours(Number.isFinite(h) ? h : 8, Number.isFinite(m) ? m : 0, 0, 0);
+      if (at.getTime() < nowMs + 2 * 60000) continue; // Slack needs a time in the future
+      const text = String(cfg[k.text] || k.defText).trim().slice(0, 200) || k.defText;
+      out[ymdLocal(at.getTime()) + ":" + kind] = { postAt: at.getTime(), text, kind, day: ymdLocal(at.getTime()) };
+    }
+  }
+  return out;
+}
+let slackAheadAgain = false;
+async function slackAheadSync(force) {
+  if (slackAheadBusy) { if (force) slackAheadAgain = true; return { ok: true, queued: true }; } // done right after the running one
+  const g = await chrome.storage.local.get(["automationTab", "slackOut", "slackAhead", "slackAheadAt", "slackSession"]);
+  const cfg = g.slackOut || {};
+  const have = { ...(g.slackAhead || {}) };
+  const on = !!(g.automationTab && cfg.ahead && (cfg.on || cfg.inOn));
+  if (!on && !Object.keys(have).length) return { ok: true, list: have };
+  if (!force && Date.now() - (Number(g.slackAheadAt) || 0) < 30 * 60000 && on) return { ok: true, list: have };
+  const s = g.slackSession;
+  if (!s) return { ok: false, error: "Slack isn't connected." };
+  slackAheadBusy = true;
+  try {
+    const now = Date.now();
+    const esc = (t) => String(t).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+    let ch = null;
+    try { ch = await slackChannelIdByName(s, cfg.channel || SLACK_OUT_CHANNEL); } catch (e) {}
+    // What Slack still holds: one deleted there is marked cancelled (not re-made).
+    if (ch && Object.values(have).some((x) => x && x.id && !x.cancelled && x.postAt > now)) {
+      const r = await slackApi("chat.scheduledMessages.list", { channel: ch.id, limit: "100" }, s).catch(() => null);
+      if (r && r.ok) {
+        const ids = new Set((r.scheduled_messages || []).map((m) => m.id));
+        for (const x of Object.values(have)) if (x && x.id && !x.cancelled && x.postAt > now + 60000 && !ids.has(x.id)) { x.cancelled = true; x.how = "slack"; }
+      }
+    }
+    const want = slackAheadWanted(cfg, on, now);
+    const del = async (x) => {
+      if (!(x && x.id && x.postAt > now)) return true;
+      if (!ch) return false;
+      const r = await slackApi("chat.deleteScheduledMessage", { channel: ch.id, scheduled_message_id: x.id }, s).catch(() => null);
+      return !!(r && (r.ok || r.error === "invalid_scheduled_message_id"));
+    };
+    let err = "";
+    // Gone from the plan (or changed): delete from Slack.
+    for (const [key, x] of Object.entries(have)) {
+      if (!x) { delete have[key]; continue; }
+      if (x.postAt <= now + 2 * 60000) { if (now - x.postAt > 2 * 86400000) delete have[key]; continue; } // posted, or about to be: left alone (kept 2 days for the list)
+      const w = want[key];
+      if (x.cancelled) { if (!w) delete have[key]; continue; } // a day cancelled stays cancelled while it's planned
+      if (!w || w.postAt !== x.postAt || w.text !== x.text) {
+        if (await del(x)) delete have[key];
+        else err = "Couldn't remove " + new Date(x.postAt).toLocaleString([], { weekday: "short", hour: "numeric", minute: "2-digit" }) + " from Slack - it may still be posted (Slack \u203A Drafts & sent \u203A Scheduled).";
+        await new Promise((ok) => setTimeout(ok, 300));
+      }
+    }
+    // New ones.
+    if (on && ch) {
+      for (const [key, w] of Object.entries(want)) {
+        if (have[key]) continue; // (also one whose delete failed above: not made twice)
+        const r = await slackApi("chat.scheduleMessage", { channel: ch.id, text: esc(w.text), post_at: String(Math.floor(w.postAt / 1000)) }, s).catch((e) => ({ ok: false, error: String((e && e.message) || e) }));
+        if (r && r.ok) have[key] = { id: r.scheduled_message_id, channel: ch.name, ...w };
+        else { err = String((r && r.error) || "no answer"); if (SLACK_AUTH_ERR.test(err)) break; }
+        await new Promise((ok) => setTimeout(ok, 300));
+      }
+    } else if (on && !ch) err = "Couldn't find #" + (cfg.channel || SLACK_OUT_CHANNEL) + " in your Slack.";
+    await chrome.storage.local.set({ slackAhead: have, slackAheadAt: Date.now(), slackAheadErr: err });
+    return { ok: !err, error: err, list: have };
+  } finally {
+    slackAheadBusy = false;
+    if (slackAheadAgain) { slackAheadAgain = false; setTimeout(() => { slackAheadSync(true).catch(() => {}); }, 0); }
+  }
+}
+// Cancel one (✕ on the card): deleted from Slack, marked so it isn't made again.
+async function slackAheadCancel(key) {
+  const g = await chrome.storage.local.get(["slackAhead", "slackSession", "slackOut"]);
+  const have = { ...(g.slackAhead || {}) };
+  const x = have[key];
+  if (!x) return { ok: false, error: "Not scheduled any more." };
+  if (x.postAt <= Date.now()) return { ok: false, error: "Slack has already posted it." };
+  if (!x.cancelled && x.id) {
+    const s = g.slackSession;
+    if (!s) return { ok: false, error: "Slack isn't connected." };
+    const ch = await slackChannelIdByName(s, (g.slackOut && g.slackOut.channel) || SLACK_OUT_CHANNEL).catch(() => null);
+    const r = ch ? await slackApi("chat.deleteScheduledMessage", { channel: ch.id, scheduled_message_id: x.id }, s).catch(() => null) : null;
+    if (!r || (!r.ok && r.error !== "invalid_scheduled_message_id")) return { ok: false, error: "Slack said: " + ((r && r.error) || "no answer") };
+  }
+  have[key] = { ...x, cancelled: true, how: "here" };
+  await chrome.storage.local.set({ slackAhead: have });
+  return { ok: true, list: have };
+}
+// ---------- Automation › Away in Slack ----------
+// Only while the Automation tab is on (storage automationTab) and ticked
+// (storage slackAway { on, away "HH:MM", active "HH:MM" }): on weekdays from the
+// away time on, Slack shows you away (users.setPresence away); on weekdays that
+// aren't company holidays, between the active time and the away time, back to
+// automatic (active). Each once a day (slackAwayLast { away: day, active: day }),
+// so changing it by hand in Slack in between is respected. Untick / hide the tab:
+// back to automatic at once (SLACK_AWAY_SET).
+async function slackSetPresence(presence) {
+  const { slackSession: s } = await chrome.storage.local.get("slackSession");
+  if (!s) return { ok: false, error: "Slack isn't connected (Clients \u203A Slack channels \u203A Connect)." };
+  const r = await slackApi("users.setPresence", { presence: presence === "away" ? "away" : "auto" }, s).catch((e) => ({ ok: false, error: String((e && e.message) || e) }));
+  if (!r || !r.ok) { const err = String((r && r.error) || "no answer"); return { ok: false, error: SLACK_AUTH_ERR.test(err) ? "Slack signed you out - press Reconnect in Clients." : "Slack said: " + err }; }
+  const now = { presence: presence === "away" ? "away" : "active", at: Date.now() };
+  await chrome.storage.local.set({ slackAwayNow: now });
+  return { ok: true, ...now };
+}
+async function maybeSlackPresence() {
+  const g = await chrome.storage.local.get(["automationTab", "slackAway", "slackAwayLast"]);
+  const cfg = g.slackAway || {};
+  if (!g.automationTab || !cfg.on) return;
+  const now = new Date();
+  if (!slackDayChosen(cfg, now)) return; // a day not chosen keeps the last one (Friday's away lasts the weekend)
+  const at = (hhmm, dh) => { const [h, m] = String(hhmm || "").split(":").map(Number); const d = new Date(now); d.setHours(Number.isFinite(h) ? h : dh, Number.isFinite(m) ? m : 0, 0, 0); return d; };
+  const awayAt = at(cfg.away || "17:00", 17), activeAt = at(cfg.active || "08:00", 8);
+  const day = ymdLocal(now.getTime());
+  const last = { ...(g.slackAwayLast || {}) };
+  let want = "";
+  if (now >= awayAt && last.away !== day) want = "away";
+  else if (now >= activeAt && now < awayAt && last.active !== day) {
+    let holiday = false;
+    if (cfg.skipHolidays !== false) { try { holiday = isCompanyHoliday(now.getTime()); } catch (e) {} }
+    if (!holiday) want = "active";
+  }
+  if (!want) return;
+  const tries = last.tries && last.tries.day === day && last.tries.what === want ? last.tries : { day, what: want, n: 0, at: 0 };
+  if (tries.n >= 3 || Date.now() - tries.at < 5 * 60000) return;
+  tries.n++; tries.at = Date.now();
+  const r = await slackSetPresence(want === "away" ? "away" : "auto");
+  if (r.ok) { last[want] = day; delete last.tries; }
+  else last.tries = tries;
+  await chrome.storage.local.set({ slackAwayLast: last });
+  if (!r.ok && tries.n >= 3) await notify("slack-away", "Couldn't set your Slack status", r.error, undefined, "https://app.slack.com").catch(() => {});
+}
 async function getDoneToday(force, maxAgeMs = 60000) {
   const cfg = await getClickupConfig();
   if (!cfg || !cfg.token || !cfg.teamId || cfg.userId == null) return { ok: false, reason: "not-configured" };
@@ -4840,6 +5176,107 @@ function dropStaleDueRows(state) {
     }
   }
 }
+// Changes made in ClickUp itself (a new estimate, due or start date, status,
+// name, priority) reach every list here within one refresh: the cached bundles
+// (this week, Mon-Fri, next week, tomorrow, the custom range, today) are only
+// re-fetched every 15-60 minutes, so they kept the old values and the same task
+// could show "no est" / Oct 30 in one card and 30m / Today in another. One
+// request per refresh asks ClickUp for the tasks changed since the last one, and
+// every copy of those tasks is patched; a task that moved out of a list's dates
+// leaves it, one that moved into a cached list's dates makes that list re-fetch
+// on the next refresh. storage cuChangedAt = when the last such check ran.
+// Returns the time to store as cuChangedAt once the patched state is saved (0: nothing read).
+async function patchChangedTasks(state, cfg) {
+  if (!state || !cfg || !cfg.token || !cfg.teamId) return 0;
+  const { cuChangedAt } = await chrome.storage.local.get("cuChangedAt");
+  const now = Date.now();
+  const since = Math.max(Number(cuChangedAt) || 0, now - 2 * 3600000) - 90000; // a little overlap; never more than 2h back
+  const me = cfg.userId != null ? String(cfg.userId) : "";
+  const fresh = new Map();
+  for (let page = 0; page < 3; page++) { // a busy team after a long sleep: a few pages, not one
+    const r = await fetchTeamTasksPage(cfg.token, cfg.teamId, page, since);
+    for (const x of (r && r.tasks) || []) {
+      if (!x || x.id == null || fresh.has(String(x.id))) continue;
+      fresh.set(String(x.id), {
+        name: x.name || "", status: (x.status && x.status.status) || "", done: isTaskDone(x), priority: cuPriorityName(x),
+        startDateMs: Number(x.start_date) || 0, dueDateMs: Number(x.due_date) || 0, estimateMs: Number(x.time_estimate) || 0,
+        // Mine (assigned to me) - only these can make one of my lists fetch again.
+        mine: !!me && (Array.isArray(x.assignees) ? x.assignees : []).some((a) => a && String(a.id) === me),
+        extra: /^extras?\s+tasks?\b/i.test(x.name || ""),
+      });
+    }
+    if (!r || r.last) break;
+  }
+  if (fresh.size) applyChangedTasks(state, fresh);
+  return now;
+}
+// Patches every copy of the changed tasks (pure, so a test can drive it).
+function applyChangedTasks(state, fresh) {
+  const day = (ms) => (Number(ms) > 0 ? new Date(Number(ms)).setHours(0, 0, 0, 0) : 0);
+  const idOf = (t) => String((t && (t.id != null ? t.id : t.taskId)) || "");
+  // A row whose estimate is the whole task's (not a day's share or a configured task's).
+  const fullEst = (t) => !("dayEstimateMs" in t) && !("totalEstimateMs" in t) && t.type !== "cfg" && t.type !== "extra" && !t.extended;
+  const t0 = new Date().setHours(0, 0, 0, 0), t1 = t0 + 86399999;
+  let n = 0;
+  const bundles = [
+    { b: state, from: t0, to: t1 }, // today
+    { b: state.todayFilter }, { b: state.tomorrow, ranged: true }, { b: state.thisWeek, ranged: true, refetch: true },
+    { b: state.thisWorkweek, ranged: true }, { b: state.nextWeek, ranged: true, refetch: true }, { b: state.custom, ranged: true, refetch: true },
+  ];
+  for (const { b, from, to, ranged: ranged0, refetch: refetch0 } of bundles) {
+    if (!b) continue;
+    // A custom list by START date (or both) isn't bounded by due dates: patch only.
+    const byDue = !b.basis || b.basis === "due";
+    const ranged = ranged0 && byDue, refetch = refetch0 && byDue;
+    const lo = from || (ranged ? Number(b.fromTs) || 0 : 0), hi = to || (ranged ? Number(b.toTs) || 0 : 0);
+    const inside = (ms) => !lo || !hi || (day(ms) >= day(lo) && day(ms) <= hi);
+    for (const key of ["tasks", "deadlineTasks", "trackedTasks"]) {
+      const rows = b[key];
+      if (!Array.isArray(rows)) continue;
+      const keep = [];
+      for (const t of rows) {
+        const f = fresh.get(idOf(t));
+        if (!f) { keep.push(t); continue; }
+        // Its due date left this list's dates (only the plain "due in these dates" list): it goes.
+        if (key === "tasks" && lo && hi && f.dueDateMs && !inside(f.dueDateMs) && day(f.dueDateMs) !== day(t.dueDateMs)) {
+          if (fullEst(t)) b.estimateMs = Math.max(0, (Number(b.estimateMs) || 0) - (Number(t.estimateMs) || 0));
+          n++; continue;
+        }
+        if (key === "tasks" && fullEst(t) && f.estimateMs !== (Number(t.estimateMs) || 0)) {
+          b.estimateMs = Math.max(0, (Number(b.estimateMs) || 0) + f.estimateMs - (Number(t.estimateMs) || 0));
+          t.estimateMs = f.estimateMs; t.hasEstimate = f.estimateMs > 0; n++;
+        }
+        for (const k of ["name", "status", "done", "priority", "startDateMs", "dueDateMs"]) {
+          const v = k === "startDateMs" || k === "dueDateMs" ? (f[k] || null) : f[k];
+          if (v !== undefined && t[k] !== v && !(v === null && !t[k])) { t[k] = v; n++; }
+        }
+        keep.push(t);
+      }
+      if (keep.length !== rows.length) b[key] = keep;
+    }
+    if ("taskCount" in b && Array.isArray(b.tasks)) b.taskCount = b.tasks.length;
+    // Moved INTO this cached list's dates but not in it yet: re-fetch it next time.
+    if (refetch && lo && hi) {
+      const have = new Set((b.tasks || []).map(idOf));
+      for (const [id, f] of fresh) if (f.mine && !f.extra && f.dueDateMs && inside(f.dueDateMs) && !f.done && !have.has(id)) { b.stale = true; break; }
+    }
+  }
+  // This week by day: names / status / priority straight away; its day shares
+  // (estimates, which day) are re-worked on the next refresh when a task in it changed.
+  const wk = state.weekly;
+  if (wk && Array.isArray(wk.perDay)) {
+    let touched = false;
+    for (const p of wk.perDay) for (const t of (p && p.tasks) || []) {
+      const f = fresh.get(idOf(t));
+      if (!f) continue;
+      for (const k of ["name", "status", "done", "priority"]) if (t[k] !== f[k]) { t[k] = f[k]; n++; }
+      // Its day shares re-worked only for my own plain rows (not the configured / Extra ones, whose numbers differ by design).
+      if (f.mine && t.type !== "cfg" && t.type !== "extra" && !t.extended && (f.estimateMs !== (Number(t.totalEstimateMs != null ? t.totalEstimateMs : t.estimateMs) || 0) || day(f.dueDateMs) !== day(t.dueDateMs))) touched = true;
+    }
+    if (touched) wk.stale = true;
+  }
+  return n;
+}
 async function getTodayFilterData(cfg, settings) {
   const now = new Date();
   const start = new Date(now); start.setHours(0, 0, 0, 0);
@@ -5529,7 +5966,7 @@ async function refreshClickupImpl({ includeTasks = false, viaAlarm = false, forc
       // not leave Tue-Fri on the old numbers for up to half an hour).
       const weekChanged = !prevWeekly || prevWeekly.rule !== WEEKLY_RULE + ":" + multiDay ||
         prevWeekly.fromTs !== mondayTs || prevWeekly.toTs !== friEndTs;
-      if (!weekChanged && prevWeekly.at && Date.now() - prevWeekly.at < forceFloor(forceWeekly, WEEKLY_TTL)) {
+      if (!weekChanged && prevWeekly.at && !prevWeekly.stale && Date.now() - prevWeekly.at < forceFloor(forceWeekly, WEEKLY_TTL)) {
         weekly = prevWeekly; // still fresh - reuse without extra API calls
       } else {
         weekly = await fetchWeeklySummary({
@@ -5592,7 +6029,7 @@ async function refreshClickupImpl({ includeTasks = false, viaAlarm = false, forc
       const WEEK_TTL = 15 * 60000;
       const buildWeek = async (prev, fromTs, toTs) => {
         const rangeChanged = !prev || prev.fromTs !== fromTs || prev.toTs !== toTs || prev.multiDay !== multiDay;
-        if (!rangeChanged && prev && prev.at && Date.now() - prev.at < forceFloor(forceWeeks, WEEK_TTL)) return prev; // fresh - no API calls
+        if (!rangeChanged && prev && prev.at && !prev.stale && Date.now() - prev.at < forceFloor(forceWeeks, WEEK_TTL)) return prev; // fresh - no API calls
         const w = await computeFilterData(cfg, settings, [], fromTs, toTs);
         // "Due this week" / "Due next week" / "Due Mon-Fri" are STRICTLY
         // due-bounded scopes: a task belongs to a week bundle only when its DUE
@@ -5645,7 +6082,7 @@ async function refreshClickupImpl({ includeTasks = false, viaAlarm = false, forc
       // which cannot run page code - reads the very same number.
       const buildDay = async (prev, fromTs, toTs) => {
         const rangeChanged = !prev || prev.fromTs !== fromTs || prev.toTs !== toTs || prev.multiDay !== multiDay;
-        if (!rangeChanged && prev && prev.at && Date.now() - prev.at < forceFloor(forceWeeks, WEEK_TTL)) return prev;
+        if (!rangeChanged && prev && prev.at && !prev.stale && Date.now() - prev.at < forceFloor(forceWeeks, WEEK_TTL)) return prev;
         return { ...(await buildRangeBundle(cfg, settings, fromTs, toTs)), multiDay };
       };
       const tomStart = new Date(); tomStart.setDate(tomStart.getDate() + 1); tomStart.setHours(0, 0, 0, 0);
@@ -5745,9 +6182,11 @@ async function refreshClickupImpl({ includeTasks = false, viaAlarm = false, forc
     // be able to sink a refresh, hence the catch.
     await recordDoneHistory(state).catch(() => {});
     dropStaleDueRows(state);
+    const changedAt = await patchChangedTasks(state, cfg).catch((e) => { diagLog("changed tasks", String(e && e.message ? e.message : e)); return 0; }); // edits made in ClickUp reach every list
     await stampFamily(state, cfg, true).catch(() => {}); // subtask / parent hints on the rows
     if (gen !== settingsGen) return { ok: false, reason: "superseded" }; // a newer setting's refresh owns the state
     await setClickupState(state);
+    if (changedAt) await chrome.storage.local.set({ cuChangedAt: changedAt }).catch(() => {}); // only once the patched lists are saved
     await maybeNotifyClickup(state, { viaAlarm });
     await maybeNotifyRunningTask(cfg).catch(() => {});
     await maybeNotifyNotTracking(cfg, { viaAlarm }).catch(() => {});
@@ -7878,10 +8317,18 @@ async function hubDaySnap() {
     const live = run && run.startMs ? Math.max(0, now - Math.max(Number(run.startMs) || 0, Number(st.at) || 0, mid)) : 0;
     const tgt = Number(st.targetMs) || 0;
     const w = st.weekly && st.weekly.friday;
+    // The running task's client, from whichever list has the task (for the admin's card).
+    let runClient = "";
+    if (run) {
+      const id = String(run.taskId);
+      const lists = [st.tasks, st.todayFilter && st.todayFilter.tasks, st.thisWeek && st.thisWeek.tasks, st.nextWeek && st.nextWeek.tasks, st.custom && st.custom.tasks, st.deadlineTasks];
+      for (const p of (st.weekly && st.weekly.perDay) || []) lists.push(p && p.tasks, p && p.trackedTasks);
+      for (const l of lists) { const t = (l || []).find((x) => x && String(x.id) === id); const c = t && (t.client || (t.container && t.container.listName)); if (c) { runClient = String(c); break; } }
+    }
     return {
       at: now, est: Number(st.estimateMs) || 0, trk: (Number(st.spentMs) || 0) + live, tgt, n: Number(st.taskCount) || 0, ne: Number(st.noEstimateCount) || 0,
       w: w ? { est: Number(w.estimateMs) || 0, trk: (Number(w.spentMs) || 0) + live, tgt: tgt * (Number(w.count) || 0), from: Number(w.fromTs) || 0, to: Number(w.toTs) || 0 } : null,
-      run: run ? { id: String(run.taskId), name: String(run.taskName || "").slice(0, 160), since: Number(run.startMs) || 0 } : null,
+      run: run ? { id: String(run.taskId), name: String(run.taskName || "").slice(0, 160), since: Number(run.startMs) || 0, client: runClient.slice(0, 80) } : null,
     };
   } catch (e) { return null; }
 }
@@ -9375,8 +9822,32 @@ function slackPickFiles(files, taskName, max, hasAudit) {
   }).filter((x) => x.s > (hasAudit ? 15 : 0)).sort((a, b) => b.s - a.s || b.f.created - a.f.created);
   return scored.slice(0, max || 3).map((x) => ({ ...x.f, why: x.s >= 100 ? "names the task" : x.s > 15 ? "matches the task" : "an audit / report" }));
 }
+// Not a client (Daily Tracking, the Extra task): never looked up in Slack.
+const SLACK_NOT_CLIENT = /^(daily ?tracking|extra ?tasks?)$/i;
+// A file from Slack's search (or shared with a message) in the index's shape, so
+// it can be ranked, fetched and cited the same way. null: not one we can read.
+function slackFileEntry(f, cids, map) {
+  if (!f || !f.id || f.is_external || f.mode === "external" || f.mode === "tombstone" || f.is_hidden_by_limit) return null;
+  const name = String(f.name || f.title || "file");
+  const img = SLACK_IMG_RE.test(name);
+  if (!img && !SLACK_DOC_RE.test(name)) return null;
+  const cid = (Array.isArray(f.channels) ? f.channels : []).concat(Array.isArray(f.groups) ? f.groups : []).find((c) => map[c]) || cids[0];
+  return { id: f.id, name: name.slice(0, 160), size: Number(f.size) || 0, created: (Number(f.created || f.timestamp) || 0) * 1000, url: f.url_private_download || f.url_private || "", permalink: f.permalink || "", user: String(f.user || ""), img, channel: (map[cid] && map[cid].name) || "", cid };
+}
+// Files found by a search this session (not in the channel's file list yet), so
+// SLACK_FILE_GET can fetch them. storage.session: gone when Chrome closes.
+async function slackRememberFound(list) {
+  if (!list.length || !chrome.storage.session) return;
+  const { slackFound } = await chrome.storage.session.get("slackFound").catch(() => ({}));
+  const m = { ...(slackFound || {}) };
+  for (const f of list) m[f.id] = f;
+  const keys = Object.keys(m);
+  for (const k of keys.slice(0, Math.max(0, keys.length - 200))) delete m[k];
+  await chrome.storage.session.set({ slackFound: m }).catch(() => {});
+}
 async function slackTaskLookup(client, taskName, opts) {
   opts = opts || {};
+  if (SLACK_NOT_CLIENT.test(String(client || "").trim())) return { ok: false, reason: "not-a-client" };
   const g = await chrome.storage.local.get(["slackSession", "slackChannels", "slackIndex"]);
   const s = g.slackSession, map = g.slackChannels || {};
   if (!s) return { ok: false, reason: "not-connected" };
@@ -9388,17 +9859,37 @@ async function slackTaskLookup(client, taskName, opts) {
   const all = [].concat(...cids.map((c) => ((idx[c] && idx[c].files) || []).map((f) => ({ ...f, channel: map[c].name || "", cid: c }))));
   // An audit-like file only for the name's sake: when the client has no audit yet.
   const files = slackPickFiles(all, taskName, opts.max || 3, !!opts.hasAudit);
-  let messages = [];
+  let messages = [], images = [];
   if (!opts.noSearch) {
     const code = (String(taskName || "").match(/\b([A-Z]{2,6}-\d{1,4})/) || [])[1] || "";
     const q = code || slackTaskWords(taskName).slice(0, 3).join(" ");
     if (q) {
       const where = cids.map((c) => "in:#" + (map[c].name || "")).filter((x) => x.length > 4).join(" ");
-      const r = await slackApi("search.messages", { query: q + " " + where, count: "8", sort: "timestamp" }, s).catch(() => null);
+      // The messages about the task, and Slack's own file search (it matches a
+      // document's title and text, not only its file name) - side by side.
+      const [r, rf] = await Promise.all([
+        slackApi("search.messages", { query: q + " " + where, count: "8", sort: "timestamp" }, s).catch(() => null),
+        slackApi("search.files", { query: q + " " + where, count: "8", sort: "timestamp" }, s).catch(() => null),
+      ]);
+      // The files shared WITH those messages come first (that's usually exactly
+      // what the task needs), then the search's; each one only once.
+      const shared = [].concat(...((r && r.ok && r.messages && r.messages.matches) || []).map((m) => (Array.isArray(m.files) ? m.files : [])));
+      const searched = (rf && rf.ok && rf.files && rf.files.matches) || [];
+      const have = new Set(files.map((f) => f.id));
+      const more = [];
+      for (const raw of shared.concat(searched)) {
+        const e = slackFileEntry(raw, cids, map);
+        if (!e || have.has(e.id)) continue;
+        have.add(e.id);
+        if (e.img) { if (images.length < 6) images.push({ name: e.name, link: e.permalink, at: e.created }); }
+        else if (more.length < 3) more.push({ ...e, why: shared.includes(raw) ? "shared with a message about the task" : "Slack's search found it" });
+      }
+      files.push(...more);
+      await slackRememberFound(more).catch(() => {});
       messages = ((r && r.ok && r.messages && r.messages.matches) || []).map((m) => ({ text: String(m.text || "").slice(0, 600), who: String(m.username || (m.user_profile && m.user_profile.display_name) || ""), at: Math.round(Number(m.ts) * 1000) || 0, link: m.permalink || "", channel: (m.channel && m.channel.name) || "" })).filter((m) => m.text);
     }
   }
-  return { ok: true, channels: cids.map((c) => map[c].name || ""), files, messages, known: all.filter((f) => !f.img).length };
+  return { ok: true, channels: cids.map((c) => map[c].name || ""), files, messages, images, known: all.filter((f) => !f.img).length };
 }
 // The copies an earlier version saved from Slack into client folders (when it
 // pulled every channel): named by it ("Slack screenshot 2026-10-13 1956 AB12C.png",
@@ -9448,6 +9939,7 @@ async function slackFileGet(id) {
   if (!s) return { ok: false, error: "Slack isn't connected." };
   let f = null;
   for (const c of Object.values(g.slackIndex || {})) { f = ((c && c.files) || []).find((x) => x.id === id); if (f) break; }
+  if (!f && chrome.storage.session) { const { slackFound } = await chrome.storage.session.get("slackFound").catch(() => ({})); f = (slackFound || {})[id] || null; } // found by a search this session
   if (!f || !f.url) return { ok: false, error: "not in the list" };
   if (f.size > 12 * 1048576) return { ok: false, error: "over 12 MB" };
   const blob = await slackFetchFile(f.url, s);
@@ -9978,6 +10470,9 @@ chrome.alarms.onAlarm.addListener(async (alarm) => {
     await sendScheduledDrafts().catch((e) => diagLog("drafts", String(e && e.message ? e.message : e)));
     await deskLink(false).catch(() => {});
     await wpRelayTick().catch(() => {}); // Read from WordPress through the other Chrome profile
+    await maybeAutoDailyUpdate().catch((e) => diagLog("daily update", String(e && e.message ? e.message : e))); // wrap-up › send it by itself
+    await maybeSlackCheckOut().catch((e) => diagLog("slack out", String(e && e.message ? e.message : e)));
+    await maybeSlackPresence().catch((e) => diagLog("slack away", String(e && e.message ? e.message : e)));
     // A timer started or stopped somewhere else (ClickUp, the taskbar app) while
     // no extension page is open: noticed within a minute, so its alerts are set
     // on time (the 5-minute refresh alone could make them up to 5 minutes late).
@@ -12730,6 +13225,14 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         sendResponse({ ...r, state: "ready" });
         break;
       }
+      case "SLACK_AWAY_SET": { sendResponse(await slackSetPresence(msg.presence === "away" ? "away" : "auto").catch((e) => ({ ok: false, error: String((e && e.message) || e) }))); break; }
+      case "SLACK_AHEAD_SYNC": { sendResponse(await slackAheadSync(true).catch((e) => ({ ok: false, error: String((e && e.message) || e) }))); break; }
+      case "SLACK_AHEAD_CANCEL": { sendResponse(await slackAheadCancel(String(msg.key || "")).catch((e) => ({ ok: false, error: String((e && e.message) || e) }))); break; }
+      case "SLACK_OUT_NOW": {
+        // Sent now: today's scheduled one (if Slack hasn't posted it yet) is cancelled, so it isn't posted twice.
+        { const key = ymdLocal(Date.now()) + ":" + (msg.kind === "in" ? "in" : "out"); const sa = ((await chrome.storage.local.get("slackAhead")).slackAhead || {})[key]; if (sa && !sa.cancelled && sa.postAt > Date.now()) await slackAheadCancel(key).catch(() => {}); }
+        const g = await chrome.storage.local.get("slackOut"); sendResponse(await slackOutPost({ ...(g.slackOut || {}), ...(msg.cfg || {}) }, "button", msg.kind === "in" ? "in" : "out").catch((e) => ({ ok: false, error: String((e && e.message) || e) }))); break; }
+      case "DAILY_UPDATE_SEND": { sendResponse(await sendDailyUpdate(msg.text, "button").catch((e) => ({ ok: false, error: String((e && e.message) || e) }))); break; }
       case "CLICKUP_DONE_TODAY": {
         // Wrap-up page's Daily Tasks Update: every task you closed today, in every
         // project, with its client and the links in its description. Asked when the

@@ -485,6 +485,7 @@ async function load() {
       ["arQuotaTime1", "arQuotaTime2", "arQuotaTime3"].forEach(id => $(id).oninput = updateNepalTimes);
     }
     optClickup = state.clickup || {};
+    try { cuStagedPruneAll(optClickup.state); } catch (e) {}
     renderClickupSettings(optClickup);
     try { renderDashStrip(); } catch (e) {}
     if (optClickup && optClickup.configured && !cuTeams.length) refreshCuTeams().catch(() => {});
@@ -1830,14 +1831,22 @@ function cuGuessMs(t, ctx) {
 function cuEstGuess(estSpan, t, ctx, keptOnly) {
   if (!estSpan || !t) return;
   const id = cuId(t), st = cuEstStaged[id];
-  if (!st && (Number(t.estimateMs) > 0 || keptOnly)) return; // keptOnly: Explore shows your kept changes, no guesses
+  if (!st && (Number(t.estimateMs) > 0 || keptOnly)) return;
+  if (!st && cuEstPendingOpt.has(id)) return; // just set in ClickUp, syncing: no guess beside it // keptOnly: Explore shows your kept changes, no guesses
   const chip = document.createElement("span");
   if (st) {
-    chip.className = "est-staged";
-    chip.textContent = (Number(st.ms) > 0 ? fmtDurOpt(st.ms) : "no est") + " \u270E";
-    chip.title = "Estimate kept here, not in ClickUp yet" + (Number(st.was) > 0 ? " (it's " + fmtDurOpt(st.was) + " in ClickUp)" : "") + " - press Apply to ClickUp to set it. Click to drop it.";
+    chip.className = "est-staged" + (cuEstApplying.has(id) ? " saving" : "");
+    const val = Number(st.ms) > 0 ? fmtDurOpt(st.ms) : "no est";
     estSpan.style.display = "none";
-    chip.onclick = (e) => { e.preventDefault(); e.stopPropagation(); delete cuEstStaged[id]; cuEstSave(); cuGuessRepaint(); };
+    if (cuEstApplying.has(id)) {
+      chip.textContent = val + " \u00b7 Saving\u2026";
+      chip.title = "Setting this estimate in ClickUp\u2026";
+      chip.onclick = (e) => { e.preventDefault(); e.stopPropagation(); };
+    } else {
+      chip.textContent = val + " \u270E";
+      chip.title = "Estimate kept here, not in ClickUp yet" + (Number(st.was) > 0 ? " (it's " + fmtDurOpt(st.was) + " in ClickUp)" : "") + " - press \u270E not applied \u00b7 Apply next to the task's name to set it. Click here to drop it.";
+      chip.onclick = (e) => { e.preventDefault(); e.stopPropagation(); delete cuEstStaged[id]; cuEstSave(); cuGuessRepaint(); };
+    }
   } else {
     const g = cuGuessEst(t, ctx);
     if (!g || g.none) { if (g && g.none) estSpan.title = g.why; return; }
@@ -1856,19 +1865,38 @@ function cuGuessRepaint() {
 }
 // Apply kept estimates, one at a time, saying how far it is.
 let cuEstSaving = null;
+const cuEstApplying = new Set(); // ids being set in ClickUp right now (their chip says Saving…)
+let cuEstRun = null; // the ids the running Apply works through (a later Apply adds to it)
 async function cuApplyEsts(ids) {
   ids = (ids || []).map(String).filter((id) => cuEstStaged[id]);
   if (!ids.length) return;
+  if (cuEstRun) { // one is running: these join it, one at a time like the rest
+    for (const id of ids) if (!cuEstRun.includes(id)) { cuEstRun.push(id); cuEstApplying.add(id); cuEstSaving.total++; }
+    cuGuessRepaint();
+    return;
+  }
+  cuEstRun = ids.slice();
   cuEstSaving = { done: 0, total: ids.length, failed: [] };
   cuGuessRepaint();
-  for (const id of ids) {
+  for (let i = 0; i < cuEstRun.length; i++) {
+    const id = cuEstRun[i];
     const st = cuEstStaged[id];
+    if (!st) { cuEstApplying.delete(id); cuEstSaving.done++; continue; } // dropped meanwhile
+    cuEstApplying.add(id);
+    cuGuessRepaint();
     const r = await send({ type: "SET_CLICKUP_ESTIMATE", taskId: id, estimateMs: Number(st.ms) || 0 }, 20000).catch(() => null);
-    if (r && r.ok) delete cuEstStaged[id]; else cuEstSaving.failed.push(st.name || id);
+    cuEstApplying.delete(id);
+    if (r && r.ok) {
+      delete cuEstStaged[id];
+      // Until ClickUp's data has it, the row shows the new value as syncing (never "no est" again for a moment).
+      try { markEstPendingOpt(id, Number(st.ms) || 0, !!st.share); } catch (e) {}
+    } else cuEstSaving.failed.push(st.name || id);
     cuEstSaving.done++;
     cuEstSave();
     cuGuessRepaint();
+    try { applyEstPendingOpt(); } catch (e) {} // the redrawn row shows the new value as syncing straight away
   }
+  cuEstRun = null;
   const f = cuEstSaving.failed;
   cuEstSaving = null;
   optWeekMsg = { at: Date.now(), err: !!f.length, text: f.length ? "Couldn't set the estimate of " + f.join(", ") + " - still kept here." : "Estimates set in ClickUp \u2713" };
@@ -2341,6 +2369,33 @@ function makeListResizable(el, key) {
   });
 }
 
+// "✎ not applied · Apply" next to a task's name, in every list: the task has a
+// change kept here that ClickUp doesn't have yet - a due date moved in This week
+// by day and/or an estimate typed or a guess picked. One click sets this task's
+// changes in ClickUp (Saving… meanwhile); the day's / Apply all buttons still do many.
+function cuNotAppliedChip(wrap, t) {
+  const id = cuWeekId(t);
+  if (!id) return;
+  const mv = optWeekStaged.has(id), est = !!cuEstStaged[id], saving = cuEstApplying.has(id);
+  if (!mv && !est && !saving) return;
+  const sc = document.createElement("button");
+  sc.type = "button"; sc.className = "wk-stchip" + (saving ? " saving" : ""); sc.draggable = false;
+  sc.addEventListener("mousedown", (e) => e.stopPropagation());
+  if (saving) {
+    sc.disabled = true; sc.textContent = "Saving\u2026"; sc.title = "Setting it in ClickUp\u2026";
+  } else {
+    const what = [mv ? "its new due date" : "", est ? "its estimate (" + (Number(cuEstStaged[id].ms) > 0 ? fmtDurOpt(cuEstStaged[id].ms) : "none") + ")" : ""].filter(Boolean).join(" and ");
+    sc.textContent = "\u270E not applied \u00b7 Apply";
+    sc.title = "Changed here, not in ClickUp yet: " + what + ". Click to set it in ClickUp for this task only.";
+    sc.onclick = (e) => {
+      e.preventDefault(); e.stopPropagation();
+      sc.disabled = true; sc.textContent = "Saving\u2026"; sc.classList.add("saving");
+      if (optWeekStaged.has(id)) cuApplyStaged([id]);
+      if (cuEstStaged[id]) cuApplyEsts([id]); else cuGuessRepaint();
+    };
+  }
+  wrap.appendChild(sc);
+}
 function appendNameCellOpt(row, nm, t) {
   // ▸ opens the task details dropdown (task-panel.js).
   if (window.PcmTaskPanel) row.appendChild(PcmTaskPanel.chevron(t));
@@ -2364,6 +2419,7 @@ function appendNameCellOpt(row, nm, t) {
     wrap.appendChild(pa);
   }
   wrap.appendChild(nm);
+  try { cuNotAppliedChip(wrap, t); } catch (e) {} // never let it break a row (e.g. drawn before the page finished loading)
   if (t && t.childCount) {
     const k = document.createElement("span");
     k.className = "cu-kids";
@@ -3506,6 +3562,40 @@ function cuStageMoves(moves) {
   const n = optWeekStaged.size;
   optWeekMsg = n ? { at: Date.now(), text: "\u270E " + n + " change" + (n === 1 ? "" : "s") + " kept here - press Apply to ClickUp when the week looks right." } : { at: Date.now(), text: "Back where it was - nothing to change in ClickUp." };
 }
+// Changes kept here that ClickUp has since overtaken - the task's due date or
+// estimate was changed there (by Apply, by you in ClickUp, or by a teammate):
+// dropped, so "not applied" never shows for something ClickUp already has.
+// A moved task: its due day in the fresh data isn't the day it was moved FROM.
+// An estimate: ClickUp now has the kept value, or a different one than before.
+function cuStagedPruneAll(st) {
+  if (!st || (!optWeekStaged.size && !Object.keys(cuEstStaged).length)) return false;
+  const dayOf = (ms) => (Number(ms) > 0 ? new Date(Number(ms)).setHours(0, 0, 0, 0) : 0);
+  const due = new Map(), est = new Map();
+  const full = (t) => !("dayEstimateMs" in t) && !("totalEstimateMs" in t) && t.type !== "cfg" && t.type !== "extra";
+  const look = (t) => {
+    const id = cuWeekId(t);
+    if (!id || t._staged) return;
+    if (!due.has(id) && "dueDateMs" in t) due.set(id, Number(t.dueDateMs) || 0);
+    if (!est.has(id) && full(t)) est.set(id, Number(t.estimateMs) || 0);
+  };
+  // The today list is fetched every refresh - looked at first.
+  for (const b of [st, st.todayFilter, st.tomorrow, st.thisWeek, st.nextWeek, st.custom]) for (const t of (b && b.tasks) || []) look(t);
+  for (const p of (st.weekly && st.weekly.perDay) || []) for (const t of (p && p.tasks) || []) look(t);
+  let changed = false;
+  for (const [id, s] of [...optWeekStaged]) {
+    if (!due.has(id)) continue;
+    if (dayOf(due.get(id)) !== dayOf(s.oldDueMs)) { optWeekStaged.delete(id); changed = true; }
+  }
+  if (changed) cuStagedSave();
+  let estChanged = false;
+  for (const [id, s] of Object.entries(cuEstStaged)) {
+    if (!est.has(id) || !s) continue;
+    const now = est.get(id);
+    if (now === Number(s.ms) || (s.was != null ? now !== Number(s.was) : now > 0)) { delete cuEstStaged[id]; estChanged = true; }
+  }
+  if (estChanged) cuEstSave();
+  return changed || estChanged;
+}
 // Apply some (or all) staged moves: the move queue does it (status, Undo, reload-proof).
 async function cuApplyStaged(ids) {
   const items = ids.map((id) => optWeekStaged.get(String(id))).filter(Boolean);
@@ -3974,8 +4064,8 @@ function renderOptionsWeekly(cu) {
             const nm = makeLinkOpt(t.url, t.name || "(untitled task)");
             appendDoneTickOpt(nm, t);
             if (t._moving) { const mv = document.createElement("span"); mv.className = "wk-mvchip"; mv.textContent = "\u23F3 moving"; nm.appendChild(mv); }
-            if (t._staged) { row.classList.add("wk-staged"); const sc = document.createElement("span"); sc.className = "wk-stchip"; sc.textContent = "\u270E not applied yet"; sc.title = "Moved here in this extension only - press Apply to ClickUp (this day or all) to change its due date in ClickUp. Drag it back to its day to undo."; nm.appendChild(sc); }
             appendNameCellOpt(row, nm, t);
+            if (t._staged) row.classList.add("wk-staged"); // its "✎ not applied · Apply" comes from appendNameCellOpt
             const spans = document.createElement("span");
             spans.className = "estpairs";
             const est = document.createElement("span");
@@ -7025,7 +7115,13 @@ function renderClickupPreviewBody(st) {
         const withG = viewTasks.reduce((a, t) => a + cuGuessMs(t, gctx), 0);
         if (withG !== 0) { const s = document.createElement("span"); s.className = "cu-gtot"; s.title = "With the guessed estimates (and the ones you kept, not in ClickUp yet) for the tasks that have none"; s.textContent = "~" + fmtDurOpt(Math.max(0, estAll + withG)) + " with guesses"; tot.append(" \u00b7 ", s); }
         const kept = viewTasks.map(cuId).filter((id) => cuEstStaged[id]);
-        if (cuEstSaving) tot.append(" \u00b7 ", Object.assign(document.createElement("b"), { textContent: "Saving estimates\u2026 " + cuEstSaving.done + " of " + cuEstSaving.total }));
+        if (cuEstSaving) {
+          tot.append(" \u00b7 ", Object.assign(document.createElement("b"), { textContent: "Saving estimates\u2026 " + cuEstSaving.done + " of " + cuEstSaving.total }));
+          const bar = document.createElement("div");
+          bar.className = "wk-stagebar cu-estbar";
+          bar.append(Object.assign(document.createElement("span"), { className: "cu-estbar-saving", textContent: "Saving estimates in ClickUp\u2026 " + cuEstSaving.done + " of " + cuEstSaving.total }));
+          lists.prepend(bar);
+        }
         else if (kept.length) {
           const ap = document.createElement("button"); ap.type = "button"; ap.className = "wk-apply sm"; ap.textContent = "Apply " + kept.length + " estimate" + (kept.length === 1 ? "" : "s") + " to ClickUp";
           ap.onclick = () => { ap.disabled = true; cuApplyEsts(kept); };
@@ -7033,6 +7129,16 @@ function renderClickupPreviewBody(st) {
           dc.title = "Forget the estimates you kept (nothing changes in ClickUp)";
           dc.onclick = () => { for (const id of kept) delete cuEstStaged[id]; cuEstSave(); cuGuessRepaint(); };
           tot.append(" ", ap, " ", dc);
+          const bar = document.createElement("div");
+          bar.className = "wk-stagebar cu-estbar";
+          const tx = document.createElement("span");
+          tx.textContent = "\u270E " + kept.length + " estimate" + (kept.length === 1 ? "" : "s") + " kept here, not in ClickUp yet - \u270E not applied \u00b7 Apply next to a task sets just that one.";
+          const ap2 = document.createElement("button"); ap2.type = "button"; ap2.className = "wk-apply"; ap2.textContent = "Apply " + (kept.length === 1 ? "it" : "all " + kept.length) + " to ClickUp";
+          ap2.onclick = () => { ap2.disabled = true; cuApplyEsts(kept); };
+          const dc2 = document.createElement("button"); dc2.type = "button"; dc2.className = "wk-selclear"; dc2.textContent = "Discard";
+          dc2.title = dc.title; dc2.onclick = dc.onclick;
+          bar.append(tx, ap2, dc2);
+          lists.prepend(bar);
         }
       }
       tot.title = "Added up from the rows below, under the filter, day, client and search that are on now.";
@@ -9292,6 +9398,7 @@ function scheduleClickupUiRefresh(delay) {
       const st = await send({ type: "GET_STATE" });
       if (st) {
         optClickup = st.clickup || {};
+        try { cuStagedPruneAll(optClickup.state); } catch (e) {}
         cuAutoPaint = true;
         try { renderClickupSettings(optClickup); } finally { cuAutoPaint = false; }
         try { renderDashStrip(); } catch (e) {} try { if (insTabActive()) renderInsights(); } catch (e) {}
@@ -10705,7 +10812,7 @@ const ADMIN_FILES = [
   "manifest.json", "background.js", "popup.html", "popup.js", "options.html", "options.js", "phone-timer.js",
   "offscreen.html", "offscreen.js", "update.html", "update.js", "auto-update.html", "auto-update.js", "wrapup.html", "wrapup.js",
   "notify-menu.js", "export-tasks.js", "lib-zip.js", "lib-unzip.js", "lib-automation.js",
-  "lib-availability.js", "lib-clickup.js", "lib-crypto.js", "lib-tidy.js", "lib-drive.js", "find-many.js", "week-fold.js", "ar-status.js", "automation.js", "lib-rules.js", "nav-badges.js", "simple-view.js", "task-panel.js", "lib-updater.js", "offscreen-updater.js", "celebrate.js", "celebrate.html", "celebrate-window.js", "fx.js", "pcm-help.js", "tracker.html", "tracker.js", "bulk-edit.js", "pcm-search.js", "lib-taskfiles.js", "task-files.js", "reminders.js", "hub.js", "task-sort.js", "breakdown.js", "calendar.js", "notices.js", "insights-plus.js", "header-ui.js", "weather.js", "paused-clients.js", "client-notices.js", "plan-apply.js", "task-notes.js", "task-dupes.js", "rollup-help.js", "md-notes.js", "mention.js", "long-list.js", "local-tasks.js", "ui-extras.js", "assignees.js", "add-time.js", "team-hub.gs", "vendor/pdf.min.js", "vendor/pdf.worker.min.js", "vendor/pdfjs-LICENSE.txt",
+  "lib-availability.js", "lib-clickup.js", "lib-crypto.js", "lib-tidy.js", "lib-drive.js", "find-many.js", "week-fold.js", "ar-status.js", "automation.js", "lib-rules.js", "nav-badges.js", "simple-view.js", "task-panel.js", "lib-updater.js", "offscreen-updater.js", "celebrate.js", "celebrate.html", "celebrate-window.js", "fx.js", "pcm-help.js", "tracker.html", "tracker.js", "bulk-edit.js", "pcm-search.js", "lib-taskfiles.js", "task-files.js", "reminders.js", "hub.js", "task-sort.js", "breakdown.js", "calendar.js", "notices.js", "insights-plus.js", "header-ui.js", "weather.js", "paused-clients.js", "client-notices.js", "lib-dailyupdate.js", "plan-apply.js", "task-notes.js", "task-dupes.js", "rollup-help.js", "md-notes.js", "mention.js", "long-list.js", "local-tasks.js", "ui-extras.js", "assignees.js", "add-time.js", "team-hub.gs", "vendor/pdf.min.js", "vendor/pdf.worker.min.js", "vendor/pdfjs-LICENSE.txt",
   "icons/icon16.png", "icons/icon48.png", "icons/icon128.png", "icons/celebrate.png", "icons/sad.png",
   "sounds/notify.wav", "sounds/danger.mp3", "sounds/winner.wav",
   "README.md", "CHANGELOG.md",

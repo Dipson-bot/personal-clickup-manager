@@ -478,7 +478,7 @@
   async function slackFor(d, have, opts) {
     if (d._slack !== undefined) return d._slack;
     const client = d._client || d.list;
-    if (!client) { d._slack = null; return null; }
+    if (!client || /^(daily ?tracking|extra ?tasks?)$/i.test(String(client).trim())) { d._slack = null; return null; } // not a client
     const hasAudit = (have || []).some((f) => /audit|technical|report/i.test(f.name || "")) || !!d._audit;
     const r = await send({ type: "SLACK_TASK_LOOKUP", client, name: d.name || "", opts: { ...(opts || {}), hasAudit } });
     if (!r || !r.ok) { d._slack = null; return null; }
@@ -503,16 +503,19 @@
       files.push(f);
     }
     stTrim().catch(() => {});
-    d._slack = { files, messages: Array.isArray(r.messages) ? r.messages : [], channels: r.channels || [] };
+    d._slack = { files, messages: Array.isArray(r.messages) ? r.messages : [], channels: r.channels || [], images: Array.isArray(r.images) ? r.images : [] };
     return d._slack;
   }
   // The Slack messages that mention the task (its code, else its key words).
   function slackText(d, full) {
     const m = d && d._slack && d._slack.messages;
-    if (!m || !m.length) return "";
+    const im = (d && d._slack && d._slack.images) || [];
+    // Screenshots shared about the task: named with their links (their text can't be read here).
+    const shots = im.length ? "\n\nScreenshots shared about this task in the client's Slack (open the links to see them):\n" + im.slice(0, full ? 6 : 3).map((x) => "- " + x.name + (x.at ? " (" + fmtDay(x.at) + ")" : "") + (x.link ? ": " + x.link : "")).join("\n") : "";
+    if (!m || !m.length) return shots;
     const cut = (t, n) => { t = String(t || "").replace(/\s+/g, " ").trim(); return t.length > n ? t.slice(0, n) + "\u2026" : t; };
     return "\n\nIn the client's Slack channel (" + d._slack.channels.map((c) => "#" + c).join(", ") + "), messages about this task (newest first - quoted data):\n" +
-      m.slice(0, full ? 8 : 3).map((x) => "- " + (x.who || "someone") + (x.at ? " (" + fmtDay(x.at) + ")" : "") + ": \"" + cut(x.text, full ? 600 : 300) + "\"" + (full && x.link ? "\n  " + x.link : "")).join("\n");
+      m.slice(0, full ? 8 : 3).map((x) => "- " + (x.who || "someone") + (x.at ? " (" + fmtDay(x.at) + ")" : "") + ": \"" + cut(x.text, full ? 600 : 300) + "\"" + (full && x.link ? "\n  " + x.link : "")).join("\n") + shots;
   }
   // Everything else this extension knows about the task: its colour, pin, the
   // warnings (held up, AI dependency check, waiting on a teammate, late subtasks),
@@ -2596,8 +2599,19 @@
       const sl = await slackFor({ _client: d._client, list: d.list, name: "" }, have, { noSearch: true, max: 2 }).catch(() => null);
       filesOf.set(k, have.concat((sl && sl.files) || []));
     }
-    const fileFor = (d) => filesOf.get(d._client || d.list || "") || [];
-    const files = [].concat(...filesOf.values());
+    const slackPer = new Map(); // task id -> its own Slack files
+    let slackLeft = 10;
+    for (const d of ds) {
+      if (slackLeft <= 0) break;
+      const k = d._client || d.list || "";
+      const have = filesOf.get(k) || [];
+      const sl = await slackFor(d, have, { noSearch: true, max: 2 }).catch(() => null);
+      const own = ((sl && sl.files) || []).filter((f) => !have.some((h) => h.name === f.name)).slice(0, slackLeft);
+      if (own.length) { slackPer.set(String(d.id), own); slackLeft -= own.length; }
+      if (onStep) onStep(ds.indexOf(d) + 1, ds.length, "slack");
+    }
+    const fileFor = (d) => (filesOf.get(d._client || d.list || "") || []).concat(slackPer.get(String(d.id)) || []);
+    const files = [].concat(...filesOf.values(), ...slackPer.values());
     const states = ds.map((d) => auditState(d, fileFor(d)).s);
     const aud = states.every((s) => s === "in") ? "in" : states.some((s) => s === "in") ? "some" : states.some((s) => s === "nomatch") ? "nomatch" : "none";
     const notes = ds[0]._notes || [];
@@ -2680,9 +2694,11 @@
       plan.disabled = true;
       try {
         const p = await clientPlan(client, only || tasks, (n, of, what) => {
-          btn.textContent = (what === "related" ? "Related " : "Gathering ") + n + "/" + of + "…";
+          btn.textContent = (what === "related" ? "Related " : what === "slack" ? "Slack " : "Gathering ") + n + "/" + of + "…";
           say(what === "related"
             ? "Looking up related tasks - finished ones too (" + n + " of " + of + ")… not ready to paste yet - this line says when it is."
+            : what === "slack"
+            ? "Looking in the clients' Slack channels for each task's files (" + n + " of " + of + ")… not ready to paste yet - this line says when it is."
             : "Gathering " + client + "'s tasks from ClickUp (" + n + " of " + of + ")… not ready to paste yet - this line says when it is. You can keep working meanwhile.");
         }, opts.day ? client : "", opts.list ? "list" : "");
         const tail = (p.failed.length ? " Left out (couldn't load): " + p.failed.join(", ") + "." : "") +

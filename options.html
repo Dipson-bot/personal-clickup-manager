@@ -674,6 +674,9 @@
   .est-guess { color: var(--muted); border: 1px dashed var(--border); }
   .est-guess:hover { color: var(--indigo); border-color: var(--indigo); }
   .est-staged { color: var(--amber, #d97706); border: 1px dashed currentColor; background: color-mix(in srgb, var(--amber, #d97706) 9%, transparent); }
+  .est-staged.saving { cursor: progress; border-style: solid; }
+  .est-staged.saving::after { content: ""; display: inline-block; width: 8px; height: 8px; margin-left: 5px; border: 2px solid currentColor; border-right-color: transparent; border-radius: 50%; animation: cu-spin .7s linear infinite; vertical-align: -1px; }
+  .cu-estbar { margin: 0 0 8px; }
   .cu-gtot, .wk-gtot { color: var(--indigo); font-weight: 600; }
   /* drafts (not in ClickUp yet) for a day: dashed, like the draft pills */
   .wk-draftest { font-size: 11.5px; font-weight: 600; padding: 1px 8px; border-radius: 999px; border: 1px dashed color-mix(in srgb, var(--indigo, #6366f1) 55%, transparent); color: var(--indigo, #6366f1); white-space: nowrap; }
@@ -890,7 +893,10 @@
   #optWeekList .cu-task.wk-dragging > * { opacity: .45; }
   #optWeekList .cu-task.wk-moving > * { opacity: .6; }
   #optWeekList .cu-task.wk-staged > * { background: color-mix(in srgb, var(--amber, #d97706) 9%, transparent); }
-  #optWeekList .wk-stchip { margin-left: 6px; padding: 0 6px; border-radius: 999px; font-size: 10.5px; font-weight: 700; color: var(--amber, #d97706); border: 1px dashed currentColor; white-space: nowrap; }
+  .cu-task .wk-stchip { flex: none; margin: 0; padding: 0 7px; border-radius: 999px; font: inherit; font-size: 10.5px; font-weight: 700; line-height: 1.6; color: var(--amber, #d97706); background: transparent; border: 1px dashed currentColor; white-space: nowrap; cursor: pointer; }
+  .cu-task .wk-stchip:hover { border-style: solid; background: color-mix(in srgb, var(--amber, #d97706) 14%, transparent); }
+  .cu-task .wk-stchip:disabled { cursor: progress; opacity: .8; }
+  .cu-task .wk-stchip.saving::after { content: ""; display: inline-block; width: 8px; height: 8px; margin-left: 5px; border: 2px solid currentColor; border-right-color: transparent; border-radius: 50%; animation: cu-spin .7s linear infinite; vertical-align: -1px; }
   .wk-stagebar { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; margin: 0 0 10px; padding: 7px 10px; border: 1px dashed var(--amber, #d97706); border-radius: 8px; background: color-mix(in srgb, var(--amber, #d97706) 8%, transparent); font-size: 12.5px; }
   .wk-stagebar > span { flex: 1 1 260px; }
   .wk-apply { font: inherit; font-size: 12px; font-weight: 700; padding: 3px 10px; border-radius: 7px; border: 1px solid var(--green, #16a34a); background: var(--green, #16a34a); color: #fff; cursor: pointer; white-space: nowrap; }

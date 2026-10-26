@@ -1,5 +1,13 @@
 # Changelog
 
+## v4.3.1
+- The calendar's time picker (reminders, scheduled comments and drafts, every date-and-time box) now offers every minute, not only 5-minute steps.
+- Wrap up the day: Send to #daily-task-update posts the Daily Tasks Update in Slack as you (links stay clickable), and a tick box sends it by itself on weekdays at the time you pick - once a day, your edited text if you changed it, never when nothing was completed - with a notification and a link to the message.
+- AI briefs (Copy for AI, Ask, Explain, Plan with AI) find more of a task's files in the client's Slack channel: the files shared with the messages about the task and the ones Slack's own search finds (by title and text), not only files named after it - so a client with no files kept in the extension still gets what its channel has. Screenshots shared about the task are listed with their links, and Plan with AI also reads each task's own Slack files (up to 10 per plan).
+- A task with a change kept here that ClickUp doesn't have yet (a due date moved in This week by day, an estimate typed or a guess picked) shows ✎ not applied · Apply next to its name in every list: one click sets just that task's changes in ClickUp. While it saves it says Saving…, and afterwards the row keeps the new estimate instead of flashing back to no est. The dashboard's Tasks card also shows the "not in ClickUp yet" bar at the top.
+- Changes made in ClickUp itself (a new estimate, due or start date, status, name or priority) now show in every list within one refresh (about 5 minutes) - before, the This week, Mon-Fri, next week and custom lists could keep the old values for up to an hour. A move or estimate kept as "not applied" that ClickUp already has (applied, or changed there) is cleared by itself.
+- Admin: a person's day card shows the client of the task they're working on.
+
 ## v4.3.0
 - Site monitor: Only my clients shows, counts and checks just the sites of the clients on your Clients tab (no down alerts for the others); the other sites stay saved and come back when you untick it.
 - Clients: any client can now be hidden from your list with ✕ (its files and notes are kept; Show hidden brings it back), and hovering a client shows which of your tasks put it there.

@@ -51,39 +51,8 @@ async function loadDone(force) {
   else { doneErr = (r && (r.error || r.reason)) || "couldn't reach the extension"; if (!doneRows) doneRows = []; }
   render();
 }
-// "🔥 Acme Plumbing SEO" -> "Acme Plumbing", "NORTH STAR ROOFING SEO" -> "North Star Roofing".
-function projectName(client) {
-  let n = String(client || "").replace(/^[^\p{L}\p{N}]+/u, "").replace(/\s+seo\s*$/i, "").trim();
-  if (n && n === n.toUpperCase() && /[A-Z]{2}/.test(n)) n = n.toLowerCase().replace(/\b\p{L}/gu, (c) => c.toUpperCase());
-  return n || "Other";
-}
-const byName = (a, b) => String(a.name || "").localeCompare(String(b.name || ""), undefined, { numeric: true, sensitivity: "base" });
-function linkPart(links) {
-  const l = Array.isArray(links) ? links : [];
-  if (!l.length) return "";
-  return " : " + (l.length === 1 ? "<" + l[0] + "|Click Here>" : l.map((u, i) => "<" + u + "|Click Here " + (i + 1) + ">").join("  "));
-}
 function buildStandup() {
-  const L = ["Daily Tasks Update", "Date: " + new Date().toLocaleDateString("en-GB", { day: "numeric", month: "long", year: "numeric" }), ""];
-  if (doneRows === null) { L.push("Loading the tasks you completed today…"); return L.join("\n"); }
-  const rows = doneRows.filter((t) => !isExtra(t));
-  if (!rows.length) {
-    L.push(doneErr ? "Couldn't load today's completed tasks: " + doneErr : "No tasks completed today yet.");
-    return L.join("\n");
-  }
-  const groups = new Map();
-  for (const t of rows) {
-    const p = projectName(t.client);
-    if (!groups.has(p)) groups.set(p, []);
-    groups.get(p).push(t);
-  }
-  const order = [...groups.entries()].sort((a, b) => b[1].length - a[1].length || a[0].localeCompare(b[0]));
-  order.forEach(([p, list], i) => {
-    if (i) L.push("");
-    L.push("Project Name: " + p, "  Complete (" + list.length + ")");
-    for (const t of list.slice().sort(byName)) L.push("    · " + t.name + linkPart(t.links));
-  });
-  return L.join("\n");
+  return window.PcmDailyUpdate.build(doneRows, { error: doneErr });
 }
 // Rich-text copy: <url|label> becomes a real link, leading spaces survive.
 const escHtml = (s) => String(s).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
@@ -203,8 +172,16 @@ function render() {
   $("rebuild").hidden = !standupEdited;
 }
 
-$("standup").addEventListener("input", () => { standupEdited = true; $("rebuild").hidden = false; });
-$("rebuild").onclick = () => { standupEdited = false; render(); };
+// The edited text is kept for today, so the scheduled send posts what you wrote.
+const todayKey = () => { const d = new Date(); return d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0") + "-" + String(d.getDate()).padStart(2, "0"); };
+let draftT = 0;
+$("standup").addEventListener("input", () => {
+  standupEdited = true; $("rebuild").hidden = false;
+  clearTimeout(draftT);
+  draftT = setTimeout(() => { chrome.storage.local.set({ dailyUpdateDraft: { day: todayKey(), text: $("standup").value } }).catch(() => {}); }, 500);
+});
+const dropDraft = () => { clearTimeout(draftT); chrome.storage.local.remove("dailyUpdateDraft").catch(() => {}); };
+$("rebuild").onclick = () => { standupEdited = false; dropDraft(); render(); };
 $("copy").onclick = async () => {
   const b = $("copy");
   const text = $("standup").value;
@@ -224,9 +201,62 @@ $("refreshDone").onclick = async () => {
   const b = $("refreshDone");
   b.disabled = true;
   standupEdited = false;
+  dropDraft();
   await loadDone(true);
   b.disabled = false;
 };
+
+// ---- Send to #daily-task-update (posted as you through the extension's Slack sign-in) ----
+const fmtTime = (ms) => new Date(ms).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+function sentLine(sent) {
+  const m = $("sendMsg");
+  m.className = "hint" + (sent && sent.link ? " ok" : "");
+  m.textContent = "";
+  if (!sent || sent.day !== todayKey()) return;
+  if (sent.skipped) { m.textContent = "Not sent today: " + sent.skipped + "."; return; }
+  m.append("\u2713 Sent to #" + (sent.channel || "daily-task-update") + " at " + fmtTime(sent.at) + (sent.how === "auto" ? " (by itself)" : "") + " \u00b7 ");
+  const a = document.createElement("a");
+  a.href = sent.link; a.target = "_blank"; a.rel = "noopener"; a.textContent = "Open in Slack";
+  m.appendChild(a);
+}
+async function initSend() {
+  const b = $("sendSlack");
+  const g = await chrome.storage.local.get(["slackSession", "dailyUpdateSent"]).catch(() => ({}));
+  if (!g.slackSession) { b.disabled = true; b.title = "Connect Slack first: Options \u203A Clients \u203A Slack channels \u203A Connect"; $("sendMsg").textContent = "Connect Slack (Options \u203A Clients) to send it from here."; }
+  else sentLine(g.dailyUpdateSent);
+  b.onclick = async () => {
+    const text = $("standup").value.trim();
+    if (!text || /^Loading the tasks/m.test(text)) return;
+    const prev = (await chrome.storage.local.get("dailyUpdateSent").catch(() => ({}))).dailyUpdateSent;
+    if (prev && prev.day === todayKey() && prev.link && !confirm("Today's update was already sent at " + fmtTime(prev.at) + ". Send it again?")) return;
+    b.disabled = true; b.textContent = "Sending\u2026";
+    const m = $("sendMsg"); m.className = "hint"; m.textContent = "Posting in #daily-task-update\u2026";
+    let r = null;
+    try { r = await chrome.runtime.sendMessage({ type: "DAILY_UPDATE_SEND", text }); } catch (e) { r = null; }
+    b.disabled = false; b.textContent = "Send to #daily-task-update";
+    if (r && r.ok) sentLine(r);
+    else { m.className = "hint err"; m.textContent = "Not sent: " + ((r && r.error) || "no answer from the extension - reload it and try again."); }
+  };
+  chrome.storage.onChanged.addListener((ch, area) => { if (area === "local" && ch.dailyUpdateSent) sentLine(ch.dailyUpdateSent.newValue); });
+  // Send it by itself (weekdays, not on company holidays, once a day).
+  const on = $("autoSend"), at = $("autoAt"), msg = $("autoMsg");
+  // On this computer only (not synced): two computers would post it twice.
+  let s = {};
+  try { s = (await chrome.storage.local.get("dailyUpdateAuto")).dailyUpdateAuto || {}; } catch (e) {}
+  on.checked = !!s.on;
+  at.value = s.time || "17:30";
+  at.disabled = !on.checked;
+  const save = async () => {
+    at.disabled = !on.checked;
+    try {
+      await chrome.storage.local.set({ dailyUpdateAuto: { on: on.checked, time: at.value || "17:30" } });
+      msg.textContent = on.checked ? "On \u2713 (this computer) - sent once a day after " + (at.value || "17:30") + (g.slackSession ? "" : " (connect Slack first)") + ". If you edit the text here today, your edited text is sent." : "Off";
+    } catch (e) { msg.textContent = "Couldn't save"; }
+  };
+  on.onchange = save;
+  at.onchange = save;
+}
+initSend();
 
 // Reminder controls (same settings as Options > ClickUp setup > Tracking settings).
 async function initReminder() {
@@ -255,6 +285,17 @@ initReminder();
     if (theme === "dark") document.documentElement.dataset.theme = "dark";
     const { clickupState } = await chrome.storage.local.get("clickupState");
     st = clickupState && typeof clickupState === "object" && !clickupState.error ? clickupState : null;
+  } catch (e) {}
+  // Edited earlier today: that text is shown again (it's what the scheduled send
+  // would post) - Rebuild brings back today's full list.
+  try {
+    const { dailyUpdateDraft: dr } = await chrome.storage.local.get("dailyUpdateDraft");
+    if (dr && dr.day === todayKey() && String(dr.text || "").trim()) {
+      standupEdited = true;
+      $("standup").value = String(dr.text);
+      $("rebuild").hidden = false;
+      $("standupHint").textContent = "Your edited text from earlier today (this is what's sent). Rebuild shows today's full list again.";
+    }
   } catch (e) {}
   render();
   loadDone(false);

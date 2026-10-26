@@ -1247,6 +1247,22 @@ function makeListResizable(el, key) {
   });
 }
 
+// "✎ not applied · Apply" next to a task's name: an estimate typed or a guess
+// picked here that ClickUp doesn't have yet. One click sets it for this task only.
+function cuNotAppliedChip(wrap, t) {
+  const id = cuId(t);
+  if (!id || (!cuEstStaged[id] && !cuEstApplying.has(id))) return;
+  const sc = document.createElement("button");
+  sc.type = "button"; sc.className = "wk-stchip" + (cuEstApplying.has(id) ? " saving" : "");
+  sc.addEventListener("mousedown", (e) => e.stopPropagation());
+  if (cuEstApplying.has(id)) { sc.disabled = true; sc.textContent = "Saving\u2026"; sc.title = "Setting it in ClickUp\u2026"; }
+  else {
+    sc.textContent = "\u270E not applied \u00b7 Apply";
+    sc.title = "Estimate changed here (" + (Number(cuEstStaged[id].ms) > 0 ? fmtDur(cuEstStaged[id].ms) : "none") + "), not in ClickUp yet. Click to set it for this task only.";
+    sc.onclick = (e) => { e.preventDefault(); e.stopPropagation(); sc.disabled = true; sc.textContent = "Saving\u2026"; sc.classList.add("saving"); cuApplyEsts([id]); };
+  }
+  wrap.appendChild(sc);
+}
 function appendNameCell(row, nm, t, opts) {
   // ▸ opens the task details dropdown (task-panel.js).
   if (window.PcmTaskPanel) row.appendChild(PcmTaskPanel.chevron(t));
@@ -1271,6 +1287,7 @@ function appendNameCell(row, nm, t, opts) {
     nm.title = (nm.title || t.name || "") + "\nSubtask of: " + t.parentName; // the prefix hides in narrow lists
   }
   wrap.appendChild(nm);
+  try { cuNotAppliedChip(wrap, t); } catch (e) {} // never let it break a row (e.g. drawn before the page finished loading)
   if (t && t.childCount) {
     const k = document.createElement("span");
     k.className = "cu-kids";
@@ -1454,13 +1471,21 @@ function cuEstGuess(estSpan, t, ctx, keptOnly) {
   if (!estSpan || !t) return;
   const id = cuId(t), st = cuEstStaged[id];
   if (!st && (Number(t.estimateMs) > 0 || keptOnly)) return;
+  if (!st && cuEstPending.has(id)) return; // just set in ClickUp, syncing: no guess beside it
   const chip = document.createElement("span");
   if (st) {
-    chip.className = "est-staged";
-    chip.textContent = (Number(st.ms) > 0 ? fmtDur(st.ms) : "no est") + " \u270E";
-    chip.title = "Estimate kept here, not in ClickUp yet" + (Number(st.was) > 0 ? " (it's " + fmtDur(st.was) + " in ClickUp)" : "") + " - press Apply to set it. Click to drop it.";
+    chip.className = "est-staged" + (cuEstApplying.has(id) ? " saving" : "");
+    const val = Number(st.ms) > 0 ? fmtDur(st.ms) : "no est";
     estSpan.style.display = "none";
-    chip.onclick = (e) => { e.preventDefault(); e.stopPropagation(); delete cuEstStaged[id]; cuEstSave(); cuGuessRepaint(); };
+    if (cuEstApplying.has(id)) {
+      chip.textContent = val + " \u00b7 Saving\u2026";
+      chip.title = "Setting this estimate in ClickUp\u2026";
+      chip.onclick = (e) => { e.preventDefault(); e.stopPropagation(); };
+    } else {
+      chip.textContent = val + " \u270E";
+      chip.title = "Estimate kept here, not in ClickUp yet" + (Number(st.was) > 0 ? " (it's " + fmtDur(st.was) + " in ClickUp)" : "") + " - press \u270E not applied \u00b7 Apply next to the task's name to set it. Click here to drop it.";
+      chip.onclick = (e) => { e.preventDefault(); e.stopPropagation(); delete cuEstStaged[id]; cuEstSave(); cuGuessRepaint(); };
+    }
   } else {
     const g = cuGuessEst(t, ctx);
     if (!g || g.none) { if (g && g.none) estSpan.title = g.why; return; }
@@ -1473,19 +1498,38 @@ function cuEstGuess(estSpan, t, ctx, keptOnly) {
   estSpan.before(chip);
 }
 function cuGuessRepaint() { try { if (!cuEstEditing) renderClickup(); } catch (e) {} }
+const cuEstApplying = new Set(); // ids being set in ClickUp right now (their chip says Saving…)
+let cuEstRun = null; // the ids the running Apply works through (a later Apply adds to it)
 async function cuApplyEsts(ids) {
   ids = (ids || []).map(String).filter((id) => cuEstStaged[id]);
   if (!ids.length) return;
+  if (cuEstRun) { // one is running: these join it, one at a time like the rest
+    for (const id of ids) if (!cuEstRun.includes(id)) { cuEstRun.push(id); cuEstApplying.add(id); cuEstSaving.total++; }
+    cuGuessRepaint();
+    return;
+  }
+  cuEstRun = ids.slice();
   cuEstSaving = { done: 0, total: ids.length, failed: [] };
   cuGuessRepaint();
-  for (const id of ids) {
+  for (let i = 0; i < cuEstRun.length; i++) {
+    const id = cuEstRun[i];
     const st = cuEstStaged[id];
+    if (!st) { cuEstApplying.delete(id); cuEstSaving.done++; continue; } // dropped meanwhile
+    cuEstApplying.add(id);
+    cuGuessRepaint();
     const r = await send({ type: "SET_CLICKUP_ESTIMATE", taskId: id, estimateMs: Number(st.ms) || 0 }, 20000).catch(() => null);
-    if (r && r.ok) delete cuEstStaged[id]; else cuEstSaving.failed.push(st.name || id);
+    cuEstApplying.delete(id);
+    if (r && r.ok) {
+      delete cuEstStaged[id];
+      // Until ClickUp's data has it, the row shows the new value as syncing (never "no est" again for a moment).
+      try { markEstPending(id, Number(st.ms) || 0, !!st.share); } catch (e) {}
+    } else cuEstSaving.failed.push(st.name || id);
     cuEstSaving.done++;
     cuEstSave();
     cuGuessRepaint();
+    try { applyEstPending(); } catch (e) {} // the redrawn row shows the new value as syncing straight away
   }
+  cuEstRun = null;
   const f = cuEstSaving.failed;
   cuEstSaving = { note: f.length ? "Couldn't set the estimate of " + f.join(", ") + " - still kept here." : "Estimates set in ClickUp \u2713", err: !!f.length, at: Date.now() };
   cuGuessRepaint();

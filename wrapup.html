@@ -48,6 +48,13 @@
   .remind label { display: inline-flex; align-items: center; gap: 6px; cursor: pointer; }
   .remind input[type="time"] { font: inherit; padding: 4px 8px; border: 1px solid var(--border); border-radius: 7px; background: var(--bg); color: var(--text); }
   .remind .hint { color: var(--muted); font-size: 12px; }
+  .sendrow { margin-top: 6px; min-height: 16px; }
+  .sendrow .hint { color: var(--muted); font-size: 12px; }
+  .sendrow .hint.ok { color: var(--green, #16a34a); }
+  .sendrow .hint.err { color: var(--red, #dc2626); }
+  .sendrow a { color: inherit; }
+  .remind.autosend { margin-top: 10px; padding-top: 10px; border-top: 1px dashed var(--border); }
+  button:disabled { opacity: .6; cursor: progress; }
 </style>
 </head>
 <body>
@@ -73,7 +80,16 @@
       <div class="actions">
         <span class="hint" id="standupHint">Tasks you completed today, by project. Edit freely - Copy keeps the links clickable in Slack.</span>
         <button id="rebuild" hidden>Rebuild</button>
-        <button class="primary" id="copy">Copy</button>
+        <button id="copy">Copy</button>
+        <button class="primary" id="sendSlack" title="Post it in #daily-task-update now, as you (through the Slack sign-in the extension uses)">Send to #daily-task-update</button>
+      </div>
+      <div class="sendrow">
+        <span class="hint" id="sendMsg"></span>
+      </div>
+      <div class="remind autosend">
+        <label><input type="checkbox" id="autoSend" /> Send it to #daily-task-update by itself on weekdays at</label>
+        <input type="time" id="autoAt" />
+        <span class="hint" id="autoMsg"></span>
       </div>
     </div>
 
@@ -87,6 +103,7 @@
     </div>
   </div>
 <script src="calendar.js"></script>
+<script src="lib-dailyupdate.js"></script>
 <script src="wrapup.js"></script>
 </body>
 </html>

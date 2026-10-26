@@ -67,6 +67,7 @@
     .hb-daypop .dsub { color: var(--muted); font-size: 11.5px; }
     .hb-daypop .drun { padding: 8px 10px; border-radius: 9px; background: color-mix(in srgb, #22c55e 12%, var(--card, #fff)); border: 1px solid color-mix(in srgb, #22c55e 35%, transparent); margin-bottom: 10px; line-height: 1.45; }
     .hb-daypop .drun a { color: var(--text); font-weight: 600; }
+    .hb-daypop .drun .dclient { display: inline-block; margin-left: 2px; padding: 0 7px; border-radius: 999px; font-size: 11px; font-weight: 600; white-space: nowrap; vertical-align: 1px; color: var(--text); background: var(--card, #fff); border: 1px solid var(--border); }
     .hb-daypop .drun.none { background: var(--bg2); border-color: var(--border); color: var(--muted); }
     .hb-daypop .dsec { margin-top: 8px; padding-top: 8px; border-top: 1px dashed var(--border); }
     .hb-daypop .dsec:first-of-type { border-top: 0; }
@@ -655,6 +656,7 @@
         a.href = "https://app.clickup.com/t/" + encodeURIComponent(d.run.id); a.target = "_blank"; a.rel = "noopener";
         a.title = "Open it in ClickUp";
         run.appendChild(a);
+        if (d.run.client) { const c = el("span", "dclient", d.run.client); c.title = "Client: " + d.run.client; run.append(" ", c); }
         if (d.run.since) run.appendChild(el("div", "dsub", "Timer running for " + durS(Date.now() - d.run.since) + " (since " + new Date(d.run.since).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" }) + ")"));
       } else run.textContent = "No timer running";
       box.appendChild(run);

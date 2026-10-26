@@ -38,6 +38,32 @@
     .au-st { font-size: 12.5px; color: var(--muted); margin: 6px 0 0; }
     .au-st.ok { color: var(--green, #16a34a); }
     .au-st.err { color: var(--red, #dc2626); }
+    .au-ahead-tick { font-weight: 600 !important; }
+    .au-flow { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin: 10px 0 6px; }
+    @media (max-width: 760px) { .au-flow { grid-template-columns: 1fr; } }
+    .au-flowcol { border: 1px dashed var(--border); border-radius: 10px; padding: 9px 11px; opacity: .6; transition: opacity .2s; }
+    .au-flowcol.now { opacity: 1; border-style: solid; border-color: var(--indigo, #6366f1); background: color-mix(in srgb, var(--indigo, #6366f1) 6%, transparent); }
+    .au-flowcol > b { display: block; font-size: 12.5px; margin-bottom: 6px; }
+    .au-steps { display: flex; align-items: stretch; gap: 4px; }
+    .au-step { flex: 1 1 0; min-width: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 3px; text-align: center; font-size: 11px; line-height: 1.25; padding: 7px 5px; border-radius: 9px; background: var(--card); border: 1px solid var(--border); overflow-wrap: anywhere; }
+    .au-step .ic { font-size: 18px; line-height: 1; }
+    .au-arrow { color: var(--muted); font-weight: 700; align-self: center; flex: none; }
+    .au-flownote { font-size: 11.5px; color: var(--muted); margin-top: 7px; line-height: 1.4; }
+    .au-aheadlist { display: grid; gap: 4px; margin-top: 8px; }
+    .au-aheadlist > b { font-size: 12.5px; }
+    .au-aheadrow { display: flex; align-items: center; justify-content: space-between; gap: 8px; font-size: 12.5px; padding: 3px 0; border-top: 1px dashed var(--border); }
+    .au-aheadrow.cx > span:first-child { text-decoration: line-through; opacity: .6; }
+    .au-aheadrow.done > span:first-child { opacity: .7; }
+    .au-aheadrow button { font-size: 11.5px !important; padding: 2px 8px !important; }
+    .au-aheadhelp { line-height: 1.45; margin-top: 8px; }
+    .au-days { display: inline-flex; gap: 4px; flex-wrap: wrap; }
+    .au-days.off { opacity: .45; }
+    .au-day { font-size: 12px !important; padding: 3px 8px !important; border-radius: 999px; border: 1px solid var(--border); background: transparent; color: var(--text); cursor: pointer; }
+    .au-day.on { background: var(--indigo, #6366f1); border-color: var(--indigo, #6366f1); color: #fff; }
+    .au-dates { display: inline-flex; gap: 6px; flex-wrap: wrap; align-items: center; }
+    .au-date { display: inline-flex; align-items: center; gap: 2px; padding: 1px 4px 1px 9px; border-radius: 999px; border: 1px solid var(--border); font-size: 12px; }
+    .au-date button { border: 0; background: none; cursor: pointer; padding: 0 4px; color: var(--muted); }
+    .au-box input[type=date] { width: auto; padding: 4px 8px; border-radius: 7px; border: 1px solid var(--border); background: var(--field, #fff); color: var(--text); }
     .au-btns { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 8px; }
     .au-btns button, .au-row button { font-size: 12.5px; padding: 5px 11px; }
     .au-pre { white-space: pre-wrap; word-break: break-word; font-size: 12px; line-height: 1.45; background: var(--bg2, rgba(127,127,127,.07)); border: 1px solid var(--border); border-radius: 8px; padding: 8px 10px; margin: 8px 0 0; max-height: 260px; overflow: auto; }
@@ -127,6 +153,10 @@
   async function askHide(x) {
     if (hideBox) { hideBox.remove(); hideBox = null; }
     const { items, rules } = await onNow();
+    const so0 = ((await chrome.storage.local.get("slackOut").catch(() => ({}))).slackOut || {});
+    if (so0.on || so0.inOn) items.push({ text: "Check in / out in Slack (posts in #rmt-check-in-check-out)", tip: "" });
+    const awayOn = !!(((await chrome.storage.local.get("slackAway").catch(() => ({}))).slackAway || {}).on);
+    if (awayOn) items.push({ text: "Away in Slack after work (back to active in the morning)", tip: "" });
     if (!items.length && !rules.length) { await chrome.storage.local.set({ automationTab: false }); return; }
     const box = el("div", "au-hidebox");
     box.appendChild(el("b", "", "Still switched on:"));
@@ -141,6 +171,8 @@
     off.onclick = async (e) => {
       e.stopPropagation(); off.disabled = true; off.textContent = "Turning off\u2026";
       try { if (window.PcmConsole && window.PcmConsole.allOff) await window.PcmConsole.allOff(); } catch (x2) {}
+      try { const so = (await chrome.storage.local.get("slackOut")).slackOut; if (so && (so.on || so.inOn || so.ahead)) { await chrome.storage.local.set({ slackOut: { ...so, on: false, inOn: false, ahead: false } }); await send({ type: "SLACK_AHEAD_SYNC" }, 60000); } } catch (x2) {}
+      try { const sa = (await chrome.storage.local.get("slackAway")).slackAway; if (sa && sa.on) { await chrome.storage.local.set({ slackAway: { ...sa, on: false } }); await send({ type: "SLACK_AWAY_SET", presence: "auto" }); } } catch (x2) {}
       for (const r of rules) { try { await send({ type: "RULES_TOGGLE", id: r.id, on: false }); } catch (x2) {} }
       box.remove(); hideBox = null;
       await chrome.storage.local.set({ automationTab: false });
@@ -180,7 +212,7 @@
     const w = el("span", "au-time");
     const t = t12(hhmm);
     const h = el("select"); for (let i = 1; i <= 12; i++) { const o = el("option", "", String(i)); o.value = String(i); h.appendChild(o); } h.value = String(t.h12);
-    const m = el("select"); const mins = []; for (let i = 0; i < 60; i += 5) mins.push(i); if (!mins.includes(t.min)) mins.push(t.min); mins.sort((a, b) => a - b);
+    const m = el("select"); const mins = []; for (let i = 0; i < 60; i++) mins.push(i); if (!mins.includes(t.min)) mins.push(t.min); mins.sort((a, b) => a - b);
     for (const i of mins) { const o = el("option", "", String(i).padStart(2, "0")); o.value = String(i); m.appendChild(o); } m.value = String(t.min);
     const ap = el("select"); for (const v of ["AM", "PM"]) { const o = el("option", "", v); o.value = v; ap.appendChild(o); } ap.value = t.pm ? "PM" : "AM";
     w.append(h, el("span", "", ":"), m, ap);
@@ -196,10 +228,242 @@
     const rules = el("div", "au-card");
     panel.appendChild(rules);
     buildRules(rules);
+    const out = el("div", "au-card");
+    out.style.marginTop = "20px";
+    panel.appendChild(out);
+    buildSlackOut(out);
+    const away = el("div", "au-card");
+    away.style.marginTop = "20px";
+    panel.appendChild(away);
+    buildSlackAway(away);
     const cheats = el("div", "au-card");
     cheats.style.marginTop = "20px";
     panel.appendChild(cheats);
     buildCheats(cheats);
+  }
+
+  // ---------- When (shared): every week on some days, or only on some dates ----------
+  // cfg { mode "days"|"dates", days [0-6], dates ["YYYY-MM-DD"], skipHolidays };
+  // save() stores it. The date box is the extension's own calendar (calendar.js).
+  function scheduleBox(cfg, save, radioName, holidayText) {
+    if (!Array.isArray(cfg.days) || !cfg.days.length) cfg.days = [1, 2, 3, 4, 5];
+    if (!Array.isArray(cfg.dates)) cfg.dates = [];
+    const today = () => { const d = new Date(); return d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0") + "-" + String(d.getDate()).padStart(2, "0"); };
+    const box = el("div", "au-box");
+    const mrow = el("div", "au-row");
+    const mDays = el("label"), mDates = el("label");
+    const rDays = el("input"); rDays.type = "radio"; rDays.name = radioName; rDays.checked = cfg.mode !== "dates";
+    const rDates = el("input"); rDates.type = "radio"; rDates.name = radioName; rDates.checked = cfg.mode === "dates";
+    mDays.append(rDays, document.createTextNode(" Every week on"));
+    mDates.append(rDates, document.createTextNode(" Only on these dates"));
+    const dayRow = el("span", "au-days");
+    const NAMES = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+    for (const i of [1, 2, 3, 4, 5, 6, 0]) {
+      const b = el("button", "au-day" + (cfg.days.includes(i) ? " on" : ""), NAMES[i]); b.type = "button";
+      b.onclick = () => { cfg.days = cfg.days.includes(i) ? cfg.days.filter((x) => x !== i) : cfg.days.concat(i); if (!cfg.days.length) cfg.days = [i]; b.classList.toggle("on", cfg.days.includes(i)); save(); };
+      dayRow.appendChild(b);
+    }
+    mrow.append(mDays, dayRow);
+    const drow = el("div", "au-row");
+    const dpick = el("input"); dpick.type = "date"; dpick.title = "Add a date";
+    const dlist = el("span", "au-dates");
+    drow.append(mDates, dpick, dlist);
+    const hrow = el("div", "au-row");
+    const hl = el("label"); const hol = el("input"); hol.type = "checkbox"; hol.checked = cfg.skipHolidays !== false;
+    hl.append(hol, document.createTextNode(" " + (holidayText || "Skip company holidays")));
+    hrow.appendChild(hl);
+    box.append(mrow, drow, hrow);
+    const paintDates = () => {
+      dlist.textContent = "";
+      const ds = cfg.dates.filter((d) => d >= today()).sort();
+      if (!ds.length) { dlist.appendChild(el("span", "au-st", "no dates yet - pick one")); return; }
+      for (const d of ds) {
+        const c = el("span", "au-date", new Date(d + "T12:00:00").toLocaleDateString([], { weekday: "short", month: "short", day: "numeric" }) + " ");
+        const x = el("button", "", "\u2715"); x.type = "button"; x.title = "Remove this date";
+        x.onclick = () => { cfg.dates = cfg.dates.filter((y) => y !== d); paintDates(); save(); };
+        c.appendChild(x); dlist.appendChild(c);
+      }
+    };
+    rDays.onchange = () => { cfg.mode = "days"; save(); };
+    rDates.onchange = () => { cfg.mode = "dates"; save(); };
+    dpick.onchange = () => { const v = dpick.value; if (/^\d{4}-\d\d-\d\d$/.test(v) && !cfg.dates.includes(v)) { cfg.dates = cfg.dates.filter((d) => d >= today()).concat(v); cfg.mode = "dates"; rDates.checked = true; paintDates(); save(); } dpick.value = ""; };
+    hol.onchange = () => { cfg.skipHolidays = hol.checked; save(); };
+    paintDates();
+    return { box, refresh: () => dayRow.classList.toggle("off", cfg.mode === "dates") };
+  }
+
+  // ---------- Away in Slack ----------
+  // Away from the away time, active again from the active time, on weekdays -
+  // the background does it (only while this tab is on), once each a day.
+  async function buildSlackAway(card) {
+    card.append(el("h2", "", "Away in Slack after work"), el("p", "sub", "Slack shows you away from the time you pick, and active again in the morning - on the days you tick, or only on the dates you pick (a day not chosen keeps the last one: Friday's away lasts the weekend). Each happens once a day, so changing it yourself in Slack in between is kept. Untick it, or hide this tab, and you're active again at once. It runs only while this tab is on."));
+    const g = await chrome.storage.local.get(["slackAway", "slackAwayNow", "slackSession"]).catch(() => ({}));
+    const cfg = { on: false, away: "17:00", active: "08:00", mode: "days", days: [1, 2, 3, 4, 5], dates: [], skipHolidays: true, ...(g.slackAway || {}) };
+    const row1 = el("div", "au-row");
+    const lab = el("label");
+    const on = el("input"); on.type = "checkbox"; on.checked = !!cfg.on;
+    lab.append(on, document.createTextNode(" Set me away at"));
+    const tAway = timeSel(cfg.away);
+    const tActive = timeSel(cfg.active);
+    row1.append(lab, tAway, el("span", "", "and active again at"), tActive);
+    const st = el("div", "au-st");
+    card.append(row1, st);
+    const whenAway = scheduleBox(cfg, () => { chrome.storage.local.set({ slackAway: { ...cfg } }).catch(() => {}); whenAway.refresh(); }, "au-away-mode", "Not active on company holidays (away still happens)");
+    card.appendChild(whenAway.box);
+    whenAway.refresh();
+    const paint = (now, err) => {
+      st.className = "au-st" + (err ? " err" : "");
+      if (err) { st.textContent = err; return; }
+      if (!g.slackSession) { st.textContent = "Connect Slack first (Clients \u203A Slack channels)."; return; }
+      const last = now && now.at ? " Last set: " + (now.presence === "away" ? "away" : "active") + " at " + fmtT(now.at) + (new Date(now.at).toDateString() === new Date().toDateString() ? "" : " on " + new Date(now.at).toLocaleDateString([], { weekday: "short", month: "short", day: "numeric" })) + "." : "";
+      st.textContent = (on.checked ? "On - away at " + fmtT(new Date().setHours(...tAway.value().split(":").map(Number), 0, 0)) + ", active at " + fmtT(new Date().setHours(...tActive.value().split(":").map(Number), 0, 0)) + (cfg.mode === "dates" ? ", on the dates below." : ", on the days ticked below.") : "Off.") + last;
+    };
+    const save = async (e) => {
+      const was = !!cfg.on;
+      if (tActive.value() >= tAway.value()) { paint(null, "The active time has to be before the away time (e.g. active 8:00 AM, away 5:00 PM)."); return; }
+      Object.assign(cfg, { on: on.checked, away: tAway.value(), active: tActive.value() });
+      // A new time takes effect today: forget what was already done today.
+      await chrome.storage.local.set({ slackAway: { ...cfg }, ...(e && e.type === "au-change" ? { slackAwayLast: {} } : {}) }).catch(() => {});
+      if (was && !cfg.on) { const r = await send({ type: "SLACK_AWAY_SET", presence: "auto" }); if (!r || !r.ok) { paint(null, "Turned off, but couldn't set you active in Slack: " + ((r && r.error) || "no answer")); return; } }
+      if (!was && cfg.on) await chrome.storage.local.set({ slackAwayLast: {} }).catch(() => {}); // starts fresh: today's step happens within a minute
+      paint((await chrome.storage.local.get("slackAwayNow").catch(() => ({}))).slackAwayNow);
+    };
+    on.addEventListener("change", save);
+    tAway.addEventListener("au-change", save);
+    tActive.addEventListener("au-change", save);
+    chrome.storage.onChanged.addListener((ch, area) => { if (area === "local" && ch.slackAwayNow) paint(ch.slackAwayNow.newValue); });
+    paint(g.slackAwayNow);
+  }
+
+  // ---------- Check in / out in Slack ----------
+  // "in" in the morning and "out" in the evening in #rmt-check-in-check-out, on
+  // the days ticked (or only on dates picked) - the background posts them (only
+  // while this tab is on), once a day each, within 2 hours of their time.
+  async function buildSlackOut(card) {
+    card.append(el("h2", "", "Check in / out in Slack"), el("p", "sub", "Posts your check-in and check-out messages in #rmt-check-in-check-out at the times you pick - on the days you tick, or only on the dates you pick. Each goes once a day, within 2 hours of its time: check-out only on a day you worked (time tracked or at the computer), check-in only when you're at the computer. It runs only while this tab is on."));
+    const g = await chrome.storage.local.get(["slackOut", "slackOutSent", "slackInSent", "slackSession"]).catch(() => ({}));
+    const cfg = { on: false, time: "17:00", text: "out", inOn: false, inTime: "08:00", inText: "in", ahead: false, mode: "days", days: [1, 2, 3, 4, 5], dates: [], skipHolidays: true, ...(g.slackOut || {}) };
+    const today = () => { const d = new Date(); return d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0") + "-" + String(d.getDate()).padStart(2, "0"); };
+    // Saved at once; with "Schedule in Slack ahead" on (or just turned off), Slack's
+    // scheduled posts follow a moment later (a pause, so clicking through days
+    // doesn't call Slack for every click).
+    let syncT = 0, aheadWas = !!cfg.ahead;
+    const save = async () => {
+      await chrome.storage.local.set({ slackOut: { ...cfg } }).catch(() => {});
+      paintAll();
+      if (cfg.ahead || aheadWas) {
+        aheadWas = !!cfg.ahead;
+        clearTimeout(syncT);
+        syncT = setTimeout(async () => { aheadMsg("Updating Slack\u2019s scheduled posts\u2026"); const r = await send({ type: "SLACK_AHEAD_SYNC" }, 60000); aheadMsg(r && r.ok === false && r.error && r.error !== "busy" ? "Slack: " + r.error : ""); paintAhead(); }, 900);
+      }
+    };
+    // One line per message: tick, time, text, Send now, status.
+    const rows = [];
+    const line = (kind, label) => {
+      const k = kind === "in" ? { on: "inOn", time: "inTime", text: "inText", def: "in", sent: "slackInSent" } : { on: "on", time: "time", text: "text", def: "out", sent: "slackOutSent" };
+      const box = el("div", "au-box");
+      const r1 = el("div", "au-row");
+      const lab = el("label");
+      const on = el("input"); on.type = "checkbox"; on.checked = !!cfg[k.on];
+      lab.append(on, document.createTextNode(" " + label + " at"));
+      const ts = timeSel(cfg[k.time]);
+      const tx = el("input"); tx.type = "text"; tx.value = cfg[k.text] || k.def; tx.maxLength = 200; tx.placeholder = k.def; tx.style.flex = "0 1 160px";
+      const now = el("button", "", "Send now"); now.type = "button"; now.title = "Post it in #rmt-check-in-check-out right now";
+      r1.append(lab, ts, el("span", "", "message"), tx, now);
+      const st = el("div", "au-st");
+      box.append(r1, st);
+      on.addEventListener("change", () => { cfg[k.on] = on.checked; save(); });
+      ts.addEventListener("au-change", () => { cfg[k.time] = ts.value(); save(); });
+      tx.addEventListener("change", () => { cfg[k.text] = tx.value.trim() || k.def; save(); });
+      now.onclick = async () => {
+        const t = tx.value.trim() || k.def;
+        if (!confirm("Post \"" + t + "\" in #rmt-check-in-check-out now?")) return;
+        now.disabled = true; now.textContent = "Posting\u2026";
+        const r = await send({ type: "SLACK_OUT_NOW", kind, cfg: { [k.text]: t } });
+        now.disabled = false; now.textContent = "Send now";
+        if (r && r.ok) g[k.sent] = r; else { st.className = "au-st err"; st.textContent = "Not posted: " + ((r && r.error) || "no answer from the extension"); return; }
+        paintAll();
+      };
+      rows.push({ kind, k, on, ts, st });
+      return box;
+    };
+    card.append(line("in", "Check in"), line("out", "Check out"));
+    // When: the days of the week, or only some dates.
+    const whenBox = scheduleBox(cfg, save, "au-inout-mode");
+    card.appendChild(whenBox.box);
+    // ---- Schedule in Slack ahead (off unless ticked) ----
+    const ab = el("div", "au-box au-ahead");
+    const al = el("label", "au-ahead-tick");
+    const aOn = el("input"); aOn.type = "checkbox"; aOn.checked = !!cfg.ahead;
+    al.append(aOn, document.createTextNode(" Schedule in Slack ahead, so they're posted even when my laptop is off"));
+    // The picture: what happens without it, and with it.
+    const flow = el("div", "au-flow");
+    const side = (cls, title, steps, note) => {
+      const c = el("div", "au-flowcol " + cls);
+      c.appendChild(el("b", "", title));
+      const f = el("div", "au-steps");
+      steps.forEach((s, i) => { if (i) f.appendChild(el("span", "au-arrow", "\u2192")); const st = el("span", "au-step"); st.append(el("span", "ic", s[0]), el("span", "", s[1])); f.appendChild(st); });
+      c.append(f, el("div", "au-flownote", note));
+      return c;
+    };
+    const offSide = side("off", "Not ticked (now)", [["\uD83D\uDCBB", "Laptop on, Chrome open"], ["\u23F0", "8:00 / 5:00"], ["\uD83D\uDCAC", "the extension posts it"]],
+      "\uD83D\uDCA4 Laptop off or asleep at that time: nothing is posted (it catches up within 2 hours if you turn it on). It only posts on a day you worked / when you're at the computer.");
+    const onSide = side("on", "Ticked", [["\uD83D\uDCBB", "While your laptop is on"], ["\uD83D\uDCE4", "the next 7 days go to Slack"], ["\u2601\uFE0F", "Slack posts at 8:00 / 5:00"]],
+      "\uD83D\uDCA4 Laptop off: still posted - Slack sends them, like a message you schedule yourself. \u26A0\uFE0F It no longer checks that you worked: on a leave or sick day, cancel that day below (or in Slack).");
+    flow.append(offSide, onSide);
+    const list = el("div", "au-aheadlist");
+    const amsg = el("div", "au-st");
+    const aheadMsg = (t) => { amsg.className = "au-st" + (/^Slack:/.test(t) ? " err" : ""); amsg.textContent = t; };
+    const help = el("div", "au-st au-aheadhelp");
+    help.innerHTML = "<b>Cancel or change them?</b> Yes, from here: \u2715 cancels one day in Slack. Changing the time, message, days or dates above updates every upcoming one in Slack, and unticking this (or a message, or hiding this tab) removes them all. In Slack you can also delete or edit them (Drafts &amp; sent \u203A Scheduled) - a day you delete there isn't scheduled again. Slack keeps the next 7 days; the rest follow while your laptop is on.";
+    ab.append(al, flow, list, amsg, help);
+    card.appendChild(ab);
+    const fmtDayT = (ms) => new Date(ms).toLocaleDateString([], { weekday: "short", month: "short", day: "numeric" }) + ", " + fmtT(ms);
+    async function paintAhead() {
+      flow.classList.toggle("is-on", !!cfg.ahead);
+      offSide.classList.toggle("now", !cfg.ahead); onSide.classList.toggle("now", !!cfg.ahead);
+      list.textContent = ""; help.hidden = !cfg.ahead;
+      if (!cfg.ahead) return;
+      const sa = (await chrome.storage.local.get("slackAhead").catch(() => ({}))).slackAhead || {};
+      const items = Object.entries(sa).filter(([, x]) => x).sort((a, b) => a[1].postAt - b[1].postAt);
+      if (!items.length) { list.appendChild(el("div", "au-st", cfg.on || cfg.inOn ? "Nothing scheduled in Slack yet - it's sent within a minute." : "Tick Check in or Check out above to schedule them.")); return; }
+      list.appendChild(el("b", "", "Scheduled in Slack"));
+      for (const [key, x] of items) {
+        const row = el("div", "au-aheadrow" + (x.cancelled ? " cx" : x.postAt <= Date.now() ? " done" : ""));
+        row.append(el("span", "", fmtDayT(x.postAt) + " \u00b7 \"" + x.text + "\""));
+        if (x.cancelled) row.appendChild(el("span", "au-st", x.how === "slack" ? "deleted in Slack" : "cancelled"));
+        else if (x.postAt <= Date.now()) row.appendChild(el("span", "au-st ok", "posted by Slack"));
+        else {
+          const c = el("button", "", "\u2715 Cancel"); c.type = "button"; c.title = "Delete this one from Slack's scheduled messages";
+          c.onclick = async () => { c.disabled = true; c.textContent = "Cancelling\u2026"; const r = await send({ type: "SLACK_AHEAD_CANCEL", key }); if (!r || !r.ok) { c.disabled = false; c.textContent = "\u2715 Cancel"; aheadMsg("Slack: " + ((r && r.error) || "no answer")); } paintAhead(); };
+          row.appendChild(c);
+        }
+        list.appendChild(row);
+      }
+    }
+    aOn.addEventListener("change", () => { cfg.ahead = aOn.checked; save(); paintAhead(); });
+    chrome.storage.onChanged.addListener((ch, area) => { if (area === "local" && ch.slackAhead) paintAhead(); });
+    paintAhead();
+    function paintAll() {
+      whenBox.refresh();
+      for (const r of rows) {
+        const sent = g[r.k.sent];
+        r.st.className = "au-st" + (sent && sent.day === today() ? " ok" : "");
+        r.st.textContent = "";
+        if (!g.slackSession) { r.st.textContent = "Connect Slack first (Clients \u203A Slack channels)."; continue; }
+        if (sent && sent.day === today()) {
+          r.st.append("\u2713 Posted \"" + sent.text + "\" in #" + sent.channel + " at " + fmtT(sent.at) + (sent.how === "auto" ? " (by itself)" : "") + " \u00b7 ");
+          const a = el("a", "", "Open in Slack"); a.href = sent.link; a.target = "_blank"; a.rel = "noopener"; r.st.appendChild(a);
+        } else r.st.textContent = r.on.checked ? "On - " + (cfg.mode === "dates" ? "on the dates below" : "on the days ticked below") + " at " + fmtT(new Date().setHours(...r.ts.value().split(":").map(Number), 0, 0)) + "." : "Off.";
+      }
+    }
+    chrome.storage.onChanged.addListener((ch, area) => {
+      if (area !== "local") return;
+      if (ch.slackOutSent) g.slackOutSent = ch.slackOutSent.newValue;
+      if (ch.slackInSent) g.slackInSent = ch.slackInSent.newValue;
+      if (ch.slackOutSent || ch.slackInSent) paintAll();
+    });
+    paintAll();
   }
 
   // ---------- Rules: WHEN / IF / THEN, built from blocks ----------

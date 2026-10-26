@@ -818,7 +818,7 @@
     hSel.value = String(t.h12);
     const mSel = el("select"); mSel.title = "Minutes";
     const mins = [];
-    for (let m = 0; m < 60; m += 5) mins.push(m);
+    for (let m = 0; m < 60; m++) mins.push(m); // every minute (5-minute steps made 8:07 impossible)
     if (!mins.includes(t.min)) mins.push(t.min); // an odd minute already set is kept, not rounded away
     mins.sort((a, b) => a - b);
     for (const m of mins) { const o = el("option", "", String(m).padStart(2, "0")); o.value = String(m); mSel.appendChild(o); }
