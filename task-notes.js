@@ -21,6 +21,7 @@
   // week you've already finished, still open in ClickUp until its week - marked
   // here only, so it reads as done in your plan (dimmed, ✓ done early).
   let early = {};
+  let colorAuto = null, autoQ = null; // monthly report auto colour (below); null until storage is read
   let colors = {}, colorLabels = []; // 🎨 (see "your own colours on tasks" below)
   // Earlier colour swatches -> their new shade (same meaning, easier to see on every palette).
   // Older shades of the colours, moved to today's (TN_SWATCH): each one straight to its current shade.
@@ -64,8 +65,9 @@
   let rems = [];
   function load() {
     try {
-      chrome.storage.local.get(["taskNotes", "taskPins", "reminders", "taskEarly", "taskColors", "taskColorLabels"]).then((g) => {
+      chrome.storage.local.get(["taskNotes", "taskPins", "reminders", "taskEarly", "taskColors", "taskColorLabels", "taskColorAuto"]).then((g) => {
         colors = g.taskColors && typeof g.taskColors === "object" ? g.taskColors : {};
+        colorAuto = g.taskColorAuto && typeof g.taskColorAuto === "object" ? g.taskColorAuto : {};
         colorLabels = Array.isArray(g.taskColorLabels) ? g.taskColorLabels : [];
         if (colorLabels.some((l) => l && TN_RESHADE[String(l.color).toLowerCase()])) {
           colorLabels = colorLabels.map((l) => (l && TN_RESHADE[String(l.color).toLowerCase()] ? { ...l, color: TN_RESHADE[String(l.color).toLowerCase()] } : l));
@@ -522,6 +524,7 @@
     const wrap = row && row.querySelector(".nmwrap");
     if (!t || t.id == null || !wrap || /^rev-/.test(String(t.id))) return;
     const id = String(t.id);
+    autoColor(t);
     let box = wrap.querySelector(".tn-marks");
     if (!box) {
       box = document.createElement("span");
@@ -600,6 +603,29 @@
     }
   }
   function decorateAll() { document.querySelectorAll(".cu-task").forEach(decorate); }
+  // Monthly report tasks get your "Report" colour by themselves - only when one of
+  // your colours is called Report, never over a colour the task already has, and
+  // once per task (taskColorAuto), so taking it off or picking another one sticks.
+  function autoColor(t) {
+    if (!colorAuto || !/^[^\w]*(?:\w+\s+)?monthly\s*report/i.test(String(t.name || ""))) return;
+    const id = String(t.id);
+    if (colors[id] || colorAuto[id] || (autoQ && autoQ[id])) return;
+    const lab = allLabels().find((l) => l && /^reports?$/i.test(String(l.name || "").trim()));
+    if (!lab) return;
+    if (!autoQ) { autoQ = {}; setTimeout(() => flushAuto().catch(() => {}), 0); }
+    autoQ[id] = { l: lab.id, nid: "", at: Date.now(), name: String(t.name || "") };
+  }
+  async function flushAuto() {
+    const q = autoQ; autoQ = null;
+    if (!q) return;
+    // Read fresh: the popup and the dashboard may both be doing this.
+    const g = await chrome.storage.local.get(["taskColors", "taskColorAuto"]);
+    const next = { ...(g.taskColors || {}) }, seen = { ...(g.taskColorAuto || {}) };
+    for (const [id, v] of Object.entries(q)) { if (seen[id]) continue; seen[id] = Date.now(); if (!next[id]) next[id] = v; }
+    const ids = Object.keys(seen);
+    if (ids.length > 3000) for (const k of ids.sort((a, b) => seen[a] - seen[b]).slice(0, ids.length - 3000)) delete seen[k];
+    await chrome.storage.local.set({ taskColors: next, taskColorAuto: seen });
+  }
   let pending = 0;
   // Chips added in the same frame the rows were drawn (a timer let the bare rows show first).
   let burst = 0;

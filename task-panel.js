@@ -171,6 +171,9 @@
   html.pcm-sheet-open body { min-height: 560px; overflow: hidden; }
   .pcm-ai-row { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
   .pcm-note { color: var(--muted); font-size: 11px; }
+  .pcm-split { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin: 6px 0 8px; }
+  .pcm-spin { display: inline-block; width: 10px; height: 10px; border: 2px solid currentColor; border-right-color: transparent; border-radius: 50%; vertical-align: -1px; animation: pcm-spin .8s linear infinite; }
+  @keyframes pcm-spin { to { transform: rotate(360deg); } }
   .pcm-note:empty { display: none; }
   .pcm-tip { color: var(--amber, #b45309); }
   .pcm-sel { font-size: 11px; padding: 3px 6px; border: 1px solid var(--border); border-radius: 6px; background: var(--card); color: var(--text); max-width: 150px; }
@@ -551,6 +554,63 @@
     return parts.length ? "\n\nFrom the client's audit (" + (a.fileName || "audit") + "):\n" + parts.join("\n\n") : "";
   }
   // The task plus the text of any files the user attached, within `cap` characters.
+  // ---- Report rules (General › Report rules, settings.reportRules) ----
+  // For a task whose name says "report" (Monthly Report, Monthly Reporting,
+  // Technical Monthly Report...), Copy for AI / Ask / Explain / Plan with AI add
+  // these rules under "Reporting rules". Empty (the start): nothing added.
+  const REPORT_RULES_DEFAULT = ""; // starts empty: each person pastes their own rules (kept out of the public code)
+  let reportRules = REPORT_RULES_DEFAULT;
+  try {
+    chrome.storage.local.get("settings").then((g) => { const v = g && g.settings && g.settings.reportRules; if (typeof v === "string") reportRules = v; }).catch(() => {});
+    chrome.storage.onChanged.addListener((ch, area) => { if (area === "local" && ch.settings && ch.settings.newValue && typeof ch.settings.newValue.reportRules === "string") reportRules = ch.settings.newValue.reportRules; });
+  } catch (e) {}
+  const isReportTask = (d) => /\breport/i.test(String((d && d.name) || ""));
+  // Monthly report "Make my own task" (General › Report rules, off unless ticked):
+  // on a monthly report task you share with others, one click makes your own
+  // related task, takes you off this one and leaves the comment (background).
+  let reportSplit = false;
+  try {
+    chrome.storage.local.get("settings").then((g) => { reportSplit = !!(g && g.settings && g.settings.reportSplit === true); }).catch(() => {});
+    chrome.storage.onChanged.addListener((ch, area) => { if (area === "local" && ch.settings && ch.settings.newValue) reportSplit = ch.settings.newValue.reportSplit === true; });
+  } catch (e) {}
+  function splitBar(p, d) {
+    const me = String(d.meUserId || "");
+    const people = Array.isArray(d.assigneePeople) ? d.assigneePeople : [];
+    if (!reportSplit || !me || !/monthly\s*report/i.test(String(d.name || "")) || people.length < 2 || !people.some((a) => String(a.id) === me)) return;
+    const bar = el("div", "pcm-split");
+    const b = el("button", "pcm-btn", "\u2702 Make my own task");
+    b.type = "button";
+    b.title = "Makes your own task (the name in General \u203A Report rules) in this List, on you, due the Friday of this task's week, with its File: line, relates it to this task, takes you off this task and leaves your comment here.";
+    const st = el("span", "pcm-note");
+    bar.append(b, st);
+    p.appendChild(bar);
+    const busy = (t) => { b.disabled = !!t; st.className = "pcm-note"; st.textContent = ""; if (t) { st.appendChild(el("span", "pcm-spin")); st.append(" " + t); } };
+    // A run in flight (also after a reload) shows its step.
+    const paint = (m) => { const x = m && m[d.id]; if (x && Date.now() - x.at < 3 * 60000) busy(x.step); };
+    chrome.storage.local.get("reportSplitAct").then((g) => paint(g.reportSplitAct)).catch(() => {});
+    const onCh = (ch, area) => { if (!bar.isConnected) { chrome.storage.onChanged.removeListener(onCh); return; } if (area === "local" && ch.reportSplitAct) paint(ch.reportSplitAct.newValue); };
+    chrome.storage.onChanged.addListener(onCh);
+    b.onclick = async (e) => {
+      e.stopPropagation();
+      busy("Starting\u2026");
+      const r = await send({ type: "CLICKUP_REPORT_SPLIT", taskId: d.id });
+      b.disabled = false; st.textContent = "";
+      if (r && r.ok) {
+        b.remove();
+        st.append("\u2713 Your task: ");
+        if (r.task && safeUrl(r.task.url)) st.appendChild(link(r.task.url, (r.task.name || "open it") + " \u2197")); else st.append((r.task && r.task.name) || "made");
+        st.append(r.done && r.done.includes("made") ? " - you're off this task and the comment is posted." : " (it was already there) - you're off this task.");
+        return;
+      }
+      st.className = "pcm-err";
+      const part = r && r.done && r.done.length ? " Done so far: " + r.done.map((x) => ({ made: "your task made", related: "related", unassigned: "you're off this task", commented: "comment posted" })[x]).join(", ") + "." : "";
+      st.textContent = ((r && r.status === 429) ? "ClickUp is busy - try again in a minute." : "Couldn't finish: " + ((r && r.error) || "no reply from the extension") + ".") + part;
+    };
+  }
+  function reportRulesText(client) {
+    const r = String(reportRules || "").trim();
+    return r ? "\n\nReporting rules (the team's rules for client reports - follow them):\n" + r.replace(/<Client>/g, client || "<Client>") : "";
+  }
   function aiPrompt(d, files, cap, full) {
     let out = taskText(d, full);
     const docs = (files || []).filter((f) => f.kind === "text" && f.text);
@@ -573,6 +633,7 @@
         out += "\n--- " + f.name + when + head + " ---\n" + t;
       }
     }
+    if (isReportTask(d) && !d._noRules) out += reportRulesText(d._client || d.list || "");
     return out;
   }
   // The free AIs (Chrome's small built-in model and the online fallback) guess
@@ -2233,6 +2294,7 @@
       macts.appendChild(rem);
     }
     p.appendChild(meta);
+    splitBar(p, d);
     // Something stops this task (itself, its parent, or a task it waits on, in a
     // red status): said first, in red, so nobody reads on and starts it.
     const stops = [];
@@ -2620,7 +2682,7 @@
       : (notes.length ? "\n\nNotes the user keeps about this client:\n" + notes.map((n) => "- " + n.text).join("\n") : "");
     const per = Math.max(4000, Math.floor((PLAN_MAX - 8000) / ds.length));
     const blocks = ds.map((d, i) => {
-      const x = { ...d, _notes: null, _relBudget: Math.max(800, Math.floor(per / 3)) }; // the client notes go in once, at the top; related details get a third of its room
+      const x = { ...d, _notes: null, _noRules: true, _relBudget: Math.max(800, Math.floor(per / 3)) }; // the client notes (and report rules) go in once, at the top; related details get a third of its room
       let t = aiPrompt(x, fileFor(d), Math.min(12000, per), true);
       if (t.length > per) t = t.slice(0, per) + "\n...(cut short)";
       return "=== Task " + (i + 1) + " of " + ds.length + " ===\n" + t;
@@ -2632,6 +2694,7 @@
       (day ? "\n\n" + (isList ? "Tasks shown: " : "Day: ") + day + "\nTasks: " + ds.length + (estAll ? " (estimates add up to " + fmtDur(estAll) + ")" : "") : "\n\nClient: " + client + "\nOpen tasks: " + ds.length) +
       (ds.some((d) => d._related && d._related.more) ? "\nRelated tasks: at most " + relCap + " per task for this plan (the most important first); where more exist it says how many were left out." : "") +
       notesText +
+      (ds.some(isReportTask) ? reportRulesText(byClient.size === 1 ? (ds[0]._client || ds[0].list || "") : "") : "") +
       (failed.length ? "\n\nCouldn't load (left out): " + failed.map((f) => f.name).join(", ") : "") +
       "\n\n" + blocks.join("\n\n") +
       (day ? "\n\nNow answer with the headings above: the order" + (isList ? "" : " for the day") + ", GO or WAIT for every task, whether it fits " + (isList ? "the time available" : "the day") + ", what to do together, the audit check, what to ask for, and where each is done - nothing invented."
@@ -3096,6 +3159,7 @@
     return p;
   }
   window.PcmTaskPanel = {
+    REPORT_RULES_DEFAULT,
     // For Options > Task files: read any supported file the same way the AI does.
     readFile,
     clientTools,

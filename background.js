@@ -33,6 +33,18 @@ import { tidyCollect, tidyLines, tidyResolved, tidyDayOk, tidyUrgent, tidyDateSh
 import "./lib-rules.js"; // globalThis.PcmRules - the Automation tab's rule blocks
 import "./lib-dailyupdate.js"; // globalThis.PcmDailyUpdate - the Daily Tasks Update text (wrap-up page + scheduled send)
 
+// ---- Helper only ----
+// A Chrome profile ticked as "signed in to the clients' WordPress" (Site monitor)
+// is ONLY the helper that reads PHP versions for the person's main profile. That
+// profile holds company logins, so everything else that uses the extension's
+// wide permissions stays off there: Agent Router logins and balances, Slack,
+// Drive sync, Site monitor checks, ClickUp, the rules, reminders. Its timers only
+// check for updates and run the WordPress relay; buttons for the rest say so.
+let helperOnly = false;
+chrome.storage.local.get("wpHelper").then((g) => { helperOnly = !!(g && g.wpHelper); }).catch(() => {});
+chrome.storage.onChanged.addListener((ch, area) => { if (area === "local" && ch.wpHelper) helperOnly = !!ch.wpHelper.newValue; });
+async function isHelperOnly() { try { helperOnly = !!(await chrome.storage.local.get("wpHelper")).wpHelper; } catch (e) {} return helperOnly; }
+const HELPER_BLOCKED = new Set(["RUN_ALL", "RUN_ONE", "SLACK_CONNECT", "SLACK_POLL_NOW", "SLACK_TASK_LOOKUP", "SLACK_FILE_GET", "CNOTE_REFRESH", "DAILY_UPDATE_SEND", "SLACK_OUT_NOW", "SLACK_AWAY_SET", "SLACK_AHEAD_SYNC", "SITE_MONITOR_CHECK_NOW", "SYNC_NOW", "CLICKUP_SAVE_TOKEN", "CLICKUP_SAVE_ADMIN_TOKEN"]);
 const CHECK_ALARM = "dailyLoginCheck";
 const CLICKUP_ALARM = "clickupRefresh";
 const SYNC_ALARM = "driveAutoSync";
@@ -678,11 +690,20 @@ function fireDueReminders() {
     const list = await remList();
     const now = Date.now();
     let changed = false, shown = 0;
+    // A copy ticked as the WordPress helper (another Chrome profile on this computer,
+    // Site monitor) shows no reminders: the person's main profile does - otherwise
+    // every reminder popped up twice. And the same text due the same minute (two
+    // copies of one reminder in the list) pops up once.
+    const { wpHelper } = await chrome.storage.local.get("wpHelper");
+    const once = new Set();
     for (const r of list) {
       if (!r || r.done || r.active === false || r.paused || !(Number(r.at) > 0) || Number(r.at) > now + 15000) continue;
       const missed = now - Number(r.at) > 5 * 60000;
       const offToday = (REM_SKIP[r.id] || []).some((k) => (k === "holiday" ? isCompanyHoliday : isCompanyWfh)(Number(r.at)));
-      if (shown < 5 && !offToday) {
+      const sameKey = String(r.text || "").trim().toLowerCase() + "|" + Math.floor(Number(r.at) / 60000);
+      const dupe = once.has(sameKey);
+      once.add(sameKey);
+      if (shown < 5 && !offToday && !dupe && !wpHelper) {
         if (r.forMe !== false) await showReminder(r, missed);
         if (missed && r.forMe !== false) r.missedAt = now; // the sidebar counts it on Reminders
         if (Array.isArray(r.to) && r.to.length) await remSendToPeople(r).catch(() => {});
@@ -2368,6 +2389,11 @@ async function buildRoster(cfg) {
 //   Defaults ON - being patient rarely hurts, and it prevents a fast logout/login
 //   race from breaking a switch on a momentarily slow connection.
 // notify: show a desktop notification after a daily run finishes
+// Monthly report "Make my own task": your task is due the Friday of the main
+// task's week (Mon-Sun; today's week when it has no due date).
+function fridayOf(ms) { const x = new Date(ms); x.setHours(0, 0, 0, 0); x.setDate(x.getDate() - ((x.getDay() + 6) % 7) + 4); return x.getTime(); }
+// Monthly report "Make my own task": the comment left on the main task.
+const REPORT_SPLIT_COMMENT = "unassigning from here since separately assigned in related task.";
 const DEFAULT_SETTINGS = {
   targetUrl: URLS.agentRouterLogin,
   mode: "auto",
@@ -2968,6 +2994,7 @@ async function anchorCreditCheckpoint(accountId) {
 // skipped here (they still update on the next daily login and via the tab ⟳).
 let balancePollInFlight = false;
 async function pollBalancesInBackground() {
+  if (await isHelperOnly()) return;
   if (balancePollInFlight) return;
   balancePollInFlight = true;
   try {
@@ -3522,6 +3549,13 @@ async function deskLink(force) {
     if (cfg && cfg.token) { try { r = (await deskPost({ show, style, anim, warnEmpty, ext: chrome.runtime.id, token: cfg.token, teamId: cfg.teamId || "" })) || r; } catch (e) {} }
   }
   const out = { ...da, running: true, seenAt: Date.now(), checkedAt: Date.now(), version: String(r.version || ""), signedIn: !!r.signedIn, user: String(r.user || ""), shown: r.shown !== false, folders: !!r.folders };
+  if (r.timer && r.timer.taskId) {
+    const st = await getClickupState().catch(() => null);
+    if (st && (!st.running || String(st.running.taskId) !== String(r.timer.taskId))) {
+      await setClickupState({ ...st, running: { taskId: String(r.timer.taskId), taskName: String(r.timer.taskName || "") || cuTaskNameIn(st, r.timer.taskId), startMs: Number(r.timer.startMs) || Date.now(), id: null, syncing: true } }).catch(() => {});
+      refreshClickup({ includeTasks: true }).catch(() => {}); // ClickUp confirms (and fills in the rest)
+    }
+  }
   await chrome.storage.local.set({ deskApp: out });
   // The first time the app turns up and nothing was chosen yet: the timer moves to
   // the taskbar and the floating window stops opening by itself (Settings can
@@ -5276,6 +5310,24 @@ function applyChangedTasks(state, fresh) {
     if (touched) wk.stale = true;
   }
   return n;
+}
+// A Start / Stop / Complete being written to ClickUp right now (storage
+// cuPendingAct { taskId: { action, at } }): every page shows "Starting… waiting
+// for ClickUp" on that row until it's done - also after a reload.
+async function cuPendingSet(taskId, action) {
+  const { cuPendingAct } = await chrome.storage.local.get("cuPendingAct").catch(() => ({}));
+  const m = { ...(cuPendingAct || {}) };
+  const now = Date.now();
+  if (action) m[String(taskId)] = { action, at: now }; else delete m[String(taskId)];
+  for (const k of Object.keys(m)) if (!m[k] || now - Number(m[k].at) > 180000) delete m[k];
+  await chrome.storage.local.set({ cuPendingAct: m }).catch(() => {});
+}
+function cuTaskNameIn(st, taskId) {
+  const id = String(taskId);
+  const lists = [st && st.tasks, st && st.todayFilter && st.todayFilter.tasks, st && st.thisWeek && st.thisWeek.tasks, st && st.nextWeek && st.nextWeek.tasks, st && st.custom && st.custom.tasks, st && st.deadlineTasks];
+  for (const p of (st && st.weekly && st.weekly.perDay) || []) lists.push(p && p.tasks);
+  for (const l of lists) { const t = (l || []).find((x) => x && String(x.id) === id); if (t && t.name) return String(t.name); }
+  return "";
 }
 async function getTodayFilterData(cfg, settings) {
   const now = new Date();
@@ -8077,6 +8129,7 @@ async function watchAttentionTab(tabId, accountId) {
 }
 const attnChecking = new Set();
 chrome.tabs.onUpdated.addListener((tabId, info, tab) => {
+  if (helperOnly) return; // a helper profile doesn't look at Agent Router pages
   if (info.status !== "complete" || !/^https:\/\/([a-z0-9-]+\.)*agentrouter\.org\//i.test(String((tab && tab.url) || ""))) return;
   if (/\/(login|oauth)/i.test(new URL(tab.url).pathname) || attnChecking.has(tabId)) return;
   attnChecking.add(tabId);
@@ -8107,6 +8160,7 @@ chrome.tabs.onRemoved.addListener((tabId) => {
 // The daily auto path: only touches accounts not already attempted today, so it
 // never re-opens tabs for an account that already succeeded or needs the user.
 async function checkAndMaybeRun() {
+  if (await isHelperOnly()) return; // no Agent Router logins in a helper profile
   if (isRunning) return { ok: false, reason: "already running" };
   // Self-heal a status left as "running" by a worker that died mid-login (once
   // per worker), so a crashed run doesn't permanently block this account.
@@ -8160,6 +8214,7 @@ async function checkAndMaybeRun() {
 // ~1h clock) and mirrors accounts/status so you don't have to keep re-signing-in
 // or hitting "Sync now" by hand.
 async function autoSyncIfSignedIn(opts) {
+  if (await isHelperOnly()) return; // no Drive sync in a helper profile
   try {
     if (!(await isSignedIn())) return; // no valid/silently-refreshable token
     await syncNow(opts);
@@ -9449,6 +9504,9 @@ function cnoteScore(raw, postedMs) {
   return s;
 }
 const cnoteId = (cid, ts) => String(cid) + "-" + String(ts).replace(/[^0-9]/g, "");
+// Text saved by an earlier build (or shared through the hub by one) had a tag
+// with no known name written as "@someone", often several in a row: dropped.
+const cnoteClean = (s) => String(s || "").replace(/(?:@someone\b[ \t,]*)+/g, "").replace(/[ \t]{2,}/g, " ").replace(/^[ \t]+|[ \t]+$/gm, "").trim();
 // What a notice says in a line (the notification, the banner): the AI's summary,
 // else the client's own words - the part after "Client message:" when the
 // message quotes one - without the @tags, the greeting and Slack's *bold*.
@@ -9522,10 +9580,11 @@ function cnoteFromMessage(m, cid, client, s) {
 // AI's reading wins over one without; the dates the AI read win over the guess.
 async function cnoteMerge(items) {
   const g = await chrome.storage.local.get("clientNotices");
-  const by = new Map(((g.clientNotices && g.clientNotices.list) || []).map((n) => [n.id, n]));
+  const by = new Map(((g.clientNotices && g.clientNotices.list) || []).map((n) => [n.id, { ...n, text: cnoteClean(n.text), summary: cnoteClean(n.summary) }]));
   const fresh = [];
-  for (const n of items || []) {
-    if (!n || !n.id || !n.client) continue;
+  for (const n0 of items || []) {
+    if (!n0 || !n0.id || !n0.client) continue;
+    const n = { ...n0, text: cnoteClean(n0.text), summary: cnoteClean(n0.summary) };
     const had = by.get(n.id);
     if (!had) { by.set(n.id, n); fresh.push(n); continue; }
     if (n.ai && !had.ai) by.set(n.id, { ...had, ...n });
@@ -9758,6 +9817,7 @@ const SLACK_IMG_RE = /\.(png|jpe?g|webp|gif)$/i;
 const SLACK_INDEX_MAX = 400; // per channel, newest first
 let slackPolling = false;
 async function slackPoll(force) {
+  if (await isHelperOnly()) return { ok: false, error: "helper only" };
   if (slackPolling) return { ok: false, error: "already checking" };
   const g = await chrome.storage.local.get(["slackSession", "slackChannels", "slackPoll", "slackIndex"]);
   const s = g.slackSession, map = g.slackChannels || {}, poll = g.slackPoll || {};
@@ -9946,6 +10006,7 @@ async function slackFileGet(id) {
   return { ok: true, name: f.name, type: blob.type || "", created: f.created, b64: abToB64(await blob.arrayBuffer()) };
 }
 chrome.downloads.onChanged.addListener((delta) => {
+  if (helperOnly) return; // nor at its downloads
   if (delta && delta.state && delta.state.current === "complete") onSlackDownload(delta.id).catch(() => {});
 });
 // When OUR update zip finishes: show it in the folder + a "click to reload" notification.
@@ -10430,6 +10491,10 @@ scheduleWrapUpAlarm().catch(() => {});
 applyIdleInterval().catch(() => {});
 try { chrome.idle.onStateChanged.addListener((st) => { onIdleStateChanged(st).catch(() => {}); }); } catch (e) {}
 chrome.alarms.onAlarm.addListener(async (alarm) => {
+  if (await isHelperOnly()) { // helper only: updates and the WordPress relay, nothing else
+    if (alarm.name === UPDATE_ALARM) { await checkForUpdate().catch(() => {}); await maybeAutoUpdate().catch(() => {}); await wpRelayTick().catch(() => {}); }
+    return;
+  }
   if (alarm.name === CHECK_ALARM) {
     checkForUpdate().catch(() => {}); // cheap: the update alarm already runs every minute
     checkAndMaybeRun().catch(() => {});
@@ -10578,13 +10643,213 @@ const TASK_MUTATIONS = new Set([
   "CLICKUP_TASK_START", "CLICKUP_TASK_STOP", "CLICKUP_TASK_COMPLETE",
   "SET_CLICKUP_ESTIMATE", "CLICKUP_SET_DUE", "CLICKUP_MOVE_DUE",
 ]);
+// ---------- Ctrl+Z: one undo history for every page (undo.js) ----------
+// storage undoStack: [{ id, at, kind: "local" | "cu", label, ops, typing }], the
+// newest last, at most 20. Pages push your own-data changes (UNDO_PUSH); ClickUp
+// field changes are recorded here (undoBefore / undoAfter around the message).
+// UNDO_RUN puts the newest (or the one with that id) back; one that fails stays
+// in the list so Ctrl+Z can try again.
+const UNDO_MAX = 20;
+let undoChain = Promise.resolve(); // one change to the list at a time
+function undoLocked(fn) { const p = undoChain.then(fn, fn); undoChain = p.catch(() => {}); return p; }
+const undoSig = (e) => (e.ops || []).map((o) => o.t ? o.t + ":" + (o.fields || []).join(",") : o.key + ":" + o.mode + ":" + Object.keys(o.sub || {}).sort().join(",") + (o.items || []).map((i) => i.id).sort().join(",")).join("|");
+function undoPush(entry) {
+  return undoLocked(async () => {
+    const { undoStack } = await chrome.storage.local.get("undoStack");
+    const list = Array.isArray(undoStack) ? undoStack.slice() : [];
+    const top = list[list.length - 1], now = Date.now();
+    // Typing in a note saves every few seconds: one entry, the text from before you started.
+    if (top && entry.kind === "local" && top.kind === "local" && now - top.at < 20000 && undoSig(top) === undoSig(entry)) { top.at = now; await chrome.storage.local.set({ undoStack: list }); return top; }
+    // The same change to several tasks in a row (Apply estimates...): one entry.
+    const fieldsOnly = (e) => e.kind === "cu" && (e.ops || []).every((o) => o.t === "fields");
+    if (top && fieldsOnly(top) && fieldsOnly(entry) && now - top.at < 4000 && top.ops[0].fields.join() === entry.ops[0].fields.join() && !top.ops.some((o) => o.taskId === entry.ops[0].taskId)) {
+      top.ops = top.ops.concat(entry.ops); top.at = now;
+      top.label = undoFieldWord(top.ops[0].fields) + " on " + top.ops.length + " tasks";
+      await chrome.storage.local.set({ undoStack: list });
+      return top;
+    }
+    const e = { ...entry, id: now.toString(36) + Math.random().toString(36).slice(2, 6), at: now };
+    list.push(e);
+    await chrome.storage.local.set({ undoStack: list.slice(-UNDO_MAX) });
+    return e;
+  });
+}
+const undoFieldWord = (f) => f.includes("due") ? (f.includes("start") ? "Dates" : "Due date") : f.includes("start") ? "Start date" : f.includes("estimate") ? "Estimate" : f.includes("status") ? "Status" : f.includes("priority") ? "Priority" : "Change";
+const undoShort = (s) => { s = String(s || "").trim(); return s.length > 60 ? s.slice(0, 59) + "\u2026" : s; };
+// The task's name and full estimate from the saved lists (no ClickUp call).
+async function undoStateTask(taskId) {
+  const st = await getClickupState().catch(() => null);
+  let hit = null;
+  const seen = new Set();
+  const walk = (o) => {
+    if (!o || typeof o !== "object" || seen.has(o) || (hit && "totalEstimateMs" in hit)) return;
+    seen.add(o);
+    if (Array.isArray(o)) { o.forEach(walk); return; }
+    const oid = o.id != null ? o.id : o.taskId;
+    if (oid != null && String(oid) === taskId && o.name && (!hit || "totalEstimateMs" in o)) hit = o;
+    for (const k in o) if (o[k] && typeof o[k] === "object") walk(o[k]);
+  };
+  walk(st);
+  if (!hit) return null;
+  const full = "totalEstimateMs" in hit ? Number(hit.totalEstimateMs) || 0 : ("dayEstimateMs" in hit || hit.extended ? null : Number(hit.estimateMs) || 0);
+  return { name: String(hit.name || ""), estimateMs: full };
+}
+const UNDO_TYPES = new Set(["SET_CLICKUP_ESTIMATE", "CLICKUP_SET_DUE", "CLICKUP_MOVE_DUE", "CLICKUP_BULK_ONE", "CLICKUP_ADD_ASSIGNEE", "CLICKUP_REMOVE_ASSIGNEE"]);
+// Before the change: what it was. Fails quietly (the change still goes ahead, only without an undo).
+async function undoBefore(msg) {
+  const taskId = String(msg.taskId || "");
+  if (!taskId) return null;
+  const cfg = await getClickupConfig();
+  if (!cfg || !cfg.token) return null;
+  const lite = await undoStateTask(taskId);
+  if (msg.type === "SET_CLICKUP_ESTIMATE") {
+    if (lite && lite.estimateMs != null) return { name: lite.name, before: { estimateMs: lite.estimateMs } };
+    const t = await getTaskById(cfg.token, taskId);
+    return t ? { name: t.name, before: { estimateMs: Number(t.estimateMs) || 0 } } : null;
+  }
+  if (msg.type === "CLICKUP_SET_DUE" || msg.type === "CLICKUP_MOVE_DUE") {
+    const t = await getTaskById(cfg.token, taskId);
+    return t ? { name: t.name, before: { dueDateMs: t.dueDateMs || null, dueDateHasTime: t.dueDateHasTime != null ? !!t.dueDateHasTime : null, startDateMs: t.startDateMs || null } } : null;
+  }
+  if (msg.type === "CLICKUP_BULK_ONE") {
+    // The Bulk edit tab's batches have their own Undo; a restore is an undo itself.
+    if (msg._batch || !msg.change || msg.change.kind === "restore") return null;
+    return { name: lite ? lite.name : "" };
+  }
+  return { name: lite ? lite.name : "" };
+}
+async function undoAfter(pre, msg, r) {
+  if (!pre) return;
+  const taskId = String(msg.taskId || "");
+  const nm = pre.name ? " \u00b7 " + undoShort(pre.name) : "";
+  if (msg.type === "CLICKUP_ADD_ASSIGNEE" || msg.type === "CLICKUP_REMOVE_ASSIGNEE") {
+    const added = msg.type === "CLICKUP_ADD_ASSIGNEE";
+    const who = String(msg.name || "").trim() || (r && r.self ? "you" : "someone");
+    await undoPush({ kind: "cu", label: (added ? "Added " + who + " to the task" : "Took " + who + " off the task") + nm, ops: [{ t: "person", taskId, userId: String(msg.userId), added, name: who }] });
+    return;
+  }
+  let fields, before = pre.before, label;
+  if (msg.type === "SET_CLICKUP_ESTIMATE") fields = ["estimate"];
+  else if (msg.type === "CLICKUP_SET_DUE") fields = Number(msg.startMs) > 0 ? ["due", "start"] : ["due"];
+  else if (msg.type === "CLICKUP_MOVE_DUE") fields = ["due"];
+  else {
+    const k = msg.change.kind;
+    fields = [k === "due" ? "due" : k === "start" ? "start" : k];
+    before = r && r.before;
+    if (k === "status" && msg.change.value) label = "Status set to " + msg.change.value + nm;
+  }
+  if (!before || !fields.every((f) => ["due", "start", "estimate", "status", "priority"].includes(f))) return;
+  await undoPush({ kind: "cu", label: label || undoFieldWord(fields) + " changed" + nm, ops: [{ t: "fields", taskId, name: pre.name || "", fields, before, assignee: msg.assignee || "" }] });
+}
+async function undoRunOp(op) {
+  if (op.t === "person" || op.t === "fields") {
+    const cfg = await getClickupConfig();
+    if (!cfg || !cfg.token) throw new Error("ClickUp isn't connected");
+    if (op.t === "person") {
+      if (op.added) await removeTaskAssignee(cfg.token, op.taskId, op.userId);
+      else await addTaskAssignee(cfg.token, op.taskId, op.userId);
+      clearFilterCache();
+      refreshClickup({ includeTasks: true, forceWeeks: true }).catch(() => {});
+      return;
+    }
+    const b = op.before || {}, body = {};
+    const PRIO = { urgent: 1, high: 2, normal: 3, low: 4, none: null };
+    for (const f of op.fields) {
+      if (f === "due") { body.due_date = b.dueDateMs || null; if (b.dueDateMs && b.dueDateHasTime != null) body.due_date_time = !!b.dueDateHasTime; }
+      else if (f === "start") body.start_date = b.startDateMs || null;
+      else if (f === "estimate") body.time_estimate = Math.max(0, Math.round(Number(b.estimateMs) || 0));
+      else if (f === "status" && b.status) body.status = b.status;
+      else if (f === "priority") body.priority = PRIO[String(b.priority || "none").toLowerCase()] ?? null;
+    }
+    if (!Object.keys(body).length) return;
+    const token = cuScopeToken(cfg, cfg.userId, op.assignee || undefined);
+    const res = await cuRawFetch(token, "https://api.clickup.com/api/v2/task/" + encodeURIComponent(op.taskId), { method: "PUT", headers: { Authorization: token, "Content-Type": "application/json" }, body: JSON.stringify(body) });
+    if (!res.ok) {
+      let why = res.status === 429 ? "ClickUp is busy - try again in a minute" : "ClickUp said HTTP " + res.status;
+      try { const j = await res.json(); if (j && (j.err || j.error) && res.status !== 429) why = j.err || j.error; } catch (e) {}
+      throw new Error(why);
+    }
+    try {
+      const f = {};
+      if (body.status) { f.status = body.status; f.done = /^(complete|done|closed)$/i.test(body.status); }
+      if ("time_estimate" in body) f.estimateMs = body.time_estimate;
+      if (Object.keys(f).length) await patchStateTask(op.taskId, f);
+      if ("due_date" in body) await patchStateDue(op.taskId, Number(body.due_date) || 0);
+    } catch (e) {}
+    clearFilterCache();
+    clearTaskTreeCache();
+    return;
+  }
+  // Your own data: put back only what that change touched.
+  if (op.key === "settings") {
+    const p = {};
+    for (const k of Object.keys(op.sub || {})) p[k] = (op.gone || []).includes(k) ? undefined : op.sub[k];
+    const next = await setSettings(p);
+    await scheduleAgentRouterAlarms(next).catch(() => {});
+    applyIdleInterval().catch(() => {});
+    scheduleWrapUpAlarm().catch(() => {});
+    return;
+  }
+  const cur = (await chrome.storage.local.get(op.key))[op.key];
+  let val;
+  if (op.mode === "sub") {
+    val = cur && typeof cur === "object" && !Array.isArray(cur) ? { ...cur } : {};
+    for (const k of Object.keys(op.sub || {})) { if ((op.gone || []).includes(k)) delete val[k]; else val[k] = op.sub[k]; }
+  } else if (op.mode === "item") {
+    val = Array.isArray(cur) ? cur.slice() : [];
+    for (const it of op.items || []) {
+      const i = val.findIndex((x) => x && String(x.id) === String(it.id));
+      if (!it.old) { if (i >= 0) val.splice(i, 1); }
+      else if (i >= 0) val[i] = it.old;
+      else val.splice(Math.min(Math.max(Number(it.at) || 0, 0), val.length), 0, it.old);
+    }
+  } else val = op.old;
+  if (val == null) await chrome.storage.local.remove(op.key);
+  else await chrome.storage.local.set({ [op.key]: val });
+}
+async function undoRun(id) {
+  const { undoStack } = await chrome.storage.local.get("undoStack");
+  const list = Array.isArray(undoStack) ? undoStack : [];
+  const e = id ? list.find((x) => x.id === id) : list[list.length - 1];
+  if (!e) return { ok: false, empty: true };
+  try {
+    // Several tasks: newest first, each one only once.
+    for (const op of (e.ops || []).slice().reverse()) await undoRunOp(op);
+  } catch (err) {
+    return { ok: false, kept: true, label: e.label, error: String(err && err.message ? err.message : err) };
+  }
+  await undoLocked(async () => {
+    const g = await chrome.storage.local.get("undoStack");
+    await chrome.storage.local.set({ undoStack: (Array.isArray(g.undoStack) ? g.undoStack : []).filter((x) => x.id !== e.id) });
+  });
+  if (e.kind === "cu") refreshClickup({ includeTasks: true, forceWeeks: true }).catch(() => {});
+  return { ok: true, label: e.label };
+}
+
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   (async () => {
     try {
       // Anything that changes a task from the extension must not be hidden by the
       // 2-minute subtask cache (lib-clickup getTaskTree).
       if (TASK_MUTATIONS.has(msg && msg.type)) clearTaskTreeCache();
+      if (HELPER_BLOCKED.has(msg && msg.type) && (await isHelperOnly())) {
+        sendResponse({ ok: false, reason: "helper-only", error: "This Chrome profile is only the WordPress helper, so that's switched off here. Untick \"This profile is signed in to the clients' WordPress\" (Site monitor) to use it." });
+        return;
+      }
+      // Ctrl+Z: what an undoable ClickUp edit changes is recorded once it worked.
+      if (UNDO_TYPES.has(msg && msg.type)) {
+        const pre = await undoBefore(msg).catch(() => null);
+        if (pre) { const reply = sendResponse; sendResponse = (r) => { if (r && r.ok) undoAfter(pre, msg, r).catch(() => {}); reply(r); }; }
+      }
       switch (msg.type) {
+      case "UNDO_PUSH": {
+        const e = msg.entry || {};
+        if (e.kind !== "local" || !Array.isArray(e.ops) || !e.ops.length) { sendResponse({ ok: false }); break; }
+        await undoPush({ kind: "local", label: String(e.label || "Change").slice(0, 120), ops: e.ops.slice(0, 5), typing: !!e.typing });
+        sendResponse({ ok: true });
+        break;
+      }
+      case "UNDO_RUN": { sendResponse(await undoRun(String(msg.id || ""))); break; }
       case "GET_STATE": {
         // (The Drive "signed in" answer never holds this up - see signedInQuick.)
         hubHello(false, HUB_ACTIVE_MS).catch(() => {}); // popup / options opened = active (hourly at most)
@@ -10638,6 +10903,61 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
           data.meUserId = cfg.userId == null ? "" : String(cfg.userId);
           sendResponse({ ok: true, data });
         } catch (e) { sendResponse({ ok: false, error: String(e && e.message ? e.message : e), status: e && e.status }); }
+        break;
+      }
+      case "CLICKUP_REPORT_SPLIT": {
+        // Monthly report "Make my own task" (General › Report rules, off unless
+        // ticked): a task of your own in the same List, related to the main one,
+        // then you off the main task with a comment. Each step is saved in
+        // reportSplitAct so the panel shows it (also after a reload).
+        const taskId = String(msg.taskId || "");
+        const step = (t) => chrome.storage.local.get("reportSplitAct").then((g) => { const m = { ...(g.reportSplitAct || {}) }; if (t) m[taskId] = { step: t, at: Date.now() }; else delete m[taskId]; return chrome.storage.local.set({ reportSplitAct: m }); }).catch(() => {});
+        const done = [];
+        try {
+          const cfg = await getClickupConfig();
+          if (!cfg || !cfg.token || cfg.userId == null) { sendResponse({ ok: false, error: "Connect ClickUp first." }); break; }
+          const s = await getSettings();
+          if (s.reportSplit !== true) { sendResponse({ ok: false, error: "Turn it on first: General › Report rules." }); break; }
+          const me = String(cfg.userId);
+          await step("Reading the task…");
+          const d = await getTaskPanel(cfg.token, taskId, true);
+          if (!(d.assigneePeople || []).some((a) => String(a.id) === me)) { sendResponse({ ok: false, error: "You're not on this task any more - it's already separated." }); break; }
+          if (!d.listId) { sendResponse({ ok: false, error: "Couldn't tell which List this task is in." }); break; }
+          const name = String(s.reportSplitName || "").trim() || "Technical Monthly Report";
+          // Already made (a related task of that name on you): don't make a second one.
+          let mine = null;
+          for (const id of (d.linked || []).slice(0, 8)) {
+            const t = await getTaskById(cfg.token, id).catch(() => null);
+            if (t && String(t.name || "").trim().toLowerCase() === name.toLowerCase() && (t.assignees || []).some((a) => String(a.id) === me)) { mine = { id: String(t.id || id), url: t.url || taskUrlFor(id), name: t.name }; break; }
+          }
+          if (!mine) {
+            await step("Making your task…");
+            // The main task's File: line comes along as it is (File: "" when no doc is attached).
+            const fm = String(d.description || "").match(/^[ \t*_]*File[*_]*:[*_]*[ \t]*(.*)$/im);
+            const file = fm ? fm[1].trim() : "";
+            mine = await createTask(cfg.token, d.listId, { name, md: "File: " + (file || "\"\""), assignees: [Number(me)], dueDateMs: fridayOf(Number(d.dueDateMs) || Date.now()) });
+            done.push("made");
+            await step("Relating it to the main task…");
+            await relateTasks(cfg.token, mine.id, taskId, "related");
+            done.push("related");
+          }
+          await step("Taking you off the main task…");
+          await removeTaskAssignee(cfg.token, taskId, me);
+          done.push("unassigned");
+          const text = String(s.reportSplitComment == null ? REPORT_SPLIT_COMMENT : s.reportSplitComment).trim();
+          if (text) {
+            await step("Leaving the comment…");
+            await postTaskComment(cfg.token, taskId, text.slice(0, 5000), []);
+            done.push("commented");
+          }
+          openTasksCache = null;
+          clearFilterCache();
+          clearTaskTreeCache();
+          refreshClickup({ includeTasks: true, forceWeeks: true }).catch(() => {});
+          sendResponse({ ok: true, task: mine, done });
+        } catch (e) {
+          sendResponse({ ok: false, error: String(e && e.message ? e.message : e), status: e && e.status, done });
+        } finally { await step(null); }
         break;
       }
       case "CLICKUP_TASK_ATTACH": {
@@ -11641,22 +11961,27 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
             });
             break;
           }
-          if (cur) await stopTimer(cfg.token, cfg.teamId).catch(() => {});
-          for (const rid of toRevert) await setTaskStatus(cfg.token, rid, "to do").catch(() => {});
-          // Set this task in progress + start its timer.
-          await setTaskStatus(cfg.token, taskId, "in progress");
-          await startTimer(cfg.token, cfg.teamId, taskId);
-          // Every card shows it straight away (the refresh below confirms).
-          for (const rid of toRevert) await patchStateTask(rid, { status: "to do" }).catch(() => {});
-          await patchStateTask(taskId, { status: "in progress" }).catch(() => {});
-          const st2 = (await getClickupState().catch(() => null)) || {};
-          await setClickupState({ ...st2, activeTaskId: taskId });
-          // Bust the filter cache so the today/filter views recompute with the
-          // new status instead of serving the pre-change snapshot.
-          clearFilterCache();
-          const r = await refreshClickup({ includeTasks: true }).catch(() => ({}));
-          const running = (r.data && r.data.running) || await getCurrentTimeEntry(cfg.token, cfg.teamId).catch(() => null);
-          sendResponse({ ok: true, running: running || null, data: r.data || null });
+          await cuPendingSet(taskId, "start");
+          try {
+            if (cur) await stopTimer(cfg.token, cfg.teamId).catch(() => {});
+            for (const rid of toRevert) await setTaskStatus(cfg.token, rid, "to do").catch(() => {});
+            // Set this task in progress + start its timer.
+            await setTaskStatus(cfg.token, taskId, "in progress");
+            await startTimer(cfg.token, cfg.teamId, taskId);
+            // Every card shows it straight away - running included, marked "syncing"
+            // until the refresh below confirms it (a slow or busy ClickUp used to
+            // leave the page showing nothing for minutes, even after a reload).
+            for (const rid of toRevert) await patchStateTask(rid, { status: "to do" }).catch(() => {});
+            await patchStateTask(taskId, { status: "in progress" }).catch(() => {});
+            const st2 = (await getClickupState().catch(() => null)) || {};
+            const running = { taskId, taskName: (msg.name && String(msg.name)) || cuTaskNameIn(st2, taskId), startMs: Date.now(), id: null, syncing: true };
+            await setClickupState({ ...st2, activeTaskId: taskId, running });
+            // Bust the filter cache so the today/filter views recompute with the
+            // new status instead of serving the pre-change snapshot.
+            clearFilterCache();
+            sendResponse({ ok: true, running, data: null });
+          } finally { await cuPendingSet(taskId, null); }
+          await refreshClickup({ includeTasks: true }).catch(() => {});
         } catch (e) {
           sendResponse({ ok: false, error: String(e && e.message ? e.message : e) });
         }
@@ -11670,17 +11995,21 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         const taskId = msg.taskId ? String(msg.taskId) : null;
         if (!taskId) { sendResponse({ ok: false, reason: "no-task" }); break; }
         try {
-          const cur = await getCurrentTimeEntry(cfg.token, cfg.teamId).catch(() => null);
-          if (cur) await stopTimer(cfg.token, cfg.teamId).catch(() => {});
-          await setTaskStatus(cfg.token, taskId, "to do");
-          await patchStateTask(taskId, { status: "to do" }).catch(() => {}); // every card at once
-          // The start/stop shortcut starts this one again next time.
-          await chrome.storage.local.set({ lastStoppedTask: { id: taskId, name: (cur && String(cur.taskId) === taskId && cur.taskName) || "", at: Date.now() } });
-          const st = (await getClickupState().catch(() => null)) || {};
-          if (String(st.activeTaskId || "") === taskId) await setClickupState({ ...st, activeTaskId: null });
-          clearFilterCache();
-          const r = await refreshClickup({ includeTasks: true }).catch(() => ({}));
-          sendResponse({ ok: true, running: (r.data && r.data.running) || null, data: r.data || null });
+          await cuPendingSet(taskId, "stop");
+          try {
+            const cur = await getCurrentTimeEntry(cfg.token, cfg.teamId).catch(() => null);
+            if (cur) await stopTimer(cfg.token, cfg.teamId).catch(() => {});
+            await setTaskStatus(cfg.token, taskId, "to do");
+            await patchStateTask(taskId, { status: "to do" }).catch(() => {}); // every card at once
+            // The start/stop shortcut starts this one again next time.
+            await chrome.storage.local.set({ lastStoppedTask: { id: taskId, name: (cur && String(cur.taskId) === taskId && cur.taskName) || "", at: Date.now() } });
+            const st = (await getClickupState().catch(() => null)) || {};
+            const wasRunning = st.running && String(st.running.taskId) === taskId;
+            await setClickupState({ ...st, activeTaskId: String(st.activeTaskId || "") === taskId ? null : st.activeTaskId, running: wasRunning || (cur && String(cur.taskId) === taskId) ? null : st.running });
+            clearFilterCache();
+            sendResponse({ ok: true, running: null, data: null });
+          } finally { await cuPendingSet(taskId, null); }
+          await refreshClickup({ includeTasks: true }).catch(() => {});
         } catch (e) {
           sendResponse({ ok: false, error: String(e && e.message ? e.message : e) });
         }
@@ -11720,15 +12049,20 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
           if (miss) { sendResponse({ ok: false, reason: "no-evidence", taskName: miss.name }); break; }
         }
         try {
-          await setTaskStatus(cfg.token, taskId, "complete");
-          await patchStateTask(taskId, { status: "complete", done: true }).catch(() => {}); // every card at once
-          const cur = await getCurrentTimeEntry(cfg.token, cfg.teamId).catch(() => null);
-          if (cur && String(cur.taskId) === taskId) await stopTimer(cfg.token, cfg.teamId).catch(() => {});
-          const st = (await getClickupState().catch(() => null)) || {};
-          if (String(st.activeTaskId || "") === taskId) await setClickupState({ ...st, activeTaskId: null });
-          await advanceAutoRun(cfg, taskId); // the auto-run queue's current task: start the next
-          clearFilterCache();
-          const r = await refreshClickup({ includeTasks: true }).catch(() => ({}));
+          await cuPendingSet(taskId, "complete");
+          let r = {};
+          try {
+            await setTaskStatus(cfg.token, taskId, "complete");
+            await patchStateTask(taskId, { status: "complete", done: true }).catch(() => {}); // every card at once
+            const cur = await getCurrentTimeEntry(cfg.token, cfg.teamId).catch(() => null);
+            if (cur && String(cur.taskId) === taskId) await stopTimer(cfg.token, cfg.teamId).catch(() => {});
+            const st = (await getClickupState().catch(() => null)) || {};
+            const wasRunning = (st.running && String(st.running.taskId) === taskId) || (cur && String(cur.taskId) === taskId);
+            if (String(st.activeTaskId || "") === taskId || wasRunning) await setClickupState({ ...st, activeTaskId: String(st.activeTaskId || "") === taskId ? null : st.activeTaskId, running: wasRunning ? null : st.running });
+            await advanceAutoRun(cfg, taskId); // the auto-run queue's current task: start the next
+            clearFilterCache();
+            r = await refreshClickup({ includeTasks: true }).catch(() => ({}));
+          } finally { await cuPendingSet(taskId, null); }
           sendResponse({ ok: true, running: (r.data && r.data.running) || null, data: r.data || null });
         } catch (e) {
           sendResponse({ ok: false, error: String(e && e.message ? e.message : e) });

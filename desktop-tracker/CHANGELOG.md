@@ -1,5 +1,9 @@
 # ClickUp Tracker changelog
 
+## 0.4.3
+- Tells the extension which task it sees tracking, so a timer started here or in ClickUp shows on the extension's pages within a minute.
+- Safer link with the extension: only Personal ClickUp Manager (the extension this app was set up with, and any you allow) can talk to the app. Any other browser extension that tries gets an Allow / Don't allow question first.
+
 ## 0.4.2
 - Helps the extension read PHP versions from WordPress when the WordPress sign-ins are in a different Chrome profile: a copy of the extension in that profile picks up the list of sites through this app and hands back only the versions. Only site addresses and version numbers pass through, on this computer only.
 

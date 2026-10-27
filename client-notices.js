@@ -59,15 +59,16 @@
   const noticeFor = (t) => active().find((n) => touches(n, t)) || null;
   // The working day before a date (Friday for a Monday).
   function dayBefore(ms) { const d = new Date(dayStart(ms)); do d.setDate(d.getDate() - 1); while (d.getDay() === 0 || d.getDay() === 6); return d.getTime(); }
+  const shown = (t) => String(t || "").replace(/(?:@someone\b[ \t,]*)+/g, "").replace(/[*_~]{1,2}([^*_~\n]+)[*_~]{1,2}/g, "$1");
   // In a line: the AI's summary, else the client's own words (after "Client message:"), without @tags or *bold*.
   function say(n) {
-    if (n.summary) return String(n.summary);
+    if (n.summary) return shown(n.summary).replace(/\s+/g, " ").trim();
     let t = String(n.text || "");
     const m = t.match(/client(?:'s)?\s+(?:message|email|said|says|wrote|request)\s*\**\s*:\s*\**([\s\S]+)/i);
     if (m) t = m[1];
     return t.replace(/@(channel|here|everyone|someone)\b/g, "").replace(/[*_~]/g, "").replace(/^\s*(hi|hello|hey|dear)\b[^\n]*\n/i, "").replace(/\s+/g, " ").trim();
   }
-  const shown = (t) => String(t || "").replace(/(?:@someone\s*)+/g, "").replace(/[*_~]{1,2}([^*_~\n]+)[*_~]{1,2}/g, "$1");
+
   const when = (n) => (n.fromMs ? "from " + fmtDay(n.fromMs) : "") + (n.untilMs ? " until " + fmtDay(n.untilMs) : n.fromMs && /until further notice/i.test(n.text || "") ? " until further notice" : "");
 
   // ---------- pills on task rows ----------
@@ -241,7 +242,7 @@
       "summary: one short sentence, plain words, what the team must do, with the date.\n" +
       "from / until: the dates it applies, as YYYY-MM-DD, worked out from the posting date (\"this Wednesday\" = the next Wednesday after it); \"\" when none.\n" +
       "siteTasks: the numbers of the tasks below that change the client's website (content edits, pages, plugins, speed, schema, redirects...) and so are affected by a freeze; [] when none.\n\n" +
-      "Message:\n" + String(n.text).slice(0, 1500) + "\n\nOpen tasks:\n" + (tasks.length ? tasks.map((t, i) => (i + 1) + ". " + t.name).join("\n") : "(none)");
+      "Message:\n" + shown(n.text).slice(0, 1500) + "\n\nOpen tasks:\n" + (tasks.length ? tasks.map((t, i) => (i + 1) + ". " + t.name).join("\n") : "(none)");
     const s = await LanguageModel.create({ expectedInputs: [{ type: "text", languages: ["en"] }], expectedOutputs: [{ type: "text", languages: ["en"] }] });
     try {
       let out;

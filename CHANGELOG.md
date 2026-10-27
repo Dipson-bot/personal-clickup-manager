@@ -1,5 +1,17 @@
 # Changelog
 
+## v4.3.2
+- Ctrl+Z undo: press Ctrl+Z on any page of the extension (or Undo on the small note that shows after a change) to undo your last change - colours, pins, My notes, reminders, client notes, paused clients, draft tasks, settings, and in ClickUp a task's due date, start date, estimate, status, priority or the people on it. Only that change is put back, the last 20 are kept (also after a reload), and Ctrl+Z inside a text box still undoes your typing.
+- Monthly report tasks get your Report colour by themselves: when one of your colours is called Report, a task named Monthly Report, Technical Monthly Report, Monthly Report Creation… is coloured with it the first time it shows up. A colour it already has is kept, and if you take the colour off it stays off.
+- Monthly report tasks: Make my own task (turn it on in General › Report rules; off by default). On a monthly report task assigned to several people, one click makes your own related task in the same List (on you, due the Friday of that week, the main task's File: line), takes you off the main task and leaves a comment there.
+- Fixed Admin › Users showing someone as Active now while their day card said Offline: the dots and Last active now update every minute (re-read from the team hub every 3 minutes), and your own row always shows you as active.
+- Start, Stop and Complete show at once: the task shows as tracking (⟳ syncing with ClickUp…) the moment ClickUp has the timer, instead of after a slow refresh, and a row keeps its Starting… / Stopping… line even after a reload until ClickUp confirms. A timer started in the taskbar app or in ClickUp shows within a minute.
+- General › Report rules: your reporting rules are added to Copy for AI, Explain this task and Plan with AI for every task with "report" in its name (Monthly Report, Technical Monthly Report...). The box starts empty: paste your rules once.
+- Safer WordPress helper: a Chrome profile ticked as "signed in to the clients' WordPress" is now helper only - Agent Router logins, Slack, Drive sync, Site monitor checks and ClickUp are off there - and its card shows how to limit the extension to the clients' websites in that profile (Site access › On specific sites).
+- ClickUp Tracker 0.4.3: only Personal ClickUp Manager can talk to the taskbar app; any other browser extension that tries gets an Allow / Don't allow question first.
+- Fixed: a reminder could pop up twice. A Chrome profile ticked as "signed in to the clients' WordPress" (Site monitor) no longer shows reminders - your main profile does - and the same reminder due the same minute shows once.
+- Fixed: client notices no longer show "@someone @someone…" - old notices and ones shared by teammates are cleaned too, including the AI summary.
+
 ## v4.3.1
 - The calendar's time picker (reminders, scheduled comments and drafts, every date-and-time box) now offers every minute, not only 5-minute steps.
 - Wrap up the day: Send to #daily-task-update posts the Daily Tasks Update in Slack as you (links stay clickable), and a tick box sends it by itself on weekdays at the time you pick - once a day, your edited text if you changed it, never when nothing was completed - with a notification and a link to the message.

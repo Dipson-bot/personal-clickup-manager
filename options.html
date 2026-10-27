@@ -2245,6 +2245,10 @@
     .sm-headrow .sm-mine input { margin: 0; }
     .sm-headrow .sm-mine + .hint { font-size: 11.5px; white-space: nowrap; }
     #siteMonitorStatus .imp-row > .imp-entry { flex: 1 1 380px; min-width: 0; }
+    #wpHelperCard .wph-only { margin: 10px 0 0; padding: 8px 12px; border-radius: 9px; border: 1px solid var(--border); background: var(--bg2, transparent); font-size: 12.5px; line-height: 1.5; }
+    #wpHelperCard .wph-steps { margin: 10px 0 0; padding: 10px 12px; border-radius: 9px; border: 1px dashed var(--border); font-size: 12.5px; line-height: 1.55; }
+    #wpHelperCard .wph-steps ol { margin: 6px 0 6px 18px; padding: 0; }
+    #wpHelperCard code { font-size: 11.5px; padding: 0 4px; border-radius: 4px; background: var(--bg2, rgba(0,0,0,.05)); }
     .sm-sheetrow { display: flex; gap: 6px; margin-top: 6px; }
     .sm-sheetrow input { flex: 1; min-width: 0; font: inherit; font-size: 12px; padding: 4px 8px; border-radius: 7px; border: 1px solid var(--border); background: var(--card); color: var(--text); }
     .sm-php.bad { color: var(--red, #dc2626); }
@@ -2351,9 +2355,22 @@
     </div>
     <div class="card" id="wpHelperCard">
       <h2>WordPress sign-ins in another Chrome profile</h2>
-      <p class="hint" style="line-height:1.5;margin:0 0 10px;">Tick this in the Chrome profile that is signed in to the clients' WordPress. When the other profile presses <b>Read from WordPress</b> (Site monitor › PHP2Shell check), this profile reads each site's Site Health page with its own sign-in and hands back only the PHP version, through the ClickUp Tracker taskbar app on this computer. No password or sign-in ever leaves this profile. Keep the taskbar app running.</p>
+      <p class="hint" style="line-height:1.5;margin:0 0 10px;">Tick this in the Chrome profile that is signed in to the clients' WordPress. When the other profile presses <b>Read from WordPress</b> (Site monitor › PHP2Shell check), this profile reads each site's Site Health page with its own sign-in and hands back only the PHP version, through the ClickUp Tracker taskbar app on this computer. No password or sign-in ever leaves this profile. Keep the taskbar app running. This profile shows no reminders (your main profile does), so they don't pop up twice.</p>
       <div class="checkbox"><input type="checkbox" id="wpHelperOn" /><label for="wpHelperOn" style="margin:0;font-weight:600;">This profile is signed in to the clients' WordPress (read PHP versions for my other profile)</label></div>
       <p class="hint" id="wpHelperMsg" style="margin:6px 0 0;"></p>
+      <div class="wph-only" id="wpHelperOnly">
+        <b>Helper only.</b> While this is ticked, this profile does nothing else: Agent Router logins, Slack, Drive sync, Site monitor checks, ClickUp and reminders are all off here - only the PHP read runs, and only when your other profile asks.
+      </div>
+      <div class="wph-steps">
+        <b>Keep it to the clients' sites (recommended, once):</b> this profile holds company logins, so let the extension reach only the clients' websites in it.
+        <ol>
+          <li>Open <code>chrome://extensions</code> in this profile (paste it in the address bar).</li>
+          <li>On <b>Personal ClickUp Manager</b>, press <b>Details</b>.</li>
+          <li>Under <b>Site access</b>, pick <b>On specific sites</b>.</li>
+          <li>Press <b>Add</b> and enter each client's website, e.g. <code>https://example-client.com</code> (one per client, as in Site monitor).</li>
+        </ol>
+        The extension then can't open any other site in this profile (mail, hosting panels, anything else), and Read from WordPress keeps working for those sites. A new client later: add its website here too.
+      </div>
     </div>
   </section>
 
@@ -2791,6 +2808,18 @@
     <div class="hint" id="myPauseMsg" style="margin-top:6px;"></div>
   </div>
 
+  <div class="card" id="reportRulesCard">
+    <h2>Report rules</h2>
+    <p class="hint" style="margin:0 0 8px;line-height:1.5;">For a task whose name has "report" in it (Monthly Report, Monthly Reporting, Technical Monthly Report...), Copy for AI, Explain this task and Plan with AI add these rules under "Reporting rules". <code>&lt;Client&gt;</code> becomes the task's client. Paste your rules here (it starts empty; empty adds nothing). It's a copy of the rules in your reports folder - it doesn't update by itself, so change it here when the rules there change.</p>
+    <textarea id="reportRulesText" rows="8" spellcheck="false" placeholder="Paste your report rules here, e.g.&#10;- Show changes as counts, never percentages.&#10;- New client or missing data: ask, don't guess." style="width:100%;box-sizing:border-box;font:12.5px/1.5 ui-monospace,SFMono-Regular,Consolas,monospace;"></textarea>
+    <div style="margin-top:6px;"><span class="hint" id="reportRulesMsg"></span></div>
+    <label style="display:flex;gap:8px;align-items:flex-start;margin-top:12px;font-size:13px;"><input type="checkbox" id="reportSplitOn" style="margin-top:3px;"><span><b>Monthly report tasks: Make my own task</b><br><span class="hint">On a monthly report task you share with others, the task's details get a <b>✂ Make my own task</b> button: one click makes your own task in the same List (on you, due the Friday of that week, the main task's <code>File:</code> line), relates it to the main task, takes you off the main task and leaves the comment below there. Off: nobody sees it.</span></span></label>
+    <div id="reportSplitBox" style="display:none;grid-template-columns:auto 1fr;gap:6px 10px;align-items:center;margin-top:8px;font-size:12.5px;">
+      <span>Your task's name</span><input type="text" id="reportSplitName" maxlength="200" placeholder="Technical Monthly Report">
+      <span>Comment on the main task</span><input type="text" id="reportSplitComment" maxlength="500">
+    </div>
+  </div>
+
   <div class="card" id="appearanceCard">
     <h2>Appearance</h2>
     <p class="hint" style="margin:0 0 12px;line-height:1.5;">Light / dark and the ready-made palettes are in the <b>☀</b> button at the top of every page. Here you can make your own palette and choose the background: plain, Task weather (it follows your running task), or your own picture or video - and how solid the cards are over it.</p>
@@ -2913,6 +2942,7 @@
 <script src="mention.js"></script>
 <script src="long-list.js"></script>
 <script src="task-notes.js"></script>
+<script src="undo.js"></script>
 <script src="task-dupes.js"></script>
 <script src="rollup-help.js"></script>
 <script src="week-fold.js"></script>

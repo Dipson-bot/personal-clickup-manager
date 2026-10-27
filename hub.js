@@ -596,6 +596,8 @@
   function presence(u) {
     const t = Date.now(), on = Number(u && u.onAt) || 0, act = Number(u && u.actAt) || 0;
     const last = Math.max(act, Number(u && u.lastSeen) || 0);
+    // Your own row: you are the one looking at it.
+    if (u && u._mine) return { k: "on", last: t, label: "Active now (you)" };
     if (!on) return { k: "", last };
     if (t - on < ONLINE_MS && act && t - act < ACTIVE_MS) return { k: "on", last, label: "Active now" };
     if (t - on < ONLINE_MS) return { k: "away", last, label: "Away" + (act ? " - last active " + ago(act) : "") + " (Chrome is open)" };
@@ -811,9 +813,27 @@
     try { chrome.storage.local.get("settings").then((g) => { const s = (g && g.settings) || {}; tbl.classList.toggle("hb-norole", s.hubRoleCol === false); tbl.classList.toggle("hb-noperf", s.hubPerfCol !== true); }).catch(() => {}); } catch (e) {}
   }
   try { chrome.storage.onChanged.addListener((ch, area) => { if (area === "local" && ch.settings) document.querySelectorAll("table.hb-users").forEach(paintRoleCol); }); } catch (e) {}
+  // The rows' dots and Last active are worked out again every minute (a row drawn
+  // 20 minutes ago must not still say Active now while its picture's card says
+  // Offline), and every 3 minutes the times are re-read from the hub, quietly.
+  let presencePaint = [], presenceAt = 0;
+  setInterval(async () => {
+    const box = $("hubAdmUsers");
+    if (!presencePaint.length || !box || !box.isConnected || document.hidden) return;
+    if (Date.now() - presenceAt >= 3 * 60000) {
+      presenceAt = Date.now();
+      const rr = await hub("users", {}, true).catch(() => null);
+      if (rr && rr.ok) {
+        const by = new Map((rr.users || []).map((x) => [String(x.install), x]));
+        for (const p of presencePaint) { const f = by.get(String(p.u.install)); if (f) Object.assign(p.u, { onAt: f.onAt, actAt: f.actAt, lastSeen: f.lastSeen, day: f.day }); }
+      }
+    }
+    for (const p of presencePaint) p.paint();
+  }, 60000);
   async function loadUsers() {
     const box = $("hubAdmUsers");
     if (!box) return;
+    presencePaint = []; presenceAt = Date.now();
     // Keep what's shown while it reloads, and say so (no blank flash).
     let note = box.querySelector(".hb-usersnote");
     if (note) note.firstChild.textContent = "Updating…"; else box.textContent = "Loading…";
@@ -900,6 +920,7 @@
   function drawUser(tbl, g, myInstall, say) {
     const u = g.row;
     const mine = !!(myInstall && u.install === myInstall);
+    if (mine) u._mine = true;
     const dupRow = el("tr"); dupRow.style.display = "none";
     const noteRow = el("tr"); noteRow.style.display = "none";
     const tr = el("tr", "hb-urow");
@@ -972,6 +993,15 @@
     const cl = el("td", pz.k === "on" ? "hb-act-on" : "", pz.k === "on" ? "Active now" : pz.k === "away" ? "Away" : pz.last ? ago(pz.last) : "-");
     if (pz.label) cl.title = pz.label;
     tr.appendChild(cl);
+    const paintPresence = () => {
+      const pz2 = presence(u);
+      cl.textContent = pz2.k === "on" ? "Active now" : pz2.k === "away" ? "Away" : pz2.last ? ago(pz2.last) : "-";
+      cl.className = pz2.k === "on" ? "hb-act-on" : "";
+      cl.title = pz2.label || "";
+      const ow = c0.querySelector(".hb-avw");
+      if (ow) ow.replaceWith(presenceAvatar(u));
+    };
+    presencePaint.push({ u, paint: paintPresence });
     tr.appendChild(el("td", "", u.state === "banned" ? "Banned" : u.state === "muted" ? "Muted until " + new Date(u.mutedUntil).toLocaleString([], { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" }) : ""));
     const ca = el("td");
     ca.style.whiteSpace = "nowrap";
@@ -991,14 +1021,7 @@
       cv.textContent = fresh.version ? "v" + fresh.version : "-";
       cv.style.color = fresh.version && cmpV(fresh.version, VERSION) < 0 ? "#b45309" : "";
       cv.title = fresh.lastSeen ? "Reported " + ago(fresh.lastSeen) + " (" + new Date(fresh.lastSeen).toLocaleString() + ")" : "";
-      {
-        const pz2 = presence(u);
-        cl.textContent = pz2.k === "on" ? "Active now" : pz2.k === "away" ? "Away" : pz2.last ? ago(pz2.last) : "-";
-        cl.className = pz2.k === "on" ? "hb-act-on" : "";
-        cl.title = pz2.label || "";
-        const ow = c0.querySelector(".hb-avw");
-        if (ow) ow.replaceWith(presenceAvatar(u));
-      }
+      paintPresence();
       const who = u.name || "That copy";
       say(moved
         ? who + " now reports " + (fresh.version ? "v" + fresh.version : "no version") + "."

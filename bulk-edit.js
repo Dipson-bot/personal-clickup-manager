@@ -642,7 +642,7 @@ function bkMergePeople(current, found, selfId) {
     for (let i = 0; i < items.length; i++) {
       const it = items[i];
       res.textContent = label + "… " + (i + 1) + " of " + items.length;
-      const r = await send({ type: "CLICKUP_BULK_ONE", taskId: it.id, change: makeChange(it), assignee: scopeId, comment: comment || undefined }, 120000);
+      const r = await send({ type: "CLICKUP_BULK_ONE", taskId: it.id, change: makeChange(it), assignee: scopeId, comment: comment || undefined, _batch: 1 }, 120000);
       if (r && r.ok) {
         ok++;
         // The change is what the owner asked for, so a task whose comment failed

@@ -79,6 +79,18 @@ function cuBusyLine(tid) {
   line.append(spin, txt);
   return line;
 }
+// A Start / Stop / Complete the background is still writing to ClickUp (storage
+// cuPendingAct): that row keeps its "Starting… waiting for ClickUp" line, also
+// after a reload, until ClickUp has it.
+function cuPendingMerge(map) {
+  const now = Date.now();
+  for (const [tid, p] of Object.entries(map || {})) if (p && now - Number(p.at) < 180000 && !cuRowBusy.has(tid)) { cuRowBusy.add(tid); cuRowBusyAct[tid] = { action: p.action, at: Number(p.at), fromBg: true }; }
+  for (const tid of [...cuRowBusy]) if (cuRowBusyAct[tid] && cuRowBusyAct[tid].fromBg && !(map && map[tid])) { cuRowBusy.delete(tid); delete cuRowBusyAct[tid]; }
+}
+try {
+  chrome.storage.local.get("cuPendingAct").then((g) => { cuPendingMerge(g && g.cuPendingAct); }).catch(() => {});
+  chrome.storage.onChanged.addListener((ch, area) => { if (area === "local" && ch.cuPendingAct) { cuPendingMerge(ch.cuPendingAct.newValue); try { render(); } catch (e) {} } });
+} catch (e) {}
 function cuSpinIcon() { const s = document.createElement("span"); s.className = "cu-spin"; return s; }
 
 const cuRowMsg = {};
@@ -468,9 +480,10 @@ function appendTaskControls(row, t) {
   actions.className = "cu-actions";
 
   if (isRunning) {
+    if (running.syncing) { const sy = cuSpinIcon(); sy.className += " cu-syncing"; sy.title = "Started - syncing with ClickUp\u2026"; actions.appendChild(sy); }
     const stop = document.createElement("button");
     stop.className = "cu-iconbtn stop";
-    stop.title = "Stop tracking · set to “to do”";
+    stop.title = running.syncing ? "Tracking (syncing with ClickUp\u2026) - click to stop \u00b7 set to \u201cto do\u201d" : "Stop tracking · set to “to do”";
     stop.textContent = busy ? "" : "⏸";
     if (busy) stop.appendChild(cuSpinIcon());
     stop.disabled = busy;
@@ -3566,6 +3579,7 @@ function renderNowTracking() {
     const subMs = known ? (cuRunPrior.subs || 0) : 0;
     const mineBefore = Math.max(0, prior - othMs - subMs);
     sess.textContent = !known ? "adding earlier time…" : prior > 0 ? "(" + (subMs > 0 ? fmtDur(subMs) + " subtasks + " : "") + (othMs > 0 ? fmtDur(othMs) + " others + " : "") + (mineBefore > 0 ? fmtDur(mineBefore) + " before + " : "") + fmtDur(live) + " now)" : "";
+    if (run.syncing) sess.textContent = "⟳ syncing with ClickUp… " + sess.textContent; // started here or in the taskbar app; ClickUp hasn't confirmed yet
     const othBits = [];
     if (par.length) othBits.push("\u26A0 " + par.map((o) => o.name || "Someone").join(", ") + (par.length === 1 ? " is" : " are") + " tracking this task right now too");
     if (othMs > 0) othBits.push(fmtDur(othMs) + " tracked by others before you" + (est > 0 ? (prior + live < est ? " \u00b7 " + fmtDur(est - prior - live) + " left of " + fmtDur(est) : " \u00b7 estimate used up") : ""));

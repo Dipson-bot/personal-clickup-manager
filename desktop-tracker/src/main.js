@@ -399,10 +399,43 @@ async function checkComments(force) {
 // sent back out.
 const LINK_PORT = 47615;
 let extShow = null; // the extension's last "show it" (null = not heard from yet)
+// Which browser extensions may talk to this app: the one it was set up with
+// (trusted the first time it connects - your Personal ClickUp Manager; a copy in
+// another Chrome profile loaded from the same folder has the same ID), plus any
+// you allowed. Any other extension asking gets one "Allow?" question; a "Don't
+// allow" is remembered for a day (then it may ask again).
+// settings.trustedExt [ids], settings.refusedExt { id: when }.
+const extIdOf = (origin) => { const m = /^chrome-extension:\/\/([a-p]{32})$/.exec(origin); return m ? m[1] : ""; };
+const askingExt = new Set();
+function extTrust(id) {
+  if (!id) return "no";
+  const yes = Array.isArray(settings.trustedExt) ? settings.trustedExt : [];
+  if (yes.includes(id)) return "yes";
+  const no = settings.refusedExt && typeof settings.refusedExt === "object" ? settings.refusedExt : {};
+  if (no[id] && Date.now() - Number(no[id]) < 86400000) return "no";
+  if (!yes.length) { settings.trustedExt = [id]; saveSettings(); return "yes"; } // the first one: the extension this app works with
+  if (!askingExt.has(id)) { askingExt.add(id); askExtAllowed(id).catch(() => {}); }
+  return "wait";
+}
+async function askExtAllowed(id) {
+  const owner = new BrowserWindow({ show: false, alwaysOnTop: true, skipTaskbar: true, width: 1, height: 1 });
+  try {
+    const r = await dialog.showMessageBox(owner, {
+      type: "question", buttons: ["Allow", "Don't allow"], defaultId: 1, cancelId: 1, title: "ClickUp Tracker",
+      message: "A browser extension wants to connect to ClickUp Tracker",
+      detail: "Extension ID: " + id + "\n\nAllow it only if it's Personal ClickUp Manager in another Chrome profile of yours (for example the WordPress helper). You can see an extension's ID in chrome://extensions with Developer mode on. If you're not sure, choose Don't allow.",
+    });
+    if (r.response === 0) {
+      settings.trustedExt = [...new Set([...(Array.isArray(settings.trustedExt) ? settings.trustedExt : []), id])];
+      if (settings.refusedExt) delete settings.refusedExt[id];
+    } else settings.refusedExt = { ...(settings.refusedExt || {}), [id]: Date.now() };
+    saveSettings();
+  } finally { owner.destroy(); askingExt.delete(id); }
+}
 function startLink() {
   const srv = http.createServer((req, res) => {
     const origin = String(req.headers.origin || "");
-    const fromExt = /^chrome-extension:\/\/[a-p]{32}$/.test(origin);
+    const fromExt = extTrust(extIdOf(origin)) === "yes";
     res.setHeader("Cache-Control", "no-store");
     if (fromExt) res.setHeader("Access-Control-Allow-Origin", origin);
     if (req.method === "OPTIONS" && fromExt) { res.writeHead(204, { "Access-Control-Allow-Methods": "POST", "Access-Control-Allow-Headers": "Content-Type" }); res.end(); return; }
@@ -439,7 +472,9 @@ function startLink() {
       try { m = JSON.parse(body); } catch (e) {}
       try { await fromExtension(m); } catch (e) {}
       res.writeHead(200, { "Content-Type": "application/json" });
-      res.end(JSON.stringify({ app: "clickup-tracker", version: app.getVersion(), signedIn: !!cu, user: (cu && cu.username) || "", shown: isMac ? !settings.hiddenByExt : !!(win && !win.isDestroyed() && win.isVisible()), platform: process.platform, folders: true, folderFiles: true, extUpdate: true }));
+      res.end(JSON.stringify({ app: "clickup-tracker", version: app.getVersion(), signedIn: !!cu,
+        // The timer this app sees running (so the extension shows it at once, even when it was started here or in ClickUp).
+        timer: state && state.running && state.running.taskId ? { taskId: String(state.running.taskId), taskName: String(state.running.taskName || "").slice(0, 200), startMs: Number(state.running.startMs) || 0 } : null, user: (cu && cu.username) || "", shown: isMac ? !settings.hiddenByExt : !!(win && !win.isDestroyed() && win.isVisible()), platform: process.platform, folders: true, folderFiles: true, extUpdate: true }));
     });
   });
   srv.on("error", () => {}); // port in use (another copy): no link, the app still works

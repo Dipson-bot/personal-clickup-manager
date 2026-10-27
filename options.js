@@ -2533,6 +2533,18 @@ function cuBusyLine(tid) {
   line.append(spin, txt);
   return line;
 }
+// A Start / Stop / Complete the background is still writing to ClickUp (storage
+// cuPendingAct): that row keeps its "Starting… waiting for ClickUp" line, also
+// after a reload, until ClickUp has it.
+function cuPendingMerge(map) {
+  const now = Date.now();
+  for (const [tid, p] of Object.entries(map || {})) if (p && now - Number(p.at) < 180000 && !cuRowBusyOpt.has(tid)) { cuRowBusyOpt.add(tid); cuRowBusyActOpt[tid] = { action: p.action, at: Number(p.at), fromBg: true }; }
+  for (const tid of [...cuRowBusyOpt]) if (cuRowBusyActOpt[tid] && cuRowBusyActOpt[tid].fromBg && !(map && map[tid])) { cuRowBusyOpt.delete(tid); delete cuRowBusyActOpt[tid]; }
+}
+try {
+  chrome.storage.local.get("cuPendingAct").then((g) => { cuPendingMerge(g && g.cuPendingAct); }).catch(() => {});
+  chrome.storage.onChanged.addListener((ch, area) => { if (area === "local" && ch.cuPendingAct) { cuPendingMerge(ch.cuPendingAct.newValue); try { repaintCuTaskRows(); } catch (e) {} } });
+} catch (e) {}
 function cuSpinIcon() { const s = document.createElement("span"); s.className = "cu-spin"; return s; }
 
 const cuRowMsgOpt = {};
@@ -2725,9 +2737,10 @@ function appendTaskControlsOpt(row, t) {
   actions.className = "cu-actions";
 
   if (isRunning) {
+    if (running.syncing) { const sy = cuSpinIcon(); sy.className += " cu-syncing"; sy.title = "Started - syncing with ClickUp\u2026"; actions.appendChild(sy); }
     const stop = document.createElement("button");
     stop.className = "cu-iconbtn stop";
-    stop.title = "Stop tracking · set to “to do”";
+    stop.title = running.syncing ? "Tracking (syncing with ClickUp\u2026) - click to stop \u00b7 set to \u201cto do\u201d" : "Stop tracking · set to “to do”";
     stop.textContent = busy ? "" : "⏸";
     if (busy) stop.appendChild(cuSpinIcon());
     stop.disabled = busy;
@@ -6172,6 +6185,7 @@ function renderNowTracking() {
     const subMs = known ? (cuRunPrior.subs || 0) : 0;
     const mineBefore = Math.max(0, prior - othMs - subMs);
     sess.textContent = !known ? "adding earlier time…" : prior > 0 ? "(" + (subMs > 0 ? fmtDurOpt(subMs) + " subtasks + " : "") + (othMs > 0 ? fmtDurOpt(othMs) + " others + " : "") + (mineBefore > 0 ? fmtDurOpt(mineBefore) + " before + " : "") + fmtDurOpt(live) + " now)" : "";
+    if (run.syncing) sess.textContent = "⟳ syncing with ClickUp… " + sess.textContent; // started here or in the taskbar app; ClickUp hasn't confirmed yet
     const othBits = [];
     if (par.length) othBits.push("\u26A0 " + par.map((o) => o.name || "Someone").join(", ") + (par.length === 1 ? " is" : " are") + " tracking this task right now too");
     if (othMs > 0) othBits.push(fmtDurOpt(othMs) + " tracked by others before you" + (est > 0 ? (prior + live < est ? " \u00b7 " + fmtDurOpt(est - prior - live) + " left of " + fmtDurOpt(est) : " \u00b7 estimate used up") : ""));
@@ -10812,7 +10826,7 @@ const ADMIN_FILES = [
   "manifest.json", "background.js", "popup.html", "popup.js", "options.html", "options.js", "phone-timer.js",
   "offscreen.html", "offscreen.js", "update.html", "update.js", "auto-update.html", "auto-update.js", "wrapup.html", "wrapup.js",
   "notify-menu.js", "export-tasks.js", "lib-zip.js", "lib-unzip.js", "lib-automation.js",
-  "lib-availability.js", "lib-clickup.js", "lib-crypto.js", "lib-tidy.js", "lib-drive.js", "find-many.js", "week-fold.js", "ar-status.js", "automation.js", "lib-rules.js", "nav-badges.js", "simple-view.js", "task-panel.js", "lib-updater.js", "offscreen-updater.js", "celebrate.js", "celebrate.html", "celebrate-window.js", "fx.js", "pcm-help.js", "tracker.html", "tracker.js", "bulk-edit.js", "pcm-search.js", "lib-taskfiles.js", "task-files.js", "reminders.js", "hub.js", "task-sort.js", "breakdown.js", "calendar.js", "notices.js", "insights-plus.js", "header-ui.js", "weather.js", "paused-clients.js", "client-notices.js", "lib-dailyupdate.js", "plan-apply.js", "task-notes.js", "task-dupes.js", "rollup-help.js", "md-notes.js", "mention.js", "long-list.js", "local-tasks.js", "ui-extras.js", "assignees.js", "add-time.js", "team-hub.gs", "vendor/pdf.min.js", "vendor/pdf.worker.min.js", "vendor/pdfjs-LICENSE.txt",
+  "lib-availability.js", "lib-clickup.js", "lib-crypto.js", "lib-tidy.js", "lib-drive.js", "find-many.js", "week-fold.js", "ar-status.js", "automation.js", "lib-rules.js", "nav-badges.js", "simple-view.js", "task-panel.js", "lib-updater.js", "offscreen-updater.js", "celebrate.js", "celebrate.html", "celebrate-window.js", "fx.js", "pcm-help.js", "tracker.html", "tracker.js", "bulk-edit.js", "pcm-search.js", "lib-taskfiles.js", "task-files.js", "reminders.js", "hub.js", "task-sort.js", "breakdown.js", "calendar.js", "notices.js", "insights-plus.js", "header-ui.js", "weather.js", "paused-clients.js", "client-notices.js", "lib-dailyupdate.js", "undo.js", "plan-apply.js", "task-notes.js", "task-dupes.js", "rollup-help.js", "md-notes.js", "mention.js", "long-list.js", "local-tasks.js", "ui-extras.js", "assignees.js", "add-time.js", "team-hub.gs", "vendor/pdf.min.js", "vendor/pdf.worker.min.js", "vendor/pdfjs-LICENSE.txt",
   "icons/icon16.png", "icons/icon48.png", "icons/icon128.png", "icons/celebrate.png", "icons/sad.png",
   "sounds/notify.wav", "sounds/danger.mp3", "sounds/winner.wav",
   "README.md", "CHANGELOG.md",
@@ -11506,7 +11520,7 @@ if ($("admCalCard")) {
 // Where the timer shows (Floating window / Taskbar / Both / Neither) is picked once
 // and kept; the Dashboard card invites people to try the taskbar until they pick.
 const DESK_REL = "https://github.com/Dipson-bot/personal-clickup-manager/releases";
-const DESK_TAG = "desktop-v0.4.2";
+const DESK_TAG = "desktop-v0.4.3";
 let deskOs = "";
 async function deskPlatform() {
   if (deskOs) return deskOs;
@@ -11878,3 +11892,41 @@ if ($("cuSplitWeeksOpt")) $("cuSplitWeeksOpt").addEventListener("change", (e) =>
 
 // A task coloured / a colour made or deleted (task-notes.js): the Colour filter and its list follow.
 chrome.storage.onChanged.addListener((ch, area) => { if (area !== "local" || !(ch.taskColors || ch.taskColorLabels)) return; setTimeout(() => { try { optRenderCuFilterMenu(); } catch (e) {} if (Array.isArray(cuFilter.colors) && cuFilter.colors.length) { try { optRepaintCuPreview(); } catch (e) {} } }, 50); });
+
+// General › Report rules: added to the AI briefs of report tasks (task-panel.js).
+(() => {
+  const ta = document.getElementById("reportRulesText"), msg = document.getElementById("reportRulesMsg");
+  if (!ta) return;
+  const def = () => (window.PcmTaskPanel && window.PcmTaskPanel.REPORT_RULES_DEFAULT) || "";
+  chrome.storage.local.get("settings").then((g) => { const v = g && g.settings && g.settings.reportRules; ta.value = typeof v === "string" ? v : def(); }).catch(() => { ta.value = def(); });
+  let t = 0;
+  const save = (text) => {
+    clearTimeout(t);
+    t = setTimeout(async () => {
+      const r = await send({ type: "SET_SETTINGS", patch: { reportRules: text } });
+      msg.textContent = r === null ? "Couldn't save" : text.trim() ? "Saved \u2713" : "Saved \u2713 - report tasks get no extra rules";
+      setTimeout(() => { msg.textContent = ""; }, 2000);
+    }, 600);
+  };
+  ta.addEventListener("input", () => save(ta.value));
+  // Monthly report "Make my own task": off unless ticked; its name and comment.
+  const on = document.getElementById("reportSplitOn"), nm = document.getElementById("reportSplitName"), cm = document.getElementById("reportSplitComment"), box = document.getElementById("reportSplitBox");
+  if (!on) return;
+  const COMMENT = "unassigning from here since separately assigned in related task.";
+  chrome.storage.local.get("settings").then((g) => {
+    const s = (g && g.settings) || {};
+    on.checked = s.reportSplit === true; box.style.display = on.checked ? "grid" : "none";
+    nm.value = s.reportSplitName || ""; cm.value = s.reportSplitComment == null ? COMMENT : s.reportSplitComment;
+  }).catch(() => {});
+  let t2 = 0;
+  const save2 = () => {
+    box.style.display = on.checked ? "grid" : "none";
+    clearTimeout(t2);
+    t2 = setTimeout(async () => {
+      const r = await send({ type: "SET_SETTINGS", patch: { reportSplit: on.checked, reportSplitName: nm.value.trim(), reportSplitComment: cm.value.trim() } });
+      msg.textContent = r === null ? "Couldn't save" : "Saved \u2713";
+      setTimeout(() => { msg.textContent = ""; }, 2000);
+    }, 400);
+  };
+  on.addEventListener("change", save2); nm.addEventListener("input", save2); cm.addEventListener("input", save2);
+})();
