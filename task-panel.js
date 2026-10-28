@@ -9,6 +9,11 @@
   const MAX_AI_INPUT = 6000; // characters of task text handed to the AI
   const MAX_VERIFY_INPUT = 30000; // the Copy for AI brief is pasted into a big model
   let openId = null; // task id whose panel is open
+  // Where it was opened: the list (its nearest element with an id, e.g. #optWeekList)
+  // and which of that task's rows in it - the same task can be in the Tasks list,
+  // This week by day and several days, and the details must stay under the row
+  // that was clicked, not jump to the first copy on the page.
+  let openHost = "", openNth = 0;
   let panel = null; // the open panel's element (kept across list re-renders)
   let aiAbort = null;
 
@@ -2990,6 +2995,9 @@
     close();
     openId = id;
     openClient = (row && row._cuTask && row._cuTask.client) ? String(row._cuTask.client) : "";
+    const hostEl = row && row.parentElement && row.parentElement.closest("[id]");
+    openHost = hostEl ? hostEl.id : "";
+    openNth = hostEl ? Math.max(0, chevsIn(hostEl, id).indexOf(row.querySelector(".pcm-chev"))) : 0;
     panel = el("div", "pcm-panel");
     panel.dataset.taskId = id;
     if (isPopup()) openSheet(row).appendChild(panel);
@@ -3008,6 +3016,14 @@
   // the same element back under its task's new row.
   // In the same frame as the redraw (a microtask, not a timer): with a timer the
   // open details were missing for one frame on every refresh - a visible flash.
+  const chevsIn = (root, id) => [...root.querySelectorAll(".pcm-chev")].filter((b) => b.dataset.taskId === id);
+  // The row the open details belong to: the same copy of the task in the same list.
+  function openRow() {
+    const host = openHost && document.getElementById(openHost);
+    const inHost = host ? chevsIn(host, openId) : [];
+    const btn = inHost[openNth] || inHost[0] || chevsIn(document, openId)[0];
+    return btn && btn.closest(".cu-task");
+  }
   let queued = false;
   new MutationObserver(() => {
     if (queued || !openId || !panel) return;
@@ -3015,9 +3031,8 @@
     queueMicrotask(() => {
       queued = false;
       if (!openId || !panel) return;
-      const btn = [...document.querySelectorAll(".pcm-chev")].find((b) => b.dataset.taskId === openId);
       // A panel opened from an Insights list row (openIn) follows that row instead.
-      const row = panel.dataset.host ? document.querySelector(panel.dataset.host + "[data-id=\"" + CSS.escape(openId) + "\"]") : (btn && btn.closest(".cu-task"));
+      const row = panel.dataset.host ? document.querySelector(panel.dataset.host + "[data-id=\"" + CSS.escape(openId) + "\"]") : openRow();
       if (sheet) return; // the popup's full view doesn't follow the list
       if (row && panel.previousElementSibling !== row) row.after(panel);
       setChevrons();
@@ -3176,8 +3191,9 @@
       b.setAttribute("aria-expanded", String(id === openId));
       b.onclick = (e) => {
         e.preventDefault(); e.stopPropagation();
-        if (openId === id) { close(); return; }
         const row = b.closest(".cu-task");
+        // Open under another copy of this task (the Tasks list vs a day): move it here.
+        if (openId === id && (!row || !panel || panel.previousElementSibling === row || sheet)) { close(); return; }
         if (row) open(row, id);
       };
       return b;

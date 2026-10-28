@@ -1,0 +1,143 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex">
+<title>Shared ClickUp tasks</title>
+<!-- Shared tasks (Personal ClickUp Manager › 🔗 Share). One page, two ways in:
+     - a link to this page on the project's GitHub Pages site with the tasks after
+       the # (the part of a link the browser never sends to the server), or
+     - a downloaded copy with the tasks inside it (<script id="pcm-data">).
+     Nothing is loaded from anywhere else. -->
+<style>
+  :root { --bg: #f6f7f9; --card: #fff; --ink: #1f2937; --muted: #6b7280; --line: #e5e7eb; --accent: #7b68ee; --accent-ink: #fff; --chip: #f3f4f6; --red: #dc2626; --green: #16a34a; }
+  @media (prefers-color-scheme: dark) { :root { --bg: #111318; --card: #1b1e25; --ink: #e5e7eb; --muted: #9ca3af; --line: #2d313b; --chip: #262a33; --red: #f87171; --green: #4ade80; } }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--ink); font: 14px/1.5 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+  main { max-width: 860px; margin: 0 auto; padding: 28px 16px 48px; }
+  h1 { font-size: 22px; margin: 0 0 4px; }
+  .sub { color: var(--muted); margin: 0 0 16px; }
+  .bar { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-bottom: 18px; }
+  button { font: 600 13px system-ui, sans-serif; border: 1px solid var(--line); background: var(--card); color: var(--ink); border-radius: 8px; padding: 7px 12px; cursor: pointer; }
+  button.pri { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); }
+  button:disabled { opacity: .6; cursor: default; }
+  .msg { color: var(--muted); font-size: 13px; }
+  .msg.err { color: var(--red); }
+  .task { background: var(--card); border: 1px solid var(--line); border-left: 4px solid var(--st, var(--line)); border-radius: 10px; padding: 12px 14px; margin-bottom: 10px; }
+  .task.done { opacity: .75; }
+  .nm { font-size: 15px; font-weight: 600; color: var(--ink); text-decoration: none; word-break: break-word; }
+  .nm:hover { text-decoration: underline; }
+  .meta { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px; }
+  .chip { background: var(--chip); border-radius: 999px; padding: 1px 9px; font-size: 12px; color: var(--muted); white-space: nowrap; }
+  .chip.st { color: #fff; background: var(--st, #6b7280); text-transform: uppercase; font-weight: 700; font-size: 11px; letter-spacing: .02em; }
+  .chip.late { color: var(--red); font-weight: 600; }
+  details { margin-top: 8px; }
+  summary { cursor: pointer; color: var(--accent); font-size: 13px; font-weight: 600; }
+  .desc { white-space: pre-wrap; word-break: break-word; margin: 8px 0 0; padding: 10px 12px; background: var(--chip); border-radius: 8px; font-size: 13px; }
+  .desc a, .note a { color: var(--accent); }
+  .note { color: var(--muted); font-size: 12.5px; margin-top: 22px; border-top: 1px solid var(--line); padding-top: 12px; }
+  .empty { background: var(--card); border: 1px dashed var(--line); border-radius: 10px; padding: 24px; text-align: center; color: var(--muted); }
+</style>
+</head>
+<body>
+<main>
+  <h1 id="title">Shared ClickUp tasks</h1>
+  <p class="sub" id="sub"></p>
+  <div class="bar" id="bar" hidden>
+    <button type="button" class="pri" id="openAll">Open all in ClickUp</button>
+    <button type="button" id="copyAll">Copy all links</button>
+    <span class="msg" id="msg" role="status"></span>
+  </div>
+  <div id="list"></div>
+  <p class="note">Opening a task needs a ClickUp account with access to its workspace. With the Personal ClickUp Manager extension, <b>Open all</b> opens them together in one Chrome tab group; without it they open as separate tabs (allow pop-ups for this page if your browser asks).</p>
+</main>
+<script>
+(function () {
+  "use strict";
+  var EXT = "dlmlgnnnacdbdlgcpohdnphhecljfeal"; // the extension's id (fixed by its manifest key)
+  var $ = function (id) { return document.getElementById(id); };
+  function esc(s) { return String(s == null ? "" : s).replace(/[&<>"']/g, function (c) { return { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]; }); }
+  function okUrl(u) { return /^https:\/\/app\.clickup\.com\//.test(String(u || "")); }
+  function dur(ms) { var m = Math.round((Number(ms) || 0) / 60000), h = Math.floor(m / 60); return h ? h + "h" + (m % 60 ? " " + (m % 60) + "m" : "") : m + "m"; }
+  function day(ms) { return new Date(ms).toLocaleDateString(undefined, { weekday: "short", month: "short", day: "numeric" }); }
+  // Plain text with its web addresses made clickable (everything else stays text).
+  function linkify(text) {
+    return esc(text).replace(/https?:\/\/[^\s<)"']+/g, function (u) { return '<a href="' + u + '" target="_blank" rel="noopener noreferrer">' + u + "</a>"; });
+  }
+  async function readData() {
+    var el = document.getElementById("pcm-data");
+    if (el) return JSON.parse(el.textContent);
+    var m = /[#&]d=([A-Za-z0-9_-]+)/.exec(location.hash);
+    if (!m) return null;
+    var b64 = m[1].replace(/-/g, "+").replace(/_/g, "/");
+    while (b64.length % 4) b64 += "=";
+    var bin = atob(b64), bytes = new Uint8Array(bin.length);
+    for (var i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+    var stream = new Blob([bytes]).stream().pipeThrough(new DecompressionStream("deflate-raw"));
+    return JSON.parse(await new Response(stream).text());
+  }
+  function render(d) {
+    var tasks = (d && Array.isArray(d.tasks) ? d.tasks : []).filter(function (t) { return t && t.name; });
+    var title = String((d && d.t) || "Shared ClickUp tasks").slice(0, 120);
+    $("title").textContent = title;
+    document.title = title + " - shared tasks";
+    $("sub").textContent = tasks.length + " task" + (tasks.length === 1 ? "" : "s") + (d && d.by ? " · shared by " + String(d.by).slice(0, 80) : "") + (d && d.at ? " · " + new Date(d.at).toLocaleString(undefined, { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" }) : "");
+    if (!tasks.length) { $("list").innerHTML = '<div class="empty">This link has no tasks in it - it may have been cut short when it was copied. Ask for it again.</div>'; return []; }
+    $("bar").hidden = false;
+    var today = new Date(); today.setHours(0, 0, 0, 0);
+    $("list").innerHTML = tasks.map(function (t) {
+      var st = /^#[0-9a-f]{3,8}$/i.test(t.color || "") ? t.color : "";
+      var chips = [];
+      if (t.status) chips.push('<span class="chip st">' + esc(t.status) + "</span>");
+      if (t.priority) chips.push('<span class="chip">' + esc(t.priority) + " priority</span>");
+      if (t.due) chips.push('<span class="chip' + (!t.done && t.due < today.getTime() ? " late" : "") + '">Due ' + esc(day(t.due)) + "</span>");
+      if (t.start) chips.push('<span class="chip">Start ' + esc(day(t.start)) + "</span>");
+      if (t.est || t.spent) chips.push('<span class="chip">' + (t.spent ? esc(dur(t.spent)) + " tracked" : "") + (t.spent && t.est ? " / " : "") + (t.est ? esc(dur(t.est)) + " estimate" : "") + "</span>");
+      if (t.client) chips.push('<span class="chip">' + esc(t.client) + "</span>");
+      else if (t.list) chips.push('<span class="chip">' + esc(t.list) + "</span>");
+      if (Array.isArray(t.who) && t.who.length) chips.push('<span class="chip">' + esc(t.who.join(", ")) + "</span>");
+      var name = okUrl(t.url) ? '<a class="nm" href="' + esc(t.url) + '" target="_blank" rel="noopener noreferrer">' + esc(t.name) + "</a>" : '<span class="nm">' + esc(t.name) + "</span>";
+      var desc = t.desc ? '<details><summary>Details</summary><div class="desc">' + linkify(t.desc) + "</div></details>" : "";
+      return '<div class="task' + (t.done ? " done" : "") + '"' + (st ? ' style="--st:' + st + '"' : "") + ">" + name + '<div class="meta">' + chips.join("") + "</div>" + desc + "</div>";
+    }).join("");
+    return tasks;
+  }
+  function say(t, err) { $("msg").textContent = t; $("msg").className = "msg" + (err ? " err" : ""); }
+  // The extension (a teammate's copy): one Chrome tab group. No answer: null.
+  function viaExtension(urls, title) {
+    return new Promise(function (res) {
+      try {
+        if (!(window.chrome && chrome.runtime && chrome.runtime.sendMessage)) return res(null);
+        var done = false, fin = function (r) { if (!done) { done = true; res(r); } };
+        chrome.runtime.sendMessage(EXT, { type: "SHARE_OPEN_GROUP", urls: urls, title: title }, function (r) { void (chrome.runtime.lastError); fin(r && r.ok ? r : null); });
+        setTimeout(function () { fin(null); }, 4000);
+      } catch (e) { res(null); }
+    });
+  }
+  readData().then(function (d) {
+    var tasks = render(d);
+    var urls = tasks.map(function (t) { return t.url; }).filter(okUrl);
+    if (!urls.length) { $("openAll").disabled = true; $("copyAll").disabled = true; return; }
+    $("openAll").onclick = async function () {
+      var b = this; b.disabled = true; say("Opening…");
+      var r = await viaExtension(urls.slice(0, 60), String((d && d.t) || "Shared tasks").slice(0, 60));
+      if (r) { say("Opened " + r.opened + " in a tab group" + (r.capped ? " (the first 60)" : "") + "."); b.disabled = false; return; }
+      var blocked = 0;
+      urls.slice(0, 60).forEach(function (u) { var w = window.open(u, "_blank"); if (w) { try { w.opener = null; } catch (e) {} } else blocked++; });
+      b.disabled = false;
+      if (blocked) say("Your browser blocked " + blocked + " of them. Allow pop-ups for this page (the icon at the right of the address bar), then press Open all again.", true);
+      else say("Opened " + Math.min(urls.length, 60) + " tabs.");
+    };
+    $("copyAll").onclick = async function () {
+      var text = tasks.filter(function (t) { return okUrl(t.url); }).map(function (t) { return t.name + " - " + t.url; }).join("\n");
+      try { await navigator.clipboard.writeText(text); say("Copied " + urls.length + " links."); }
+      catch (e) { say("Couldn't copy - select the task names and copy them instead.", true); }
+    };
+  }).catch(function () {
+    $("list").innerHTML = '<div class="empty">This link couldn\'t be read - it may have been cut short when it was copied. Ask for it again.</div>';
+  });
+})();
+</script>
+</body>
+</html>

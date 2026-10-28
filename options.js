@@ -1353,7 +1353,14 @@ function cuTaskUrl(t) {
   const id = t.id != null ? t.id : t.taskId;
   return id != null && /^[a-z0-9]+$/i.test(String(id)) ? "https://app.clickup.com/t/" + id : "";
 }
+// Tab group and 🔗 Share side by side: callers place the pair like one button.
 function cuTabGroupBtn(title, getTasks, color) {
+  const w = document.createElement("span");
+  w.className = "cu-tgbtn cu-tgwrap";
+  w.append(cuTabGroupOnly(title, getTasks, color), cuShareBtn(title, getTasks));
+  return w;
+}
+function cuTabGroupOnly(title, getTasks, color) {
   const b = document.createElement("button");
   b.type = "button";
   b.className = "cu-tgbtn";
@@ -1372,6 +1379,112 @@ function cuTabGroupBtn(title, getTasks, color) {
     b.disabled = false;
     b.textContent = r && r.ok ? "Opened " + r.opened + (r.capped ? " (first 60)" : "") : "Couldn't open";
     setTimeout(() => { b.textContent = "\u29C9 Tab group"; }, 2200);
+  };
+  return b;
+}
+
+// ---------- 🔗 Share these tasks ----------
+// Next to every Tab group: the tasks you Ctrl+clicked in that group (none picked:
+// all of them) as
+//  - Copy link: a page on the project's GitHub Pages site (share.html) with the
+//    tasks inside the link after the # - never sent to any server. Anyone can
+//    open it; it shows each task's status, dates, time, people and description,
+//    and opens them all in ClickUp (a tab group with this extension).
+//  - Download page: the same page as a file, with the full descriptions.
+const SHARE_PAGE = "https://dipson-bot.github.io/personal-clickup-manager/share.html";
+const SHARE_LINK_MAX = 7000; // longer links get cut by some chat apps
+async function cuShareData(title, tasks, maxDesc) {
+  const ids = [...new Set(tasks.map((t) => cuWeekId(t)).filter((id) => id && /^[a-z0-9]+$/i.test(id)))];
+  const r = await send({ type: "SHARE_TASKS", ids, maxDesc }, 180000).catch(() => null);
+  // The page is new but the background isn't (only this page was reloaded): it
+  // doesn't know the message yet - say how to fix it instead of a vague failure.
+  if (r && r.reason === "unknown message") throw new Error("Reload the extension first (chrome://extensions \u203A \u21BB on Personal ClickUp Manager), then this page.");
+  if (!r || !r.ok) throw new Error((r && r.error) || "the extension didn't answer");
+  const client = new Map(tasks.map((t) => [cuWeekId(t), String((t && t.client) || "")]));
+  const rows = r.tasks.map((x) => ({ ...x, client: client.get(String(x.id)) || "" }));
+  return { data: { v: 1, t: String(title || "Tasks").slice(0, 120), by: r.by || "", at: Date.now(), tasks: rows }, failed: r.failed || [], capped: !!r.capped };
+}
+async function cuShareLink(data) {
+  const bytes = new TextEncoder().encode(JSON.stringify(data));
+  const z = await new Response(new Blob([bytes]).stream().pipeThrough(new CompressionStream("deflate-raw"))).arrayBuffer();
+  let bin = "";
+  const u8 = new Uint8Array(z);
+  for (let i = 0; i < u8.length; i += 0x8000) bin += String.fromCharCode.apply(null, u8.subarray(i, i + 0x8000));
+  return SHARE_PAGE + "#d=" + btoa(bin).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+}
+async function cuShareFile(data) {
+  const page = await (await fetch(chrome.runtime.getURL("share.html"))).text();
+  const json = JSON.stringify(data).replace(/</g, "\\u003c").replace(/\u2028/g, "\\u2028").replace(/\u2029/g, "\\u2029");
+  const html = page.replace("</head>", () => '<script id="pcm-data" type="application/json">' + json + "</script>\n</head>");
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(new Blob([html], { type: "text/html" }));
+  a.download = (String(data.t || "tasks").replace(/[^\w\- ]+/g, " ").replace(/\s+/g, " ").trim().slice(0, 60) || "tasks") + ".html";
+  document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(() => URL.revokeObjectURL(a.href), 60000);
+}
+function cuShareBtn(title, getTasks) {
+  const b = document.createElement("button");
+  b.type = "button";
+  b.className = "cu-tgbtn cu-sharebtn";
+  const LABEL = "\uD83D\uDD17 Share";
+  b.textContent = LABEL;
+  b.title = "Share these tasks: a link anyone can open (status, dates, time, people and description, and Open all in ClickUp), or a page to download. Ctrl+click tasks first to share only those.";
+  b.addEventListener("mousedown", (e) => e.stopPropagation());
+  let menu = null;
+  const shut = () => { if (menu) { menu.remove(); menu = null; } };
+  const reset = (ms) => setTimeout(() => { b.textContent = LABEL; b.disabled = false; }, ms);
+  b.onclick = (e) => {
+    e.preventDefault(); e.stopPropagation();
+    if (menu) { shut(); return; }
+    const all = (getTasks() || []).filter((t) => t && !t.local && cuTaskUrl(t));
+    const picked = all.filter((t) => (cuListSel && cuListSel.has(cuWeekId(t))) || (typeof optWeekSel !== "undefined" && optWeekSel.has(cuWeekId(t)))); // Ctrl+clicked in the Tasks list or a day
+    const tasks = picked.length ? picked : all;
+    if (!tasks.length) { b.textContent = "No ClickUp tasks"; reset(1600); return; }
+    const n = [...new Set(tasks.map(cuWeekId))].length;
+    menu = document.createElement("span");
+    menu.className = "cu-sharemenu";
+    const what = (picked.length ? n + " picked" : n) + " task" + (n === 1 ? "" : "s");
+    const mk = (label, tip, how) => {
+      const x = document.createElement("button");
+      x.type = "button"; x.className = "cu-tgbtn"; x.textContent = label; x.title = tip;
+      x.addEventListener("mousedown", (ev) => ev.stopPropagation());
+      x.onclick = async (ev) => {
+        ev.preventDefault(); ev.stopPropagation();
+        shut();
+        b.disabled = true; b.textContent = "Reading " + what + "\u2026";
+        try {
+          if (how === "file") {
+            const { data, failed, capped } = await cuShareData(title, tasks, 8000);
+            await cuShareFile(data);
+            b.textContent = "Downloaded " + data.tasks.length + (failed.length ? " (" + failed.length + " unreadable)" : "") + (capped ? " (first 40)" : "");
+          } else {
+            let { data, failed, capped } = await cuShareData(title, tasks, 1200);
+            let link = await cuShareLink(data), short = false;
+            // Too long for a chat message: shorter descriptions, then none.
+            for (const cut of [400, 0]) {
+              if (link.length <= SHARE_LINK_MAX) break;
+              data = { ...data, tasks: data.tasks.map((t) => ({ ...t, desc: cut ? (t.desc.length > cut ? t.desc.slice(0, cut - 1) + "\u2026" : t.desc) : "" })) };
+              link = await cuShareLink(data); short = true;
+            }
+            await navigator.clipboard.writeText(link);
+            b.textContent = "Link copied \u2713 " + data.tasks.length + " task" + (data.tasks.length === 1 ? "" : "s") + (short ? " (shorter details)" : "") + (failed.length ? " · " + failed.length + " unreadable" : "") + (capped ? " (first 40)" : "");
+            b.title = short ? "The descriptions were shortened to keep the link short - Download page has them in full." : b.title;
+          }
+          reset(3200);
+        } catch (err) {
+          const why = String((err && err.message) || err);
+          b.textContent = /^Reload the extension/.test(why) ? "Reload the extension first" : "Couldn't share: " + why.slice(0, 60);
+          b.title = why;
+          reset(6000);
+        }
+      };
+      return x;
+    };
+    menu.append(
+      mk("Copy link", "Copy a link to a page showing " + what + " - anyone can open it; opening a task needs access to this ClickUp workspace.", "link"),
+      mk("Download page", "Save a page with " + what + " and their full descriptions, to attach to an email or message.", "file"));
+    b.after(menu);
+    setTimeout(() => { if (menu) shut(); }, 10000);
   };
   return b;
 }
@@ -2194,9 +2307,9 @@ function capListToContent(el) {
 // to their rows a tick later, which moved the page again - the stretch bar
 // "closing by itself"), and the scroll position is put back before the page is
 // painted, so none of it is ever visible.
-function keepPageStill(rebuild) {
+function keepPageStill(rebuild, more) {
   const pins = [];
-  for (const el of [$("dashTasks"), $("cuPreview")]) {
+  for (const el of [$("dashTasks"), $("cuPreview")].concat(more || [])) {
     const h = el ? el.offsetHeight : 0;
     if (h > 0) { el.style.minHeight = h + "px"; pins.push({ el, h }); }
   }
@@ -3710,8 +3823,28 @@ if ($("optWeekNav")) $("optWeekNav").addEventListener("click", (e) => {
   const d = Number(b.dataset.wn);
   optWeekGo(d === 0 ? 0 : optWeekOffset + d);
 });
+// This week by day was torn down and rebuilt on EVERY background write (the 5-min
+// refresh, every timer tick saved, the follow-up refresh after a change) - the
+// rows flickered and the page could move under the mouse. Like the Tasks list
+// (renderClickupPreview): an automatic redraw that would draw the same thing only
+// updates the live numbers, and a real redraw holds the page still while the
+// rows are swapped. Anything you do yourself always redraws.
+let cuLastWeekSig = "";
+function cuWeekSig(cu) {
+  try {
+    return cuPaintSig(cu && cu.state) + "|" + JSON.stringify([cu && cu.configured, cu && cu.weeklyTo, optWeekOffset, optWeekAssign, [...optWeekStaged.keys()],
+      Object.keys(cuEstStaged), [...cuEstApplying], [...cuEstPendingOpt.keys()], optWeekMsg && optWeekMsg.at, optWeekPending.length, new Date().toDateString()]);
+  } catch (e) { return ""; }
+}
 function renderOptionsWeekly(cu) {
   if (cuEstEditingOpt) { cuRenderPendingOpt = true; return; }
+  const sig = cuAutoPaint ? cuWeekSig(cu) : "";
+  const box = $("optWeekList");
+  if (sig && sig === cuLastWeekSig && box && box.childElementCount) { try { cuWeekLiveNumbers(); } catch (e) {} return; }
+  cuLastWeekSig = sig;
+  keepPageStill(() => renderOptionsWeeklyBody(cu), [box]);
+}
+function renderOptionsWeeklyBody(cu) {
   cu = cu || {};
   const w = cuWeekWithLive(cu.state && cu.state.weekly, cuLiveSinceRefresh(cu.state));
   if (!cu.configured || !w || !w.today || !w.friday) {
@@ -5628,11 +5761,12 @@ function cuScopeTargetMs(dailyMs, st, f) {
   let days = 0;
   const d = new Date(r.fromTs); d.setHours(12, 0, 0, 0);
   const end = new Date(r.toTs); end.setHours(12, 0, 0, 0);
-  const holiday = (x) => !!(window.PcmCalendar && window.PcmCalendar.isHoliday(x.getTime()));
+  // Company holidays and my leave (Settings › My leave) are days off.
+  const holiday = (x) => !!(window.PcmCalendar && (window.PcmCalendar.isDayOff || window.PcmCalendar.isHoliday)(x.getTime()));
   let weekdays = 0;
   for (let i = 0; d <= end && i < 400; i++, d.setDate(d.getDate() + 1)) if (d.getDay() !== 0 && d.getDay() !== 6) { weekdays++; if (!holiday(d)) days++; }
   if (weekdays <= 1) return dailyMs; // today / tomorrow: the daily target
-  return dailyMs * days; // company holidays don't count (a whole holiday week = no target)
+  return dailyMs * days; // company holidays and my leave don't count (a whole week off = no target)
 }
 // Today's own tracked time, for the Tracked bar when the active scope is NOT
 // today. The bar's own number is only today's when the scope is: "Deadline
@@ -8796,10 +8930,11 @@ function insDrillsHtml(m) {
   var out = "";
   // Due on an office holiday (Dashain, Tihar...): each with the same weekday of
   // the next working week. Nothing moves until its Move button is pressed.
-  if ((m.holList || []).length) out += insDrill("holiday", "Due on a holiday · " + m.holList.length + " task" + (m.holList.length === 1 ? "" : "s") + " to move", m.holList, function (r) {
+  if ((m.holList || []).length) out += insDrill("holiday", "Due on a holiday or your leave · " + m.holList.length + " task" + (m.holList.length === 1 ? "" : "s") + " to move", m.holList, function (r) {
     var to = insHolMove(r.due);
-    return { badge: '<span class="badge red" title="Due on an office holiday">' + insDateShort(r.due) + "</span>",
-      plain: "due on a holiday (" + insDateShort(r.due) + ") · suggested: " + (to ? new Date(to).toLocaleDateString([], { weekday: "short", month: "short", day: "numeric" }) : "pick a day"),
+    var lv = insOnLeave(r.due);
+    return { badge: '<span class="badge red" title="' + (lv ? "Due while you're on leave" : "Due on an office holiday") + '">' + insDateShort(r.due) + "</span>",
+      plain: "due on " + (lv ? "your leave" : "a holiday") + " (" + insDateShort(r.due) + ") · suggested: " + (to ? new Date(to).toLocaleDateString([], { weekday: "short", month: "short", day: "numeric" }) : "pick a day"),
       action: to ? "Move to " + new Date(to).toLocaleDateString([], { weekday: "short", month: "short", day: "numeric" }) : "Change due date", act: to ? "hmove" : "due" };
   });
   out += insDrill("overdue", "Overdue tasks", m.overdueList, function (r) {
@@ -8833,15 +8968,25 @@ function insDrillsHtml(m) {
 // Every row goes in the DOM (up to INS_DRILL_MAX) and insApplyFilter decides
 // which INS_DRILL_CAP of them are visible. Rendering only the first 60 would
 // mean a client filter found nothing for anyone further down the list.
-// An office holiday on a working day (company calendar: Dashain, Tihar...).
+// An office holiday (company calendar: Dashain, Tihar...) or my leave
+// (Settings › My leave) on a working day.
+function insOnLeave(ts) {
+  var d = new Date(Number(ts)), g = d.getDay();
+  return g !== 0 && g !== 6 && !!(typeof window !== "undefined" && window.PcmCalendar && window.PcmCalendar.isLeave && window.PcmCalendar.isLeave(d.getTime()));
+}
 function insOnHoliday(ts) {
   var d = new Date(Number(ts)), g = d.getDay();
-  return g !== 0 && g !== 6 && !!(typeof window !== "undefined" && window.PcmCalendar && window.PcmCalendar.isHoliday && window.PcmCalendar.isHoliday(d.getTime()));
+  return insOnLeave(ts) || (g !== 0 && g !== 6 && !!(typeof window !== "undefined" && window.PcmCalendar && window.PcmCalendar.isHoliday && window.PcmCalendar.isHoliday(d.getTime())));
 }
-// The same weekday of the next working week that isn't a holiday (Oct 19 -> Oct 26).
+// The same weekday of the next working week that isn't a holiday (Oct 19 -> Oct 26);
+// due during my leave: my first working day back.
 function insHolMove(ts) {
-  var d = new Date(Number(ts));
-  for (var i = 0; i < 8; i++) { d.setDate(d.getDate() + 7); if (!insOnHoliday(d.getTime())) return d.getTime(); }
+  var d = new Date(Number(ts)), i;
+  if (insOnLeave(ts)) {
+    for (i = 0; i < 60; i++) { d.setDate(d.getDate() + 1); if (d.getDay() !== 0 && d.getDay() !== 6 && !insOnHoliday(d.getTime())) return d.getTime(); }
+    return 0;
+  }
+  for (i = 0; i < 8; i++) { d.setDate(d.getDate() + 7); if (!insOnHoliday(d.getTime())) return d.getTime(); }
   return 0;
 }
 // Status colours, as in a task's details: red = stopped, amber = review, blue = in progress.
@@ -10826,7 +10971,7 @@ const ADMIN_FILES = [
   "manifest.json", "background.js", "popup.html", "popup.js", "options.html", "options.js", "phone-timer.js",
   "offscreen.html", "offscreen.js", "update.html", "update.js", "auto-update.html", "auto-update.js", "wrapup.html", "wrapup.js",
   "notify-menu.js", "export-tasks.js", "lib-zip.js", "lib-unzip.js", "lib-automation.js",
-  "lib-availability.js", "lib-clickup.js", "lib-crypto.js", "lib-tidy.js", "lib-drive.js", "find-many.js", "week-fold.js", "ar-status.js", "automation.js", "lib-rules.js", "nav-badges.js", "simple-view.js", "task-panel.js", "lib-updater.js", "offscreen-updater.js", "celebrate.js", "celebrate.html", "celebrate-window.js", "fx.js", "pcm-help.js", "tracker.html", "tracker.js", "bulk-edit.js", "pcm-search.js", "lib-taskfiles.js", "task-files.js", "reminders.js", "hub.js", "task-sort.js", "breakdown.js", "calendar.js", "notices.js", "insights-plus.js", "header-ui.js", "weather.js", "paused-clients.js", "client-notices.js", "lib-dailyupdate.js", "undo.js", "plan-apply.js", "task-notes.js", "task-dupes.js", "rollup-help.js", "md-notes.js", "mention.js", "long-list.js", "local-tasks.js", "ui-extras.js", "assignees.js", "add-time.js", "team-hub.gs", "vendor/pdf.min.js", "vendor/pdf.worker.min.js", "vendor/pdfjs-LICENSE.txt",
+  "lib-availability.js", "lib-clickup.js", "lib-crypto.js", "lib-tidy.js", "lib-drive.js", "find-many.js", "week-fold.js", "ar-status.js", "automation.js", "lib-rules.js", "nav-badges.js", "simple-view.js", "task-panel.js", "lib-updater.js", "offscreen-updater.js", "celebrate.js", "celebrate.html", "celebrate-window.js", "fx.js", "pcm-help.js", "tracker.html", "tracker.js", "bulk-edit.js", "pcm-search.js", "lib-taskfiles.js", "task-files.js", "reminders.js", "hub.js", "task-sort.js", "breakdown.js", "calendar.js", "notices.js", "insights-plus.js", "header-ui.js", "weather.js", "paused-clients.js", "client-notices.js", "lib-dailyupdate.js", "undo.js", "share.html", "plan-apply.js", "task-notes.js", "task-dupes.js", "rollup-help.js", "md-notes.js", "mention.js", "long-list.js", "local-tasks.js", "ui-extras.js", "assignees.js", "add-time.js", "team-hub.gs", "vendor/pdf.min.js", "vendor/pdf.worker.min.js", "vendor/pdfjs-LICENSE.txt",
   "icons/icon16.png", "icons/icon48.png", "icons/icon128.png", "icons/celebrate.png", "icons/sad.png",
   "sounds/notify.wav", "sounds/danger.mp3", "sounds/winner.wav",
   "README.md", "CHANGELOG.md",
@@ -11929,4 +12074,65 @@ chrome.storage.onChanged.addListener((ch, area) => { if (area !== "local" || !(c
     }, 400);
   };
   on.addEventListener("change", save2); nm.addEventListener("input", save2); cm.addEventListener("input", save2);
+})();
+
+// ---- Settings › My leave (settings.myLeave): sick, annual or other days off ----
+// Saved at once (not with Save settings). The background treats each day as a
+// day off for this person; the calendar, targets and Insights read it too.
+(function wireMyLeave() {
+  const list = $("myLeaveList"), add = $("myLeaveAdd");
+  if (!list || !add) return;
+  const KIND = { sick: "Sick leave", annual: "Annual leave", other: "Leave" };
+  const today = () => { const d = new Date(); return d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0") + "-" + String(d.getDate()).padStart(2, "0"); };
+  const fmt = (s) => new Date(s + "T12:00:00").toLocaleDateString([], { weekday: "short", month: "short", day: "numeric" });
+  const msg = (t) => { $("myLeaveMsg").textContent = t || ""; };
+  let leave = [];
+  async function load() {
+    const g = await chrome.storage.local.get("settings").catch(() => ({}));
+    leave = g.settings && Array.isArray(g.settings.myLeave) ? g.settings.myLeave.slice() : [];
+    paint();
+  }
+  function paint() {
+    list.textContent = "";
+    // Past leave stays saved (it keeps the rating fair) but only the last 30 days show.
+    const cut = new Date(Date.now() - 30 * 86400000).toISOString().slice(0, 10);
+    const shown = leave.filter((e) => e && (e.to || e.from) >= cut).sort((a, b) => a.from.localeCompare(b.from));
+    if (!shown.length) { list.appendChild(Object.assign(document.createElement("span"), { className: "hint", textContent: "No leave added." })); return; }
+    const t = today();
+    for (const e of shown) {
+      const row = document.createElement("div");
+      row.style.cssText = "display:flex;gap:8px;align-items:center";
+      const now = e.from <= t && (e.to || e.from) >= t, past = (e.to || e.from) < t;
+      const txt = document.createElement("span");
+      txt.textContent = (KIND[e.kind] || "Leave") + " · " + fmt(e.from) + (e.to && e.to !== e.from ? " to " + fmt(e.to) : "") + (now ? " (now)" : past ? " (past)" : "");
+      if (past) txt.style.opacity = ".6";
+      const rm = document.createElement("button");
+      rm.type = "button"; rm.className = "ap-lnk"; rm.textContent = "Remove";
+      rm.onclick = () => save(leave.filter((x) => x !== e), "Removed.");
+      row.append(txt, rm);
+      list.appendChild(row);
+    }
+  }
+  async function save(next, done) {
+    msg("Saving…");
+    add.disabled = true;
+    try {
+      const r = await send({ type: "SET_SETTINGS", patch: { myLeave: next } });
+      if (r && r.ok === false) throw new Error(r.error || "not saved");
+      leave = next; paint(); msg(done);
+    } catch (e) { msg("Couldn't save: " + ((e && e.message) || e)); }
+    add.disabled = false;
+  }
+  add.onclick = () => {
+    const from = $("myLeaveFrom").value, to = $("myLeaveTo").value || from;
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(from)) { msg("Pick the first day of the leave."); return; }
+    if (to < from) { msg("The last day is before the first."); return; }
+    const e = { id: "lv" + Date.now().toString(36), from, to, kind: $("myLeaveKind").value || "other" };
+    // Overlapping leave is replaced by the new one.
+    const next = leave.filter((x) => x && ((x.to || x.from) < from || x.from > to)).concat(e);
+    $("myLeaveFrom").value = ""; $("myLeaveTo").value = "";
+    save(next, "Added: " + KIND[e.kind] + " " + fmt(from) + (to !== from ? " to " + fmt(to) : "") + ".");
+  };
+  try { chrome.storage.onChanged.addListener((ch, area) => { if (area === "local" && ch.settings && JSON.stringify((ch.settings.newValue || {}).myLeave || []) !== JSON.stringify(leave)) load(); }); } catch (e) {}
+  load();
 })();

@@ -27,7 +27,7 @@ import {
   linkifySheet,
 } from "./lib-drive.js";
 import { runAllAccounts, runAccountLogin, readAgentRouterLogin, URLS, GITHUB_KEEP_COOKIES } from "./lib-automation.js";
-import { getTaskHoldInfo, fetchArchivedMine, unarchiveTask, getLatestCommentBy, getTaskCommentsLite, getTaskTimeEntries, deleteTimeEntry, getUserGroups, getUser, verifyToken, getTeams, fetchTodayEstimate, fetchWeeklySummary, fetchDateRangeEstimate, createTaskCache, fetchTeamMembers, fetchWorkspaceTags, cuTagNames, fmtDuration, findExtraTaskByName, parseTaskIdFromUrl, getCurrentTimeEntry, getRunningTaskProgress, startTimer, stopTimer, getTaskById, setTaskStatus, setTaskDates, taskUrlFor, clientLabelFromContainer, resolveSpaceNamesFor, taskContainer, cuPriorityName, isTaskDone, getSubtasksOfParent, getTaskTree, getTaskDetail, updateTimeEntry, setTaskDueDate, clearTaskTreeCache, listWorkspaceClients, cuRowAssignees, fetchDoneBetween, fetchDoneLite, fetchTrackedHistory, getTaskPanel, addTaskComment, postTaskComment, setTaskDescription, getTaskCommentLinks, createTask, relateTasks, removeTaskAssignee, addTaskAssignee, postAssignedComment, addTimeEntry, weeklyWithToday, listClientFieldOptions, listReachableClients, bgToken, patientToken, cuRawFetch, getRelatedTasks, slimIndexTask, fetchTeamTasksPage, listAllLists, setPausedClients } from "./lib-clickup.js";
+import { getTaskShareInfo, getTaskHoldInfo, fetchArchivedMine, unarchiveTask, getLatestCommentBy, getTaskCommentsLite, getTaskTimeEntries, deleteTimeEntry, getUserGroups, getUser, verifyToken, getTeams, fetchTodayEstimate, fetchWeeklySummary, fetchDateRangeEstimate, createTaskCache, fetchTeamMembers, fetchWorkspaceTags, cuTagNames, fmtDuration, findExtraTaskByName, parseTaskIdFromUrl, getCurrentTimeEntry, getRunningTaskProgress, startTimer, stopTimer, getTaskById, setTaskStatus, setTaskDates, taskUrlFor, clientLabelFromContainer, resolveSpaceNamesFor, taskContainer, cuPriorityName, isTaskDone, getSubtasksOfParent, getTaskTree, getTaskDetail, updateTimeEntry, setTaskDueDate, clearTaskTreeCache, listWorkspaceClients, cuRowAssignees, fetchDoneBetween, fetchDoneLite, fetchTrackedHistory, getTaskPanel, addTaskComment, postTaskComment, setTaskDescription, getTaskCommentLinks, createTask, relateTasks, removeTaskAssignee, addTaskAssignee, postAssignedComment, addTimeEntry, weeklyWithToday, listClientFieldOptions, listReachableClients, bgToken, patientToken, cuRawFetch, getRelatedTasks, slimIndexTask, fetchTeamTasksPage, listAllLists, setPausedClients } from "./lib-clickup.js";
 import { resolveRelayKey, pickProbeModel, probeRelay } from "./lib-availability.js";
 import { tidyCollect, tidyLines, tidyResolved, tidyDayOk, tidyUrgent, tidyDateShort } from "./lib-tidy.js";
 import "./lib-rules.js"; // globalThis.PcmRules - the Automation tab's rule blocks
@@ -699,7 +699,8 @@ function fireDueReminders() {
     for (const r of list) {
       if (!r || r.done || r.active === false || r.paused || !(Number(r.at) > 0) || Number(r.at) > now + 15000) continue;
       const missed = now - Number(r.at) > 5 * 60000;
-      const offToday = (REM_SKIP[r.id] || []).some((k) => (k === "holiday" ? isCompanyHoliday : isCompanyWfh)(Number(r.at)));
+      // My leave: none of the office reminders (check in / out, cups) either.
+      const offToday = (REM_SKIP[r.id] || []).some((k) => (k === "holiday" ? isDayOff : isCompanyWfh)(Number(r.at)));
       const sameKey = String(r.text || "").trim().toLowerCase() + "|" + Math.floor(Number(r.at) / 60000);
       const dupe = once.has(sameKey);
       once.add(sameKey);
@@ -1947,7 +1948,7 @@ async function maybeAutoDailyUpdate() {
   if (!set.dailyUpdateAuto) return;
   const now = new Date();
   if (now.getDay() === 0 || now.getDay() === 6) return;
-  try { if (isCompanyHoliday(now.getTime())) return; } catch (e) {}
+  try { if (isDayOff(now.getTime())) return; } catch (e) {} // a company holiday or my leave
   const [h, m] = String(set.dailyUpdateTime || "17:30").split(":").map(Number);
   const due = new Date(now); due.setHours(Number.isFinite(h) ? h : 17, Number.isFinite(m) ? m : 30, 0, 0);
   if (now < due) return;
@@ -2016,6 +2017,7 @@ function slackDayChosen(cfg, now) {
 // ...and not a company holiday, unless that's allowed (skipHolidays false).
 function slackInOutDayOk(cfg, now) {
   if (!slackDayChosen(cfg, now)) return false;
+  try { if (isMyLeave(now.getTime())) return false; } catch (e) {} // on leave: never
   if (cfg.skipHolidays !== false) { try { if (isCompanyHoliday(now.getTime())) return false; } catch (e) {} }
   return true;
 }
@@ -2215,6 +2217,7 @@ async function maybeSlackPresence() {
   else if (now >= activeAt && now < awayAt && last.active !== day) {
     let holiday = false;
     if (cfg.skipHolidays !== false) { try { holiday = isCompanyHoliday(now.getTime()); } catch (e) {} }
+    try { if (isMyLeave(now.getTime())) holiday = true; } catch (e) {} // on leave: stays away
     if (!holiday) want = "active";
   }
   if (!want) return;
@@ -3410,7 +3413,57 @@ async function getClickupState() {
   const { clickupState } = await chrome.storage.local.get("clickupState");
   return clickupState && typeof clickupState === "object" ? clickupState : null;
 }
+// ---- What this copy just set in ClickUp wins over a refresh for a while ----
+// Right after a change, ClickUp's task search can still hand back the OLD value
+// (its index catches up later), so the refresh that follows an Apply / Start /
+// Complete repainted "no est" or the old status until a manual reload. A value
+// set here is laid over every refresh for 3 minutes; a second refresh 25 seconds
+// later picks up ClickUp's own copy once it has caught up.
+const CU_HOLD_MS = 3 * 60000;
+const cuJustSet = new Map(); // taskId -> { at, f: { estimateMs?, status?, done?, priority? } }
+function cuHoldWrite(taskId, fields) {
+  if (taskId == null || !fields) return;
+  const id = String(taskId), now = Date.now(), prev = cuJustSet.get(id);
+  const f = {};
+  for (const k of ["estimateMs", "status", "done", "priority"]) if (k in fields) f[k] = fields[k];
+  if (!Object.keys(f).length) return;
+  cuJustSet.set(id, { at: now, f: { ...(prev && now - prev.at < CU_HOLD_MS ? prev.f : {}), ...f } });
+  cuSettleSoon();
+}
+function cuApplyHeld(st) {
+  if (!cuJustSet.size || !st) return;
+  const now = Date.now();
+  for (const [id, w] of cuJustSet) if (now - w.at > CU_HOLD_MS) cuJustSet.delete(id);
+  if (!cuJustSet.size) return;
+  const seen = new Set();
+  const walk = (o) => {
+    if (!o || typeof o !== "object" || seen.has(o)) return;
+    seen.add(o);
+    if (Array.isArray(o)) { o.forEach(walk); return; }
+    const oid = o.id != null ? o.id : o.taskId;
+    const w = oid != null && ("name" in o || "status" in o) ? cuJustSet.get(String(oid)) : null;
+    if (w) {
+      for (const [k, v] of Object.entries(w.f)) {
+        if (k !== "estimateMs") { o[k] = v; continue; }
+        // A per-day share (spread over days, Extra Task, configured task) keeps its share.
+        const isShare = "dayEstimateMs" in o || o.extended || o.type === "cfg" ||
+          ("totalEstimateMs" in o && Number(o.totalEstimateMs) !== Number(o.estimateMs));
+        if ("totalEstimateMs" in o) o.totalEstimateMs = v;
+        if (!isShare) o.estimateMs = v;
+        if ("hasEstimate" in o) o.hasEstimate = v > 0;
+      }
+    }
+    for (const k in o) if (o[k] && typeof o[k] === "object") walk(o[k]);
+  };
+  walk(st);
+}
+let cuSettleTimer = 0;
+function cuSettleSoon() {
+  clearTimeout(cuSettleTimer);
+  cuSettleTimer = setTimeout(() => { clearFilterCache(); refreshClickup({ includeTasks: true, forceWeeks: true, forceWeekly: true }).catch(() => {}); }, 25000);
+}
 async function setClickupState(state) {
+  try { cuApplyHeld(state); } catch (e) {}
   await chrome.storage.local.set({ clickupState: state });
   updateBadge().catch(() => {});
   maybeAutoFloat(state).catch((e) => diagLog("auto-float", String(e && e.message ? e.message : e)));
@@ -3715,7 +3768,7 @@ async function rulesBaseCtx() {
   const st = (await getClickupState().catch(() => null)) || {};
   const now = Date.now(), dow = new Date(now).getDay();
   const live = st.running && st.running.startMs ? Math.max(0, now - Math.max(Number(st.running.startMs) || 0, Number(st.at) || 0, new Date(now).setHours(0, 0, 0, 0))) : 0;
-  return { now, workday: dow !== 0 && dow !== 6 && !isCompanyHoliday(now), todayMs: (Number(st.spentMs) || 0) + live };
+  return { now, workday: dow !== 0 && dow !== 6 && !isDayOff(now), todayMs: (Number(st.spentMs) || 0) + live };
 }
 async function rulesLog(entry) {
   const { autoRuleLog } = await chrome.storage.local.get("autoRuleLog");
@@ -3944,6 +3997,7 @@ async function rulesDoAction(rule, a, ctx, cfg) {
       if (!cur) return { did: "no timer was running" };
       rulesTimerTouchedAt = Date.now();
       await stopTimer(cfg.token, cfg.teamId);
+      cuStoppedToDo(cfg, cur.taskId);
       return { did: "stopped the timer on " + (cur.taskName || "the task"), undo: { op: "start", taskId: String(cur.taskId) }, changed: true };
     }
     case "start_timer": {
@@ -3979,7 +4033,7 @@ async function rulesDoAction(rule, a, ctx, cfg) {
       if (!t) return { did: "no task" };
       const task = await getTaskById(cfg.token, t.id);
       const d = new Date(); d.setHours(0, 0, 0, 0);
-      const work = (x) => x.getDay() !== 0 && x.getDay() !== 6 && !isCompanyHoliday(x.getTime());
+      const work = (x) => x.getDay() !== 0 && x.getDay() !== 6 && !isDayOff(x.getTime());
       if (p.to === "tomorrow") d.setDate(d.getDate() + 1);
       else if (p.to === "next_monday") { d.setDate(d.getDate() + 1); while (d.getDay() !== 1) d.setDate(d.getDate() + 1); }
       else { d.setDate(d.getDate() + 1); for (let i = 0; i < 14 && !work(d); i++) d.setDate(d.getDate() + 1); }
@@ -3997,8 +4051,8 @@ async function rulesDoAction(rule, a, ctx, cfg) {
       const fmt = (d) => d.toLocaleDateString([], { month: "short", day: "numeric" });
       const label = fmt(mon) + " \u2013 " + fmt(fri);
       let work = 0;
-      for (let i = 0; i < 5; i++) { const x = new Date(mon); x.setDate(mon.getDate() + i); if (!isCompanyHoliday(x.getTime())) work++; }
-      if (!work) return { did: "no Extra Task for " + label + " - the whole week is holidays" };
+      for (let i = 0; i < 5; i++) { const x = new Date(mon); x.setDate(mon.getDate() + i); if (!isDayOff(x.getTime())) work++; }
+      if (!work) return { did: "no Extra Task for " + label + " - the whole week is days off" };
       const hint = cfg.username || cfg.email || "";
       // Already covered this week? Any Extra Task of mine whose start..due span
       // touches Mon-Fri - a weekly one, one with odd dates (due next Monday), or a
@@ -5013,6 +5067,7 @@ async function computeFilterData(cfg0, settings, assigneeIds, fromTs, toTs) {
 // refresh still runs behind it. Spread (multi-day) rows, configured tasks and the
 // Extra Task are left to that refresh.
 async function patchStateDue(taskId, dueMs) {
+  cuSettleSoon(); // ClickUp's search may still have the old date: look again in 25s
   const st = await getClickupState();
   if (!st || !taskId) return;
   const id = String(taskId), due = Number(dueMs) || 0;
@@ -5108,6 +5163,7 @@ async function runPendingMoves() {
 // A task changed from the extension (status, done, priority, estimate): change
 // it in the saved state at once, so every card shows it before the full refresh.
 async function patchStateTask(taskId, fields) {
+  cuHoldWrite(taskId, fields); // kept over the refreshes that follow (ClickUp's search lags)
   const st = await getClickupState();
   if (!st || !taskId || !fields) return;
   const id = String(taskId), seen = new Set();
@@ -6237,6 +6293,7 @@ async function refreshClickupImpl({ includeTasks = false, viaAlarm = false, forc
     const changedAt = await patchChangedTasks(state, cfg).catch((e) => { diagLog("changed tasks", String(e && e.message ? e.message : e)); return 0; }); // edits made in ClickUp reach every list
     await stampFamily(state, cfg, true).catch(() => {}); // subtask / parent hints on the rows
     if (gen !== settingsGen) return { ok: false, reason: "superseded" }; // a newer setting's refresh owns the state
+    try { const before = (await getClickupState()) || {}; cuNoteTimerChange(cfg, before.running, state.running); } catch (e) {}
     await setClickupState(state);
     if (changedAt) await chrome.storage.local.set({ cuChangedAt: changedAt }).catch(() => {}); // only once the patched lists are saved
     await maybeNotifyClickup(state, { viaAlarm });
@@ -6340,6 +6397,41 @@ const calYmd = (ts) => { const d = new Date(ts); return d.getFullYear() + "-" + 
 const companyOn = (ts) => { const k = calYmd(ts); return companyCal.filter((e) => k >= e.from && k <= e.to); };
 const isCompanyHoliday = (ts) => companyOn(ts).some((e) => e.kind === "holiday");
 const isCompanyWfh = (ts) => companyOn(ts).some((e) => e.kind === "wfh");
+// ---- My leave (sick, annual...): settings.myLeave, set in Settings › My leave ----
+// A leave day is a day off for this person only: no work reminders or nudges, no
+// Slack check in / out, no target, and it doesn't count against their rating.
+const LEAVE_KINDS = { sick: "Sick leave", annual: "Annual leave", other: "Leave" };
+function normalizeMyLeave(list) {
+  const ok = /^\d{4}-\d{2}-\d{2}$/;
+  return (Array.isArray(list) ? list : []).filter((e) => e && ok.test(String(e.from || ""))).map((e) => ({
+    from: String(e.from), to: ok.test(String(e.to || "")) && String(e.to) >= String(e.from) ? String(e.to) : String(e.from),
+    kind: LEAVE_KINDS[e.kind] ? e.kind : "other",
+    ...(e.id ? { id: String(e.id).slice(0, 40) } : {}),
+  })).sort((a, b) => a.from.localeCompare(b.from)).slice(-100);
+}
+let myLeave = [];
+const myLeaveOn = (ts) => { const k = calYmd(ts); return myLeave.find((e) => k >= e.from && k <= e.to) || null; };
+const isMyLeave = (ts) => !!myLeaveOn(ts);
+// Not a working day for me: a company holiday or my leave (weekends are checked apart).
+const isDayOff = (ts) => isCompanyHoliday(ts) || isMyLeave(ts);
+// Leave now or starting within 30 days, for Admin › Users ("On leave until Fri").
+function myLeaveSoon(now = Date.now()) {
+  const a = calYmd(now), b = calYmd(now + 30 * 86400000);
+  return myLeave.filter((e) => e.to >= a && e.from <= b).slice(0, 4).map((e) => ({ f: e.from, t: e.to, k: e.kind }));
+}
+chrome.storage.local.get("settings").then((g) => { myLeave = normalizeMyLeave(g.settings && g.settings.myLeave); }).catch(() => {});
+chrome.storage.onChanged.addListener((ch, area) => {
+  if (area !== "local" || !ch.settings) return;
+  const before = JSON.stringify(myLeave);
+  myLeave = normalizeMyLeave(ch.settings.newValue && ch.settings.newValue.myLeave);
+  if (JSON.stringify(myLeave) === before) return;
+  // Slack posts already scheduled for a day that is now leave are taken back,
+  // and the admin sees the leave at the next check-in (sent now).
+  setTimeout(() => {
+    slackAheadSync(true).catch(() => {});
+    chrome.storage.local.remove("teamSummaryCache").then(() => hubHello(true)).catch(() => {});
+  }, 0);
+});
 // Keep storage (read by the pages' calendar) and memory in step.
 async function loadCompanyCal() {
   const { companyCalendar } = await chrome.storage.local.get("companyCalendar");
@@ -6444,7 +6536,7 @@ async function maybeCompanyHeadsUp() {
 function insideOfficeHours(settings, when = new Date()) {
   const weekday = when.getDay() !== 0 && when.getDay() !== 6;
   if (!weekday) return false;
-  if (isCompanyHoliday(when.getTime())) return false; // company holiday: no work nudges
+  if (isDayOff(when.getTime())) return false; // company holiday or my leave: no work nudges
   const { startHour, endHour } = officeHourBounds(settings);
   if (!(startHour < endHour)) return false;
   const hour = when.getHours();
@@ -6612,7 +6704,7 @@ async function maybeNotifyClickup(state, { viaAlarm }) {
 // timesheet shows it was started automatically.
 async function startQueuedTask(cfg, taskId, label) {
   const cur = await getCurrentTimeEntry(cfg.token, cfg.teamId).catch(() => null);
-  if (cur && String(cur.taskId) !== String(taskId)) await stopTimer(cfg.token, cfg.teamId).catch(() => {});
+  if (cur && String(cur.taskId) !== String(taskId)) { await stopTimer(cfg.token, cfg.teamId).catch(() => {}); cuStoppedToDo(cfg, cur.taskId, 0); }
   await setTaskStatus(cfg.token, taskId, "in progress").catch(() => {});
   await startTimer(cfg.token, cfg.teamId, taskId, label);
   // A task already warned about today must still complete when it reaches its estimate.
@@ -6672,6 +6764,7 @@ async function maybeAutoStop(cfg, entry, progress, key, today) {
   try {
     await stopTimer(cfg.token, cfg.teamId);
     if (rule.action === "complete") await setTaskStatus(cfg.token, key, "complete");
+    else cuStoppedToDo(cfg, key, 0);
     const next = { ...rules };
     if (rule.daily) next[key] = { ...rule, firedDay: today }; else delete next[key];
     await chrome.storage.local.set({ autoStopTasks: next, runningProgress: null });
@@ -6749,6 +6842,34 @@ async function notifyParallelTracking(entry, progress) {
     "\u201C" + name + "\u201D - " + names + " started a timer on it" + (fresh[0].startMs ? " at " + new Date(fresh[0].startMs).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" }) : "") + ", so its estimate is being used by both of you. Check with them before going on.",
     "danger", taskUrlFor(entry.taskId));
 }
+// ---- A stopped timer puts its task back to "to do" ----
+// Stopping (pausing) a task without completing it means it's no longer being
+// worked on, so it shouldn't stay "in progress" - wherever the timer was stopped:
+// a Stop button, the start/stop shortcut, a queue moving on, an automatic stop,
+// the taskbar app or ClickUp itself. Checked a few seconds later, so a stop that
+// is followed by Complete (or by the same task starting again) is left alone.
+const cuToDoChecks = new Map(); // taskId -> timer
+function cuStoppedToDo(cfg, taskId, delayMs = 6000) {
+  const id = taskId != null ? String(taskId) : "";
+  if (!id || !cfg || !cfg.token) return;
+  clearTimeout(cuToDoChecks.get(id));
+  cuToDoChecks.set(id, setTimeout(async () => {
+    cuToDoChecks.delete(id);
+    try {
+      const cur = await getCurrentTimeEntry(cfg.token, cfg.teamId).catch(() => undefined);
+      if (cur === undefined || (cur && String(cur.taskId) === id)) return; // couldn't ask, or it runs again
+      const t = await getTaskById(cfg.token, id).catch(() => null);
+      if (!t || String(t.status || "").toLowerCase() !== "in progress") return; // completed, or already moved on: leave it
+      await setTaskStatus(cfg.token, id, "to do");
+      await patchStateTask(id, { status: "to do" }).catch(() => {});
+    } catch (e) { diagLog("stopped -> to do", String(e && e.message ? e.message : e)); }
+  }, delayMs));
+}
+// The timer seen before vs now: a task whose timer went away (or moved to another task).
+function cuNoteTimerChange(cfg, before, now) {
+  const was = before && before.taskId != null ? String(before.taskId) : "";
+  if (was && (!now || String(now.taskId) !== was)) cuStoppedToDo(cfg, was);
+}
 // Is a timer running, and is it the one we know? One small request. A new timer
 // (started in ClickUp or the taskbar app, or restarted after a pause) gets its
 // earlier time worked out and its "almost up" / "reached" alarms set at once.
@@ -6758,6 +6879,7 @@ async function syncRunningTimer(cfg) {
   const prev = (await getClickupState()) || {};
   const keyOf = (x) => (x ? String(x.taskId || "") + ":" + String(x.startMs || "") : "");
   const changed = keyOf(prev.running) !== keyOf(running);
+  if (changed) cuNoteTimerChange(cfg, prev.running, running);
   if (changed) await setClickupState({ ...prev, running: running || null });
   if (changed && running) maybeNotifyRunningTask(cfg).catch(() => {});
   if (changed && !running) { await chrome.storage.local.set({ runningProgress: null }).catch(() => {}); await scheduleEstimateAlarms(null).catch(() => {}); }
@@ -7142,7 +7264,7 @@ function extraWeekAllHoliday(t) {
   const dow = d.getDay();
   const mon = new Date(d);
   if (dow === 0) mon.setDate(mon.getDate() + 1); else if (dow === 6) mon.setDate(mon.getDate() + 2); else mon.setDate(mon.getDate() - (dow - 1));
-  for (let i = 0; i < 5; i++) { const x = new Date(mon); x.setDate(mon.getDate() + i); if (!isCompanyHoliday(x.getTime())) return false; }
+  for (let i = 0; i < 5; i++) { const x = new Date(mon); x.setDate(mon.getDate() + i); if (!isDayOff(x.getTime())) return false; }
   return true;
 }
 async function maybeCloseExtraTask() {
@@ -7182,8 +7304,8 @@ async function maybeCloseExtraTask() {
   extraTaskCache.clear();
   refreshClickup({ includeTasks: true }).catch(() => {});
   setTimeout(() => { extraTaskCache.clear(); clearFilterCache(); refreshClickup({ includeTasks: true, forceWeeks: true, forceWeekly: true }).catch(() => {}); }, 90000);
-  await notify("cu-extra-closed-" + now, skip ? "Holiday week: Extra Task skipped" : "Extra Task closed for this week",
-    skip ? (ex.name || "Your Extra Task") + " was for a week of office holidays, so it was closed straight away. ClickUp now creates the one for the next working week."
+  await notify("cu-extra-closed-" + now, skip ? "Week off: Extra Task skipped" : "Extra Task closed for this week",
+    skip ? (ex.name || "Your Extra Task") + " was for a week of office holidays or your leave, so it was closed straight away. ClickUp now creates the one for the next working week."
       : (ex.name || "Your Extra Task") + " was still open after 5 PM on its due day, so it was marked complete. ClickUp now creates next week's one.",
     undefined, t.url || ex.url || null);
 }
@@ -7233,21 +7355,24 @@ async function fixExtraDates() {
   return { ok: true, label: fix.label };
 }
 
-// ---------- heads-up before an office holiday ----------
-// On the last working day before a company holiday (from 2 PM): one notice per
-// holiday with your open tasks due while the office is closed, so they can be
-// moved in time - or "nothing due then".
+// ---------- heads-up before an office holiday (or my leave) ----------
+// On the last working day before a company holiday or my own leave (from 2 PM):
+// one notice per holiday / leave with your open tasks due while you're away, so
+// they can be moved in time - or "nothing due then".
 async function maybeHolidayHeadsUp(now = Date.now()) {
   const s = await getSettings();
   if (s.clickupHolidayHeadsUp === false) return;
   const d = new Date(now);
-  if (d.getHours() < 14 || d.getDay() === 0 || d.getDay() === 6 || isCompanyHoliday(now)) return;
+  if (d.getHours() < 14 || d.getDay() === 0 || d.getDay() === 6 || isDayOff(now)) return;
   const n = new Date(d); n.setHours(12, 0, 0, 0); n.setDate(n.getDate() + 1);
   for (let i = 0; i < 4 && (n.getDay() === 0 || n.getDay() === 6); i++) n.setDate(n.getDate() + 1);
   const k = calYmd(n.getTime());
-  const hol = companyCal.find((e) => e.kind === "holiday" && k >= e.from && k <= (e.to || e.from));
+  // An office holiday, else my own leave (sick, annual...) starting then.
+  const lv = myLeaveOn(n.getTime());
+  const hol = companyCal.find((e) => e.kind === "holiday" && k >= e.from && k <= (e.to || e.from)) ||
+    (lv ? { from: lv.from, to: lv.to, title: LEAVE_KINDS[lv.kind], leave: true } : null);
   if (!hol) return;
-  const key = hol.from + "|" + hol.title;
+  const key = (hol.leave ? "leave:" : "") + hol.from + "|" + hol.title;
   const { holidayHeadsUp } = await chrome.storage.local.get("holidayHeadsUp");
   const seen = Array.isArray(holidayHeadsUp) ? holidayHeadsUp : [];
   if (seen.includes(key)) return;
@@ -7264,8 +7389,8 @@ async function maybeHolidayHeadsUp(now = Date.now()) {
   const when = f(hol.from) + (hol.to && hol.to !== hol.from ? " \u2013 " + f(hol.to) : "");
   const names = due.slice(0, 3).map((t) => "\u2022 " + String(t.name || "").slice(0, 60)).join("\n");
   await notify("cu-holiday-" + Date.now(), hol.title + " - " + when,
-    due.length ? "The office is closed then and " + due.length + " of your tasks " + (due.length === 1 ? "is" : "are") + " due:\n" + names + (due.length > 3 ? "\n\u2026 and " + (due.length - 3) + " more" : "") + "\nMove the dates today (or ask your senior)."
-      : "The office is closed then. Nothing of yours is due in those days \u2713",
+    due.length ? (hol.leave ? "You're away then" : "The office is closed then") + " and " + due.length + " of your tasks " + (due.length === 1 ? "is" : "are") + " due:\n" + names + (due.length > 3 ? "\n\u2026 and " + (due.length - 3) + " more" : "") + "\nMove the dates today (or ask your senior)."
+      : (hol.leave ? "You're away then." : "The office is closed then.") + " Nothing of yours is due in those days \u2713",
     undefined, chrome.runtime.getURL("options.html#dashboard"), due.length ? { requireInteraction: true } : undefined);
 }
 
@@ -7274,7 +7399,7 @@ async function maybeWrapUp() {
   if (s.clickupWrapUp === false) return;
   const now = new Date();
   if (now.getDay() === 0 || now.getDay() === 6) return;
-  if (isCompanyHoliday(now.getTime())) return; // company holiday
+  if (isDayOff(now.getTime())) return; // company holiday or my leave
   const [h, m] = parseHM(s.clickupWrapUpTime, [16, 45]);
   const at = new Date(now);
   at.setHours(h, m, 0, 0);
@@ -7346,6 +7471,8 @@ function offDayReason(weekMode) {
   return (ms) => {
     const hol = companyOn(ms).find((e) => e.kind === "holiday");
     if (hol) return (hol.title || "Company holiday") + " \u00b7 " + tidyDateShort(ms);
+    const lv = myLeaveOn(ms);
+    if (lv) return "Your " + LEAVE_KINDS[lv.kind].toLowerCase() + " \u00b7 " + tidyDateShort(ms);
     const d = new Date(ms).getDay();
     return off.includes(d) ? DAY[d] + " " + tidyDateShort(ms) : "";
   };
@@ -7394,7 +7521,7 @@ async function maybeTidyNotify() {
   if (s.clickupTidyNotify === false) return;
   const now = new Date();
   if (!tidyDayOk(s.clickupTidyDays, now)) return;
-  if (isCompanyHoliday(now.getTime())) return; // company holiday: nobody wants a nudge
+  if (isDayOff(now.getTime())) return; // company holiday or my leave: nobody wants a nudge
   const [h, m] = parseHM(s.clickupTidyTime, [14, 0]);
   const at = new Date(now);
   at.setHours(h, m, 0, 0);
@@ -8282,12 +8409,21 @@ function perfScores(perf, targetMs, now = Date.now()) {
   const mon = (() => { const d = new Date(today); d.setDate(d.getDate() - ((d.getDay() + 6) % 7)); return d.getTime(); })();
   const monthStart = new Date(new Date(today).getFullYear(), new Date(today).getMonth(), 1).getTime();
   const done = (perf.done || []).filter((t) => t && t.doneAt && !EXTRA_TASK_RE.test(t.name || ""));
-  const lateDays = (t) => Math.ceil((t.doneAt - (dayStartOf(t.dueDateMs) + DAY)) / DAY);
+  // My leave isn't held against me: a task due while I was on leave is due on my
+  // first working day back, and leave days after the due date aren't late days.
+  const nextDay = (d) => dayStartOf(d + 36 * 3600000);
+  const lateDays = (t) => {
+    let due = dayStartOf(t.dueDateMs);
+    if (isMyLeave(due)) for (let i = 0; i < 60; i++) { due = nextDay(due); const g = new Date(due).getDay(); if (g !== 0 && g !== 6 && !isDayOff(due)) break; }
+    let late = Math.ceil((t.doneAt - (due + DAY)) / DAY);
+    for (let d = nextDay(due), i = 0; late > 0 && d < t.doneAt && i < 400; d = nextDay(d), i++) if (isMyLeave(d)) late--;
+    return late;
+  };
   const score = (from) => {
     let tracked = 0, work = 0;
     for (let d = dayStartOf(from); d < today; d += DAY) {
       const g = new Date(d).getDay();
-      if (g === 0 || g === 6 || isCompanyHoliday(d)) continue;
+      if (g === 0 || g === 6 || isDayOff(d)) continue; // weekends, company holidays, my leave
       work++; tracked += Number(perf.days && (perf.days[d] || perf.days[String(d)])) || 0;
     }
     const parts = [];
@@ -8416,7 +8552,10 @@ async function hubHello(force, gapMs = HUB_HELLO_MS) {
   const p = await hubProfile();
   if (!p) return null; // not connected to ClickUp: nothing to say who this is
   await chrome.storage.local.set({ hubHelloAt: Date.now() });
-  const sum = await teamSummary().catch(() => null);
+  let sum = await teamSummary().catch(() => null);
+  // My leave now or soon, with it (Admin › Users: "On leave until Fri").
+  const lv = myLeaveSoon();
+  if (lv.length) sum = { lv, ...(sum || { at: Date.now() }) };
   const r = await hubCall("hello", { ...p, version, ...(sum ? { perf: JSON.stringify(sum).slice(0, 900) } : {}) });
   if (r && r.ok) await chrome.storage.local.set({ hubHelloVer: version });
   if (r && r.ok) await chrome.storage.local.set({ hubMe: { state: r.state, mutedUntil: r.mutedUntil || 0, settings: r.settings || {}, role: r.role === "owner" || r.role === "admin" ? r.role : "user", at: Date.now() } });
@@ -10643,6 +10782,41 @@ const TASK_MUTATIONS = new Set([
   "CLICKUP_TASK_START", "CLICKUP_TASK_STOP", "CLICKUP_TASK_COMPLETE",
   "SET_CLICKUP_ESTIMATE", "CLICKUP_SET_DUE", "CLICKUP_MOVE_DUE",
 ]);
+// ---------- "Open in a tab group" ----------
+// A list's ClickUp tasks as tabs in one named Chrome tab group (a week, a day, a
+// client...), next to the tab the user is on. Also asked for by a shared task page.
+async function openTabGroup(urlsIn, title, colorIn) {
+  const urls = [...new Set((Array.isArray(urlsIn) ? urlsIn : []).map(String).filter((u) => /^https:\/\/app\.clickup\.com\//.test(u)))].slice(0, 60);
+  if (!urls.length) return { ok: false, reason: "no-tasks" };
+  try {
+    const [cur] = await chrome.tabs.query({ active: true, lastFocusedWindow: true }).catch(() => []);
+    const winId = cur && cur.windowId;
+    const ids = [];
+    for (const [i, url] of urls.entries()) {
+      const t = await chrome.tabs.create({ url, active: i === 0, ...(winId != null ? { windowId: winId } : {}), ...(cur && cur.index != null ? { index: cur.index + 1 + i } : {}) });
+      ids.push(t.id);
+    }
+    const groupId = await chrome.tabs.group({ tabIds: ids, ...(winId != null ? { createProperties: { windowId: winId } } : {}) });
+    const colors = ["blue", "green", "purple", "cyan", "orange", "pink", "yellow", "red", "grey"];
+    const color = colors.includes(colorIn) ? colorIn : "blue";
+    if (chrome.tabGroups) await chrome.tabGroups.update(groupId, { title: String(title || "Tasks").slice(0, 60), color, collapsed: false }).catch(() => {});
+    return { ok: true, opened: ids.length, capped: (urlsIn || []).length > 60 };
+  } catch (e) {
+    return { ok: false, error: String((e && e.message) || e) };
+  }
+}
+const SHARE_MAX = 40;
+// A shared task page (share.html on the project's GitHub Pages site, the only
+// site manifest externally_connectable lets in) asks a teammate's copy to open
+// its tasks as a tab group. Only ClickUp task links, at most 60, nothing else.
+chrome.runtime.onMessageExternal.addListener((msg, sender, sendResponse) => {
+  const okSite = sender && typeof sender.url === "string" && sender.url.startsWith("https://dipson-bot.github.io/personal-clickup-manager/");
+  if (!okSite || !msg) { sendResponse({ ok: false }); return; }
+  if (msg.type === "PCM_PING") { sendResponse({ ok: true, name: "Personal ClickUp Manager" }); return; }
+  if (msg.type !== "SHARE_OPEN_GROUP") { sendResponse({ ok: false }); return; }
+  openTabGroup(msg.urls, msg.title, "blue").then(sendResponse, () => sendResponse({ ok: false }));
+  return true;
+});
 // ---------- Ctrl+Z: one undo history for every page (undo.js) ----------
 // storage undoStack: [{ id, at, kind: "local" | "cu", label, ops, typing }], the
 // newest last, at most 20. Pages push your own-data changes (UNDO_PUSH); ClickUp
@@ -11206,6 +11380,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
           );
           if (res.ok) {
             clearFilterCache();
+            cuHoldWrite(msg.taskId, { estimateMs: Math.round(Number(msg.estimateMs) || 0) }); // a refresh can't put the old one back
             // Patch the edited task's rows in the stored state right away so the
             // popup's post-save load() doesn't repaint the OLD value while the
             // full recompute below is still running.
@@ -13522,26 +13697,26 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         break;
       }
       case "OPEN_TAB_GROUP": {
-        // "Open in a tab group": a list's ClickUp tasks as tabs in one named Chrome
-        // tab group (a week, a day, a client...), next to the tab the user is on.
-        const urls = [...new Set((Array.isArray(msg.urls) ? msg.urls : []).map(String).filter((u) => /^https:\/\/app\.clickup\.com\//.test(u)))].slice(0, 60);
-        if (!urls.length) { sendResponse({ ok: false, reason: "no-tasks" }); break; }
-        try {
-          const [cur] = await chrome.tabs.query({ active: true, lastFocusedWindow: true }).catch(() => []);
-          const winId = cur && cur.windowId;
-          const ids = [];
-          for (const [i, url] of urls.entries()) {
-            const t = await chrome.tabs.create({ url, active: i === 0, ...(winId != null ? { windowId: winId } : {}), ...(cur && cur.index != null ? { index: cur.index + 1 + i } : {}) });
-            ids.push(t.id);
+        sendResponse(await openTabGroup(msg.urls, msg.title, msg.color));
+        break;
+      }
+      case "SHARE_TASKS": {
+        // 🔗 Share: the picked tasks' details from ClickUp (description, people,
+        // status...) for the shared page. A few at a time, gently on the limits.
+        const cfg = await getClickupConfig();
+        if (!cfg || !cfg.token) { sendResponse({ ok: false, error: "ClickUp isn't connected." }); break; }
+        const ids = [...new Set((Array.isArray(msg.ids) ? msg.ids : []).map(String).filter((x) => /^[a-z0-9]+$/i.test(x)))].slice(0, SHARE_MAX);
+        const maxDesc = Math.min(8000, Math.max(0, Number(msg.maxDesc) || 1500));
+        const out = new Array(ids.length).fill(null), failed = [];
+        let next = 0;
+        const worker = async () => {
+          while (next < ids.length) {
+            const i = next++;
+            try { out[i] = await getTaskShareInfo(cfg.token, ids[i], maxDesc); } catch (e) { failed.push(ids[i]); }
           }
-          const groupId = await chrome.tabs.group({ tabIds: ids, ...(winId != null ? { createProperties: { windowId: winId } } : {}) });
-          const colors = ["blue", "green", "purple", "cyan", "orange", "pink", "yellow", "red", "grey"];
-          const color = colors.includes(msg.color) ? msg.color : "blue";
-          if (chrome.tabGroups) await chrome.tabGroups.update(groupId, { title: String(msg.title || "Tasks").slice(0, 60), color, collapsed: false }).catch(() => {});
-          sendResponse({ ok: true, opened: ids.length, capped: (msg.urls || []).length > 60 });
-        } catch (e) {
-          sendResponse({ ok: false, error: String((e && e.message) || e) });
-        }
+        };
+        await Promise.all([worker(), worker(), worker()]);
+        sendResponse({ ok: true, tasks: out.filter(Boolean), failed, capped: (msg.ids || []).length > SHARE_MAX, by: cfg.username || "" });
         break;
       }
       case "CLICKUP_TASK_INDEX": {

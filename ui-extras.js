@@ -435,6 +435,7 @@
     }
     if (z.nextSibling !== anchor) anchor.parentNode.insertBefore(z, anchor);
   }
+  const BOX_LISTS = "#dashTasks, #cuTaskList, #optWeekList";
   function paintRows() {
     paintBar();
     paintDrop();
@@ -455,7 +456,7 @@
       // Its place in the auto-run queue.
       let qc = wrap && wrap.querySelector(".ac-q");
       const qi = queue && Array.isArray(queue.ids) && t ? queue.ids.indexOf(String(t.id)) : -1;
-      if (qi >= 0 && wrap && !(arBoxes && qi > 0 && row.closest("#dashTasks, #cuTaskList"))) {
+      if (qi >= 0 && wrap && !(arBoxes && qi > 0 && row.closest(BOX_LISTS))) {
         const k = queue.total - queue.ids.length + qi + 1;
         const txt = (qi === 0 ? "\u25B6 " : "") + k + "/" + queue.total; // running: "▶ 4/6", waiting: "5/6"
         if (!qc) { qc = document.createElement("span"); qc.className = "ac-q"; const nm = wrap.querySelector(".nm"); if (nm && nm.nextSibling) wrap.insertBefore(qc, nm.nextSibling); else wrap.appendChild(qc); }
@@ -465,9 +466,12 @@
       } else if (qc) qc.remove();
       // The tick box (shown while acBoxes is on).
       let cb = wrap && wrap.querySelector(".ac-box");
-      // The boxes belong to the Tasks list only (dashboard / popup), not the other cards.
-      const inMain = !!row.closest("#dashTasks, #cuTaskList");
-      const want = boxes && wrap && inMain && canBox(t);
+      // The boxes belong to the Tasks list (dashboard / popup) and This week by day's
+      // days (so a task can be ticked there without scrolling back up), not the other cards.
+      const inMain = !!row.closest(BOX_LISTS);
+      // A task spread over several days is the same task in each day: box it there too.
+      const bt = t && "dayEstimateMs" in t && row.closest("#optWeekList") ? (({ dayEstimateMs, ...r }) => r)(t) : t;
+      const want = boxes && wrap && inMain && canBox(bt);
       if (want && !cb) {
         cb = document.createElement("input");
         cb.type = "checkbox";
@@ -475,13 +479,13 @@
         cb.addEventListener("click", (e) => { e.stopPropagation(); toggleMark(row._cuTask, cb.checked); });
         wrap.insertBefore(cb, wrap.firstChild);
       } else if (!want && cb) { cb.remove(); cb = null; }
-      if (cb) cb.disabled = noEst(t) && !on;
+      if (cb) cb.disabled = noEst(bt) && !on;
       if (cb && cb.disabled) { cb.checked = false; cb.title = "Give this task an estimate first - it completes itself when its tracked time reaches the estimate"; }
       else if (cb) { cb.checked = on; cb.title = on ? "Marked: completes itself (and stops the timer) when its tracked time reaches its estimate - untick to stop" : "Tick to complete this task automatically when its tracked time reaches its estimate"; }
       // The numbered box (shown while arBoxes is on) - its place in the run order.
       // A task already in a running queue shows its queue chip instead.
       let nb = wrap && wrap.querySelector(".ar-box");
-      const wantN = arBoxes && wrap && inMain && qi !== 0 && canBox(t);
+      const wantN = arBoxes && wrap && inMain && qi !== 0 && canBox(bt);
       if (wantN && !nb) {
         nb = document.createElement("button");
         nb.type = "button";

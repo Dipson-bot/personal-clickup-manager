@@ -23,7 +23,9 @@
   const dShort = (ts) => new Date(ts).toLocaleDateString(undefined, { month: "short", day: "numeric" });
   const dDay = (ts) => new Date(ts).toLocaleDateString(undefined, { weekday: "short", month: "short", day: "numeric" });
   const isHoliday = (ts) => { try { return !!(window.PcmCalendar && window.PcmCalendar.isHoliday(ts)); } catch (e) { return false; } };
-  const isWorkday = (ts) => { const g = new Date(ts).getDay(); return g !== 0 && g !== 6 && !isHoliday(ts); };
+  // My leave (Settings › My leave): a day off like a holiday - no target, not counted.
+  const isLeave = (ts) => { try { return !!(window.PcmCalendar && window.PcmCalendar.isLeave && window.PcmCalendar.isLeave(ts)); } catch (e) { return false; } };
+  const isWorkday = (ts) => { const g = new Date(ts).getDay(); return g !== 0 && g !== 6 && !isHoliday(ts) && !isLeave(ts); };
   const round15 = (ms) => Math.max(15 * MIN, Math.round(ms / (15 * MIN)) * 15 * MIN);
   const plural = (n, w) => n + " " + w + (n === 1 ? "" : "s");
   const ago = (at) => {
@@ -903,7 +905,7 @@
       if (w) {
         const perDay = [0, 1, 2, 3, 4, 5, 6].map((i) => addDays(w.mon, i)).filter((d) => Number(perf.days[d]) > 0 || isWorkday(d));
         wkDrill = drillBox("week", "Week of " + esc(dShort(w.mon)) + " · " + fmt(w.tracked) + " of " + fmt(w.target),
-          perDay.map((d) => '<div class="ip-row"><span class="no"></span><div class="nm"><button type="button" class="ip-btn" data-card="heat" data-kind="day" data-key="' + d + '" style="border:0;padding:0;background:none;color:var(--indigo)">' + esc(dDay(d)) + "</button>" + (isHoliday(d) ? ' <span class="flag mut">holiday</span>' : "") + '</div><span class="tm">' + fmt(Number(perf.days[d]) || 0) + "</span></div>").join("") +
+          perDay.map((d) => '<div class="ip-row"><span class="no"></span><div class="nm"><button type="button" class="ip-btn" data-card="heat" data-kind="day" data-key="' + d + '" style="border:0;padding:0;background:none;color:var(--indigo)">' + esc(dDay(d)) + "</button>" + (isHoliday(d) ? ' <span class="flag mut">holiday</span>' : isLeave(d) ? ' <span class="flag mut">leave</span>' : "") + '</div><span class="tm">' + fmt(Number(perf.days[d]) || 0) + "</span></div>").join("") +
           (hasDetail ? '<p class="ip-meta" style="margin:10px 0 2px">Tasks you tracked time on</p>' + simpleRows(weekTasks(w.mon), (t) => fmt(t.ms)) : needNew));
       }
     }
@@ -918,6 +920,7 @@
         const on = drill && drill.card === "heat" && String(drill.key) === String(d);
         if (d > today) hm += '<span class="c fut"></span>';
         else if (isHoliday(d)) hm += '<span class="c h" title="' + esc(dDay(d)) + ': company holiday"></span>';
+        else if (isLeave(d) && !(Number(perf.days[d]) > 0)) hm += '<span class="c h" title="' + esc(dDay(d)) + ': your leave"></span>';
         else hm += '<button type="button" class="c' + (on ? " on" : "") + '" data-card="heat" data-kind="day" data-key="' + d + '" style="background:' + heatColor(d === today ? Math.max(ms / tMs, 0.01) : ms / tMs) + '" title="' + esc(dDay(d)) + ": " + fmt(ms) + (d === today ? " so far" : "") + ' - click for the tasks"></button>';
       }
     }
@@ -927,7 +930,7 @@
       const d = Number(drill.key);
       dayDrill = drillBox("heat", esc(dDay(d)) + " · " + fmt(Number(perf.days[d]) || 0) + " tracked", hasDetail ? simpleRows(dayTasks(d), (t) => fmt(t.ms)) : needNew);
     }
-    h += '<div class="ip-card"><h3>Your ' + fmt(tMs) + ' days</h3><p class="hint">Green: target reached · amber: 70%+ · red: less · striped: holiday. Newest week on top; click a day for its tasks.</p>' + hm + dayDrill + "</div>";
+    h += '<div class="ip-card"><h3>Your ' + fmt(tMs) + ' days</h3><p class="hint">Green: target reached · amber: 70%+ · red: less · striped: holiday or your leave. Newest week on top; click a day for its tasks.</p>' + hm + dayDrill + "</div>";
     // Deadlines per week
     const finWeek = (mon) => done.filter((t) => t.doneAt >= mon && t.doneAt < addDays(mon, 7));
     let dlDrill = "";

@@ -2638,11 +2638,12 @@ function cuScopeTargetMs(dailyMs, st, f) {
   let days = 0;
   const d = new Date(r.fromTs); d.setHours(12, 0, 0, 0);
   const end = new Date(r.toTs); end.setHours(12, 0, 0, 0);
-  const holiday = (x) => !!(window.PcmCalendar && window.PcmCalendar.isHoliday(x.getTime()));
+  // Company holidays and my leave (Settings › My leave) are days off.
+  const holiday = (x) => !!(window.PcmCalendar && (window.PcmCalendar.isDayOff || window.PcmCalendar.isHoliday)(x.getTime()));
   let weekdays = 0;
   for (let i = 0; d <= end && i < 400; i++, d.setDate(d.getDate() + 1)) if (d.getDay() !== 0 && d.getDay() !== 6) { weekdays++; if (!holiday(d)) days++; }
   if (weekdays <= 1) return dailyMs; // today / tomorrow: the daily target
-  return dailyMs * days; // company holidays don't count (a whole holiday week = no target)
+  return dailyMs * days; // company holidays and my leave don't count (a whole week off = no target)
 }
 // Today's own tracked time, for the Tracked bar when the active scope is NOT
 // today. The bar's own number is only today's when the scope is: "Deadline

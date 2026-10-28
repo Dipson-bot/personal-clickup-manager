@@ -86,6 +86,9 @@
     .hb-dot.on { background: #22c55e; }
     .hb-dot.away { background: #eab308; }
     .hb-dot.off { background: #9ca3af; }
+    .hb-dot.leave { background: #8b5cf6; }
+    .hb-leave { color: #7c3aed; font-weight: 600; }
+    html[data-theme="dark"] .hb-leave { color: #a78bfa; }
     .hb-act-on { color: #16a34a; font-weight: 700; }
     html[data-theme="dark"] .hb-act-on { color: #4ade80; }
     .hb-av { width: 30px; height: 30px; border-radius: 50%; flex: none; object-fit: cover; display: grid; place-items: center; font: 700 11px sans-serif; color: #fff; background: #6366f1; overflow: hidden; }
@@ -593,16 +596,36 @@
   // on: the copy's last call (every 3-10 min while Chrome runs); act: the person's
   // last keyboard / mouse use. Last active: the later of that and the check-in.
   const ONLINE_MS = 12 * 60000, ACTIVE_MS = 15 * 60000;
+  // Their own leave (Settings › My leave), sent with their check-in: on leave
+  // today, or the next leave within 30 days.
+  const LEAVE_WORD = { sick: "sick leave", annual: "annual leave", other: "leave" };
+  const ymdOf = (ts) => { const d = new Date(ts); return d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0") + "-" + String(d.getDate()).padStart(2, "0"); };
+  const fmtYmd = (s) => new Date(s + "T12:00:00").toLocaleDateString([], { weekday: "short", month: "short", day: "numeric" });
+  function leaveOf(u) {
+    const lv = u && u.perf && Array.isArray(u.perf.lv) ? u.perf.lv : [];
+    const k = ymdOf(Date.now());
+    const now = lv.find((e) => e && e.f <= k && e.t >= k);
+    if (now) return { now: true, label: "On " + (LEAVE_WORD[now.k] || "leave") + (now.t > k ? " until " + fmtYmd(now.t) : " today") };
+    const next = lv.filter((e) => e && e.f > k).sort((a, b) => String(a.f).localeCompare(String(b.f)))[0];
+    if (!next) return null;
+    const w = LEAVE_WORD[next.k] || "leave";
+    return { now: false, label: w.charAt(0).toUpperCase() + w.slice(1) + " " + (next.t !== next.f ? fmtYmd(next.f) + " to " + fmtYmd(next.t) : "on " + fmtYmd(next.f)) };
+  }
   function presence(u) {
     const t = Date.now(), on = Number(u && u.onAt) || 0, act = Number(u && u.actAt) || 0;
     const last = Math.max(act, Number(u && u.lastSeen) || 0);
     // Your own row: you are the one looking at it.
     if (u && u._mine) return { k: "on", last: t, label: "Active now (you)" };
-    if (!on) return { k: "", last };
-    if (t - on < ONLINE_MS && act && t - act < ACTIVE_MS) return { k: "on", last, label: "Active now" };
-    if (t - on < ONLINE_MS) return { k: "away", last, label: "Away" + (act ? " - last active " + ago(act) : "") + " (Chrome is open)" };
-    return { k: "off", last, label: "Offline - last active " + (last ? ago(last) : "never") };
+    const lv = leaveOf(u), soon = lv && !lv.now ? " · " + lv.label : "";
+    const activeNow = t - on < ONLINE_MS && act && t - act < ACTIVE_MS;
+    if (lv && lv.now && !activeNow) return { k: "leave", last, label: lv.label };
+    if (!on) return { k: "", last, ...(soon ? { label: lv.label } : {}) };
+    if (activeNow) return { k: "on", last, label: "Active now" + soon };
+    if (t - on < ONLINE_MS) return { k: "away", last, label: "Away" + (act ? " - last active " + ago(act) : "") + " (Chrome is open)" + soon };
+    return { k: "off", last, label: "Offline - last active " + (last ? ago(last) : "never") + soon };
   }
+  const presenceWord = (pz) => pz.k === "on" ? "Active now" : pz.k === "away" ? "Away" : pz.k === "leave" ? "On leave" : pz.last ? ago(pz.last) : "-";
+  const presenceCls = (pz) => pz.k === "on" ? "hb-act-on" : pz.k === "leave" ? "hb-leave" : "";
   // ---- One person's day: click their picture or name in Admin › Users ----
   // From what their own copy last reported (u.day, with the presence): the task
   // with a timer running, Due today and This week - the same numbers as their
@@ -971,7 +994,7 @@
       cpf.appendChild(big);
       cpf.appendChild(el("small", "hb-sub", "wk " + (p.w && p.w.s != null ? p.w.s : "—") + " · mo " + (p.m && p.m.s != null ? p.m.s : "—") + " · all " + (p.a && p.a.s != null ? p.a.s : "—")));
       const pt = (o) => o ? [o.h != null ? "time " + o.h : "", o.d != null ? "deadlines " + o.d : "", o.e != null ? "estimates " + o.e : ""].filter(Boolean).join(", ") : "";
-      cpf.title = "Rating out of 100 (time tracked 40%, deadlines met 35%, estimates held 25%).\nThis month: " + pt(p.m) + "\nAll 12 weeks: " + pt(p.a) + "\nLast 4 weeks: " + (p.fin4 || 0) + " finished, " + (p.late4 || 0) + " of them late" + (sm.at ? "\nAs of " + new Date(sm.at).toLocaleString() : "");
+      cpf.title = "Rating out of 100 (time tracked 40%, deadlines met 35%, estimates held 25%). Leave days don't count.\nThis month: " + pt(p.m) + "\nAll 12 weeks: " + pt(p.a) + "\nLast 4 weeks: " + (p.fin4 || 0) + " finished, " + (p.late4 || 0) + " of them late" + (sm.at ? "\nAs of " + new Date(sm.at).toLocaleString() : "");
     } else { cpf.appendChild(el("span", "hint", "-")); cpf.title = "Not reported yet - it comes with their next check-in on v4.1.4 or newer."; }
     tr.appendChild(cpf);
     const chl = el("td", "c-perf");
@@ -990,13 +1013,13 @@
     if (u.lastSeen) cv.title = "Reported " + ago(u.lastSeen) + " (" + new Date(u.lastSeen).toLocaleString() + ")";
     tr.appendChild(cv);
     const pz = presence(u);
-    const cl = el("td", pz.k === "on" ? "hb-act-on" : "", pz.k === "on" ? "Active now" : pz.k === "away" ? "Away" : pz.last ? ago(pz.last) : "-");
+    const cl = el("td", presenceCls(pz), presenceWord(pz));
     if (pz.label) cl.title = pz.label;
     tr.appendChild(cl);
     const paintPresence = () => {
       const pz2 = presence(u);
-      cl.textContent = pz2.k === "on" ? "Active now" : pz2.k === "away" ? "Away" : pz2.last ? ago(pz2.last) : "-";
-      cl.className = pz2.k === "on" ? "hb-act-on" : "";
+      cl.textContent = presenceWord(pz2);
+      cl.className = presenceCls(pz2);
       cl.title = pz2.label || "";
       const ow = c0.querySelector(".hb-avw");
       if (ow) ow.replaceWith(presenceAvatar(u));

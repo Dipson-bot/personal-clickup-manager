@@ -1,5 +1,13 @@
 # Changelog
 
+## v4.3.3
+- My leave (ClickUp setup › Tracking settings): add sick, annual or other leave. Leave days are days off for you: no work reminders, nudges or wrap-up, the targets leave them out, they don't lower your rating, a task due during leave counts as due on your first day back, you get a heads-up the day before with the tasks due while you're away, and Admin › Users shows you as on leave.
+- Share tasks: 🔗 Share next to every Tab group copies a link to a page with those tasks (or only the ones you Ctrl+clicked) - status, dates, time, people and description, and Open all in ClickUp (one tab group with this extension, separate tabs without it). Download page saves the same page as a file to attach to an email.
+- Fixed: a change applied to ClickUp (an estimate, a status, Start / Complete) could show the old value again until you reloaded, because ClickUp's task search still had the old one for a moment. What you just set now stays on screen, and the extension looks again 25 seconds later.
+- Fixed: This week by day was rebuilt on every background refresh, so its rows flickered. It now only redraws when something on it changed, and holds the page still when it does.
+- Fixed: ▶ on a task in This week by day opened its details in the Tasks list above when the task was in both. The details now open under the row you clicked, stay there when the lists refresh, and ▶ in the other list moves them there.
+- Fixed: a task whose timer is stopped without completing it now always goes back to To do - also when it was stopped in the taskbar app or in ClickUp itself. Before, only the Stop buttons did this, so a stopped task (such as the Extra Task) could stay In progress.
+
 ## v4.3.2
 - Ctrl+Z undo: press Ctrl+Z on any page of the extension (or Undo on the small note that shows after a change) to undo your last change - colours, pins, My notes, reminders, client notes, paused clients, draft tasks, settings, and in ClickUp a task's due date, start date, estimate, status, priority or the people on it. Only that change is put back, the last 20 are kept (also after a reload), and Ctrl+Z inside a text box still undoes your typing.
 - Monthly report tasks get your Report colour by themselves: when one of your colours is called Report, a task named Monthly Report, Technical Monthly Report, Monthly Report Creation… is coloured with it the first time it shows up. A colour it already has is kept, and if you take the colour off it stays off.

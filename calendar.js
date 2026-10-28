@@ -176,6 +176,11 @@
   }
   const isHoliday = (ts) => eventsOn(ts).some((e) => e.kind === "holiday");
   const isWfh = (ts) => eventsOn(ts).some((e) => e.kind === "wfh");
+  // My leave (Settings › My leave, settings.myLeave): a day off for me only.
+  let leave = [];
+  const leaveOn = (ts) => { const k = ymd(ts); return leave.find((e) => e && e.from && k >= e.from && k <= (e.to || e.from)) || null; };
+  const isLeave = (ts) => !!leaveOn(ts);
+  const isDayOff = (ts) => isHoliday(ts) || isLeave(ts);
   const fmtShort = (ts) => new Date(ts).toLocaleDateString(undefined, { month: "short", day: "numeric" });
   // ---- times, for the date+time fields (reminders, a notice's "until") ----
   // These fields used to be impossible with a mouse: the calendar takes over
@@ -206,6 +211,8 @@
     const today = eventsOn(now);
     const hol = today.find((e) => e.kind === "holiday");
     if (hol) return icon("holiday") + " " + hol.title;
+    const lv = leaveOn(now);
+    if (lv) return "🌴 On leave" + (lv.to && lv.to !== ymd(now) ? " until " + fmtShort(parseYmd(lv.to)) : " today");
     const wfh = today.find((e) => e.kind === "wfh");
     const soon = company.filter((e) => e.from > ymd(now) && parseYmd(e.from) - now < 14 * 86400000).sort((a, b) => a.from.localeCompare(b.from))[0];
     if (soon && (!wfh || soon.kind === "holiday")) return (wfh ? icon("wfh") + " WFH \u00b7 " : "") + icon(soon.kind) + " " + soon.title + (soon.kind === "event" ? " " + fmtShort(parseYmd(soon.from)) + evTime(soon) : " from " + fmtShort(parseYmd(soon.from)));
@@ -236,7 +243,7 @@
       else if (rep === "weekdays") hit = dow !== 0 && dow !== 6;
       else if (rep === "weekly") hit = dow === at.getDay();
       if (!hit) continue;
-      if ((REM_SKIP[r.id] || []).some((x) => (x === "holiday" ? isHoliday : isWfh)(day.getTime()))) continue;
+      if ((REM_SKIP[r.id] || []).some((x) => (x === "holiday" ? isDayOff : isWfh)(day.getTime()))) continue;
       out.push({ time: at.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" }), mins: at.getHours() * 60 + at.getMinutes(), text: String(r.text || "Reminder") });
     }
     return out.sort((a, b) => a.mins - b.mins);
@@ -341,6 +348,8 @@
     .pcal-day.today { border-color: var(--indigo, #6366f1); box-shadow: inset 0 0 0 1px var(--indigo, #6366f1); }
     .pcal-day.hol { background: rgba(239,68,68,.36); }
     .pcal-day.hol .ad { color: #ef4444; }
+    .pcal-day.lv { background: rgba(139,92,246,.30); } .pcal-day.lv .ad { color: #7c3aed; }
+    html[data-theme="dark"] .pcal-day.lv { background: rgba(167,139,250,.42); } html[data-theme="dark"] .pcal-day.lv .ad { color: #fff; }
     .pcal-day.flash { animation: pcal-flash 1.6s ease 2; }
     @keyframes pcal-flash { 0%, 100% { box-shadow: 0 0 0 0 rgba(99,102,241,0); } 40% { box-shadow: 0 0 0 3px var(--indigo, #6366f1); } }
     .pcal-day.wfh { background: rgba(59,130,246,.16); }
@@ -593,6 +602,7 @@
       }
       const evs = eventsOn(ts);
       if (evs.some((e) => e.kind === "holiday")) b.classList.add("hol");
+      else if (!weekend && isLeave(ts)) { b.classList.add("lv"); b.title = (b.title ? b.title + " · " : "") + "Your leave"; }
       else if (weekend) b.classList.add("we");
       else if (evs.some((e) => e.kind === "wfh")) b.classList.add("wfh");
       const bs = toBS(d);
@@ -740,7 +750,7 @@
     }
     if (picker && picker.time) pop.appendChild(timeRow());
     const lg = el("div", "pcal-legend");
-    lg.innerHTML = '<span>\u23F0 Reminder</span><span><i class="lg-we"></i>Weekend</span><span><i class="lg-hol"></i>Holiday</span><span><i class="lg-wfh"></i>Work from home</span><span><i style="background:#d97706;border-radius:50%"></i>Festival</span><span><i style="background:var(--indigo,#6366f1)"></i>Tasks due</span>';
+    lg.innerHTML = '<span>\u23F0 Reminder</span><span><i class="lg-we"></i>Weekend</span><span><i class="lg-hol"></i>Holiday</span><span><i class="lg-wfh"></i>Work from home</span><span><i style="background:rgba(139,92,246,.7)"></i>My leave</span><span><i style="background:#d97706;border-radius:50%"></i>Festival</span><span><i style="background:var(--indigo,#6366f1)"></i>Tasks due</span>';
     pop.appendChild(lg);
     // Company days in this month and the next few weeks.
     const fromK = ymd(first.getTime()), toK = ymd(new Date(last.getFullYear(), last.getMonth() + 1, last.getDate()).getTime());
@@ -952,7 +962,8 @@
   }
   async function load() {
     try {
-      const g = await chrome.storage.local.get(["companyCalendar", "clickupState", "reminders", "insOpenCache"]);
+      const g = await chrome.storage.local.get(["companyCalendar", "clickupState", "reminders", "insOpenCache", "settings"]);
+      leave = g.settings && Array.isArray(g.settings.myLeave) ? g.settings.myLeave : [];
       openAll = g.insOpenCache && Array.isArray(g.insOpenCache.tasks) ? g.insOpenCache : openAll;
       company = Array.isArray(g.companyCalendar) ? g.companyCalendar : [];
       reminders = Array.isArray(g.reminders) ? g.reminders : [];
@@ -961,7 +972,7 @@
     paintChip();
     if (pop) paintMonth();
   }
-  try { chrome.storage.onChanged.addListener((ch, area) => { if (area === "local" && (ch.companyCalendar || ch.clickupState || ch.reminders || ch.insOpenCache)) load(); }); } catch (e) {}
+  try { chrome.storage.onChanged.addListener((ch, area) => { if (area === "local" && (ch.companyCalendar || ch.clickupState || ch.reminders || ch.insOpenCache || (ch.settings && JSON.stringify((ch.settings.newValue || {}).myLeave || []) !== JSON.stringify(leave)))) load(); }); } catch (e) {}
   try { chrome.storage.onChanged.addListener((ch, area) => { if (area === "local" && ch.calMode && (ch.calMode.newValue === "bs" || ch.calMode.newValue === "ad")) calMode = ch.calMode.newValue; }); } catch (e) {}
   setInterval(paintChip, 60000); // the date rolls over at midnight
   if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", load); else load();
@@ -1041,5 +1052,5 @@
       return native ? native.call(this) : undefined;
     };
   } catch (e) {}
-  window.PcmCalendar = { toBS, fromBS, festivalOn, bsLabel, isHoliday, isWfh, eventsOn, remindersOn, open, pick: pickDate, pickFor, refresh: load };
+  window.PcmCalendar = { toBS, fromBS, festivalOn, bsLabel, isHoliday, isWfh, isLeave, leaveOn, isDayOff, eventsOn, remindersOn, open, pick: pickDate, pickFor, refresh: load };
 })();

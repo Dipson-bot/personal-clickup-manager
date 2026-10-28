@@ -3735,3 +3735,20 @@ export function fmtDuration(ms) {
   if (h > 0) return h + "h";
   return m + "m";
 }
+
+// Share these tasks (🔗 Share next to Tab group): what the shared page shows for
+// one task - read from ClickUp so the description and people are current.
+export async function getTaskShareInfo(token, taskId, maxDesc = 1500) {
+  const t = await cuFetch(token, "/task/" + encodeURIComponent(String(taskId)), [["include_markdown_description", "true"]]);
+  const desc = String((t && (t.markdown_description || t.text_content || t.description)) || "").trim();
+  return {
+    id: String((t && t.id) || taskId), name: (t && t.name) || "(untitled task)", url: (t && t.url) || taskUrlFor(taskId),
+    status: (t && t.status && t.status.status) || "", color: (t && t.status && t.status.color) || "", done: isTaskDone(t),
+    priority: (t && t.priority && t.priority.priority) || "",
+    due: t && t.due_date ? Number(t.due_date) : 0, start: t && t.start_date ? Number(t.start_date) : 0,
+    est: Number(t && t.time_estimate) || 0, spent: Number(t && t.time_spent) || 0,
+    who: (Array.isArray(t && t.assignees) ? t.assignees : []).map((a) => a && (a.username || a.email)).filter(Boolean),
+    list: (t && t.list && t.list.name) || "", parent: t && t.parent != null ? String(t.parent) : "",
+    desc: desc.length > maxDesc ? desc.slice(0, maxDesc - 1) + "\u2026" : desc,
+  };
+}
