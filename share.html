@@ -61,7 +61,7 @@
   var EXT = "dlmlgnnnacdbdlgcpohdnphhecljfeal"; // the extension's id (fixed by its manifest key)
   var $ = function (id) { return document.getElementById(id); };
   function esc(s) { return String(s == null ? "" : s).replace(/[&<>"']/g, function (c) { return { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]; }); }
-  function okUrl(u) { return /^https:\/\/app\.clickup\.com\//.test(String(u || "")); }
+  function okUrl(u) { return /^https:\/\/app\.clickup\.com\/t\//.test(String(u || "")); } // ClickUp task links only
   function dur(ms) { var m = Math.round((Number(ms) || 0) / 60000), h = Math.floor(m / 60); return h ? h + "h" + (m % 60 ? " " + (m % 60) + "m" : "") : m + "m"; }
   function day(ms) { return new Date(ms).toLocaleDateString(undefined, { weekday: "short", month: "short", day: "numeric" }); }
   // Plain text with its web addresses made clickable (everything else stays text).
@@ -141,8 +141,12 @@
     // is never mistaken for "no extension" (and opened a second time as tabs).
     var here = await askExtension({ type: "PCM_PING" }, 3000);
     if (here && here.ok) {
+      // Marked before asking: the extension closes this tab once the group is open,
+      // and a tab reopened later (Ctrl+Shift+T) must not open everything again.
+      if (auto) markOpened();
       var r = await askExtension({ type: "SHARE_OPEN_GROUP", urls: some, title: title, closeMe: !!auto }, 60000);
       btn.disabled = false;
+      if (!(r && r.ok)) { try { sessionStorage.removeItem(onceKey); } catch (e) {} }
       if (r && r.ok) { markOpened(); say("Opened " + r.opened + " in a tab group" + (urls.length > 60 ? " (the first 60)" : "") + "."); }
       else say("The extension couldn't open them - press Open all to try again.", true);
       return;
