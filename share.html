@@ -7,8 +7,11 @@
 <title>Shared ClickUp tasks</title>
 <!-- Shared tasks (Personal ClickUp Manager › 🔗 Share). One page, two ways in:
      - a link to this page on the project's GitHub Pages site with the tasks after
-       the # (the part of a link the browser never sends to the server), or
-     - a downloaded copy with the tasks inside it (<script id="pcm-data">).
+       the # (the part of a link the browser never sends to the server): the tasks
+       open by themselves - one tab group with the extension, then this tab closes;
+       without it separate tabs once pop-ups are allowed, and until then this list.
+     - a downloaded copy with the tasks inside it (<script id="pcm-data">): nothing
+       opens until Open all is pressed.
      Nothing is loaded from anywhere else. -->
 <style>
   :root { --bg: #f6f7f9; --card: #fff; --ink: #1f2937; --muted: #6b7280; --line: #e5e7eb; --accent: #7b68ee; --accent-ink: #fff; --chip: #f3f4f6; --red: #dc2626; --green: #16a34a; }
@@ -50,7 +53,7 @@
     <span class="msg" id="msg" role="status"></span>
   </div>
   <div id="list"></div>
-  <p class="note">Opening a task needs a ClickUp account with access to its workspace. With the Personal ClickUp Manager extension, <b>Open all</b> opens them together in one Chrome tab group; without it they open as separate tabs (allow pop-ups for this page if your browser asks).</p>
+  <p class="note">Opening a task needs a ClickUp account with access to its workspace. With the Personal ClickUp Manager extension, a shared link opens its tasks together in one Chrome tab group by itself. Without it they open as separate tabs, once pop-ups are allowed for this page.</p>
 </main>
 <script>
 (function () {
@@ -58,7 +61,7 @@
   var EXT = "dlmlgnnnacdbdlgcpohdnphhecljfeal"; // the extension's id (fixed by its manifest key)
   var $ = function (id) { return document.getElementById(id); };
   function esc(s) { return String(s == null ? "" : s).replace(/[&<>"']/g, function (c) { return { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]; }); }
-  function okUrl(u) { return /^https:\/\/app\.clickup\.com\//.test(String(u || "")); }
+  function okUrl(u) { return /^https:\/\/app\.clickup\.com\/t\//.test(String(u || "")); } // ClickUp task links only
   function dur(ms) { var m = Math.round((Number(ms) || 0) / 60000), h = Math.floor(m / 60); return h ? h + "h" + (m % 60 ? " " + (m % 60) + "m" : "") : m + "m"; }
   function day(ms) { return new Date(ms).toLocaleDateString(undefined, { weekday: "short", month: "short", day: "numeric" }); }
   // Plain text with its web addresses made clickable (everything else stays text).
@@ -104,36 +107,69 @@
     return tasks;
   }
   function say(t, err) { $("msg").textContent = t; $("msg").className = "msg" + (err ? " err" : ""); }
-  // The extension (a teammate's copy): one Chrome tab group. No answer: null.
-  function viaExtension(urls, title) {
+  // Ask the extension (a teammate's copy). No answer in time: null.
+  function askExtension(msg, ms) {
     return new Promise(function (res) {
       try {
         if (!(window.chrome && chrome.runtime && chrome.runtime.sendMessage)) return res(null);
         var done = false, fin = function (r) { if (!done) { done = true; res(r); } };
-        chrome.runtime.sendMessage(EXT, { type: "SHARE_OPEN_GROUP", urls: urls, title: title }, function (r) { void (chrome.runtime.lastError); fin(r && r.ok ? r : null); });
-        setTimeout(function () { fin(null); }, 4000);
+        chrome.runtime.sendMessage(EXT, msg, function (r) { void (chrome.runtime.lastError); fin(r || null); });
+        setTimeout(function () { fin(null); }, ms);
       } catch (e) { res(null); }
     });
+  }
+  // Separate tabs. A page may only do this by itself once pop-ups are allowed: the
+  // first tab tells (blocked = stop, nothing half opened). Returns how many opened.
+  function openTabs(urls) {
+    var opened = 0, blocked = 0;
+    for (var i = 0; i < urls.length; i++) {
+      if (blocked && !opened) { blocked = urls.length; break; }
+      var w = window.open(urls[i], "_blank");
+      if (w) { opened++; try { w.opener = null; } catch (e) {} } else blocked++;
+    }
+    return { opened: opened, blocked: blocked };
+  }
+  // A reload (or a tab restored later) doesn't open everything again.
+  var onceKey = "pcm.opened." + location.hash.slice(0, 200);
+  function openedBefore() { try { return sessionStorage.getItem(onceKey) === "1"; } catch (e) { return false; } }
+  function markOpened() { try { sessionStorage.setItem(onceKey, "1"); } catch (e) {} }
+  async function openAll(urls, title, auto) {
+    var some = urls.slice(0, 60), btn = $("openAll");
+    btn.disabled = true;
+    say("Opening " + some.length + " task" + (some.length === 1 ? "" : "s") + "\u2026");
+    // Is it there? A short question first, so a big group taking its time to open
+    // is never mistaken for "no extension" (and opened a second time as tabs).
+    var here = await askExtension({ type: "PCM_PING" }, 3000);
+    if (here && here.ok) {
+      // Marked before asking: the extension closes this tab once the group is open,
+      // and a tab reopened later (Ctrl+Shift+T) must not open everything again.
+      if (auto) markOpened();
+      var r = await askExtension({ type: "SHARE_OPEN_GROUP", urls: some, title: title, closeMe: !!auto }, 60000);
+      btn.disabled = false;
+      if (!(r && r.ok)) { try { sessionStorage.removeItem(onceKey); } catch (e) {} }
+      if (r && r.ok) { markOpened(); say("Opened " + r.opened + " in a tab group" + (urls.length > 60 ? " (the first 60)" : "") + "."); }
+      else say("The extension couldn't open them - press Open all to try again.", true);
+      return;
+    }
+    var t = openTabs(some);
+    btn.disabled = false;
+    if (t.opened) markOpened();
+    if (t.blocked) say(t.opened ? "Your browser blocked " + t.blocked + " of them. Allow pop-ups for this page (the icon at the right of the address bar), then press Open all again." : "Your browser blocked the tabs. Allow pop-ups for this page (the icon at the right of the address bar) and reload - they'll open by themselves. Or open them one by one below.", true);
+    else say("Opened " + t.opened + " tab" + (t.opened === 1 ? "" : "s") + (urls.length > 60 ? " (the first 60)" : "") + ".");
   }
   readData().then(function (d) {
     var tasks = render(d);
     var urls = tasks.map(function (t) { return t.url; }).filter(okUrl);
     if (!urls.length) { $("openAll").disabled = true; $("copyAll").disabled = true; return; }
-    $("openAll").onclick = async function () {
-      var b = this; b.disabled = true; say("Opening…");
-      var r = await viaExtension(urls.slice(0, 60), String((d && d.t) || "Shared tasks").slice(0, 60));
-      if (r) { say("Opened " + r.opened + " in a tab group" + (r.capped ? " (the first 60)" : "") + "."); b.disabled = false; return; }
-      var blocked = 0;
-      urls.slice(0, 60).forEach(function (u) { var w = window.open(u, "_blank"); if (w) { try { w.opener = null; } catch (e) {} } else blocked++; });
-      b.disabled = false;
-      if (blocked) say("Your browser blocked " + blocked + " of them. Allow pop-ups for this page (the icon at the right of the address bar), then press Open all again.", true);
-      else say("Opened " + Math.min(urls.length, 60) + " tabs.");
-    };
+    var groupTitle = String((d && d.t) || "Shared tasks").slice(0, 60);
+    $("openAll").onclick = function () { openAll(urls, groupTitle, false); };
     $("copyAll").onclick = async function () {
       var text = tasks.filter(function (t) { return okUrl(t.url); }).map(function (t) { return t.name + " - " + t.url; }).join("\n");
       try { await navigator.clipboard.writeText(text); say("Copied " + urls.length + " links."); }
       catch (e) { say("Couldn't copy - select the task names and copy them instead.", true); }
     };
+    // A shared link opens its tasks by itself; a downloaded page waits for the button.
+    if (!document.getElementById("pcm-data") && !openedBefore()) openAll(urls, groupTitle, true);
   }).catch(function () {
     $("list").innerHTML = '<div class="empty">This link couldn\'t be read - it may have been cut short when it was copied. Ask for it again.</div>';
   });

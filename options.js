@@ -1386,13 +1386,15 @@ function cuTabGroupOnly(title, getTasks, color) {
 // ---------- 🔗 Share these tasks ----------
 // Next to every Tab group: the tasks you Ctrl+clicked in that group (none picked:
 // all of them) as
-//  - Copy link: a page on the project's GitHub Pages site (share.html) with the
-//    tasks inside the link after the # - never sent to any server. Anyone can
-//    open it; it shows each task's status, dates, time, people and description,
-//    and opens them all in ClickUp (a tab group with this extension).
-//  - Download page: the same page as a file, with the full descriptions.
+//  - Copy link: a link (share.html on the project's GitHub Pages site, the tasks
+//    inside it after the # - never sent to any server) that opens them the moment
+//    it's opened: one Chrome tab group with this extension, then its own tab
+//    closes; without it separate tabs once pop-ups are allowed, and until then a
+//    page listing them. Made from the rows on screen: instant, no ClickUp reads.
+//  - Download page: a page as a file, with the full descriptions read from ClickUp.
 const SHARE_PAGE = "https://dipson-bot.github.io/personal-clickup-manager/share.html";
 const SHARE_LINK_MAX = 7000; // longer links get cut by some chat apps
+const SHARE_LINK_TASKS = 60; // the most a tab group opens
 async function cuShareData(title, tasks, maxDesc) {
   const ids = [...new Set(tasks.map((t) => cuWeekId(t)).filter((id) => id && /^[a-z0-9]+$/i.test(id)))];
   const r = await send({ type: "SHARE_TASKS", ids, maxDesc }, 180000).catch(() => null);
@@ -1403,6 +1405,19 @@ async function cuShareData(title, tasks, maxDesc) {
   const client = new Map(tasks.map((t) => [cuWeekId(t), String((t && t.client) || "")]));
   const rows = r.tasks.map((x) => ({ ...x, client: client.get(String(x.id)) || "" }));
   return { data: { v: 1, t: String(title || "Tasks").slice(0, 120), by: r.by || "", at: Date.now(), tasks: rows }, failed: r.failed || [], capped: !!r.capped };
+}
+// What the link carries: only what the rows already know (no descriptions).
+function cuShareRows(title, tasks) {
+  const seen = new Set(), rows = [];
+  for (const t of tasks) {
+    const id = cuWeekId(t);
+    if (!id || seen.has(id) || !cuTaskUrl(t)) continue;
+    seen.add(id);
+    rows.push({ id, name: String((t && (t.name || t.taskName)) || "(untitled task)"), url: cuTaskUrl(t), status: String((t && t.status) || ""), done: !!(t && t.done),
+      priority: typeof (t && t.priority) === "string" ? t.priority : "", due: Number(t && t.dueDateMs) || 0, est: Number(t && (t.totalEstimateMs || t.estimateMs || t.dayEstimateMs)) || 0, spent: Number(t && (t.totalSpentMs || t.spentMs)) || 0,
+      who: (Array.isArray(t && t.assignees) ? t.assignees : []).map((a) => a && a.username).filter(Boolean), client: String((t && t.client) || "") });
+  }
+  return { v: 1, t: String(title || "Tasks").slice(0, 120), at: Date.now(), tasks: rows.slice(0, SHARE_LINK_TASKS) };
 }
 async function cuShareLink(data) {
   const bytes = new TextEncoder().encode(JSON.stringify(data));
@@ -1428,7 +1443,7 @@ function cuShareBtn(title, getTasks) {
   b.className = "cu-tgbtn cu-sharebtn";
   const LABEL = "\uD83D\uDD17 Share";
   b.textContent = LABEL;
-  b.title = "Share these tasks: a link anyone can open (status, dates, time, people and description, and Open all in ClickUp), or a page to download. Ctrl+click tasks first to share only those.";
+  b.title = "Share these tasks: a link that opens them straight away in a tab group, or a page to download with their details. Ctrl+click tasks first to share only those.";
   b.addEventListener("mousedown", (e) => e.stopPropagation());
   let menu = null;
   const shut = () => { if (menu) { menu.remove(); menu = null; } };
@@ -1451,24 +1466,19 @@ function cuShareBtn(title, getTasks) {
       x.onclick = async (ev) => {
         ev.preventDefault(); ev.stopPropagation();
         shut();
-        b.disabled = true; b.textContent = "Reading " + what + "\u2026";
+        b.disabled = true; b.textContent = how === "file" ? "Reading " + what + "\u2026" : "Copying\u2026";
         try {
           if (how === "file") {
             const { data, failed, capped } = await cuShareData(title, tasks, 8000);
             await cuShareFile(data);
             b.textContent = "Downloaded " + data.tasks.length + (failed.length ? " (" + failed.length + " unreadable)" : "") + (capped ? " (first 40)" : "");
           } else {
-            let { data, failed, capped } = await cuShareData(title, tasks, 1200);
-            let link = await cuShareLink(data), short = false;
-            // Too long for a chat message: shorter descriptions, then none.
-            for (const cut of [400, 0]) {
-              if (link.length <= SHARE_LINK_MAX) break;
-              data = { ...data, tasks: data.tasks.map((t) => ({ ...t, desc: cut ? (t.desc.length > cut ? t.desc.slice(0, cut - 1) + "\u2026" : t.desc) : "" })) };
-              link = await cuShareLink(data); short = true;
-            }
+            const data = cuShareRows(title, tasks);
+            let link = await cuShareLink(data);
+            // Too long for a chat message: only the names and links.
+            if (link.length > SHARE_LINK_MAX) link = await cuShareLink({ ...data, tasks: data.tasks.map((t) => ({ id: t.id, name: t.name, url: t.url })) });
             await navigator.clipboard.writeText(link);
-            b.textContent = "Link copied \u2713 " + data.tasks.length + " task" + (data.tasks.length === 1 ? "" : "s") + (short ? " (shorter details)" : "") + (failed.length ? " · " + failed.length + " unreadable" : "") + (capped ? " (first 40)" : "");
-            b.title = short ? "The descriptions were shortened to keep the link short - Download page has them in full." : b.title;
+            b.textContent = "Link copied \u2713 " + data.tasks.length + " task" + (data.tasks.length === 1 ? "" : "s") + (n > SHARE_LINK_TASKS ? " (first " + SHARE_LINK_TASKS + ")" : "");
           }
           reset(3200);
         } catch (err) {
@@ -1481,7 +1491,7 @@ function cuShareBtn(title, getTasks) {
       return x;
     };
     menu.append(
-      mk("Copy link", "Copy a link to a page showing " + what + " - anyone can open it; opening a task needs access to this ClickUp workspace.", "link"),
+      mk("Copy link", "Copy a link that opens " + what + " as soon as it's opened: one tab group with this extension, otherwise separate tabs once pop-ups are allowed. Opening a task needs access to this ClickUp workspace.", "link"),
       mk("Download page", "Save a page with " + what + " and their full descriptions, to attach to an email or message.", "file"));
     b.after(menu);
     setTimeout(() => { if (menu) shut(); }, 10000);
@@ -2489,6 +2499,7 @@ function makeListResizable(el, key) {
 function cuNotAppliedChip(wrap, t) {
   const id = cuWeekId(t);
   if (!id) return;
+  if (t && t.done && !cuEstApplying.has(id)) return; // completed: nothing to apply (cuStagedPruneAll drops it)
   const mv = optWeekStaged.has(id), est = !!cuEstStaged[id], saving = cuEstApplying.has(id);
   if (!mv && !est && !saving) return;
   const sc = document.createElement("button");
@@ -2498,8 +2509,11 @@ function cuNotAppliedChip(wrap, t) {
     sc.disabled = true; sc.textContent = "Saving\u2026"; sc.title = "Setting it in ClickUp\u2026";
   } else {
     const what = [mv ? "its new due date" : "", est ? "its estimate (" + (Number(cuEstStaged[id].ms) > 0 ? fmtDurOpt(cuEstStaged[id].ms) : "none") + ")" : ""].filter(Boolean).join(" and ");
-    sc.textContent = "\u270E not applied \u00b7 Apply";
-    sc.title = "Changed here, not in ClickUp yet: " + what + ". Click to set it in ClickUp for this task only.";
+    // Say what is waiting: "1h estimate", "due Fri", or both.
+    const mvTo = mv ? Number((optWeekStaged.get(id) || {}).toTs) || 0 : 0;
+    const short = [est ? (Number(cuEstStaged[id].ms) > 0 ? fmtDurOpt(cuEstStaged[id].ms) + " estimate" : "no estimate") : "", mv ? "due " + (mvTo ? new Date(mvTo).toLocaleDateString([], { weekday: "short" }) : "date") : ""].filter(Boolean).join(" + ");
+    sc.textContent = "\u270E " + short + " not in ClickUp \u00b7 Apply";
+    sc.title = "Changed here, not in ClickUp yet: " + what + ". Click to set it in ClickUp for this task only (\u2715 next to it forgets it).";
     sc.onclick = (e) => {
       e.preventDefault(); e.stopPropagation();
       sc.disabled = true; sc.textContent = "Saving\u2026"; sc.classList.add("saving");
@@ -2508,6 +2522,20 @@ function cuNotAppliedChip(wrap, t) {
     };
   }
   wrap.appendChild(sc);
+  if (!saving) {
+    const x = document.createElement("button");
+    x.type = "button"; x.className = "wk-stx"; x.textContent = "\u2715"; x.draggable = false;
+    x.title = "Forget this task's change kept here (nothing changes in ClickUp)";
+    x.setAttribute("aria-label", x.title);
+    x.addEventListener("mousedown", (e) => e.stopPropagation());
+    x.onclick = (e) => {
+      e.preventDefault(); e.stopPropagation();
+      if (optWeekStaged.delete(id)) cuStagedSave();
+      if (cuEstStaged[id]) { delete cuEstStaged[id]; cuEstSave(); }
+      cuGuessRepaint();
+    };
+    wrap.appendChild(x);
+  }
 }
 function appendNameCellOpt(row, nm, t) {
   // ▸ opens the task details dropdown (task-panel.js).
@@ -3696,11 +3724,12 @@ function cuStageMoves(moves) {
 function cuStagedPruneAll(st) {
   if (!st || (!optWeekStaged.size && !Object.keys(cuEstStaged).length)) return false;
   const dayOf = (ms) => (Number(ms) > 0 ? new Date(Number(ms)).setHours(0, 0, 0, 0) : 0);
-  const due = new Map(), est = new Map();
+  const due = new Map(), est = new Map(), done = new Set();
   const full = (t) => !("dayEstimateMs" in t) && !("totalEstimateMs" in t) && t.type !== "cfg" && t.type !== "extra";
   const look = (t) => {
     const id = cuWeekId(t);
     if (!id || t._staged) return;
+    if (t.done) done.add(id); // completed (here or in ClickUp): nothing left to apply
     if (!due.has(id) && "dueDateMs" in t) due.set(id, Number(t.dueDateMs) || 0);
     if (!est.has(id) && full(t)) est.set(id, Number(t.estimateMs) || 0);
   };
@@ -3709,12 +3738,14 @@ function cuStagedPruneAll(st) {
   for (const p of (st.weekly && st.weekly.perDay) || []) for (const t of (p && p.tasks) || []) look(t);
   let changed = false;
   for (const [id, s] of [...optWeekStaged]) {
+    if (done.has(id)) { optWeekStaged.delete(id); changed = true; continue; }
     if (!due.has(id)) continue;
     if (dayOf(due.get(id)) !== dayOf(s.oldDueMs)) { optWeekStaged.delete(id); changed = true; }
   }
   if (changed) cuStagedSave();
   let estChanged = false;
   for (const [id, s] of Object.entries(cuEstStaged)) {
+    if (done.has(id)) { delete cuEstStaged[id]; estChanged = true; continue; }
     if (!est.has(id) || !s) continue;
     const now = est.get(id);
     if (now === Number(s.ms) || (s.was != null ? now !== Number(s.was) : now > 0)) { delete cuEstStaged[id]; estChanged = true; }
@@ -7245,6 +7276,7 @@ function renderClickupPreviewBody(st) {
   // client or search is on (tracked-only rows add their time, not an estimate,
   // the same as the client headings).
   {
+    if ($("dashTasksGroup")) $("dashTasksGroup").replaceChildren(); // nothing shown: no buttons
     const shownDl = viewDeadline.filter((t) => !t.error);
     const nShown = shownDl.length + viewTasks.length + viewTracked.length;
     if (nShown) {
@@ -7290,8 +7322,11 @@ function renderClickupPreviewBody(st) {
         }
       }
       tot.title = "Added up from the rows below, under the filter, day, client and search that are on now.";
-      tot.appendChild(cuTabGroupBtn((($("dashTasksScope") && $("dashTasksScope").textContent) || "Tasks") + (clientsSel.length === 1 ? " · " + clientsSel[0] : clientsSel.length > 1 ? " · " + clientsSel.length + " clients" : ""), () => [].concat(viewTasks, shownDl, viewTracked)));
       lists.appendChild(tot);
+      // Tab group + Share for the whole list: in the card's toolbar, not this row
+      // (Simple view hides it, and a list without client headings had none then).
+      const gb = $("dashTasksGroup");
+      if (gb) gb.replaceChildren(cuTabGroupBtn((($("dashTasksScope") && $("dashTasksScope").textContent) || "Tasks") + (clientsSel.length === 1 ? " · " + clientsSel[0] : clientsSel.length > 1 ? " · " + clientsSel.length + " clients" : ""), () => [].concat(viewTasks, shownDl, viewTracked)));
     }
   }
   if (clientsSel.length) {
@@ -8265,6 +8300,12 @@ var INS_STORE = "insOpenCache";
 // Archived in ClickUp (background cuArchived) for Insights › Health; asked for
 // (one small read at most every 30 minutes) whenever Insights is drawn.
 var insArchived = [], insArchivedAt = 0;
+// Slack: tagged, no reply yet (background slackMentionsUpdate, the 20-minute Slack check).
+var insSlackTags = [];
+try {
+  chrome.storage.local.get("slackMentions").then(function (g) { insSlackTags = (g && g.slackMentions && g.slackMentions.items) || []; }).catch(function () {});
+  chrome.storage.onChanged.addListener(function (ch, area) { if (area === "local" && ch.slackMentions) insSlackTags = (ch.slackMentions.newValue && ch.slackMentions.newValue.items) || []; });
+} catch (e) {}
 function insArchivedLoad() {
   try {
     chrome.storage.local.get("cuArchived").then(function (g) { var c = g && g.cuArchived; insArchived = c && Array.isArray(c.tasks) ? c.tasks : []; insArchivedAt = (c && c.at) || 0; }).catch(function () {});
@@ -8740,6 +8781,15 @@ function insPaint(m, st, meta) {
     var t = (m.byId && m.byId[String(u.id)]) || null;
     return { id: u.id, name: (u.task && u.task.name) || (t && t.name) || "(task " + u.id + ")", url: (u.task && u.task.url) || insTaskUrl(u.id), client: (u.task && u.task.client) || (t && t.client) || "", due: t ? t.due : 0, n: u.n, mention: u.mention, latest: u.latest };
   });
+  m.slackList = (insSlackTags || []).filter(function (x) { return x && !x.answeredAt && !x.doneAt; }).map(function (x) {
+    return { id: x.k, name: (x.channel ? "#" + x.channel : "Slack") + (x.whoName ? " · " + x.whoName : ""), url: x.link, client: x.client || "", due: 0, kind: x.kind, at: x.at, text: x.text || "" };
+  });
+  // Read but not answered: opening a task's details reads its comments, so these
+  // would otherwise be gone with nothing to find them by.
+  m.readList = (window.PcmComments && window.PcmComments.readNoReply ? window.PcmComments.readNoReply() : []).map(function (u) {
+    var t = (m.byId && m.byId[String(u.id)]) || null;
+    return { id: u.id, name: (u.task && u.task.name) || (t && t.name) || "(task " + u.id + ")", url: (u.task && u.task.url) || insTaskUrl(u.id), client: (u.task && u.task.client) || (t && t.client) || "", due: t ? t.due : 0, n: u.n, mention: u.mention, latest: u.latest };
+  });
   // The same job sitting in your lists twice (task-dupes.js, off the same open
   // list this page already fetched - the copies are often in another month, so
   // nothing on screen could have shown them side by side). One row per group,
@@ -8914,6 +8964,14 @@ function insDrillsHtml(m) {
     return { badge: r.mention ? '<span class="badge red">@ you</span>' : '<span class="badge amber">💬 ' + r.n + "</span>",
       plain: (r.latest ? r.latest.who + ": " + r.latest.text : "") + (r.n > 1 ? " (+" + (r.n - 1) + " more)" : ""), action: "Mark read", act: "seen" };
   });
+  var slackOut = (m.slackList || []).length ? insDrill("slackwait", "Slack: tagged, no reply yet", m.slackList, function (r) {
+    return { badge: r.kind === "you" ? '<span class="badge red">@ you</span>' : '<span class="badge amber">@channel</span>',
+      plain: insDateShort(r.at) + " " + new Date(r.at).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" }) + " · " + r.text, action: "Done", act: "slackdone" };
+  }) : "";
+  var readOut = (m.readList || []).length ? insDrill("readwait", "Read, no reply yet", m.readList, function (r) {
+    return { badge: r.mention ? '<span class="badge red">@ you</span>' : '<span class="badge amber">💬 ' + r.n + "</span>",
+      plain: (r.latest ? r.latest.who + ": " + r.latest.text : "") + (r.n > 1 ? " (+" + (r.n - 1) + " more)" : ""), action: "No reply needed", act: "cmtdone" };
+  }) : "";
   // Possible duplicates: the point is to stop you wondering whether you already
   // did it. "Not a duplicate" dismisses a group for good (work that genuinely
   // carries one name), so the list can't cry wolf twice about the same pair.
@@ -8942,7 +9000,9 @@ function insDrillsHtml(m) {
     return { badge: '<span class="badge red">' + (d > 0 ? d + "d" : "due") + "</span>",
       plain: "due " + insDateShort(r.due) + (r.est ? " · " + insHrs(r.est) : " · no est"), action: "Change due date", act: "due" };
   });
+  out += slackOut;
   out += cmtOut;
+  out += readOut;
   out += lateOut;
   out += dupOut;
   // Archived in ClickUp: listed so it can't vanish without a trace. Who did it
@@ -9010,7 +9070,7 @@ if (typeof document !== "undefined") document.addEventListener("click", function
   var a = e.target && e.target.closest ? e.target.closest("#insView .trow .ttl-a") : null;
   if (!a || e.ctrlKey || e.metaKey || e.shiftKey || e.button !== 0 || !window.PcmTaskPanel || !window.PcmTaskPanel.openIn) return;
   var row = a.closest(".trow"), id = row && row.getAttribute("data-id");
-  if (!id) return;
+  if (!id || a.closest('[data-drill="slackwait"]')) return; // a Slack message: opens in Slack
   e.preventDefault();
   window.PcmTaskPanel.openIn(row, id);
 }, true);
@@ -9286,6 +9346,16 @@ function insRowAction(btn) {
   if (btn.getAttribute("data-act") === "seen") {
     row._busy = true;
     (window.PcmComments ? window.PcmComments.markRead(id) : Promise.resolve()).then(function () { insRowDone(row, "marked read"); });
+    return;
+  }
+  if (btn.getAttribute("data-act") === "slackdone") {
+    row._busy = true;
+    send({ type: "SLACK_MENTION_DONE", k: id }).catch(function () {}).then(function () { insRowDone(row, "done"); });
+    return;
+  }
+  if (btn.getAttribute("data-act") === "cmtdone") {
+    row._busy = true;
+    (window.PcmComments ? window.PcmComments.noReplyNeeded(id) : Promise.resolve()).then(function () { insRowDone(row, "cleared"); });
     return;
   }
   if (btn.getAttribute("data-act") === "roadblock") {
@@ -10060,7 +10130,7 @@ function renderSiteMonitorStatus(cfg) {
       const statusText = isOff ? "\u23F9 Monitoring off for this site" : st.paused ? "\u23F8 Client paused - not checked"
         : waitingOn(s.url) ? '<span class="sm-checking"><i class="sm-spin"></i>Checking now\u2026</span>' + (st.lastCheck ? " \u00B7 was " + was + " at " + smClock(st.lastCheck) : "")
         : stale ? '<span class="sm-stale">\u231B Not checked for ' + smGap(nowTs - st.lastCheck) + "</span> \u00B7 was " + was + " at " + smClock(st.lastCheck)
-        : st.up === true ? "✅ Up" : st.up === false ? (st.blank || st.kind === "blank" ? "⚠️ Blank page" : st.kind === "5xx" ? "🔥 Server error" + (st.status ? " (HTTP " + st.status + ")" : "") : "🚨 Down") : "⚪ Not checked yet";
+        : st.up === true ? "✅ Up" : st.up === false && Number(st.oks) > 0 ? "🟡 Answering again - confirming before it counts as back up" : st.up === false ? (st.blank || st.kind === "blank" ? "⚠️ Blank page" : st.kind === "5xx" ? "🔥 Server error" + (st.status ? " (HTTP " + st.status + ")" : "") : "🚨 Down") : "⚪ Not checked yet";
       // A stale row already names its own gap and time, so it does not repeat it.
       const lastCheckText = !st.lastCheck ? "never" : stale ? new Date(st.lastCheck).toLocaleString() : '<span title="' + escapeHtml(new Date(st.lastCheck).toLocaleString()) + '">' + smAgo(nowTs - st.lastCheck) + "</span>";
       // The address opens the site (new tab).

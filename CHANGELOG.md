@@ -1,5 +1,13 @@
 # Changelog
 
+## v4.3.4
+- Site monitor: one alert when a site goes down and one when it is back, nothing in between. A site is called back only after two good checks in a row (like down needs two failed ones), so a site flickering on and off no longer sends alert after alert; its row says "Answering again - confirming" meanwhile.
+- Slack: tagged, no reply yet (Insights › Health): messages in your client Slack channels that tag you (or @channel / @here) and that you haven't answered, with a link to each. They go once you reply in the thread or post in the channel, or press Done; a new @you tag also pops up. Needs Slack connected in Clients › Slack.
+- A change kept here but not in ClickUp yet now says what it is ("✎ 1h estimate not in ClickUp · Apply", "due Fri"), has its own ✕ to forget it, and goes away by itself once the task is completed.
+- Comments you've read no longer vanish: Insights › Read, no reply yet keeps them with the task's name until you comment on the task (here or in ClickUp) or press No reply needed, for up to 14 days.
+- Share: Copy link now opens the tasks as soon as the link is opened - one tab group with this extension, and the link's own tab closes. Without it they open as separate tabs once pop-ups are allowed for the page. It's made instantly from the list on screen; Download page still has the full descriptions.
+- Tab group and Share now also sit in the Tasks card's toolbar, so they're there for any list, in Simple view too.
+
 ## v4.3.3
 - My leave (ClickUp setup › Tracking settings): add sick, annual or other leave. Leave days are days off for you: no work reminders, nudges or wrap-up, the targets leave them out, they don't lower your rating, a task due during leave counts as due on your first day back, you get a heads-up the day before with the tasks due while you're away, and Admin › Users shows you as on leave.
 - Share tasks: 🔗 Share next to every Tab group copies a link to a page with those tasks (or only the ones you Ctrl+clicked) - status, dates, time, people and description, and Open all in ClickUp (one tab group with this extension, separate tabs without it). Download page saves the same page as a file to attach to an email.

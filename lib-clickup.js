@@ -931,8 +931,17 @@ export async function getTaskCommentsLite(token, taskId) {
       userId: c && c.user && c.user.id != null ? String(c.user.id) : "",
       who: String((c && c.user && (c.user.username || c.user.email)) || "Someone"),
       text: text.length > 220 ? text.slice(0, 218) + "…" : text, mentions,
+      replies: Number(c && c.reply_count) || 0,
     };
   }).filter((c) => c.at > 0);
+}
+// Who answered in one comment's thread (ClickUp keeps thread replies apart from
+// the task's comments): [{ userId, at }].
+export async function getCommentRepliesLite(token, commentId) {
+  const j = await cuFetch(token, "/comment/" + encodeURIComponent(String(commentId)) + "/reply");
+  return (Array.isArray(j && j.comments) ? j.comments : []).map((c) => ({
+    userId: c && c.user && c.user.id != null ? String(c.user.id) : "", at: Number(c && c.date) || 0,
+  })).filter((c) => c.at > 0);
 }
 // Your own latest comment on a task, as text with its links written out - the
 // export's Work File "File:" when the task's File: "..." field is empty (that

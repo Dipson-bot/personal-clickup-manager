@@ -337,7 +337,24 @@
   // ---------- unread comments (background scanComments) ----------
   // A comment by someone else newer than when you last opened the task's
   // details (and under 60 days old) is unread; one that @mentions you is marked.
-  let cmtCache = {}, cmtSeen = {};
+  let cmtCache = {}, cmtSeen = {}, cmtDone = {};
+  // Opening a task's details reads its comments, so "I'll reply after this task"
+  // would lose them: read but unanswered stays listed for 14 days, until you
+  // comment on the task or press No reply needed. ClickBot's notes aren't for
+  // answering; a task whose own comments aren't known yet (no myAt) waits for the
+  // next check rather than listing something you may have answered.
+  const READ_KEEP_MS = 14 * 86400000;
+  function readNoReply(now = Date.now()) {
+    const out = [];
+    for (const id of Object.keys(cmtCache)) {
+      const c = cmtCache[id];
+      if (!c || !Array.isArray(c.list) || !("myAt" in c)) continue;
+      const seen = Number(cmtSeen[id]) || 0, after = Math.max(Number(c.myAt) || 0, Number(cmtDone[id]) || 0, now - READ_KEEP_MS);
+      const wait = c.list.filter((x) => x && x.at > after && x.at <= seen && !/^click\s*bot$/i.test(String(x.who || "")));
+      if (wait.length) out.push({ id, n: wait.length, mention: wait.some((x) => x.mention), latest: wait[0], seenAt: seen, task: c });
+    }
+    return out.sort((a, b) => (b.mention - a.mention) || (b.latest.at - a.latest.at));
+  }
   function unreadOf(id) {
     const c = cmtCache[String(id)];
     if (!c || !Array.isArray(c.list)) return { n: 0, mention: false, latest: null };
@@ -349,15 +366,16 @@
     return Object.keys(cmtCache).map((id) => ({ id, ...unreadOf(id) })).filter((x) => x.n > 0).sort((a, b) => (b.mention - a.mention) || (b.latest.at - a.latest.at));
   }
   try {
-    chrome.storage.local.get(["cuComments", "cuCommentSeen"]).then((g) => { cmtCache = g.cuComments || {}; cmtSeen = g.cuCommentSeen || {}; decorateAll(); }).catch(() => {});
+    chrome.storage.local.get(["cuComments", "cuCommentSeen", "cuCommentDone"]).then((g) => { cmtCache = g.cuComments || {}; cmtSeen = g.cuCommentSeen || {}; cmtDone = g.cuCommentDone || {}; decorateAll(); }).catch(() => {});
     chrome.storage.onChanged.addListener((ch, area) => {
+      if (area === "local" && ch.cuCommentDone) cmtDone = ch.cuCommentDone.newValue || {};
       if (area !== "local" || (!ch.cuComments && !ch.cuCommentSeen)) return;
       if (ch.cuComments) cmtCache = ch.cuComments.newValue || {};
       if (ch.cuCommentSeen) cmtSeen = ch.cuCommentSeen.newValue || {};
       decorateAll();
     });
   } catch (e) {}
-  window.PcmComments = { unreadOf, unreadAll, markRead: (ids) => new Promise((ok) => { try { chrome.runtime.sendMessage({ type: "COMMENTS_SEEN", taskIds: [].concat(ids) }, () => { void chrome.runtime.lastError; ok(); }); } catch (e) { ok(); } }) };
+  window.PcmComments = { unreadOf, unreadAll, readNoReply, noReplyNeeded: (id) => new Promise((ok) => { try { chrome.runtime.sendMessage({ type: "COMMENTS_DONE", taskId: String(id) }, () => { void chrome.runtime.lastError; ok(); }); } catch (e) { ok(); } }), markRead: (ids) => new Promise((ok) => { try { chrome.runtime.sendMessage({ type: "COMMENTS_SEEN", taskIds: [].concat(ids) }, () => { void chrome.runtime.lastError; ok(); }); } catch (e) { ok(); } }) };
 
 
   // ---------- 🎨 your own colours on tasks ----------

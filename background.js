@@ -27,7 +27,7 @@ import {
   linkifySheet,
 } from "./lib-drive.js";
 import { runAllAccounts, runAccountLogin, readAgentRouterLogin, URLS, GITHUB_KEEP_COOKIES } from "./lib-automation.js";
-import { getTaskShareInfo, getTaskHoldInfo, fetchArchivedMine, unarchiveTask, getLatestCommentBy, getTaskCommentsLite, getTaskTimeEntries, deleteTimeEntry, getUserGroups, getUser, verifyToken, getTeams, fetchTodayEstimate, fetchWeeklySummary, fetchDateRangeEstimate, createTaskCache, fetchTeamMembers, fetchWorkspaceTags, cuTagNames, fmtDuration, findExtraTaskByName, parseTaskIdFromUrl, getCurrentTimeEntry, getRunningTaskProgress, startTimer, stopTimer, getTaskById, setTaskStatus, setTaskDates, taskUrlFor, clientLabelFromContainer, resolveSpaceNamesFor, taskContainer, cuPriorityName, isTaskDone, getSubtasksOfParent, getTaskTree, getTaskDetail, updateTimeEntry, setTaskDueDate, clearTaskTreeCache, listWorkspaceClients, cuRowAssignees, fetchDoneBetween, fetchDoneLite, fetchTrackedHistory, getTaskPanel, addTaskComment, postTaskComment, setTaskDescription, getTaskCommentLinks, createTask, relateTasks, removeTaskAssignee, addTaskAssignee, postAssignedComment, addTimeEntry, weeklyWithToday, listClientFieldOptions, listReachableClients, bgToken, patientToken, cuRawFetch, getRelatedTasks, slimIndexTask, fetchTeamTasksPage, listAllLists, setPausedClients } from "./lib-clickup.js";
+import { getCommentRepliesLite, getTaskShareInfo, getTaskHoldInfo, fetchArchivedMine, unarchiveTask, getLatestCommentBy, getTaskCommentsLite, getTaskTimeEntries, deleteTimeEntry, getUserGroups, getUser, verifyToken, getTeams, fetchTodayEstimate, fetchWeeklySummary, fetchDateRangeEstimate, createTaskCache, fetchTeamMembers, fetchWorkspaceTags, cuTagNames, fmtDuration, findExtraTaskByName, parseTaskIdFromUrl, getCurrentTimeEntry, getRunningTaskProgress, startTimer, stopTimer, getTaskById, setTaskStatus, setTaskDates, taskUrlFor, clientLabelFromContainer, resolveSpaceNamesFor, taskContainer, cuPriorityName, isTaskDone, getSubtasksOfParent, getTaskTree, getTaskDetail, updateTimeEntry, setTaskDueDate, clearTaskTreeCache, listWorkspaceClients, cuRowAssignees, fetchDoneBetween, fetchDoneLite, fetchTrackedHistory, getTaskPanel, addTaskComment, postTaskComment, setTaskDescription, getTaskCommentLinks, createTask, relateTasks, removeTaskAssignee, addTaskAssignee, postAssignedComment, addTimeEntry, weeklyWithToday, listClientFieldOptions, listReachableClients, bgToken, patientToken, cuRawFetch, getRelatedTasks, slimIndexTask, fetchTeamTasksPage, listAllLists, setPausedClients } from "./lib-clickup.js";
 import { resolveRelayKey, pickProbeModel, probeRelay } from "./lib-availability.js";
 import { tidyCollect, tidyLines, tidyResolved, tidyDayOk, tidyUrgent, tidyDateShort } from "./lib-tidy.js";
 import "./lib-rules.js"; // globalThis.PcmRules - the Automation tab's rule blocks
@@ -1139,10 +1139,11 @@ function siteKindLabel(kind, status) {
 }
 const fmtMins = (ms) => { const m = Math.max(1, Math.round(ms / 60000)); return m < 60 ? m + " min" : Math.floor(m / 60) + "h" + (m % 60 ? " " + (m % 60) + "m" : ""); };
 // One site's new state after a check, and the notification to show (if any).
-// Pure (no Chrome calls), so it's tested on its own. A notification only comes
-// on a CHANGE: up -> problem, one problem -> another kind, problem -> back up.
-// Automatic checks need failuresNeeded failed checks in a row first; a manual
-// "Check" decides at once (and notifies too - the change is real either way).
+// Pure (no Chrome calls), so it's tested on its own. Two notifications per
+// outage, no more: once when it goes down, once when it's back. Automatic checks
+// need failuresNeeded failed checks in a row to call it down AND as many good
+// ones in a row to call it back (a site flickering in between stays one outage);
+// a manual "Check" decides at once (and notifies too - the change is real).
 function siteDecide(prevIn, result, o) {
   const prev = { ...(prevIn || { up: null, fails: 0, lastCheck: 0, lastDownNotified: 0 }) };
   const now = o.now;
@@ -1153,6 +1154,14 @@ function siteDecide(prevIn, result, o) {
   prev.blank = !result.ok && !!result.blank;
   let note = null;
   if (result.ok) {
+    // Down, and answering again: back only after failuresNeeded good checks in a row.
+    if (prev.up === false && !o.manual && (Number(prev.oks) || 0) + 1 < o.failuresNeeded) {
+      prev.oks = (Number(prev.oks) || 0) + 1;
+      prev.fails = 0;
+      prev.lastMs = result.ms || 0;
+      return { prev, note };
+    }
+    prev.oks = 0;
     if (prev.up === false) {
       // Everything it went through, in order: "site blank, then server error (HTTP 500)".
       const seen = Array.isArray(prev.seen) && prev.seen.length ? prev.seen : [siteKindLabel(prev.kind || "down", prev.status)];
@@ -1174,6 +1183,7 @@ function siteDecide(prevIn, result, o) {
     return { prev, note };
   }
   const kind = siteKind(result);
+  prev.oks = 0;
   prev.fails = (prev.fails || 0) + 1;
   prev.lastError = result.error || ("HTTP " + result.status);
   if (!prev.downSince) prev.downSince = now;
@@ -1184,12 +1194,8 @@ function siteDecide(prevIn, result, o) {
     : o.name + " doesn't answer at all. " + prev.lastError +
       " If it opens fine for others, the site's security (a firewall or security plugin) may be blocking this computer - ask whoever manages the site to allow this office's IP.";
   if (prev.up === false) {
-    // Already known to be down: news only when it gets WORSE than anything seen
-    // in this outage (blank -> server error -> no answer). A server flapping
-    // between 503 and a timeout must not post a sticky alarm every 5 minutes.
-    if (SITE_SEVERITY[kind] > (prev.worst != null ? prev.worst : SITE_SEVERITY[prev.kind] || 0)) {
-      note = { kind, sound: k.sound, title: k.icon + " Still broken, now " + siteKindLabel(kind, result.status) + ": " + o.name, message: why };
-    }
+    // Already known to be down: no more alerts until it's back (what kind of
+    // problem it is now shows on its row in Site monitor).
   } else if (o.manual || prev.fails >= o.failuresNeeded) {
     if (o.manual) prev.fails = Math.max(prev.fails, o.failuresNeeded);
     prev.up = false;
@@ -3721,6 +3727,9 @@ async function heldStartReminder(taskId) {
 // [last 6 comments by others] } }; cuCommentSeen { taskId: when you looked }.
 // The pages count a comment as unread when it's newer than that look (and less
 // than 60 days old). A new comment that @mentions you pops up a notification.
+// Read but not answered stays findable (Insights › Read, no reply yet): myAt = your
+// own latest comment on the task, cuCommentDone { taskId: when you replied from
+// here or pressed No reply needed }.
 // ---------- Automation rules (the Automation tab, shown with /automation) ----------
 // WHEN something happens / IF conditions hold / THEN do things - the blocks,
 // checks and plain words live in lib-rules.js (globalThis.PcmRules). This is the
@@ -4463,6 +4472,17 @@ chrome.storage.onChanged.addListener((ch, area) => {
 
 const CMT_PER_RUN = 6, CMT_RECHECK_MS = 3 * 3600000;
 let cmtScanning = false;
+// A task's comments are dealt with: you replied from here, or No reply needed.
+async function commentsHandled(taskId) {
+  const id = String(taskId || "");
+  if (!id) return;
+  const { cuCommentDone } = await chrome.storage.local.get("cuCommentDone");
+  const done = cuCommentDone && typeof cuCommentDone === "object" ? { ...cuCommentDone } : {};
+  const now = Date.now();
+  for (const k of Object.keys(done)) if (now - done[k] > 30 * 86400000) delete done[k];
+  done[id] = now;
+  await chrome.storage.local.set({ cuCommentDone: done });
+}
 async function scanComments(more) {
   if (cmtScanning) return;
   const st = (await getClickupState().catch(() => null)) || {};
@@ -4482,10 +4502,12 @@ async function scanComments(more) {
     const now = Date.now();
     const due = [...rows.values()].filter((t) => {
       const c = cache[String(t.id)];
-      return !c || (Number(t.updatedMs) > (c.upd || 0) + 1000) || now - (c.checkedAt || 0) > CMT_RECHECK_MS;
+      // (c.list has comments but no myAt: read before your own comments were noted.)
+      return !c || (Number(t.updatedMs) > (c.upd || 0) + 1000) || now - (c.checkedAt || 0) > CMT_RECHECK_MS || (Array.isArray(c.list) && c.list.length && !("myAt" in c));
     }).sort((a, b) => {
       const ca = cache[String(a.id)], cb = cache[String(b.id)];
-      const pa = !ca ? 0 : Number(a.updatedMs) > (ca.upd || 0) ? 1 : 2, pb = !cb ? 0 : Number(b.updatedMs) > (cb.upd || 0) ? 1 : 2;
+      const rank = (t, c) => (!c ? 0 : Number(t.updatedMs) > (c.upd || 0) || !("myAt" in c) ? 1 : 2);
+      const pa = rank(a, ca), pb = rank(b, cb);
       return pa - pb || (Number(b.updatedMs) || 0) - (Number(a.updatedMs) || 0);
     }).slice(0, more ? CMT_PER_RUN * 3 : CMT_PER_RUN);
     const me = String(cfg.userId || "");
@@ -4502,7 +4524,14 @@ async function scanComments(more) {
         const before = prev.list.reduce((mx, c) => Math.max(mx, c.at), 0);
         for (const c of others) if (c.at > before && c.mention) pings.push({ id, name: t.name, url: t.url || taskUrlFor(id), c });
       }
-      cache[id] = { checkedAt: now, upd: Number(t.updatedMs) || 0, name: String(t.name || "").slice(0, 200), url: t.url || taskUrlFor(id), client: t.client || "", list: others };
+      let myAt = list.reduce((mx, c) => (c.userId === me ? Math.max(mx, c.at) : mx), 0);
+      // A reply in a comment's thread is an answer too (ClickUp's Reply button): the
+      // threads of the newest comments by others after your last comment, at most 3.
+      for (const c of list.filter((x) => x.userId !== me && x.replies > 0 && x.at > myAt).sort((a, b) => b.at - a.at).slice(0, 3)) {
+        const rs = await getCommentRepliesLite(cfg.token, c.id).catch(() => []);
+        for (const x of rs) if (x.userId === me) myAt = Math.max(myAt, x.at);
+      }
+      cache[id] = { checkedAt: now, upd: Number(t.updatedMs) || 0, name: String(t.name || "").slice(0, 200), url: t.url || taskUrlFor(id), client: t.client || "", list: others, myAt };
       await new Promise((r) => setTimeout(r, 250));
     }
     // Forget tasks that are no longer open (kept a day in case the list was partial).
@@ -9768,7 +9797,7 @@ async function cnoteFromHub(rows) {
 async function cnotePollChannels(ids, map, s) {
   const { cnoteSince } = await chrome.storage.local.get("cnoteSince");
   const since = { ...(cnoteSince || {}) };
-  const found = [];
+  const found = [], byChannel = {};
   let authErr = false;
   for (const cid of ids.slice(0, 60)) {
     const oldest = since[cid] || String(Math.floor((Date.now() - CNOTE_FIRST_MS) / 1000));
@@ -9781,6 +9810,7 @@ async function cnotePollChannels(ids, map, s) {
       if (r2 && r2.ok) msgs = msgs.concat(r2.messages || []);
     }
     let newest = oldest;
+    byChannel[cid] = msgs;
     for (const m of msgs) {
       if (Number(m.ts) > Number(newest)) newest = String(m.ts);
       const n = cnoteFromMessage(m, cid, map[cid].client, s);
@@ -9789,6 +9819,7 @@ async function cnotePollChannels(ids, map, s) {
     since[cid] = newest;
   }
   await chrome.storage.local.set({ cnoteSince: since });
+  if (!authErr) await slackMentionsUpdate(byChannel, ids, map, s).catch((e) => diagLog("slack tagged", String(e && e.message ? e.message : e)));
   if (found.length) {
     const ids = [...new Set(found.flatMap((n) => (String(n.raw).match(/<@([UW][A-Z0-9]+)/g) || []).map((x) => x.slice(2))))];
     const names = ids.length ? await cnoteNames(ids, s).catch(() => ({})) : {};
@@ -9798,6 +9829,85 @@ async function cnotePollChannels(ids, map, s) {
     await cnoteShare(fresh);
   }
   return { authErr, found: found.length };
+}
+// ---------- Slack: tagged, no reply yet ----------
+// Client channels (Clients › Slack) where someone tagged you (@you, or @channel /
+// @here, which includes you) and you haven't answered: no reply of yours in its
+// thread and nothing you posted in that channel after it. From the same 20-minute
+// check as Client notices (its messages, no extra history reads) plus a look at
+// a few threads for your reply. Read only - nothing is posted in Slack. Listed
+// in Insights until answered, Done or 14 days old; a new @you pops up once.
+// A tag inside someone else's thread reply isn't seen (channel history only has
+// the top-level messages). storage slackMentions { at, items: [...] }, slackMentionsBack { [cid]: 1 }.
+const SLACK_TAG_KEEP_MS = 14 * 86400000, SLACK_TAG_THREADS = 12, SLACK_TAG_RECHECK_MS = 15 * 60000;
+function slackTagOf(m, me) {
+  if (!m || !m.ts || m.bot_id || (m.subtype && m.subtype !== "thread_broadcast") || !me || m.user === me) return "";
+  const t = String(m.text || "");
+  if (t.includes("<@" + me + ">") || t.includes("<@" + me + "|")) return "you";
+  if (/<!(channel|here|everyone)\b/.test(t)) return "channel";
+  return "";
+}
+function slackTagLink(s, cid, ts) { return "https://" + (s.domain || "slack.com") + "/archives/" + cid + "/p" + String(ts).replace(".", ""); }
+async function slackMentionsUpdate(byChannel, ids, map, s) {
+  const me = String((s && s.userId) || "");
+  if (!me) return;
+  const g = await chrome.storage.local.get(["slackMentions", "slackMentionsBack"]);
+  const items = new Map((((g.slackMentions && g.slackMentions.items) || [])).map((x) => [x.k, x]));
+  const back = { ...(g.slackMentionsBack || {}) };
+  const now = Date.now(), fresh = [];
+  // Channels never looked at for tags: their last 3 days, once (so a tag from just
+  // before this check existed isn't missed). Not announced.
+  const firstLook = new Set();
+  let looks = 0;
+  for (const cid of ids.slice(0, 60)) {
+    if (back[cid] || looks >= 10) continue; // at most 10 a check: never a burst of reads
+    looks++;
+    const r = await slackApi("conversations.history", { channel: cid, oldest: String(Math.floor((now - CNOTE_FIRST_MS) / 1000)), limit: "200" }, s).catch(() => null);
+    if (!r || !r.ok) { if (r && r.error && r.error !== "ratelimited") back[cid] = 1; continue; } // can't be read: not asked again
+    byChannel[cid] = (r.messages || []).concat(byChannel[cid] || []);
+    back[cid] = 1; firstLook.add(cid);
+    await new Promise((x) => setTimeout(x, 300));
+  }
+  for (const [cid, msgs] of Object.entries(byChannel)) {
+    for (const m of msgs || []) {
+      const kind = slackTagOf(m, me);
+      if (!kind) continue;
+      const k = cid + ":" + m.ts;
+      const at = Math.round(Number(m.ts) * 1000);
+      if (now - at > SLACK_TAG_KEEP_MS) continue;
+      const replied = Array.isArray(m.reply_users) && m.reply_users.includes(me);
+      const old = items.get(k);
+      items.set(k, { ...(old || {}), k, cid, ts: String(m.ts), at, kind, client: String((map[cid] && map[cid].client) || ""), channel: String((map[cid] && map[cid].name) || ""),
+        who: String(m.user || ""), raw: String(m.text || "").slice(0, 2000), link: slackTagLink(s, cid, m.ts), ...(replied && !(old && old.answeredAt) ? { answeredAt: now } : {}) });
+      if (!old && !replied && kind === "you" && !firstLook.has(cid)) fresh.push(k);
+    }
+    // You posted in the channel after it: answered there.
+    const mine = (msgs || []).filter((m) => m && m.user === me && !m.subtype).map((m) => Number(m.ts));
+    if (mine.length) for (const it of items.values()) if (it.cid === cid && !it.answeredAt && mine.some((ts) => ts > Number(it.ts))) it.answeredAt = now;
+  }
+  // A reply of yours in the thread: a few open ones checked each time, newest first.
+  const open = [...items.values()].filter((it) => !it.answeredAt && !it.doneAt && now - (Number(it.checkedAt) || 0) > SLACK_TAG_RECHECK_MS).sort((a, b) => b.at - a.at).slice(0, SLACK_TAG_THREADS);
+  for (const it of open) {
+    const r = await slackApi("conversations.replies", { channel: it.cid, ts: it.ts, limit: "200" }, s).catch(() => null);
+    it.checkedAt = now;
+    if (r && r.ok && (r.messages || []).slice(1).some((x) => x && x.user === me)) it.answeredAt = now;
+    await new Promise((x) => setTimeout(x, 300));
+  }
+  // Names for the people and the text (Slack's <@U…> ids).
+  const need = [...new Set([...items.values()].filter((it) => !it.text).flatMap((it) => [it.who].concat((it.raw.match(/<@([UW][A-Z0-9]+)/g) || []).map((x) => x.slice(2)))).filter(Boolean))];
+  const names = need.length ? await cnoteNames(need, s).catch(() => ({})) : {};
+  for (const it of items.values()) if (!it.text) { it.text = cnotePlain(it.raw, names).slice(0, 600); it.whoName = names[it.who] || it.whoName || ""; }
+  // Kept: open ones for 14 days; answered / done ones 2 more days (then gone).
+  const list = [...items.values()].filter((it) => now - it.at < SLACK_TAG_KEEP_MS && !((it.answeredAt || it.doneAt) && now - (it.answeredAt || it.doneAt) > 2 * 86400000))
+    .sort((a, b) => b.at - a.at).slice(0, 200);
+  // Done pressed while this ran (it takes a while): kept, not overwritten.
+  const latest = (((await chrome.storage.local.get("slackMentions")).slackMentions || {}).items) || [];
+  for (const x of latest) if (x && x.doneAt) { const it = list.find((y) => y.k === x.k); if (it && !it.doneAt) it.doneAt = x.doneAt; }
+  await chrome.storage.local.set({ slackMentions: { at: now, items: list }, slackMentionsBack: back });
+  for (const k of fresh.slice(0, 3)) {
+    const it = items.get(k);
+    await notify("slack-tag-" + k, "\uD83D\uDCAC " + (it.whoName || "Someone") + " tagged you" + (it.client ? " · " + it.client : ""), it.text || "", undefined, it.link).catch(() => {});
+  }
 }
 async function hubPollClientNotes() {
   const r = await hubCall("cnotes", {}).catch(() => null);
@@ -10785,11 +10895,11 @@ const TASK_MUTATIONS = new Set([
 // ---------- "Open in a tab group" ----------
 // A list's ClickUp tasks as tabs in one named Chrome tab group (a week, a day, a
 // client...), next to the tab the user is on. Also asked for by a shared task page.
-async function openTabGroup(urlsIn, title, colorIn) {
+async function openTabGroup(urlsIn, title, colorIn, near) {
   const urls = [...new Set((Array.isArray(urlsIn) ? urlsIn : []).map(String).filter((u) => /^https:\/\/app\.clickup\.com\//.test(u)))].slice(0, 60);
   if (!urls.length) return { ok: false, reason: "no-tasks" };
   try {
-    const [cur] = await chrome.tabs.query({ active: true, lastFocusedWindow: true }).catch(() => []);
+    const cur = near || (await chrome.tabs.query({ active: true, lastFocusedWindow: true }).catch(() => []))[0];
     const winId = cur && cur.windowId;
     const ids = [];
     for (const [i, url] of urls.entries()) {
@@ -10806,15 +10916,20 @@ async function openTabGroup(urlsIn, title, colorIn) {
   }
 }
 const SHARE_MAX = 40;
-// A shared task page (share.html on the project's GitHub Pages site, the only
-// site manifest externally_connectable lets in) asks a teammate's copy to open
-// its tasks as a tab group. Only ClickUp task links, at most 60, nothing else.
+// A shared link (share.html on the project's GitHub Pages site, the only site
+// manifest externally_connectable lets in) asks a teammate's copy to open its
+// tasks as a tab group the moment it's opened, then the link's own tab closes.
+// Only ClickUp task links, at most 60, nothing else.
 chrome.runtime.onMessageExternal.addListener((msg, sender, sendResponse) => {
   const okSite = sender && typeof sender.url === "string" && sender.url.startsWith("https://dipson-bot.github.io/personal-clickup-manager/");
   if (!okSite || !msg) { sendResponse({ ok: false }); return; }
   if (msg.type === "PCM_PING") { sendResponse({ ok: true, name: "Personal ClickUp Manager" }); return; }
   if (msg.type !== "SHARE_OPEN_GROUP") { sendResponse({ ok: false }); return; }
-  openTabGroup(msg.urls, msg.title, "blue").then(sendResponse, () => sendResponse({ ok: false }));
+  const urls = (Array.isArray(msg.urls) ? msg.urls : []).map(String).filter((u) => /^https:\/\/app\.clickup\.com\/t\//.test(u));
+  openTabGroup(urls, msg.title, "blue", sender.tab).then((r) => {
+    sendResponse(r);
+    if (r && r.ok && msg.closeMe && sender.tab && sender.tab.id != null) chrome.tabs.remove(sender.tab.id).catch(() => {});
+  }, () => sendResponse({ ok: false }));
   return true;
 });
 // ---------- Ctrl+Z: one undo history for every page (undo.js) ----------
@@ -11282,6 +11397,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         sendResponse({ ok: true });
         break;
       }
+      case "COMMENTS_DONE": { await commentsHandled(msg.taskId); sendResponse({ ok: true }); break; }
       case "COMMENTS_SCAN": { sendResponse({ ok: true }); scanComments(!!msg.more).catch(() => {}); break; }
       case "CLICKUP_TASK_COMMENT": {
         try {
@@ -11292,6 +11408,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
           // @names are matched to the workspace people already loaded (no request).
           const members = ((await getClickupState().catch(() => null)) || {}).members;
           const data = await addTaskComment(cfg.token, msg.taskId, text.slice(0, 5000), members);
+          await commentsHandled(msg.taskId).catch(() => {}); // answered: off Read, no reply yet
           sendResponse({ ok: true, data, mentioned: data && data.mentioned, unmatched: data && data.unmatched });
         } catch (e) { sendResponse({ ok: false, error: String(e && e.message ? e.message : e), status: e && e.status }); }
         break;
@@ -12694,6 +12811,15 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         if (msg.on) await wpHelperTake().catch(() => {}); // say "I'm here" to the app straight away
         const ps = await deskFiles({ op: "phpStatus", install: await installId() }, 3000);
         sendResponse({ ok: true, app: !!(ps && ps.ok), oldApp: !!(ps && !ps.ok) });
+        break;
+      }
+      case "SLACK_MENTION_DONE": {
+        // Insights › Slack: tagged, no reply yet › Done (answered somewhere the check can't see, or nothing to say).
+        const g = await chrome.storage.local.get("slackMentions");
+        const sm = g.slackMentions || { items: [] };
+        const items = (sm.items || []).map((x) => (x.k === String(msg.k || "") ? { ...x, doneAt: Date.now() } : x));
+        await chrome.storage.local.set({ slackMentions: { ...sm, items } });
+        sendResponse({ ok: true });
         break;
       }
       case "SLACK_POLL_NOW": { sendResponse(await slackPoll(true).catch((e) => ({ ok: false, error: String(e && e.message || e) }))); break; }

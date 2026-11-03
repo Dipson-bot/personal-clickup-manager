@@ -659,6 +659,7 @@
   .cu-tgbtn.cu-tgwrap { display: inline-flex; gap: 6px; align-items: center; padding: 0; border: 0; background: none; cursor: default; }
   .cu-tgwrap > .cu-tgbtn, .cu-sharemenu > .cu-tgbtn { margin-left: 0; }
   .cu-sharemenu { display: inline-flex; gap: 4px; }
+  #dashTasksGroup .cu-tgwrap { margin-left: 0; }
   .cu-clienthead .cu-tgbtn { margin-left: auto; }
   .cu-mgroup { margin: 14px 0 2px; padding: 6px 10px; border-radius: 8px; background: color-mix(in srgb, var(--indigo) 14%, transparent); font-size: 13.5px; color: var(--muted); }
   .cu-mgroup:first-child { margin-top: 2px; }
@@ -899,6 +900,8 @@
   .cu-task .wk-stchip { flex: none; margin: 0; padding: 0 7px; border-radius: 999px; font: inherit; font-size: 10.5px; font-weight: 700; line-height: 1.6; color: var(--amber, #d97706); background: transparent; border: 1px dashed currentColor; white-space: nowrap; cursor: pointer; }
   .cu-task .wk-stchip:hover { border-style: solid; background: color-mix(in srgb, var(--amber, #d97706) 14%, transparent); }
   .cu-task .wk-stchip:disabled { cursor: progress; opacity: .8; }
+  .cu-task .wk-stx { flex: none; margin: 0 0 0 -2px; padding: 0 5px; border: 0; background: none; color: var(--muted); font: inherit; font-size: 11px; line-height: 1.6; cursor: pointer; border-radius: 999px; }
+  .cu-task .wk-stx:hover { color: var(--red, #dc2626); background: color-mix(in srgb, var(--red, #dc2626) 10%, transparent); }
   .cu-task .wk-stchip.saving::after { content: ""; display: inline-block; width: 8px; height: 8px; margin-left: 5px; border: 2px solid currentColor; border-right-color: transparent; border-radius: 50%; animation: cu-spin .7s linear infinite; vertical-align: -1px; }
   .wk-stagebar { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; margin: 0 0 10px; padding: 7px 10px; border: 1px dashed var(--amber, #d97706); border-radius: 8px; background: color-mix(in srgb, var(--amber, #d97706) 8%, transparent); font-size: 12.5px; }
   .wk-stagebar > span { flex: 1 1 260px; }
@@ -1426,6 +1429,7 @@
       <div class="dash-h"><h3>Tasks</h3><span class="hint" id="dashTasksScope"></span><span class="spacer"></span>
         <input type="search" id="dashSearch" class="dash-search" placeholder="Search these tasks" title="Narrows the lists below to the tasks whose name, client, status or assignee matches. It only filters what is already loaded - it never asks ClickUp for anything, so it costs none of your rate limit. Esc clears it." autocomplete="off" />
         <button type="button" class="icon-btn" id="dashRefresh" title="Refresh from ClickUp now">↻</button>
+        <span id="dashTasksGroup"></span>
         <div class="cu-filter" id="optCuClientWrap">
           <button type="button" class="cu-filter-btn" id="optCuClientBtn" aria-expanded="false" aria-haspopup="true" title="Show only some clients' tasks - your clients are listed; search to find any client in the workspace">&#9662; Client</button>
           <div class="cu-filter-menu cu-client-menu" id="optCuClientMenu" hidden role="menu">
