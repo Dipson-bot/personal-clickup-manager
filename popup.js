@@ -2404,7 +2404,7 @@ let cuLoadIdleT = 0;
 function cuLoadWhenIdle() {
   clearTimeout(cuLoadIdleT);
   if (cuUserBusy()) { cuLoadIdleT = setTimeout(cuLoadWhenIdle, 1500); return; }
-  load();
+  load(true);
 }
 let cuLiveCardTick = null; // repaints the Due today card's tracked figure
 // A draft added, edited, applied or deleted (local-tasks.js): the totals' "+ 1h in 1 draft" follow.
@@ -3280,8 +3280,23 @@ function cuSetupDrag(container) {
   new MutationObserver(() => { if (card.style.display !== stats.style.display) card.style.display = stats.style.display; }).observe(stats, { attributes: true, attributeFilter: ["style"] });
 })();
 
+// A background refresh (the 60-second timer sync, the 5-minute ClickUp check, an
+// account status) used to rebuild every task row even when nothing had changed -
+// the popup / side panel flickered about once a minute while a timer ran. Like
+// the Options page (cuPaintSig): an automatic redraw that would draw the same
+// thing is skipped. Anything you do yourself always redraws (and resets this).
+let cuAutoPaintP = false, cuLastSigP = "";
+function cuPaintSigP() {
+  try {
+    return JSON.stringify(state.clickup, (k, v) => (k === "at" || k === "membersAt" || k === "errorAt" ? undefined : v)) + "|" +
+      JSON.stringify(cuFilter) + "|" + new Date().toDateString();
+  } catch (e) { return ""; }
+}
 function renderClickup() {
   if (cuEstEditing || cuDragging) { cuRenderPending = true; return; }
+  const sigP = cuAutoPaintP ? cuPaintSigP() : "";
+  if (sigP && sigP === cuLastSigP && $("cuTaskList") && $("cuTaskList").childElementCount) return;
+  cuLastSigP = sigP;
   try { cuPaintDayBar(); } catch (e) {}
   const cu = state.clickup || {};
   const statsCard = $("statsCard");
@@ -4094,11 +4109,12 @@ function render() {
 }
 
 
-async function load() {
+async function load(auto) {
   const s = await send({ type: "GET_STATE" }, 20000); // a cold start can take a while
   if (s) state = s;
   applyArVisibility(state);
-  render();
+  cuAutoPaintP = !!auto; // from a background change: skipped if nothing on it changed
+  try { render(); } finally { cuAutoPaintP = false; }
 }
 
 $("runAll").onclick = async () => {
@@ -4686,12 +4702,15 @@ chrome.runtime.onMessage.addListener((msg) => {
 });
 chrome.storage.onChanged.addListener((changes, area) => {
   if (area !== "local") return;
-  if (changes.status) load();
-  if (changes.balances) load();
-  if (changes.availability) load();
+  if (changes.status) load(true);
+  if (changes.balances) load(true);
+  if (changes.availability) load(true);
   // A settings change can alter how totals are counted (see the parent/subtask
   // estimate rule), so drop the views this page caches itself and refetch.
-  if (changes.settings) {
+  // Only a real change - not Drive sync's new time stamp (_updatedAt), which
+  // reloaded the whole popup / side panel on every sync.
+  const setDiff = (o, n) => { o = o || {}; n = n || {}; return [...new Set(Object.keys(o).concat(Object.keys(n)))].filter((k) => k !== "_updatedAt" && JSON.stringify(o[k]) !== JSON.stringify(n[k])); };
+  if (changes.settings && setDiff(changes.settings.oldValue, changes.settings.newValue).length) {
     cuCustomCache = { key: "", status: "", data: null, at: 0 };
     cuOverdueCache = { status: "", data: null, at: 0 };
     load();

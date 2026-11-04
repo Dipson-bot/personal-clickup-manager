@@ -25,10 +25,15 @@
   const kindOf = (n) => KINDS[n.kind] || (n.ai ? KINDS.other : { icon: "⚠️", label: "Possible client instruction" });
 
   let notices = [], dismissed = {}, openTasks = null, tasksAsked = false;
+  // General › Features › Show client notices (settings.cnoteOff): off = no card,
+  // no banner, no ⚠ on tasks. The Slack check goes on, so turning it back on shows
+  // what's current at once.
+  let allOff = false;
   // Showing: not hidden here, not judged unimportant, and still current - until a
   // week after its last date, or two weeks after it was posted when it names none.
   // ...and only for clients I have open tasks for (assigned to me) - none until those are known.
   function active() {
+    if (allOff) return [];
     const now = Date.now();
     const cur = notices.filter((n) => n && !dismissed[n.id] && n.important !== false &&
       ((n.untilMs ? n.untilMs + DAY : n.fromMs ? n.fromMs + 14 * DAY : Number(n.at) + 14 * DAY) > now));
@@ -148,7 +153,8 @@
         '<button type="button" class="cn-btn" data-cn-noimp="' + esc(n.id) + '" title="Not a client instruction - hide it">Not important</button></div></div>';
     });
     const html = '<div class="cn-top"><h2>⚠️ Client notices <span class="hint">(from the clients\' Slack channels)</span></h2>' +
-      '<button type="button" class="cn-btn" data-cn-refresh="1" title="Look in the client channels now">Check Slack now</button></div>' + items.join("");
+      '<button type="button" class="cn-btn" data-cn-refresh="1" title="Look in the client channels now">Check Slack now</button>' +
+      '<button type="button" class="cn-btn" data-cn-off="1" title="Hide every client notice (this card, the banner and the ⚠ on tasks). Turn them back on in General › Features.">Hide all</button></div>' + items.join("");
     if (html !== lastCard) { lastCard = html; host.innerHTML = html; }
   }
   let lastCard = "";
@@ -159,6 +165,12 @@
       dismissed[b.dataset.cnHide || b.dataset.cnNoimp] = b.dataset.cnNoimp ? "noimp" : Date.now();
       try { await chrome.storage.local.set({ cnoteDismissed: dismissed }); } catch (err) {}
       paint();
+      return;
+    }
+    if (b.dataset.cnOff) {
+      b.disabled = true;
+      await send({ type: "SET_SETTINGS", patch: { cnoteOff: true } });
+      allOff = true; paint();
       return;
     }
     if (b.dataset.cnRefresh) {
@@ -290,7 +302,8 @@
 
   async function load() {
     try {
-      const g = await chrome.storage.local.get(["clientNotices", "cnoteDismissed"]);
+      const g = await chrome.storage.local.get(["clientNotices", "cnoteDismissed", "settings"]);
+      allOff = !!(g.settings && g.settings.cnoteOff);
       notices = (g.clientNotices && Array.isArray(g.clientNotices.list)) ? g.clientNotices.list : [];
       dismissed = g.cnoteDismissed && typeof g.cnoteDismissed === "object" ? g.cnoteDismissed : {};
     } catch (e) {}
@@ -301,6 +314,7 @@
       if (area !== "local") return;
       if (ch.clientNotices) { notices = (ch.clientNotices.newValue && ch.clientNotices.newValue.list) || []; paint(); runAi(); }
       if (ch.cnoteDismissed) { dismissed = ch.cnoteDismissed.newValue || {}; paint(); }
+      if (ch.settings) { const off = !!(ch.settings.newValue && ch.settings.newValue.cnoteOff); if (off !== allOff) { allOff = off; paint(); } }
     });
   } catch (e) {}
   const mo = new MutationObserver((recs) => { if (recs.some((r) => [...r.addedNodes].some((x) => x.nodeType === 1 && !(x.closest && x.closest("#cnoteCard, #cnoteBar, .pcm-cnote-pill"))))) paint(); });

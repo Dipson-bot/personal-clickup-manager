@@ -9768,10 +9768,11 @@ async function cnoteAnnounce(fresh) {
   const { cnoteSeen } = await chrome.storage.local.get("cnoteSeen");
   const seen = { ...(cnoteSeen || {}) };
   const mine = await cnoteMyClientKeys().catch(() => null); // only clients I have open tasks for
+  const off = !!(await getSettings().catch(() => ({}))).cnoteOff; // General › Features › Show client notices off: no pop-ups either
   for (const n of fresh) {
     if (seen[n.id] || n.important === false) continue;
     seen[n.id] = Date.now();
-    if (!cnoteIsMine(n.client, mine)) continue;
+    if (off || !cnoteIsMine(n.client, mine)) continue;
     if (Date.now() - Number(n.at) > 2 * 86400000) continue; // an old message found on the first look: on the card, no pop-up
     const when = n.fromMs ? " (from " + new Date(n.fromMs).toLocaleDateString([], { weekday: "short", month: "short", day: "numeric" }) + ")" : "";
     await notify("cnote-" + n.id, "⚠️ " + n.client + ": client notice" + when, cnoteBrief(n).slice(0, 240), undefined, chrome.runtime.getURL("options.html#dashboard")).catch(() => {});

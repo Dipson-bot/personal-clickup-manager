@@ -263,7 +263,8 @@
     const wrap = document.createElement("div");
     wrap.className = "md-ed";
     const BTN = [["b", "B", "Bold (Ctrl+B)", "bold"], ["i", "I", "Italic (Ctrl+I)", "italic"], ["s", "S", "Strikethrough", "strikeThrough"], ["code", "</>", "Code", "code"],
-      ["ul", "• List", "Bullet list", "insertUnorderedList"], ["ol", "1. List", "Numbered list", "insertOrderedList"], ["box", "☐ Box", "Checkbox at the cursor", "box"]];
+      ["ul", "• List", "Bullet list", "insertUnorderedList"], ["ol", "1. List", "Numbered list", "insertOrderedList"], ["box", "☐ Box", "Checkbox at the cursor", "box"],
+      ["link", "🔗 Link", "Link the selected words (Ctrl+K) - or paste a web address over them", "link"]];
     wrap.innerHTML = '<div class="md-tb">' + BTN.map((b) => '<button type="button" data-cmd="' + b[3] + '" title="' + b[2] + '">' + esc(b[1]) + "</button>").join("") +
       '<span class="sp"></span><button type="button" data-raw title="Edit the raw Markdown text instead">Markdown</button></div>' +
       '<div class="md md-area" contenteditable="true" spellcheck="true"></div><textarea class="md-raw" hidden spellcheck="true"></textarea>';
@@ -332,11 +333,42 @@
       const li = b.closest("li"); if (li) li.classList.toggle("done", on);
       changed();
     });
+    // A link on words: the selected words get the address (asked for, or the one
+    // pasted over them, the same as in ClickUp and Slack). Nothing selected: the
+    // address goes in as its own link.
+    const selIn = () => { const sel = window.getSelection(); return sel && sel.rangeCount && area.contains(sel.getRangeAt(0).startContainer) ? sel : null; };
+    const linkWords = (url) => {
+      const u = String(url || "").trim();
+      if (!/^https?:\/\/\S+$/i.test(u)) return false;
+      const sel = selIn();
+      if (sel && !sel.isCollapsed && String(sel).trim()) document.execCommand("createLink", false, u);
+      else document.execCommand("insertHTML", false, '<a href="' + esc(u) + '">' + esc(u) + "</a>&nbsp;");
+      area.querySelectorAll("a[href]").forEach((a) => { a.target = "_blank"; a.rel = "noopener"; });
+      changed();
+      return true;
+    };
+    const askLink = () => {
+      const sel = selIn();
+      const range = sel ? sel.getRangeAt(0).cloneRange() : null;
+      const cur = sel && sel.anchorNode ? (sel.anchorNode.nodeType === 1 ? sel.anchorNode : sel.anchorNode.parentElement).closest("a[href]") : null;
+      const u = window.prompt(range && !range.collapsed ? "Link the selected words to:" : "Web address to add:", cur ? cur.getAttribute("href") : "https://");
+      if (u == null) return;
+      area.focus();
+      // The cursor in a link with nothing selected: the change is to that link (not a second one).
+      if (cur && range && range.collapsed && area.contains(cur)) range.selectNodeContents(cur);
+      if (range) { const s2 = window.getSelection(); s2.removeAllRanges(); s2.addRange(range); }
+      if (!String(u).trim() && cur) { document.execCommand("unlink", false, null); changed(); return; } // emptied: no link
+      if (!linkWords(/^https?:\/\//i.test(String(u).trim()) ? u : "https://" + String(u).trim())) window.alert("That isn't a web address.");
+    };
+    area.addEventListener("keydown", (e) => { if ((e.ctrlKey || e.metaKey) && !e.shiftKey && !e.altKey && String(e.key).toLowerCase() === "k") { e.preventDefault(); e.stopPropagation(); askLink(); } });
     // Pasted formatting arrives as Markdown -> shown formatted at the cursor.
     area.addEventListener("paste", (e) => {
       const cd = e.clipboardData;
       if (!cd || (cd.files && cd.files.length)) return; // screenshots: the note's own handler
       const html = cd.getData("text/html"), text = cd.getData("text/plain");
+      // A web address pasted over selected words: those words become the link.
+      const sel0 = selIn();
+      if (sel0 && !sel0.isCollapsed && /^\s*https?:\/\/\S+\s*$/i.test(text || "")) { e.preventDefault(); e.stopPropagation(); linkWords(text.trim()); return; }
       const md2 = html && formatted(html) ? fromHtml(html) : (/^\s*(#{1,6}\s|[-*+]\s|\d+[.)]\s|\|.*\||>\s|```)/m.test(text || "") ? text : "");
       e.preventDefault();
       e.stopPropagation();
@@ -358,6 +390,7 @@
       if (rawMode) return;
       area.focus();
       const cmd = btn.getAttribute("data-cmd");
+      if (cmd === "link") { askLink(); return; }
       if (cmd === "code") { const s = String(window.getSelection() || ""); document.execCommand("insertHTML", false, "<code>" + esc(s || "code") + "</code>&nbsp;"); }
       else if (cmd === "box") {
         // A checkbox is a list line: make this line one, then put a box on it.
@@ -385,7 +418,9 @@
       let before = "";
       if (r0) { try { const pre = document.createRange(); pre.selectNodeContents(area); pre.setEnd(r0.startContainer, r0.startOffset); before = pre.toString().slice(-1); } catch (e) {} }
       const t2 = (before && !/[\s"'(\[]/.test(before) ? " " : "") + text;
-      if (/https?:\/\//.test(t2)) document.execCommand("insertHTML", false, linkifyHtml(t2));
+      // A named link ([screenshot.png](https://…), an attached file): shown as that name, linked.
+      if (/\[[^\]]+\]\(https?:\/\//.test(t2)) document.execCommand("insertHTML", false, esc(t2).replace(/^ /, "&nbsp;").replace(/\[([^\]]+)\]\((https?:\/\/[^)\s]+)\)/g, (m, a, h) => '<a href="' + h + '">' + a + "</a>") + "&nbsp;");
+      else if (/https?:\/\//.test(t2)) document.execCommand("insertHTML", false, linkifyHtml(t2));
       else document.execCommand("insertText", false, t2);
       keepRange();
       changed();

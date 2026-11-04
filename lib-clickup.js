@@ -2655,6 +2655,59 @@ export async function fetchExtendedTaskEstimate({ token, teamId, taskUrl, todayB
 // returned 0 (the "Extra Tasks" row missing from Due tomorrow / next week).
 // Deliberately limited to the Extra Task by name: a one-off task you configured
 // by URL must stay inside its own start-to-due span.
+// The Extra Task is a weekly budget of hours, not a fixed slice per day: what a
+// day ahead gets is what is LEFT of it, shared by the working days left - a heavy
+// Monday leaves less for Thursday and Friday (it used to stay 1h 24m a day after
+// 5h 18m of 7h was used). Today gets its part of what was left this morning; the
+// days after today share what remains once today is counted (today's part, or
+// what today has already used if that's more). Days before today aren't set here.
+// days: the occurrence's working days (ms, midnight); spentBefore: used before today.
+export function extraLeftShares(days, estimateMs, spentBefore, spentToday, today) {
+  const out = new Map();
+  const live = [...new Set(days || [])].filter((d) => d >= today).sort((a, b) => a - b);
+  if (!live.length) return out;
+  const left = Math.max(0, (Number(estimateMs) || 0) - Math.max(0, Number(spentBefore) || 0));
+  const hasToday = live[0] === today;
+  const todayShare = hasToday ? left / live.length : 0;
+  const min = (ms) => Math.round(ms / 60000) * 60000;
+  if (hasToday) out.set(today, min(todayShare));
+  const rest = hasToday ? live.slice(1) : live;
+  const after = Math.max(0, left - (hasToday ? Math.max(todayShare, Number(spentToday) || 0) : 0));
+  for (const d of rest) out.set(d, min(after / rest.length));
+  return out;
+}
+// The working days of an Extra Task occurrence from today on: today .. its due day
+// (or this week's Friday when it has none / it's already past).
+function extraDaysLeft(task, today) {
+  // From today - or the occurrence's own start when that's later (next week's copy).
+  const startDay = Number(task && task.startDateMs) ? new Date(Number(task.startDateMs)).setHours(0, 0, 0, 0) : 0;
+  const from = Math.max(today, startDay);
+  const fri = new Date(from); fri.setDate(fri.getDate() + ((5 - fri.getDay() + 7) % 7)); fri.setHours(0, 0, 0, 0);
+  const dueDay = Number(task && task.dueDateMs) ? new Date(Number(task.dueDateMs)).setHours(0, 0, 0, 0) : 0;
+  const end = dueDay >= from ? dueDay : fri.getTime();
+  const out = [];
+  for (let d = new Date(from), i = 0; d.getTime() <= end && i < 14; d.setDate(d.getDate() + 1), i++) if (isWeekday(d.getTime())) out.push(new Date(d).setHours(0, 0, 0, 0));
+  return out;
+}
+// One day's Extra Task share with what's already used taken off (see
+// extraLeftShares). base: the plain share; spentToday: today's tracked time if known.
+// spentToday: today's tracked time, or null when it isn't known (then what's left
+// after everything tracked is shared evenly by the days left, today included).
+function extraShareLeft(task, dayTs, base, spentToday) {
+  if (!task || !EXTRA_TASK_NAME_RE.test(task.name || "") || task.done || isTaskDone(task) || !(Number(base) > 0)) return base;
+  const today = new Date().setHours(0, 0, 0, 0), day = new Date(dayTs).setHours(0, 0, 0, 0);
+  if (day < today) return base;
+  const days = extraDaysLeft(task, today);
+  if (spentToday == null) {
+    if (!days.includes(day)) return base;
+    const left = Math.max(0, (Number(task.estimateMs) || 0) - (Number(task.spentMs) || 0));
+    return Math.round(left / days.length / 60000) * 60000;
+  }
+  const tToday = Math.max(0, Number(spentToday) || 0);
+  const before = Math.max(0, (Number(task.spentMs) || 0) - tToday);
+  const left = extraLeftShares(days, task.estimateMs, before, tToday, today);
+  return left.has(day) ? left.get(day) : base;
+}
 function extraTaskWeekdayShare(task, dayTs) {
   if (!task || !EXTRA_TASK_NAME_RE.test(task.name || "")) return 0;
   if (!isWeekday(dayTs)) return 0;
@@ -2662,7 +2715,7 @@ function extraTaskWeekdayShare(task, dayTs) {
   // last week's completed task show 1h 24m against tomorrow. Now that discovery
   // picks the occurrence covering the day, this net is only for the gap before
   // ClickUp creates the next one, and showing nothing there is the honest answer.
-  if (task.done) return 0;
+  if (task.done || isTaskDone(task)) return 0;
   // Only AFTER this occurrence (the gap before ClickUp makes the next one), never
   // before it starts: an Extra Task moved to next week (a holiday week, say) owns
   // nothing this week - it used to show 1h 24m a day for a week with none.
@@ -2711,6 +2764,8 @@ export async function fetchConfiguredTasks({ token, teamId, taskUrls = [], today
       const share = extraTaskWeekdayShare(task, now);
       if (share > 0) { est.dayEstimateMs = share; est.isWeekday = true; }
     }
+    // The Extra Task: today's part of what is left of the week's hours.
+    if (est && !est.error && Number(est.dayEstimateMs) > 0) est.dayEstimateMs = extraShareLeft(task, now, est.dayEstimateMs, est.spentMs);
     out.push(est);
   }
   return out;
@@ -2839,7 +2894,7 @@ export async function fetchWeeklySummary({ token, teamId, userId, taskUrls = [],
         const share = Math.round(((Number(task.estimateMs) || 0) * 100) / weekdayCount) / 100;
         for (const ts of weekdays) byDay.set(ts, share);
       }
-      configs.push({ taskId: task.id, name: task.name || "", url: taskUrlFor(task.id), byDay, done: isTaskDone(task), status: task.status || "", priority: task.priority || "", container: task.container });
+      configs.push({ estimateMs: Number(task.estimateMs) || 0, taskId: task.id, name: task.name || "", url: taskUrlFor(task.id), byDay, done: isTaskDone(task), status: task.status || "", priority: task.priority || "", container: task.container });
     } catch (e) {
       // A bad URL shouldn't sink the whole week; skip it.
     }
@@ -2996,6 +3051,16 @@ export async function fetchWeeklySummary({ token, teamId, userId, taskUrls = [],
         const share = extraCfg.byDay.get(p.ts);
         if (share != null) extraByDay.set(p.ts, share);
       }
+    }
+    const exDone = extraTask ? !!extraTask.done : !!(extraCfg && extraCfg.done);
+    const today0 = new Date().setHours(0, 0, 0, 0);
+    if (!exDone && perDay.some((p) => p.ts === today0)) {
+      const spentOn = (ts) => (byDayTask.get(ts) && byDayTask.get(ts).get(exId)) || 0;
+      const exEst = extraTask ? Number(extraTask.estimateMs) || 0 : (extraCfg && Number(extraCfg.estimateMs)) || [...extraByDay.values()].reduce((a, v) => a + v, 0);
+      const days = perDay.filter((p) => (extraByDay.get(p.ts) || 0) > 0).map((p) => p.ts);
+      const before = perDay.filter((p) => p.ts < today0).reduce((a, p) => a + spentOn(p.ts), 0);
+      for (const [ts, v] of extraLeftShares(days, exEst, before, spentOn(today0), today0)) extraByDay.set(ts, v);
+      for (const p of perDay) if (p.ts < today0 && extraByDay.has(p.ts)) extraByDay.set(p.ts, spentOn(p.ts)); // a day gone: what it used
     }
     for (const p of perDay) {
       const share = extraByDay.get(p.ts) || 0;
@@ -3190,6 +3255,8 @@ export async function fetchTodayEstimate({ token, teamId, userId, targetHours = 
     }
     if (t._spanning && !(est > 0)) continue; // no share today: not today's work
     const spent = entriesOk ? (todayByTask.get(t.id) || 0) : (Number(t.time_spent) || 0);
+    // The Extra Task: today's part of what is left of the week's hours (extraLeftShares).
+    if (isExtra && entriesOk) est = extraShareLeft({ name: t.name, done: isTaskDone(t), estimateMs: Number(t.time_estimate) || 0, spentMs: Number(t.time_spent) || 0, dueDateMs: tDue }, now, est, spent);
     const paused = isPausedTask(t);
     estimateMs += countedEst(est, spent, paused);
     spentMs += spent;
@@ -3646,6 +3713,9 @@ export async function fetchDateRangeEstimate({ token, teamId, userId, fromTs, to
           // day of this week: "Configured +8h 52m" for a 7h task).
           const inSpan = (!cStart && !cDue) || (ts >= new Date(cStart || cDue).setHours(0, 0, 0, 0) && ts <= new Date(cDue || cStart).setHours(23, 59, 59, 999));
           if (!add && inSpan) add = extraTaskWeekdayShare(task, ts);
+          // The Extra Task: its share of what's left (today's tracked time from this range's entries when it covers today).
+          const t0 = new Date().setHours(0, 0, 0, 0);
+          add = extraShareLeft(task, ts, add, rangeByDay instanceof Map && rangeByDay.has(t0) ? (rangeByDay.get(t0).get(task.id) || 0) : null);
           dayEst += add;
         }
       }

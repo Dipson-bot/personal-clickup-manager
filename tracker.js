@@ -1062,6 +1062,21 @@
     d.getElementById("eComments").innerHTML = cs.length
       ? cs.map((c) => '<div class="cmt"><b>' + esc(c.who) + '</b>' + (cw.seenBefore && Number(c.at) > cw.seenBefore && c.userId !== cw.me ? '<span class="newtag">NEW</span>' : "") + ' <span class="when">' + (c.at ? esc(new Date(c.at).toLocaleString([], { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" })) : "") + "</span><div>" + (window.PcmMd ? window.PcmMd.render(c.text) : linkify(c.text)) + "</div></div>").join("")
       : "No comments yet.";
+    // A comment's pictures shown small under it (a screenshot link); click to open.
+    d.querySelectorAll("#eComments .cmt").forEach((cm) => {
+      const seen = new Set();
+      cm.querySelectorAll("a[href]").forEach((a) => {
+        if (!/^https?:/i.test(a.href) || seen.has(a.href) || !/\.(png|jpe?g|gif|webp|bmp)(\?|#|$)/i.test(a.href + " " + a.textContent.trim())) return;
+        seen.add(a.href);
+        const l = d.createElement("a"); l.href = a.href; l.target = "_blank"; l.rel = "noopener"; l.title = a.textContent.trim();
+        const im = d.createElement("img"); im.src = a.href; im.alt = a.textContent.trim(); im.loading = "lazy";
+        im.style.cssText = "display:block;max-width:150px;max-height:100px;margin-top:4px;border:1px solid rgba(128,128,128,.35);border-radius:5px;object-fit:contain";
+        im.onerror = () => l.remove();
+        // ClickUp serves it as a download: read it and open the picture itself instead.
+        l.onclick = (e) => { if (e.ctrlKey || e.metaKey) return; e.preventDefault(); fetch(a.href, { credentials: "include" }).then((r) => r.blob()).then((b) => window.open(URL.createObjectURL(b), "_blank")).catch(() => window.open(a.href, "_blank")); };
+        l.appendChild(im); cm.appendChild(l);
+      });
+    });
     dsc.loaded(String(p.description || "").trim());
   }
   function addFiles(list) {

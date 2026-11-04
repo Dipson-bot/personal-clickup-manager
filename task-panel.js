@@ -183,6 +183,25 @@
   .pcm-tip { color: var(--amber, #b45309); }
   .pcm-sel { font-size: 11px; padding: 3px 6px; border: 1px solid var(--border); border-radius: 6px; background: var(--card); color: var(--text); max-width: 150px; }
   .pcm-att { margin-top: 2px; }
+  .pcm-prev { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 6px; }
+  .pcm-lb { position: fixed; inset: 0; z-index: 2147483000; background: rgba(15,17,22,.86); display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 10px; padding: 16px; box-sizing: border-box; }
+  .pcm-lb-top { position: absolute; top: 10px; left: 16px; right: 16px; display: flex; align-items: center; gap: 8px; color: #f3f4f6; font: 13px system-ui, sans-serif; }
+  .pcm-lb-top .n { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 600; }
+  .pcm-lb-top button, .pcm-lb-top a { border: 1px solid rgba(255,255,255,.25); background: rgba(255,255,255,.08); color: #f9fafb; border-radius: 7px; padding: 5px 10px; font: 600 12px system-ui, sans-serif; cursor: pointer; text-decoration: none; }
+  .pcm-lb-top button:hover, .pcm-lb-top a:hover { background: rgba(255,255,255,.18); }
+  .pcm-lb img { max-width: 92vw; max-height: 82vh; object-fit: contain; border-radius: 6px; box-shadow: 0 10px 40px rgba(0,0,0,.5); background: #fff; }
+  .pcm-lb iframe { width: min(1000px, 92vw); height: 82vh; border: 0; border-radius: 6px; background: #fff; }
+  .pcm-lb .msg { color: #e5e7eb; font: 13px system-ui, sans-serif; }
+  .pcm-lb .nav { position: absolute; top: 50%; transform: translateY(-50%); width: 42px; height: 42px; border-radius: 50%; border: 0; background: rgba(255,255,255,.15); color: #fff; font-size: 20px; cursor: pointer; }
+  .pcm-lb .nav:hover { background: rgba(255,255,255,.3); }
+  .pcm-lb .nav.l { left: 16px; } .pcm-lb .nav.r { right: 16px; }
+  .pcm-prev[hidden] { display: none; }
+  .pcm-prev-it { position: relative; display: inline-flex; flex-direction: column; align-items: center; gap: 3px; max-width: 170px; font-size: 11px; color: var(--muted); text-decoration: none; }
+  .pcm-prev-it img { display: block; max-width: 170px; max-height: 120px; border: 1px solid var(--border); border-radius: 6px; background: var(--bg2, #f3f4f6); object-fit: contain; }
+  .pcm-prev-it .pcm-prev-n { max-width: 170px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .pcm-prev-file { display: inline-flex; align-items: center; gap: 5px; padding: 6px 10px; border: 1px solid var(--border); border-radius: 8px; background: var(--card); color: var(--text); font-size: 11.5px; max-width: 220px; }
+  .pcm-prev-x { position: absolute; top: -6px; right: -6px; width: 18px; height: 18px; border-radius: 50%; border: 1px solid var(--border); background: var(--card); color: var(--muted); font-size: 10px; line-height: 1; cursor: pointer; padding: 0; }
+  .pcm-prev-x:hover { color: var(--red, #dc2626); }
   .pcm-att[hidden] { display: none; }
   .pcm-chip { display: inline-flex; align-items: center; gap: 4px; max-width: 230px; font-size: 11px; padding: 2px 4px 2px 8px; border: 1px solid var(--border); border-radius: 10px; background: var(--card); }
   .pcm-chip.bad { border-color: var(--red); color: var(--red); }
@@ -1479,6 +1498,7 @@
       if (window.PcmMd) { t.classList.add("md"); t.innerHTML = window.PcmMd.render(c.text); } else renderRichText(t, c.text);
       h.appendChild(copyBtn("pcm-cp", "Copy this comment", () => c.text, () => t.innerHTML));
       b.append(h, t);
+      addCommentPreviews(t);
       row.append(av, b);
       list.appendChild(row);
     }
@@ -1644,7 +1664,43 @@
     const atBtn = el("button", "pcm-btn", "⏰ Send at…");
     atBtn.type = "button";
     atBtn.title = "Post this comment in ClickUp at a day and time you pick (by the extension, while Chrome is open - or as soon as it opens)";
-    r.append(msg, atBtn, later, post);
+    // Files: 📎 Attach, or paste a screenshot (Ctrl+V) / drop a file in the box.
+    const attach = el("button", "pcm-btn", "📎 Attach");
+    attach.type = "button";
+    attach.title = "Add files or screenshots (also Ctrl+V or drag them in): each is attached to the task and its link goes in the comment";
+    const fileIn = el("input");
+    fileIn.type = "file"; fileIn.multiple = true; fileIn.hidden = true;
+    // What's attached to this comment, previewed under the box (the picture from
+    // this computer, so it shows at once); ✕ takes its link out of the comment.
+    const prev = el("div", "pcm-prev"); prev.hidden = true;
+    let attached = [];
+    const paintPrev = () => {
+      attached = attached.filter((x) => ta.value.includes(x.url)); // its link was deleted by hand: gone here too
+      prev.textContent = "";
+      for (const x of attached) {
+        const src = x.local && IMG_RE.test(x.name) ? (x.blob || (x.blob = URL.createObjectURL(x.local))) : "";
+        prev.appendChild(previewItem(x.name, x.url, src, () => {
+          const md = "[" + String(x.name || "file").replace(/[\[\]]/g, "") + "](" + x.url + ")";
+          ta.value = ta.value.split(" " + md).join("").split(md).join("");
+          ta.dispatchEvent(new Event("input"));
+          if (x.blob) URL.revokeObjectURL(x.blob);
+          attached = attached.filter((y) => y !== x);
+          paintPrev();
+        }));
+      }
+      prev.hidden = !attached.length;
+    };
+    const added = (files) => { attached = attached.concat(files.filter((x) => x.url)); paintPrev(); };
+    // The box was emptied (posted, kept for later, scheduled): its previews go, and their pictures are let go.
+    const clearAttached = () => { for (const x of attached) if (x.blob) URL.revokeObjectURL(x.blob); attached = []; paintPrev(); };
+    const upload = (fl) => uploadInto(ta, d.id, fl, msg, true, added);
+    attach.onclick = () => fileIn.click();
+    fileIn.onchange = () => { upload(fileIn.files || []); fileIn.value = ""; };
+    ta.addEventListener("paste", (e) => { const fl = [...((e.clipboardData && e.clipboardData.files) || [])]; if (fl.length) { e.preventDefault(); e.stopPropagation(); upload(fl); } });
+    ta.addEventListener("dragover", (e) => e.preventDefault());
+    ta.addEventListener("drop", (e) => { const fl = [...((e.dataTransfer && e.dataTransfer.files) || [])]; if (fl.length) { e.preventDefault(); e.stopPropagation(); upload(fl); } });
+    ta.addEventListener("input", () => { if (attached.length && attached.some((x) => !ta.value.includes(x.url))) paintPrev(); });
+    r.append(msg, attach, fileIn, atBtn, later, post);
     const atRow = el("div", "pcm-sendat");
     atRow.hidden = true;
     const when = el("input");
@@ -1668,7 +1724,7 @@
       stSel.value = want || "";
     };
     atRow.append(el("span", "", "Post it on"), when, stSel, goAt, noAt);
-    box.append(ta, r, atRow);
+    box.append(ta, prev, r, atRow);
     const pad = (n) => String(n).padStart(2, "0");
     const localVal = (ms) => { const x = new Date(ms); return x.getFullYear() + "-" + pad(x.getMonth() + 1) + "-" + pad(x.getDate()) + "T" + pad(x.getHours()) + ":" + pad(x.getMinutes()); };
     const whenTxt = (ms) => new Date(ms).toLocaleString(undefined, { weekday: "short", month: "short", day: "numeric", hour: "numeric", minute: "2-digit" });
@@ -1715,6 +1771,7 @@
         if (c.sendAt) mode.hidden = true; // it goes at its time (completing the task first still asks)
         bar.append(mode, el("span", "sp"), copyBtn("pcm-btn", "Copy this comment", () => c.text, () => t.innerHTML), del, edit, now);
         it.append(h, t, bar);
+        addCommentPreviews(t); // a scheduled / waiting comment shows its pictures and files too
         heldBox.appendChild(it);
       }
     };
@@ -1724,7 +1781,7 @@
       if (!text) { msg.className = "pcm-err"; msg.textContent = "Write a comment first."; ta.focus(); return; }
       const res = await send({ type: "HELD_COMMENTS", op: "save", taskId: d.id, id: editing || undefined, text });
       if (res && res.ok) {
-        ta.value = ""; editing = ""; editAt = 0; editSt = ""; atRow.hidden = true; later.textContent = "Send when I complete it";
+        ta.value = ""; clearAttached(); editing = ""; editAt = 0; editSt = ""; atRow.hidden = true; later.textContent = "Send when I complete it";
         paintHeld(res.list);
         msg.className = "pcm-note"; msg.textContent = "Kept ✓ - posted when you complete this task";
       } else { msg.className = "pcm-err"; msg.textContent = "Couldn't keep it: " + ((res && res.error) || "no reply"); }
@@ -1738,7 +1795,7 @@
       const res = await send({ type: "HELD_COMMENTS", op: "save", taskId: d.id, id: editing || undefined, text, sendAt, status: stSel.value, taskName: d.name || "", url: d.url || "" });
       goAt.disabled = false;
       if (res && res.ok) {
-        ta.value = ""; editing = ""; editAt = 0; editSt = ""; atRow.hidden = true; later.textContent = "Send when I complete it";
+        ta.value = ""; clearAttached(); editing = ""; editAt = 0; editSt = ""; atRow.hidden = true; later.textContent = "Send when I complete it";
         paintHeld(res.list);
         msg.className = "pcm-note"; msg.textContent = "Scheduled ✓ - posted on " + whenTxt(sendAt) + (stSel.value ? ", and the status set to " + stSel.value : "");
         editSt = "";
@@ -1752,6 +1809,7 @@
       post.disabled = false; post.textContent = "Comment";
       if (res && res.ok && res.data) {
         ta.value = "";
+        clearAttached();
         if (editing) { const was = editing; editing = ""; editAt = 0; editSt = ""; atRow.hidden = true; later.textContent = "Send when I complete it"; send({ type: "HELD_COMMENTS", op: "delete", taskId: d.id, id: was }).then((x) => { if (x && x.ok) paintHeld(x.list); }).catch(() => {}); }
         comments = res.data.comments || [];
         paintComments(list, more, comments, false);
@@ -1809,7 +1867,136 @@
     ta.selectionStart = ta.selectionEnd = s + text.length;
     ta.dispatchEvent(new Event("input"));
   }
-  async function uploadInto(ta, taskId, files, msg) {
+  // ---------- previews of images and files ----------
+  // A comment's links to images (a pasted screenshot, an attached picture) show as
+  // a thumbnail under it, other attached files as a file chip; click to open. An
+  // image that won't load (a workspace with private attachments) just stays a link.
+  const IMG_RE = /\.(png|jpe?g|gif|webp|bmp|svg)(\?|#|$)/i;
+  const FILE_RE = /\.(pdf|docx?|xlsx?|csv|pptx?|txt|zip|mp4|mov|webm|json|html?)(\?|#|$)/i;
+  const isAttachUrl = (u) => /clickup-attachments\.com|attachments\.clickup\.com/i.test(String(u || ""));
+  function previewItem(name, url, src, onRemove) {
+    const img = IMG_RE.test(name) || IMG_RE.test(url);
+    const it = el("a", "pcm-prev-it");
+    it.href = url || "#"; it.target = "_blank"; it.rel = "noopener"; it.title = name + (url ? " - click to open" : ""); // a click previews it (pcm-lb)
+    if (img) {
+      const im = el("img"); im.alt = name; im.loading = "lazy"; im.src = src || url;
+      im.onerror = () => { im.remove(); it.prepend(el("span", "pcm-prev-file", "🖼 " + name)); };
+      it.append(im, el("span", "pcm-prev-n", name));
+    } else it.appendChild(el("span", "pcm-prev-file", "📄 " + name));
+    if (onRemove) {
+      const x = el("button", "pcm-prev-x", "✕"); x.type = "button"; x.title = "Take it out of the comment (the file stays attached to the task)";
+      x.onclick = (e) => { e.preventDefault(); e.stopPropagation(); onRemove(); };
+      it.appendChild(x);
+    }
+    return it;
+  }
+  // ---------- preview over the page (like ClickUp) ----------
+  // ClickUp serves attachments as downloads, so a plain link (or the thumbnail)
+  // downloaded the file. A click opens it here instead: a picture big, a PDF or
+  // text file in Chrome's own viewer (read as a file first, so it isn't a
+  // download), anything else downloads. ← → step through the comment's files;
+  // Esc / ✕ / a click outside closes. Ctrl / middle click still opens the link.
+  const VIEW_RE = /\.(pdf|txt|csv|json|md|mp4|webm|mov|mp3|wav)(\?|#|$)/i; // not .html: a page never runs in here
+  let lbBlobs = [];
+  function lbClose() { const o = document.querySelector(".pcm-lb"); if (o) o.remove(); lbBlobs.forEach((u) => URL.revokeObjectURL(u)); lbBlobs = []; document.removeEventListener("keydown", lbKeys, true); }
+  let lbItems = [], lbAt = 0;
+  function lbKeys(e) {
+    if (!document.querySelector(".pcm-lb")) return;
+    if (e.key === "Escape") { e.preventDefault(); e.stopPropagation(); lbClose(); }
+    else if (e.key === "ArrowRight" && lbItems.length > 1) { e.preventDefault(); lbShow((lbAt + 1) % lbItems.length, true); }
+    else if (e.key === "ArrowLeft" && lbItems.length > 1) { e.preventDefault(); lbShow((lbAt - 1 + lbItems.length) % lbItems.length, true); }
+  }
+  async function lbAsBlob(url, type) {
+    const r = await fetch(url, { credentials: "include" });
+    if (!r.ok) throw new Error("HTTP " + r.status);
+    const b = await r.blob();
+    const u = URL.createObjectURL(type ? new Blob([b], { type }) : b);
+    lbBlobs.push(u);
+    return u;
+  }
+  function lbDownload(it) {
+    lbAsBlob(it.url).then((u) => { const a = document.createElement("a"); a.href = u; a.download = it.name || "file"; document.body.appendChild(a); a.click(); a.remove(); })
+      .catch(() => window.open(it.url, "_blank", "noopener"));
+  }
+  async function lbShow(i, stepped) {
+    lbAt = i;
+    const it = lbItems[i];
+    let o = document.querySelector(".pcm-lb");
+    if (!o) {
+      o = el("div", "pcm-lb");
+      o.addEventListener("click", (e) => { if (e.target === o) lbClose(); });
+      document.body.appendChild(o);
+      document.addEventListener("keydown", lbKeys, true);
+    }
+    o.textContent = "";
+    const top = el("div", "pcm-lb-top");
+    top.appendChild(el("span", "n", it.name + (lbItems.length > 1 ? "  (" + (i + 1) + " of " + lbItems.length + ")" : "")));
+    const open = el("button", "", "Open in new tab"); open.type = "button";
+    const dl = el("button", "", "Download"); dl.type = "button"; dl.onclick = () => lbDownload(it);
+    const x = el("button", "", "✕"); x.type = "button"; x.title = "Close (Esc)"; x.onclick = lbClose;
+    top.append(open, dl, x);
+    o.appendChild(top);
+    const isImg = IMG_RE.test(it.name) || IMG_RE.test(it.url);
+    if (isImg) {
+      const im = el("img"); im.alt = it.name; im.src = it.url;
+      im.onerror = () => { im.replaceWith(el("div", "msg", "This picture couldn't be shown here - Download or Open in new tab.")); };
+      o.appendChild(im);
+      open.onclick = () => lbAsBlob(it.url).then((u) => window.open(u, "_blank")).catch(() => window.open(it.url, "_blank", "noopener"));
+    } else if (VIEW_RE.test(it.name) || VIEW_RE.test(it.url)) {
+      const msg = el("div", "msg", "Opening…"); o.appendChild(msg);
+      const type = /\.pdf(\?|#|$)/i.test(it.name + " " + it.url) ? "application/pdf" : /\.(txt|csv|json|md)(\?|#|$)/i.test(it.name + " " + it.url) ? "text/plain" : "";
+      try {
+        const u = await lbAsBlob(it.url, type);
+        if (lbItems[lbAt] !== it) return; // moved on meanwhile
+        const fr = el("iframe"); fr.src = u; fr.title = it.name;
+        msg.replaceWith(fr);
+        open.onclick = () => window.open(u, "_blank");
+      } catch (e) { msg.textContent = "Couldn't open it here (" + ((e && e.message) || e) + ") - Download or Open in new tab."; open.onclick = () => window.open(it.url, "_blank", "noopener"); }
+    } else {
+      o.appendChild(el("div", "msg", it.name + (stepped ? " can't be shown here - press Download." : " can't be shown here - it's downloading.")));
+      open.onclick = () => window.open(it.url, "_blank", "noopener");
+      if (!stepped) lbDownload(it); // opened by a click: like ClickUp; ← → past it: nothing downloads
+    }
+    if (lbItems.length > 1) {
+      const l = el("button", "nav l", "‹"), r = el("button", "nav r", "›");
+      l.type = r.type = "button"; l.title = "Previous (←)"; r.title = "Next (→)";
+      l.onclick = () => lbShow((lbAt - 1 + lbItems.length) % lbItems.length, true);
+      r.onclick = () => lbShow((lbAt + 1) % lbItems.length, true);
+      o.append(l, r);
+    }
+  }
+  // Pictures, and files attached in ClickUp - an ordinary web page (a GitHub README, a site's robots.txt) opens as the link it is.
+  const isPreviewable = (a) => !!a && /^https?:/i.test(a.href) && (IMG_RE.test(a.href) || (isAttachUrl(a.href) && (IMG_RE.test(a.textContent) || VIEW_RE.test(a.href + " " + a.textContent) || FILE_RE.test(a.href + " " + a.textContent))));
+  // Every comment the panel draws (posted, scheduled, waiting, the one being written).
+  document.addEventListener("click", (e) => {
+    if (e.button !== 0 || e.ctrlKey || e.metaKey || e.shiftKey || !e.target.closest) return;
+    if (e.target.closest(".pcm-prev-x")) return;
+    const a = e.target.closest(".pcm-prev-it, .pcm-cm-t a[href], .pcm-compose a[href], .pcm-held-it a[href]");
+    if (!a || a.closest(".pcm-lb, .md-area")) return; // a link in the editor: clicking places the cursor
+    const url = a.classList.contains("pcm-prev-it") ? a.href : a.href;
+    if (!isPreviewable(a) && !a.classList.contains("pcm-prev-it")) return;
+    e.preventDefault(); e.stopPropagation();
+    // The comment's other files, for ← →.
+    const host = a.closest(".pcm-cm, .pcm-held-it, .pcm-compose") || a.parentElement;
+    const all = [...host.querySelectorAll(".pcm-prev-it")].map((x) => ({ url: x.href, name: (x.title || "").replace(/ - click to open$/, "") || x.textContent.trim() }));
+    const name = a.classList.contains("pcm-prev-it") ? (a.title || "").replace(/ - click to open$/, "") : a.textContent.trim();
+    lbItems = all.length ? all : [{ url, name }];
+    let i = lbItems.findIndex((x) => x.url === url);
+    if (i < 0) { lbItems = [{ url, name }]; i = 0; }
+    lbShow(i);
+  }, true);
+  // Under a posted comment: its links to images / attached files.
+  function addCommentPreviews(t) {
+    const links = [...t.querySelectorAll("a[href]")].filter((a) => /^https?:/i.test(a.href) && (IMG_RE.test(a.href) || IMG_RE.test(a.textContent) || (isAttachUrl(a.href) && FILE_RE.test(a.href + " " + a.textContent))));
+    if (!links.length) return;
+    const box = el("div", "pcm-prev");
+    const seen = new Set();
+    for (const a of links) { if (seen.has(a.href)) continue; seen.add(a.href); box.appendChild(previewItem(a.textContent.trim() || "file", a.href)); }
+    t.after(box);
+  }
+  // asLinks: a comment - each file goes in as a named link ([name](url)); ClickUp's
+  // API can't put a file inside a comment, so it is attached to the task itself.
+  async function uploadInto(ta, taskId, files, msg, asLinks, onDone) {
     const list = [...files].slice(0, 10).filter((f) => f.size <= 10 * 1024 * 1024);
     if (!list.length) { msg.className = "pcm-err"; msg.textContent = "Files over 10 MB: attach them in ClickUp."; return; }
     msg.className = "pcm-note"; msg.textContent = "Uploading " + list.length + " file" + (list.length === 1 ? "" : "s") + "…";
@@ -1820,8 +2007,9 @@
     }
     const res = await send({ type: "CLICKUP_TASK_ATTACH", taskId, files: payload, noComment: true });
     if (!res || !res.ok) { msg.className = "pcm-err"; msg.textContent = "Upload failed: " + ((res && res.error) || "no reply"); return; }
-    insertAtCursor(ta, (res.files || []).map((f) => f.url || f.name).join("\n"));
-    msg.className = "pcm-note"; msg.textContent = "Uploaded ✓ Link added. Save to keep it.";
+    insertAtCursor(ta, (asLinks ? " " : "") + (res.files || []).map((f) => (asLinks && f.url ? "[" + String(f.name || "file").replace(/[\[\]]/g, "") + "](" + f.url + ")" : f.url || f.name)).join(asLinks ? " \n" : "\n"));
+    msg.className = "pcm-note"; msg.textContent = asLinks ? "Attached to the task ✓ - its link is in the comment." : "Uploaded ✓ Link added. Save to keep it.";
+    if (onDone) onDone((res.files || []).map((f, i) => ({ ...f, local: list[i] })));
   }
   function buildDescription(ds, d) {
     ds.textContent = "";

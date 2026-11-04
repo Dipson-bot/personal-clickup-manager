@@ -9645,7 +9645,11 @@ chrome.storage.onChanged.addListener((changes, area) => {
   // reload is rare (real add/delete/sign-out), not part of the periodic churn.
   // A settings change can alter how totals are counted (see the parent/subtask
   // estimate rule), so drop the views this page caches itself and refetch.
-  if (changes.settings) {
+  // Only a real change: Drive sync rewrites the settings with a new time stamp
+  // (_updatedAt) and nothing else, and that rebuilt the whole Tasks list - a
+  // flicker every sync.
+  const setDiff = (o, n) => { o = o || {}; n = n || {}; return [...new Set(Object.keys(o).concat(Object.keys(n)))].filter((k) => k !== "_updatedAt" && JSON.stringify(o[k]) !== JSON.stringify(n[k])); };
+  if (changes.settings && setDiff(changes.settings.oldValue, changes.settings.newValue).length) {
     cuCustomCache = { key: "", status: "", data: null, at: 0 };
     cuOverdueCache = { status: "", data: null, at: 0 };
     if (optClickup && optClickup.state) renderClickupPreview(optClickup.state);
@@ -11442,6 +11446,12 @@ function applyArVisibility(st) {
   if (!arVisible(st) && document.querySelector('.panel.on[data-panel="agent"]') && typeof showOptTab === "function") showOptTab("dashboard");
 }
 
+// Client notices on / off (client-notices.js reads settings.cnoteOff).
+if ($("showCnotes")) {
+  chrome.storage.local.get("settings").then((g) => { $("showCnotes").checked = !(g && g.settings && g.settings.cnoteOff); }).catch(() => {});
+  chrome.storage.onChanged.addListener((ch, area) => { if (area === "local" && ch.settings) $("showCnotes").checked = !(ch.settings.newValue && ch.settings.newValue.cnoteOff); });
+  $("showCnotes").onchange = () => { send({ type: "SET_SETTINGS", patch: { cnoteOff: !$("showCnotes").checked } }).catch(() => {}); };
+}
 if ($("showAgentRouter")) $("showAgentRouter").onchange = async () => {
   const on = $("showAgentRouter").checked;
   try { await send({ type: "SET_SETTINGS", patch: { showAgentRouter: on } }); } catch (e) {}

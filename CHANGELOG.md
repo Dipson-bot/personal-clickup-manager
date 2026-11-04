@@ -1,5 +1,11 @@
 # Changelog
 
+## v4.3.5
+- Less flicker: the popup and side panel no longer rebuild every task row on each background refresh when nothing changed (it happened about once a minute while a timer ran), and Drive sync saving your settings no longer redraws the task lists.
+- Task comments: put a link on words (🔗 Link, Ctrl+K, or paste a web address over selected words), and add screenshots or files (Ctrl+V, drag them in, or 📎 Attach) - each is attached to the task with a named link in the comment, and shown as a preview (a thumbnail for pictures) under the box while you write and under the comment once posted (scheduled ones too). Clicking a picture or file opens it in a preview over the page, like ClickUp (← → between a comment's files, Download and Open in new tab), instead of downloading it.
+- The Extra Task is now treated as a weekly budget: the days ahead share what is left of it instead of always 1h 24m (7h ÷ 5). Use 5h 18m by Wednesday and Thursday and Friday share the 1h 42m left; days already gone show what they used. The same everywhere: Today, This week by day, Due tomorrow and the popup.
+- Client notices can be switched off: General › Features › Show client notices (or Hide all on the card) hides the Dashboard card, the popup banner, the ⚠ on tasks and the pop-ups for new notices. Got it - hide still hides one notice.
+
 ## v4.3.4
 - Site monitor: one alert when a site goes down and one when it is back, nothing in between. A site is called back only after two good checks in a row (like down needs two failed ones), so a site flickering on and off no longer sends alert after alert; its row says "Answering again - confirming" meanwhile.
 - Slack: tagged, no reply yet (Insights › Health): messages in your client Slack channels that tag you (or @channel / @here) and that you haven't answered, with a link to each. They go once you reply in the thread or post in the channel, or press Done; a new @you tag also pops up. Needs Slack connected in Clients › Slack.
