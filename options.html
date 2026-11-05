@@ -1649,6 +1649,8 @@
     <div class="ins-top"><div id="insSubNav" class="ins-subnav" role="tablist"></div><button type="button" id="insRefresh" class="ins-refresh">↻ Refresh</button></div>
     <div id="insView"></div>
     <div id="insPlusView" hidden></div>
+    <!-- Descriptions (desc-check.js) has its own box: Plan / Performance repaint #insPlusView on their own timers. -->
+    <div id="insDescView" hidden></div>
   </section>
 
   <!-- ===================== ClickUp setup ===================== -->
@@ -2991,6 +2993,8 @@
 <script src="plan-apply.js"></script>
 <script src="options.js"></script>
 <script src="insights-plus.js"></script>
+<script src="lib-descfmt.js"></script>
+<script src="desc-check.js"></script>
 <script src="phone-timer.js"></script>
 <script src="bulk-edit.js"></script>
 <script src="task-files.js"></script>

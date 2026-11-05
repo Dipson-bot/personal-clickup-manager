@@ -967,6 +967,32 @@ export async function getTaskCommentLinks(token, taskId) {
   }
   return extractTaskLinks(parts.join("\n"));
 }
+// One task's own comments, in full (newest first, at most 20), each with the
+// links it holds (typed, behind words, or attached files) - Insights >
+// Descriptions reads them for the File links and the closing wording. Only this
+// task's comments: ClickUp's /task/{id}/comment never includes the parent's or
+// the subtasks'.
+export async function getTaskCommentsFull(token, taskId) {
+  const cj = await cuFetch(token, "/task/" + encodeURIComponent(String(taskId)) + "/comment");
+  return (Array.isArray(cj && cj.comments) ? cj.comments : [])
+    .filter((c) => c && Number(c.date) > 0)
+    .sort((a, b) => (Number(b.date) || 0) - (Number(a.date) || 0))
+    .slice(0, 20)
+    .map((c) => {
+      const text = String(c.comment_text || commentText(c) || "").replace(/\r/g, "").trim();
+      const extra = [];
+      for (const p of Array.isArray(c.comment) ? c.comment : []) {
+        const u = p && ((p.attributes && p.attributes.link) || (p.type === "attachment" && p.attachment && p.attachment.url));
+        if (u && !extra.includes(u)) extra.push(u);
+      }
+      return {
+        at: Number(c.date) || 0,
+        who: String((c.user && (c.user.username || c.user.email)) || "Someone"),
+        text: text.slice(0, 3000),
+        links: [...new Set(extractTaskLinks(text + "\n" + extra.join("\n")))],
+      };
+    });
+}
 // ---------- related tasks for an AI brief (open AND closed, read-only) ----------
 // A brief about open tasks also needs the tasks they hang on - including ones
 // already finished, where the answer to a question or an approval may sit in a

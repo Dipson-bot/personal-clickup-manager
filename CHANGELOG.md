@@ -1,5 +1,8 @@
 # Changelog
 
+## v4.3.7
+- Insights › Descriptions: finds your open tasks whose description fields are missing or wrong - Not formatted, Missing client description, Missing description, Missing file, File not formatted (File must be links only, separated by commas). Checks ▾ lets you switch each check on or off (Client Description, Description, File, links-only File, Pre Description, Pre File). Open a task to see its description now and after the fix side by side: the fix takes the File links from that task's own comments and has the AI write only the empty fields, and you can edit any of it by hand. Apply one task, or tick several (or all) and apply them together. Tasks show as Old format (with Client Description) or New format.
+
 ## v4.3.6
 - Slack in Insights is now two lists, like Slack's own: Slack: tagged you, no reply yet (messages that name you) first, then Slack: @channel / @here, no reply yet - which can be switched off in General › Features.
 - Client notices: Hide all ▾ now hides them for a while - for 1 hour, until tomorrow, for a week, or until a new notice arrives (or turns them off) - and they never just vanish: a line on the Dashboard and a chip at the top of every page ("⚠ 3 client notices hidden") say so, and a click shows them again.

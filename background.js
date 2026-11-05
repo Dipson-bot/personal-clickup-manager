@@ -27,11 +27,12 @@ import {
   linkifySheet,
 } from "./lib-drive.js";
 import { runAllAccounts, runAccountLogin, readAgentRouterLogin, URLS, GITHUB_KEEP_COOKIES } from "./lib-automation.js";
-import { getCommentRepliesLite, getTaskShareInfo, getTaskHoldInfo, fetchArchivedMine, unarchiveTask, getLatestCommentBy, getTaskCommentsLite, getTaskTimeEntries, deleteTimeEntry, getUserGroups, getUser, verifyToken, getTeams, fetchTodayEstimate, fetchWeeklySummary, fetchDateRangeEstimate, createTaskCache, fetchTeamMembers, fetchWorkspaceTags, cuTagNames, fmtDuration, findExtraTaskByName, parseTaskIdFromUrl, getCurrentTimeEntry, getRunningTaskProgress, startTimer, stopTimer, getTaskById, setTaskStatus, setTaskDates, taskUrlFor, clientLabelFromContainer, resolveSpaceNamesFor, taskContainer, cuPriorityName, isTaskDone, getSubtasksOfParent, getTaskTree, getTaskDetail, updateTimeEntry, setTaskDueDate, clearTaskTreeCache, listWorkspaceClients, cuRowAssignees, fetchDoneBetween, fetchDoneLite, fetchTrackedHistory, getTaskPanel, addTaskComment, postTaskComment, setTaskDescription, getTaskCommentLinks, createTask, relateTasks, removeTaskAssignee, addTaskAssignee, postAssignedComment, addTimeEntry, weeklyWithToday, listClientFieldOptions, listReachableClients, bgToken, patientToken, cuRawFetch, getRelatedTasks, slimIndexTask, fetchTeamTasksPage, listAllLists, setPausedClients } from "./lib-clickup.js";
+import { getCommentRepliesLite, getTaskShareInfo, getTaskHoldInfo, fetchArchivedMine, unarchiveTask, getLatestCommentBy, getTaskCommentsLite, getTaskTimeEntries, deleteTimeEntry, getUserGroups, getUser, verifyToken, getTeams, fetchTodayEstimate, fetchWeeklySummary, fetchDateRangeEstimate, createTaskCache, fetchTeamMembers, fetchWorkspaceTags, cuTagNames, fmtDuration, findExtraTaskByName, parseTaskIdFromUrl, getCurrentTimeEntry, getRunningTaskProgress, startTimer, stopTimer, getTaskById, setTaskStatus, setTaskDates, taskUrlFor, clientLabelFromContainer, resolveSpaceNamesFor, taskContainer, cuPriorityName, isTaskDone, getSubtasksOfParent, getTaskTree, getTaskDetail, updateTimeEntry, setTaskDueDate, clearTaskTreeCache, listWorkspaceClients, cuRowAssignees, fetchDoneBetween, fetchDoneLite, fetchTrackedHistory, getTaskPanel, addTaskComment, postTaskComment, setTaskDescription, getTaskCommentLinks, getTaskCommentsFull, createTask, relateTasks, removeTaskAssignee, addTaskAssignee, postAssignedComment, addTimeEntry, weeklyWithToday, listClientFieldOptions, listReachableClients, bgToken, patientToken, cuRawFetch, getRelatedTasks, slimIndexTask, fetchTeamTasksPage, listAllLists, setPausedClients } from "./lib-clickup.js";
 import { resolveRelayKey, pickProbeModel, probeRelay } from "./lib-availability.js";
 import { tidyCollect, tidyLines, tidyResolved, tidyDayOk, tidyUrgent, tidyDateShort } from "./lib-tidy.js";
 import "./lib-rules.js"; // globalThis.PcmRules - the Automation tab's rule blocks
 import "./lib-dailyupdate.js"; // globalThis.PcmDailyUpdate - the Daily Tasks Update text (wrap-up page + scheduled send)
+import "./lib-descfmt.js"; // globalThis.PcmDescFmt - Insights > Descriptions (closing fields check)
 
 // ---- Helper only ----
 // A Chrome profile ticked as "signed in to the clients' WordPress" (Site monitor)
@@ -1839,6 +1840,48 @@ async function getOpenTasks(cfg, force, tag, assignee) {
   await annotateClients(token, data, settings.cuClientLevel || "auto").catch(() => {});
   openTasksCache = { at: Date.now(), data, tag: tagKey, who: whoKey };
   return { ok: true, data };
+}
+// Insights > Descriptions: every open task assigned to me with its description,
+// checked for the closing fields (lib-descfmt.js). The same query as the open
+// tasks plus the descriptions (markdown, so links behind words survive); only
+// the verdict and the field values travel to the page. Cached 3 minutes; a save
+// drops the cache so the list reads again.
+let descCheckCache = null;
+async function getDescCheck(cfg, force) {
+  if (!force && descCheckCache && Date.now() - descCheckCache.at < 3 * 60000) return { ok: true, data: descCheckCache.data, at: descCheckCache.at };
+  const token = cfg.token;
+  const raw = [];
+  for (let page = 0; page < 6; page++) {
+    const url = cuOpenTasksUrl(cfg.teamId, { page, assignee: String(cfg.userId) }) + "&include_markdown_description=true";
+    const res = await cuRawFetch(token, url, { headers: { Authorization: token } });
+    if (res.status === 429) { if (page === 0) throw new Error("ClickUp rate limit - try again in a minute"); break; }
+    if (!res.ok) { if (page === 0) throw new Error("ClickUp HTTP " + res.status); break; }
+    const j = await res.json().catch(() => null);
+    const batch = j && Array.isArray(j.tasks) ? j.tasks : [];
+    raw.push(...batch);
+    if (batch.length < 100 || j.last_page === true) break;
+  }
+  const settings = await getSettings().catch(() => ({}));
+  const F = globalThis.PcmDescFmt;
+  const cut = (s) => { s = String(s || ""); return s.length > 600 ? s.slice(0, 598) + "…" : s; };
+  // The weekly Extra Task never gets closing fields, so it isn't checked.
+  const isExtra = (t) => globalThis.PcmDailyUpdate ? globalThis.PcmDailyUpdate.isExtra({ name: t.name }) : /^extras?\s+tasks?\b/i.test(t.name || "");
+  const tasks = raw.filter((t) => t && t.id != null && !isTaskDone(t) && !isExtra(t)).map((t) => {
+    const md = String(t.markdown_description || t.description || t.text_content || "");
+    const v = F.check(md, { pre: true }); // every check; the page shows the ones switched on
+    const vals = {};
+    for (const k in v.values) vals[k] = cut(v.values[k]);
+    return {
+      id: String(t.id), name: t.name || "(untitled task)", url: taskUrlFor(t.id),
+      status: (t.status && t.status.status) || "", dueDateMs: Number(t.due_date) || null,
+      container: taskContainer(t), isSubtask: !!t.parent, parentId: t.parent ? String(t.parent) : undefined,
+      format: v.format, problems: v.problems, values: vals, briefText: cut(md.replace(/\s+/g, " ").trim()),
+    };
+  });
+  const data = { tasks, deadlineTasks: [], trackedTasks: [] };
+  await annotateClients(token, data, settings.cuClientLevel || "auto").catch(() => {});
+  descCheckCache = { at: Date.now(), data: data.tasks };
+  return { ok: true, data: data.tasks, at: descCheckCache.at };
 }
 // The open-task query, as a pure URL builder so the scope (whose tasks) and the
 // tag filter are pinned down by a test instead of by reading string concatenation.
@@ -11283,6 +11326,65 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
           const data = text ? await addTaskComment(cfg.token, taskId, text.slice(0, 5000), members) : null;
           sendResponse({ ok: true, data, uploaded: links.length, mentioned: data && data.mentioned, unmatched: data && data.unmatched });
         } catch (e) { sendResponse({ ok: false, error: String(e && e.message ? e.message : e) }); }
+        break;
+      }
+      case "DESC_CHECK_LIST": {
+        // Insights > Descriptions: my open tasks with their closing-field verdicts.
+        const cfg = await getClickupConfig();
+        if (!cfg || !cfg.token || !cfg.teamId || cfg.userId == null) { sendResponse({ ok: false, reason: "not-configured" }); break; }
+        try { sendResponse(await getDescCheck(cfg, !!msg.force)); }
+        catch (e) { sendResponse({ ok: false, error: String(e && e.message ? e.message : e) }); }
+        break;
+      }
+      case "DESC_CHECK_CONTEXT": {
+        // One task's own comments (never its parent's or subtasks') and its full
+        // description, for the File links and the AI's wording.
+        try {
+          const cfg = await getClickupConfig();
+          if (!cfg || !cfg.token) { sendResponse({ ok: false, error: "ClickUp isn't connected." }); break; }
+          const id = String(msg.taskId || "");
+          const [comments, task] = await Promise.all([
+            getTaskCommentsFull(cfg.token, id),
+            cuRawFetch(cfg.token, "https://api.clickup.com/api/v2/task/" + encodeURIComponent(id) + "?include_markdown_description=true", { headers: { Authorization: cfg.token } }).then((r) => (r.ok ? r.json() : null)).catch(() => null),
+          ]);
+          const md = String((task && (task.markdown_description || task.description || task.text_content)) || "");
+          const fields = (Array.isArray(task && task.custom_fields) ? task.custom_fields : [])
+            .filter((f) => f && f.name && f.value != null && f.value !== "" && typeof f.value !== "object")
+            .map((f) => f.name + ": " + String(f.value).slice(0, 300)).slice(0, 12);
+          sendResponse({ ok: true, comments, description: md.slice(0, 8000), fields, parentName: "" });
+        } catch (e) { sendResponse({ ok: false, error: String(e && e.message ? e.message : e) }); }
+        break;
+      }
+      case "DESC_CHECK_SAVE": {
+        // Write the filled-in fields into the task's description. Reads the
+        // description fresh and writes only if nobody changed it in between.
+        try {
+          const cfg = await getClickupConfig();
+          if (!cfg || !cfg.token) { sendResponse({ ok: false, error: "ClickUp isn't connected." }); break; }
+          const id = String(msg.taskId || "");
+          const r = await cuRawFetch(cfg.token, "https://api.clickup.com/api/v2/task/" + encodeURIComponent(id) + "?include_markdown_description=true", { headers: { Authorization: cfg.token } });
+          if (!r.ok) throw new Error(r.status === 429 ? "ClickUp rate limit - try again in a minute" : "ClickUp HTTP " + r.status);
+          const t = await r.json();
+          const current = String((t && (t.markdown_description || t.description || t.text_content)) || "");
+          // The page showed a preview made from `expected`: if the description
+          // changed in ClickUp since, write nothing (the preview would be wrong).
+          const normD = (s) => String(s || "").replace(/\r\n?/g, "\n").trim();
+          if (msg.expected != null && normD(current) !== normD(msg.expected)) {
+            sendResponse({ ok: false, changed: true, error: "This description was changed in ClickUp after the preview." });
+            break;
+          }
+          const set = {};
+          const allowed = ["Client Description", "Pre Description", "Pre File", "Description", "File"];
+          for (const k of allowed) if (msg.set && typeof msg.set[k] === "string") set[k] = msg.set[k].slice(0, 8000);
+          const add = Number(msg.addFormat) === 1 ? 1 : 2;
+          const next = globalThis.PcmDescFmt.apply(current, set, add);
+          await setTaskDescription(cfg.token, id, next, current);
+          descCheckCache = null;
+          const v = globalThis.PcmDescFmt.check(next, { pre: true });
+          sendResponse({ ok: true, format: v.format, problems: v.problems, values: v.values });
+        } catch (e) {
+          sendResponse({ ok: false, error: String(e && e.message ? e.message : e), changed: e && e.code === "changed" });
+        }
         break;
       }
       case "CLICKUP_TASK_DESCRIPTION": {

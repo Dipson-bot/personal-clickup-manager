@@ -8297,7 +8297,7 @@ if (window.PcmTaskNotes) window.PcmTaskNotes.onChange(() => optRepaintCuPreview(
 
 var insCache = null;      // { status:"ok"|"err", data:[rows], error, at }
 // Insights sub-tab: "health" (this file), "plan" / "performance" (insights-plus.js).
-var INS_SUBS = ["health", "plan", "performance"];
+var INS_SUBS = ["health", "plan", "performance", "descriptions"];
 var insSub = (function () { try { var s = localStorage.getItem("insSub"); return INS_SUBS.indexOf(s) >= 0 ? s : "health"; } catch (e) { return "health"; } })();
 function insSetSub(s) {
   insSub = INS_SUBS.indexOf(s) >= 0 ? s : "health";
@@ -8646,7 +8646,7 @@ function insShell(inner) {
 function insPaintSubNav() {
   var nav = document.getElementById("insSubNav");
   if (!nav) return;
-  var labels = { health: "Health", plan: "Plan", performance: "Performance" };
+  var labels = { health: "Health", plan: "Plan", performance: "Performance", descriptions: "Descriptions" };
   // Rebuilt only when the tab changed (every redraw rebuilt it - part of the page's jumping).
   var navHtml = INS_SUBS.map(function (s) {
     return '<button type="button" role="tab" data-sub="' + s + '" class="' + (s === insSub ? "on" : "") + '" aria-selected="' + (s === insSub) + '">' + labels[s] + "</button>";
@@ -8659,11 +8659,13 @@ function insPaintSubNav() {
   // the developers' dev tasks); Performance re-reads the tracked-time history.
   var rb = document.getElementById("insRefresh");
   if (rb && !rb._busy) {
-    rb.title = insSub === "performance" ? "Read your tracked-time history from ClickUp again (at most every 10 minutes)"
+    rb.title = insSub === "descriptions" ? "Read your open tasks and their descriptions from ClickUp again"
+      : insSub === "performance" ? "Read your tracked-time history from ClickUp again (at most every 10 minutes)"
       : insSub === "plan" ? "Read your open tasks and the developers' dev tasks from ClickUp again" : "Read your open tasks from ClickUp again";
     rb.onclick = function () {
       var plus = window.PcmInsightsPlus;
-      var jobs = insSub === "performance" ? [plus ? plus.refresh("performance") : null]
+      var jobs = insSub === "descriptions" ? [window.PcmDescCheck ? window.PcmDescCheck.refresh() : null]
+        : insSub === "performance" ? [plus ? plus.refresh("performance") : null]
         : [insFetchOpen(true), insSub === "plan" && plus ? plus.refresh("plan") : null, send({ type: "ARCHIVED_GET", force: true }, 30000)];
       rb._busy = true; rb.disabled = true; rb.textContent = "Refreshing…";
       Promise.all(jobs.map(function (j) { return Promise.resolve(j).catch(function () {}); })).then(function () {
@@ -8707,6 +8709,16 @@ function renderInsights() {
   insPaintSubNav();
   var plus = document.getElementById("insPlusView");
   if (plus) {
+    // Descriptions draws in its own box, so a late Plan / Performance repaint
+    // (they redraw #insPlusView when their stored data changes) can't show there.
+    var descEl = document.getElementById("insDescView");
+    if (descEl) descEl.hidden = insSub !== "descriptions";
+    if (insSub === "descriptions" && descEl) {
+      plus.hidden = true; view.hidden = true;
+      if (window.PcmDescCheck) { try { window.PcmDescCheck.render(descEl); } catch (e) { descEl.textContent = "Couldn't show this: " + e.message; } }
+      else if (!descEl.childNodes.length) descEl.innerHTML = '<div class="ins-empty">Loading…</div>'; // desc-check.js loads after this file and draws itself
+      return;
+    }
     var other = insSub !== "health" && window.PcmInsightsPlus;
     plus.hidden = !other;
     view.hidden = !!other;
@@ -10614,7 +10626,7 @@ setInterval(() => { if (!document.hidden) syncClickupRunning(); }, 60000);
 const OPT_TABS = ["dashboard", "insights", "clickup", "agent", "sites", "hub", "reminders", "files", "bulk", "admin", "general", "automation"];
 function showOptTab(name) {
   // "insights/plan" = the Insights tab on its Plan sub-tab (links, notifications).
-  const subM = /^insights\/(health|plan|performance)$/.exec(String(name || ""));
+  const subM = /^insights\/(health|plan|performance|descriptions)$/.exec(String(name || ""));
   if (subM) { insSetSub(subM[1]); name = "insights"; }
   if (!OPT_TABS.includes(name)) name = "dashboard";
   // The Automation tab exists only once /automation has shown it (automation.js).
@@ -11075,7 +11087,7 @@ const ADMIN_FILES = [
   "manifest.json", "background.js", "popup.html", "popup.js", "options.html", "options.js", "phone-timer.js",
   "offscreen.html", "offscreen.js", "update.html", "update.js", "auto-update.html", "auto-update.js", "wrapup.html", "wrapup.js",
   "notify-menu.js", "export-tasks.js", "lib-zip.js", "lib-unzip.js", "lib-automation.js",
-  "lib-availability.js", "lib-clickup.js", "lib-crypto.js", "lib-tidy.js", "lib-drive.js", "find-many.js", "week-fold.js", "ar-status.js", "automation.js", "lib-rules.js", "nav-badges.js", "simple-view.js", "task-panel.js", "lib-updater.js", "offscreen-updater.js", "celebrate.js", "celebrate.html", "celebrate-window.js", "fx.js", "pcm-help.js", "tracker.html", "tracker.js", "bulk-edit.js", "pcm-search.js", "lib-taskfiles.js", "task-files.js", "reminders.js", "hub.js", "task-sort.js", "breakdown.js", "calendar.js", "notices.js", "insights-plus.js", "header-ui.js", "weather.js", "paused-clients.js", "client-notices.js", "lib-dailyupdate.js", "undo.js", "share.html", "plan-apply.js", "task-notes.js", "task-dupes.js", "rollup-help.js", "md-notes.js", "mention.js", "long-list.js", "local-tasks.js", "ui-extras.js", "assignees.js", "add-time.js", "team-hub.gs", "vendor/pdf.min.js", "vendor/pdf.worker.min.js", "vendor/pdfjs-LICENSE.txt",
+  "lib-availability.js", "lib-clickup.js", "lib-crypto.js", "lib-tidy.js", "lib-drive.js", "lib-descfmt.js", "desc-check.js", "find-many.js", "week-fold.js", "ar-status.js", "automation.js", "lib-rules.js", "nav-badges.js", "simple-view.js", "task-panel.js", "lib-updater.js", "offscreen-updater.js", "celebrate.js", "celebrate.html", "celebrate-window.js", "fx.js", "pcm-help.js", "tracker.html", "tracker.js", "bulk-edit.js", "pcm-search.js", "lib-taskfiles.js", "task-files.js", "reminders.js", "hub.js", "task-sort.js", "breakdown.js", "calendar.js", "notices.js", "insights-plus.js", "header-ui.js", "weather.js", "paused-clients.js", "client-notices.js", "lib-dailyupdate.js", "undo.js", "share.html", "plan-apply.js", "task-notes.js", "task-dupes.js", "rollup-help.js", "md-notes.js", "mention.js", "long-list.js", "local-tasks.js", "ui-extras.js", "assignees.js", "add-time.js", "team-hub.gs", "vendor/pdf.min.js", "vendor/pdf.worker.min.js", "vendor/pdfjs-LICENSE.txt",
   "icons/icon16.png", "icons/icon48.png", "icons/icon128.png", "icons/celebrate.png", "icons/sad.png",
   "sounds/notify.wav", "sounds/danger.mp3", "sounds/winner.wav",
   "README.md", "CHANGELOG.md",
