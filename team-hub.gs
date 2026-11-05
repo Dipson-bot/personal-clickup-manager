@@ -129,27 +129,34 @@ function doPost(e) {
     const meRow = !owner && me ? findUser(me) : null;
     const admin = owner || !!(meRow && meRow.role === "admin" && userState(meRow) === "ok");
     q._owner = owner;
+    if (me) touchPresence(me, q.act, q.day); // Script Properties + cache only, no sheet
+    // Reading needs no lock. Only writes take it, so one slow read (a thread's
+    // picture thumbnails, a long list) can no longer make everyone else wait
+    // until "Lock timeout" - which is what happened with a dozen copies calling.
+    switch (q.action) {
+      case "threads": return out(threads(q, admin));
+      case "thread": return out(thread(q, admin));
+      case "notices": return out(notices());
+      case "cnotes": return out(cnotes(q));
+      case "users": if (admin) { const r = users(); r.youOwner = !!q._owner; return out(r); } break;
+      case "nudges": if (!nudgesWaiting(q)) return out({ ok: true, nudges: [] }); break; // most checks: nothing new, no lock
+      case "hello": if (!helloNeedsWrite(q, meRow)) return out(helloReply(q, meRow)); break; // nothing changed: no write
+    }
     const lock = LockService.getScriptLock();
-    lock.waitLock(20000);
+    if (!lock.tryLock(25000)) return out({ ok: false, busy: true, error: "The hub is busy - try again in a minute." });
     try {
-      if (me) touchPresence(me, q.act, q.day);
       switch (q.action) {
         case "hello": return out(hello(q));
-        case "threads": return out(threads(q, admin));
-        case "thread": return out(thread(q, admin));
         case "post": return out(post(q, admin));
         case "metoo": return out(metoo(q));
         case "deleteOwn": return out(deleteOwn(q));
         case "react": return out(react(q));
-        case "notices": return out(notices());
         case "cnotePost": return out(cnotePost(q));
-        case "cnotes": return out(cnotes(q));
         case "nudge": return out(nudge(q));
         case "nudges": return out(nudges(q));
       }
       if (!admin) return out({ ok: false, error: "admin only" });
       switch (q.action) {
-        case "users": { const r = users(); r.youOwner = !!q._owner; return out(r); }
         case "mod": return out(mod(q));
         case "settings": return out(saveSettings(q));
         case "notice": return out(notice(q));
@@ -200,6 +207,27 @@ function userState(u) {
   if (u.status === "banned") return "banned";
   if (Number(u.mutedUntil) > now()) return "muted";
   return "ok";
+}
+// A check-in rewrites the person's row only when something in it changed or
+// 10 minutes passed (lastSeen), so the calls every few minutes cost no write.
+function helloFields(q, u) {
+  return {
+    cuUserId: String(q.cuUserId || (u && u.cuUserId) || "").slice(0, 30),
+    name: String(q.name || (u && u.name) || "").slice(0, 80),
+    avatar: /^https:\/\//.test(String(q.avatar || "")) ? String(q.avatar).slice(0, 500) : String((u && u.avatar) || ""),
+    version: String(q.version || (u && u.version) || "").slice(0, 20),
+    perf: typeof q.perf === "string" && q.perf.length <= 900 ? q.perf : String((u && u.perf) || ""),
+  };
+}
+function helloNeedsWrite(q, u) {
+  if (!u) return true;
+  if (now() - (Number(u.lastSeen) || 0) > 10 * 60000) return true;
+  const f = helloFields(q, u);
+  return Object.keys(f).some((k) => String(u[k] == null ? "" : u[k]) !== f[k]);
+}
+function helloReply(q, u) {
+  const install = cleanInstall(q);
+  return { ok: true, state: userState(u), mutedUntil: Number(u && u.mutedUntil) || 0, settings: pub(), role: install === setting("OWNER_INSTALL", "") ? "owner" : (u && u.role === "admin" ? "admin" : "user") };
 }
 function hello(q) {
   const install = cleanInstall(q);
@@ -494,6 +522,14 @@ function nudge(q) {
   writeRow("Nudges", { id: "n" + t.toString(36) + Math.random().toString(36).slice(2, 5), toUser: to, fromInstall: install, fromUser: String(u.cuUserId || ""), fromName: String(u.name || "").slice(0, 80),
     taskId: String(q.taskId || "").slice(0, 40), taskName: String(q.taskName || "").slice(0, 200), taskUrl: url, text: String(q.text || "").trim().slice(0, 300), at: t, deliveredAt: "" });
   return { ok: true };
+}
+// Is there anything for this install's user to collect? (read only, no lock)
+function nudgesWaiting(q) {
+  const install = cleanInstall(q);
+  const u = install ? findUser(install) : null;
+  if (!u || !u.cuUserId) return false;
+  const t = now();
+  return readAll("Nudges").some((n) => String(n.toUser) === String(u.cuUserId) && !n.deliveredAt && t - Number(n.at) < 7 * 86400000);
 }
 // nudges: this install's user's reminders not collected yet (marked collected now).
 function nudges(q) {

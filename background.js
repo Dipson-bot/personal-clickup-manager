@@ -11394,6 +11394,16 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
             sendResponse({ ok: false, changed: true, error: "This description was changed in ClickUp after the preview." });
             break;
           }
+          // The page sends the whole text it showed in After fix (ticked parts, edits
+          // typed in the box): written exactly as it is.
+          if (typeof msg.text === "string") {
+            const next = msg.text.replace(/\r\n?/g, "\n").slice(0, 60000);
+            await setTaskDescription(cfg.token, id, next, current);
+            descCheckCache = null;
+            const v = globalThis.PcmDescFmt.check(next, { pre: true });
+            sendResponse({ ok: true, format: v.format, problems: v.problems, values: v.values });
+            break;
+          }
           const set = {};
           const allowed = ["Client Description", "Pre Description", "Pre File", "Description", "File"];
           for (const k of allowed) if (msg.set && typeof msg.set[k] === "string") set[k] = msg.set[k].slice(0, 8000);
