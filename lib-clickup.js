@@ -3716,6 +3716,9 @@ export async function fetchDateRangeEstimate({ token, teamId, userId, fromTs, to
           // The Extra Task: its share of what's left (today's tracked time from this range's entries when it covers today).
           const t0 = new Date().setHours(0, 0, 0, 0);
           add = extraShareLeft(task, ts, add, rangeByDay instanceof Map && rangeByDay.has(t0) ? (rangeByDay.get(t0).get(task.id) || 0) : null);
+          // A day already gone: what was used on it (the Extra Task is a weekly budget).
+          const dts = new Date(ts).setHours(0, 0, 0, 0);
+          if (dts < t0 && EXTRA_TASK_NAME_RE.test(task.name || "") && rangeByDay instanceof Map && rangeByDay.size) add = (rangeByDay.get(dts) && rangeByDay.get(dts).get(task.id)) || 0;
           dayEst += add;
         }
       }

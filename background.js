@@ -9768,7 +9768,8 @@ async function cnoteAnnounce(fresh) {
   const { cnoteSeen } = await chrome.storage.local.get("cnoteSeen");
   const seen = { ...(cnoteSeen || {}) };
   const mine = await cnoteMyClientKeys().catch(() => null); // only clients I have open tasks for
-  const off = !!(await getSettings().catch(() => ({}))).cnoteOff; // General › Features › Show client notices off: no pop-ups either
+  const { cnoteHide } = await chrome.storage.local.get("cnoteHide").catch(() => ({}));
+  const off = !!(await getSettings().catch(() => ({}))).cnoteOff || !!(cnoteHide && Number(cnoteHide.until) > Date.now()); // switched off, or hidden for a while: no pop-ups either
   for (const n of fresh) {
     if (seen[n.id] || n.important === false) continue;
     seen[n.id] = Date.now();

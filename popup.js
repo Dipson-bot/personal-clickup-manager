@@ -863,8 +863,9 @@ function markTrk(trk, t, spans) {
   const run = st && st.running;
   const id = t && (t.id != null ? t.id : t.taskId);
   if (spans) {
+    trk._todaySpans = spans; // a running task's pill counts on with its time (liveTrk)
     const todayMs = cuTrkTodayMs(st, t, spent, cuRunPrior, Date.now());
-    if (todayMs > 0) {
+    if (todayMs >= 60000) { // under a minute it would read "0m today"
       const pill = document.createElement("span");
       pill.className = "trk-today";
       pill.style.order = "4";
@@ -893,6 +894,14 @@ function liveTrk(trk, t, st, run, est) {
     if (!trk.isConnected) return false;
     const ms = base + Math.max(0, Date.now() - from);
     trk.textContent = fmtDur(ms);
+    // Its "X today" pill counts on too (it used to stay at what it was when drawn).
+    const spans = trk._todaySpans;
+    if (spans && spans.isConnected) {
+      const v = cuTrkTodayMs(st, t, ms, cuRunPrior, Date.now());
+      let pill = spans.querySelector(".trk-today");
+      if (v < 60000) { if (pill) pill.remove(); }
+      else { if (!pill) { pill = document.createElement("span"); pill.className = "trk-today"; pill.style.order = "4"; pill.title = CU_TRK_TODAY_TIP; spans.appendChild(pill); } pill.textContent = fmtDur(v) + " today"; }
+    }
     trk.classList.toggle("over", est > 0 && ms > est + CU_OVER_GRACE_MS);
     return true;
   };

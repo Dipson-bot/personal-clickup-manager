@@ -2039,8 +2039,9 @@ function markTrk(trk, t, spans) {
   const run = st && st.running;
   const id = t && (t.id != null ? t.id : t.taskId);
   if (spans) {
+    trk._todaySpans = spans; // a running task's pill counts on with its time (liveTrk)
     const todayMs = cuTrkTodayMs(st, t, spent, cuRunPrior, Date.now());
-    if (todayMs > 0) {
+    if (todayMs >= 60000) { // under a minute it would read "0m today"
       const pill = document.createElement("span");
       pill.className = "trk-today";
       pill.style.order = "4";
@@ -2070,6 +2071,7 @@ function liveTrk(trk, t, st, run, est, fmt) {
     if (!trk.isConnected) return false;
     const ms = Number(trk.dataset.liveBase) + Math.max(0, Date.now() - Number(trk.dataset.liveFrom));
     trk.textContent = fmt(ms);
+    cuLiveTodayPill(trk, t, st, ms, fmt);
     const e = Number(trk.dataset.liveEst);
     trk.classList.toggle("over", e > 0 && ms > e + CU_OVER_GRACE_MS);
     return true;
@@ -2078,6 +2080,16 @@ function liveTrk(trk, t, st, run, est, fmt) {
   const iv = setInterval(() => { if (!paint()) clearInterval(iv); }, 20000);
 }
 
+// The running task's "X today" pill, kept up with its time.
+function cuLiveTodayPill(trk, t, st, ms, fmt) {
+  const spans = trk._todaySpans;
+  if (!spans || !spans.isConnected) return;
+  const v = cuTrkTodayMs(st, t, ms, cuRunPrior, Date.now());
+  let pill = spans.querySelector(".trk-today");
+  if (v < 60000) { if (pill) pill.remove(); return; }
+  if (!pill) { pill = document.createElement("span"); pill.className = "trk-today"; pill.style.order = "4"; pill.title = CU_TRK_TODAY_TIP; spans.appendChild(pill); }
+  pill.textContent = fmt(v) + " today";
+}
 // Small floating message used by the due-date editor (both pages).
 function cuDueToastOpt(text) {
   const el = document.createElement("div");
@@ -8301,7 +8313,11 @@ var INS_STORE = "insOpenCache";
 // (one small read at most every 30 minutes) whenever Insights is drawn.
 var insArchived = [], insArchivedAt = 0;
 // Slack: tagged, no reply yet (background slackMentionsUpdate, the 20-minute Slack check).
-var insSlackTags = [];
+var insSlackTags = [], insSlackChannelOn = true; // settings.slackTagChannel: list @channel / @here too (default on)
+try {
+  chrome.storage.local.get("settings").then(function (g) { insSlackChannelOn = !(g && g.settings && g.settings.slackTagChannel === false); }).catch(function () {});
+  chrome.storage.onChanged.addListener(function (ch, area) { if (area === "local" && ch.settings) insSlackChannelOn = !(ch.settings.newValue && ch.settings.newValue.slackTagChannel === false); });
+} catch (e) {}
 try {
   chrome.storage.local.get("slackMentions").then(function (g) { insSlackTags = (g && g.slackMentions && g.slackMentions.items) || []; }).catch(function () {});
   chrome.storage.onChanged.addListener(function (ch, area) { if (area === "local" && ch.slackMentions) insSlackTags = (ch.slackMentions.newValue && ch.slackMentions.newValue.items) || []; });
@@ -8964,10 +8980,16 @@ function insDrillsHtml(m) {
     return { badge: r.mention ? '<span class="badge red">@ you</span>' : '<span class="badge amber">💬 ' + r.n + "</span>",
       plain: (r.latest ? r.latest.who + ": " + r.latest.text : "") + (r.n > 1 ? " (+" + (r.n - 1) + " more)" : ""), action: "Mark read", act: "seen" };
   });
-  var slackOut = (m.slackList || []).length ? insDrill("slackwait", "Slack: tagged, no reply yet", m.slackList, function (r) {
+  // Two lists, like Slack's own (your name / Mentions): the messages that tag YOU
+  // first, then @channel / @here (settings.slackTagChannel, General › Features).
+  var slackRow = function (r) {
     return { badge: r.kind === "you" ? '<span class="badge red">@ you</span>' : '<span class="badge amber">@channel</span>',
       plain: insDateShort(r.at) + " " + new Date(r.at).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" }) + " · " + r.text, action: "Done", act: "slackdone" };
-  }) : "";
+  };
+  var slackYou = (m.slackList || []).filter(function (r) { return r.kind === "you"; });
+  var slackAll = (m.slackList || []).filter(function (r) { return r.kind !== "you"; });
+  var slackOut = (slackYou.length ? insDrill("slackwait", "Slack: tagged you, no reply yet", slackYou, slackRow) : "") +
+    (insSlackChannelOn && slackAll.length ? insDrill("slackchan", "Slack: @channel / @here, no reply yet", slackAll, slackRow) : "");
   var readOut = (m.readList || []).length ? insDrill("readwait", "Read, no reply yet", m.readList, function (r) {
     return { badge: r.mention ? '<span class="badge red">@ you</span>' : '<span class="badge amber">💬 ' + r.n + "</span>",
       plain: (r.latest ? r.latest.who + ": " + r.latest.text : "") + (r.n > 1 ? " (+" + (r.n - 1) + " more)" : ""), action: "No reply needed", act: "cmtdone" };
@@ -9070,7 +9092,7 @@ if (typeof document !== "undefined") document.addEventListener("click", function
   var a = e.target && e.target.closest ? e.target.closest("#insView .trow .ttl-a") : null;
   if (!a || e.ctrlKey || e.metaKey || e.shiftKey || e.button !== 0 || !window.PcmTaskPanel || !window.PcmTaskPanel.openIn) return;
   var row = a.closest(".trow"), id = row && row.getAttribute("data-id");
-  if (!id || a.closest('[data-drill="slackwait"]')) return; // a Slack message: opens in Slack
+  if (!id || a.closest('[data-drill="slackwait"], [data-drill="slackchan"]')) return; // a Slack message: opens in Slack
   e.preventDefault();
   window.PcmTaskPanel.openIn(row, id);
 }, true);
@@ -10767,6 +10789,13 @@ function refreshStatusStrip(delay) {
     } else {
       chips.push({ tab: "sites", cls: "", text: "Site monitor off" });
     }
+    // Client notices hidden for a while or switched off: said here on every tab; a click shows them again.
+    try {
+      const h = window.PcmClientNotices && window.PcmClientNotices.hiddenInfo ? window.PcmClientNotices.hiddenInfo() : null;
+      if (h && h.n > 0) chips.push({ tab: "dashboard", cls: "warn", text: "⚠ " + h.n + " client notice" + (h.n === 1 ? "" : "s") + (h.off ? " switched off" : " hidden"),
+        title: (h.off ? "Client notices are switched off" : h.until ? "Hidden until " + new Date(h.until).toLocaleString([], { weekday: "short", hour: "numeric", minute: "2-digit" }) : "Hidden until a new one arrives") + " - click to show them again",
+        act: () => { window.PcmClientNotices.showAll(); showOptTab("dashboard"); } });
+    } catch (e) {}
     try {
       const { updateInfo: ui } = await chrome.storage.local.get("updateInfo");
       if (ui && ui.newer) chips.unshift({ href: chrome.runtime.getURL("update.html"), cls: "warn", text: "Update available: v" + ui.latest });
@@ -10778,7 +10807,8 @@ function refreshStatusStrip(delay) {
       b.className = "st-chip" + (c.cls ? " st-" + c.cls : ""); // own names: a bare "warn" collides with the page-wide .warn box style
       b.innerHTML = '<span class="dot"></span>';
       b.appendChild(document.createTextNode(c.text));
-      b.onclick = () => { if (c.href) window.open(c.href, "_blank", "noopener"); else showOptTab(c.tab); };
+      if (c.title) b.title = c.title;
+      b.onclick = () => { if (c.act) c.act(); else if (c.href) window.open(c.href, "_blank", "noopener"); else showOptTab(c.tab); };
       el.appendChild(b);
     }
   }, delay == null ? 250 : delay);
@@ -11446,6 +11476,11 @@ function applyArVisibility(st) {
   if (!arVisible(st) && document.querySelector('.panel.on[data-panel="agent"]') && typeof showOptTab === "function") showOptTab("dashboard");
 }
 
+// Slack: @channel / @here in the tagged lists on / off (settings.slackTagChannel).
+if ($("slackTagChannel")) {
+  chrome.storage.local.get("settings").then((g) => { $("slackTagChannel").checked = !(g && g.settings && g.settings.slackTagChannel === false); }).catch(() => {});
+  $("slackTagChannel").onchange = () => { send({ type: "SET_SETTINGS", patch: { slackTagChannel: $("slackTagChannel").checked } }).catch(() => {}); try { if (insTabActive()) renderInsights(); } catch (e) {} };
+}
 // Client notices on / off (client-notices.js reads settings.cnoteOff).
 if ($("showCnotes")) {
   chrome.storage.local.get("settings").then((g) => { $("showCnotes").checked = !(g && g.settings && g.settings.cnoteOff); }).catch(() => {});

@@ -1,5 +1,11 @@
 # Changelog
 
+## v4.3.6
+- Slack in Insights is now two lists, like Slack's own: Slack: tagged you, no reply yet (messages that name you) first, then Slack: @channel / @here, no reply yet - which can be switched off in General › Features.
+- Client notices: Hide all ▾ now hides them for a while - for 1 hour, until tomorrow, for a week, or until a new notice arrives (or turns them off) - and they never just vanish: a line on the Dashboard and a chip at the top of every page ("⚠ 3 client notices hidden") say so, and a click shows them again.
+- The "X today" label next to a running task now counts up with the timer (it could stay at "0m today"), and the Extra Task's estimate for a whole week is what you used on the days gone plus what is left, so it matches the This week card.
+- Task comments read like ClickUp: oldest at the top, the newest at the bottom right above the reply box. A long thread shows its latest 5 with Show earlier comments above them.
+
 ## v4.3.5
 - Less flicker: the popup and side panel no longer rebuild every task row on each background refresh when nothing changed (it happened about once a minute while a timer ran), and Drive sync saving your settings no longer redraws the task lists.
 - Task comments: put a link on words (🔗 Link, Ctrl+K, or paste a web address over selected words), and add screenshots or files (Ctrl+V, drag them in, or 📎 Attach) - each is attached to the task with a named link in the comment, and shown as a preview (a thumbnail for pictures) under the box while you write and under the comment once posted (scheduled ones too). Clicking a picture or file opens it in a preview over the page, like ClickUp (← → between a comment's files, Download and Open in new tab), instead of downloading it.

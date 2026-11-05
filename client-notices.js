@@ -29,17 +29,31 @@
   // no banner, no ⚠ on tasks. The Slack check goes on, so turning it back on shows
   // what's current at once.
   let allOff = false;
+  // Hidden for now (the card's Hide all ▾, this computer: storage cnoteHide):
+  // { until: ms } for an hour / until tomorrow / a week, or { ids: [...] } = until a
+  // notice that isn't one of those arrives. A line on the Dashboard says so.
+  let hideFor = null;
+  const hiddenNow = (n) => !!hideFor && ((Number(hideFor.until) > Date.now()) || (Array.isArray(hideFor.ids) && hideFor.ids.includes(n.id)));
   // Showing: not hidden here, not judged unimportant, and still current - until a
   // week after its last date, or two weeks after it was posted when it names none.
   // ...and only for clients I have open tasks for (assigned to me) - none until those are known.
-  function active() {
-    if (allOff) return [];
+  function current() {
     const now = Date.now();
     const cur = notices.filter((n) => n && !dismissed[n.id] && n.important !== false &&
       ((n.untilMs ? n.untilMs + DAY : n.fromMs ? n.fromMs + 14 * DAY : Number(n.at) + 14 * DAY) > now));
     if (!cur.length) return [];
     if (!openTasks) { if (!tasksAsked) loadTasks(); return []; } // my tasks are only looked up while a notice is current
     return cur.filter((n) => openTasks.some((t) => sameClient(t, n.client)));
+  }
+  function active() {
+    if (allOff) return [];
+    const cur = current();
+    // "Until a new notice arrives": one has arrived - everything shows again.
+    if (hideFor && Array.isArray(hideFor.ids) && cur.some((n) => !hideFor.ids.includes(n.id))) {
+      hideFor = null;
+      try { chrome.storage.local.remove("cnoteHide"); } catch (e) {}
+    }
+    return cur.filter((n) => !hiddenNow(n));
   }
   // The client a task belongs to (its client label or list name) - letters and
   // digits only, so "Acme Roofing", "Acme Roofing SEO" and "🔥 ACME-ROOFING" match.
@@ -96,6 +110,7 @@
   }
   let queued = false;
   function paint() {
+    try { tellStrip(); } catch (e) {}
     if (queued) return;
     queued = true;
     setTimeout(() => { queued = false; document.querySelectorAll(".cu-task").forEach((row) => { if (row._cuTask || row.querySelector(".pcm-cnote-pill")) paintRow(row); }); paintCard(); paintBanner(); }, 60);
@@ -124,14 +139,44 @@
     const empty = document.getElementById("cuDashEmpty");
     if (empty) empty.after(host); else dash.prepend(host);
     host.addEventListener("click", onCardClick);
+    // Hide all ▾: for a while, until a new notice, or off.
+    host.addEventListener("change", async (e) => {
+      const sel = e.target.closest && e.target.closest("select.cn-hide");
+      if (!sel || !sel.value) return;
+      const v = sel.value, now = Date.now();
+      if (v === "off") { await send({ type: "SET_SETTINGS", patch: { cnoteOff: true } }); allOff = true; paint(); return; }
+      let h;
+      if (v === "1h") h = { until: now + 3600000 };
+      else if (v === "day") { const d = new Date(now); d.setDate(d.getDate() + 1); d.setHours(8, 0, 0, 0); h = { until: d.getTime() }; } // tomorrow, 8 AM
+      else if (v === "week") h = { until: now + 7 * DAY };
+      else h = { ids: current().map((n) => n.id) };
+      hideFor = h;
+      try { await chrome.storage.local.set({ cnoteHide: h }); } catch (err) {}
+      paint();
+    });
     return host;
   }
   function paintCard() {
     const host = cardHost();
     if (!host) return;
     const list = active();
-    if (!list.length) { host.hidden = true; host.innerHTML = ""; lastCard = ""; return; }
-    host.hidden = false;
+    if (!list.length) {
+      // Hidden or switched off with notices waiting: one quiet line, so they can't seem to have vanished.
+      const waiting = current().length;
+      if (waiting && (allOff || hideFor)) {
+        const until = hideFor && Number(hideFor.until) > Date.now() ? Number(hideFor.until) : 0;
+        const what = waiting + " client notice" + (waiting === 1 ? "" : "s");
+        const html = '<div class="cn-hidden">⚠️ ' + (allOff ? esc(what) + " - client notices are switched off"
+          : until ? esc(what) + " hidden until " + esc(new Date(until).toLocaleString([], new Date(until).toDateString() === new Date().toDateString() ? { hour: "numeric", minute: "2-digit" } : { weekday: "short", hour: "numeric", minute: "2-digit" }))
+          : esc(what) + " hidden until a new one arrives") +
+          ' <button type="button" class="cn-btn" data-cn-show="1">' + (allOff ? "Turn on" : "Show now") + "</button></div>";
+        host.hidden = false; host.classList.add("cn-quiet");
+        if (html !== lastCard) { lastCard = html; host.innerHTML = html; }
+        return;
+      }
+      host.hidden = true; host.innerHTML = ""; lastCard = ""; host.classList.remove("cn-quiet"); return;
+    }
+    host.hidden = false; host.classList.remove("cn-quiet");
     const items = list.map((n) => {
       const k = kindOf(n);
       const tasks = (openTasks || []).filter((t) => touches(n, t)).sort((a, b) => (Number(a.dueDateMs) || 9e15) - (Number(b.dueDateMs) || 9e15)).slice(0, 12);
@@ -154,13 +199,15 @@
     });
     const html = '<div class="cn-top"><h2>⚠️ Client notices <span class="hint">(from the clients\' Slack channels)</span></h2>' +
       '<button type="button" class="cn-btn" data-cn-refresh="1" title="Look in the client channels now">Check Slack now</button>' +
-      '<button type="button" class="cn-btn" data-cn-off="1" title="Hide every client notice (this card, the banner and the ⚠ on tasks). Turn them back on in General › Features.">Hide all</button></div>' + items.join("");
+      '<select class="cn-btn cn-hide" title="Hide every client notice for a while - this card, the banner, the ⚠ on tasks and the pop-ups. A line here says until when, with Show now."><option value="">Hide all ▾</option>' +
+      '<option value="1h">For 1 hour</option><option value="day">Until tomorrow</option><option value="week">For a week</option><option value="new">Until a new notice arrives</option><option value="off">Turn off (General › Features)</option></select></div>' + items.join("");
     if (html !== lastCard) { lastCard = html; host.innerHTML = html; }
   }
   let lastCard = "";
   async function onCardClick(e) {
     const b = e.target.closest("button");
     if (!b) return;
+    if (b.dataset.cnShow) { b.disabled = true; await showAll(); return; }
     if (b.dataset.cnHide || b.dataset.cnNoimp) {
       dismissed[b.dataset.cnHide || b.dataset.cnNoimp] = b.dataset.cnNoimp ? "noimp" : Date.now();
       try { await chrome.storage.local.set({ cnoteDismissed: dismissed }); } catch (err) {}
@@ -280,6 +327,9 @@
   .cnote-card[hidden] { display: none !important; }
   .cnote-card .cn-top { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
   .cnote-card .cn-top h2 { margin: 0; flex: 1; font-size: 15px; }
+  .cnote-card.cn-quiet { padding: 8px 14px; }
+  .cnote-card .cn-hidden { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; font-size: 12.5px; color: var(--muted); }
+  .cnote-card select.cn-hide { cursor: pointer; }
   .cnote-card .cn-item { border-top: 1px solid var(--border); padding: 10px 0 4px; margin-top: 8px; border-radius: 6px; transition: background .4s; }
   .cnote-card .cn-item.flash { background: rgba(234, 88, 12, .12); }
   .cnote-card .cn-head { display: flex; align-items: baseline; gap: 6px; flex-wrap: wrap; font-size: 13px; }
@@ -302,8 +352,9 @@
 
   async function load() {
     try {
-      const g = await chrome.storage.local.get(["clientNotices", "cnoteDismissed", "settings"]);
+      const g = await chrome.storage.local.get(["clientNotices", "cnoteDismissed", "settings", "cnoteHide"]);
       allOff = !!(g.settings && g.settings.cnoteOff);
+      hideFor = g.cnoteHide && typeof g.cnoteHide === "object" ? g.cnoteHide : null;
       notices = (g.clientNotices && Array.isArray(g.clientNotices.list)) ? g.clientNotices.list : [];
       dismissed = g.cnoteDismissed && typeof g.cnoteDismissed === "object" ? g.cnoteDismissed : {};
     } catch (e) {}
@@ -314,11 +365,29 @@
       if (area !== "local") return;
       if (ch.clientNotices) { notices = (ch.clientNotices.newValue && ch.clientNotices.newValue.list) || []; paint(); runAi(); }
       if (ch.cnoteDismissed) { dismissed = ch.cnoteDismissed.newValue || {}; paint(); }
+      if (ch.cnoteHide) { hideFor = ch.cnoteHide.newValue && typeof ch.cnoteHide.newValue === "object" ? ch.cnoteHide.newValue : null; paint(); }
       if (ch.settings) { const off = !!(ch.settings.newValue && ch.settings.newValue.cnoteOff); if (off !== allOff) { allOff = off; paint(); } }
     });
   } catch (e) {}
+  // Hidden for an hour / until tomorrow / a week: back by themselves when that time is up.
+  setInterval(() => { if (hideFor && Number(hideFor.until) && Number(hideFor.until) <= Date.now()) { hideFor = null; try { chrome.storage.local.remove("cnoteHide"); } catch (e) {} paint(); } }, 60000);
   const mo = new MutationObserver((recs) => { if (recs.some((r) => [...r.addedNodes].some((x) => x.nodeType === 1 && !(x.closest && x.closest("#cnoteCard, #cnoteBar, .pcm-cnote-pill"))))) paint(); });
   const start = () => { mo.observe(document.body, { childList: true, subtree: true }); load(); };
   if (document.body) start(); else document.addEventListener("DOMContentLoaded", start, { once: true });
-  window.PcmClientNotices = { get list() { return active(); }, noticeFor, touches, sameClient, dayBefore, refresh: load };
+  // Hidden / switched off with notices waiting: the Options page shows a chip at the
+  // top of every tab ("⚠ 3 client notices hidden"), so they never seem to vanish.
+  function hiddenInfo() {
+    const waiting = current().length;
+    if (!waiting || !(allOff || hideFor)) return null;
+    const shown = allOff ? 0 : active().length;
+    return { n: waiting - shown, off: allOff, until: hideFor && Number(hideFor.until) > Date.now() ? Number(hideFor.until) : 0 };
+  }
+  async function showAll() {
+    if (allOff) await send({ type: "SET_SETTINGS", patch: { cnoteOff: false } });
+    hideFor = null; try { await chrome.storage.local.remove("cnoteHide"); } catch (e) {}
+    allOff = false; paint();
+  }
+  let lastHiddenSig = "";
+  const tellStrip = () => { const h = hiddenInfo(); const sig = JSON.stringify(h); if (sig !== lastHiddenSig) { lastHiddenSig = sig; if (typeof window.refreshStatusStrip === "function") window.refreshStatusStrip(0); } };
+  window.PcmClientNotices = { hiddenInfo, showAll, get list() { return active(); }, noticeFor, touches, sameClient, dayBefore, refresh: load };
 })();

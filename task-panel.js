@@ -1483,7 +1483,10 @@
   // ---------- comments ----------
   function paintComments(list, more, comments, showAll) {
     list.textContent = "";
-    const shown = showAll ? comments : comments.slice(0, 5);
+    // Like ClickUp: oldest at the top, newest at the bottom next to the reply box
+    // (comments arrive newest first). A long thread shows its latest 5, with the
+    // earlier ones behind "Show N earlier comments" above them.
+    const shown = (showAll ? comments : comments.slice(0, 5)).slice().reverse();
     if (!comments.length) list.appendChild(el("div", "pcm-empty", "No comments yet."));
     for (const c of shown) {
       const row = el("div", "pcm-cm");
@@ -1503,7 +1506,7 @@
       list.appendChild(row);
     }
     more.hidden = comments.length <= 5 || showAll;
-    more.textContent = "Show all " + comments.length + " comments";
+    more.textContent = "Show " + (comments.length - 5) + " earlier comment" + (comments.length - 5 === 1 ? "" : "s");
   }
   // ---------- time tracked (your entries on this task) ----------
   // Loaded when opened (one ClickUp request), each entry editable: day, start,
@@ -1740,7 +1743,7 @@
     noAt.onclick = () => { atRow.hidden = true; };
     // The comments waiting for the task to be completed.
     const heldBox = el("div", "pcm-held");
-    sec.append(list, more, heldBox, box);
+    sec.append(more, list, heldBox, box); // earlier comments above, newest just over the box
     let editing = "";
     const paintHeld = (items) => {
       heldBox.textContent = "";

@@ -1058,7 +1058,7 @@
     const d = pip.document;
     const bits = [p.status ? "Status " + p.status : "", p.dueDateMs ? "Due " + new Date(p.dueDateMs).toLocaleDateString([], { month: "short", day: "numeric" }) : "No due date", p.estimateMs ? "Est " + fmt(p.estimateMs) : ""];
     d.getElementById("eMeta").textContent = bits.filter(Boolean).join(" · ");
-    const cs = (p.comments || []).slice(0, 5);
+    const cs = (p.comments || []).slice(0, 5).reverse(); // the latest 5, oldest first - newest last, like ClickUp
     d.getElementById("eComments").innerHTML = cs.length
       ? cs.map((c) => '<div class="cmt"><b>' + esc(c.who) + '</b>' + (cw.seenBefore && Number(c.at) > cw.seenBefore && c.userId !== cw.me ? '<span class="newtag">NEW</span>' : "") + ' <span class="when">' + (c.at ? esc(new Date(c.at).toLocaleString([], { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" })) : "") + "</span><div>" + (window.PcmMd ? window.PcmMd.render(c.text) : linkify(c.text)) + "</div></div>").join("")
       : "No comments yet.";
