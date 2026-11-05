@@ -1,5 +1,9 @@
 # Changelog
 
+## v4.3.8
+- Insights › Descriptions opens ready: while Options is open (on any tab) the list is kept up to date and the fixes are prepared in the background, one at a time, with Chrome's built-in AI - and prepared fixes are kept, so coming back shows them at once. A fix is dropped only when that task's description changed in ClickUp. Waiting fixes say "Waiting for the AI (2 ahead)" instead of all showing "Writing...". Switch it off in Checks ▾.
+- Insights › Descriptions has ▾ Clients and ▾ Filter like the Dashboard's Tasks card: tick clients, due ranges (overdue, previous / this / next week or month, no due date, or custom dates) and statuses. Tasks finished in the last 30 days are in the list too, shown once their status is ticked. The counts follow the filters.
+
 ## v4.3.7
 - Insights › Descriptions: finds your open tasks whose description fields are missing or wrong - Not formatted, Missing client description, Missing description, Missing file, File not formatted (File must be links only, separated by commas). Checks ▾ lets you switch each check on or off (Client Description, Description, File, links-only File, Pre Description, Pre File). Open a task to see its description now and after the fix side by side: the fix takes the File links from that task's own comments and has the AI write only the empty fields, and you can edit any of it by hand. Apply one task, or tick several (or all) and apply them together. Tasks show as Old format (with Client Description) or New format.
 

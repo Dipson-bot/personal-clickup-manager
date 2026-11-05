@@ -58,6 +58,7 @@
     ["fileStrict", "File must be links only, separated by commas", "", true],
     ["preDescription", "Pre Description", "", false],
     ["preFile", "Pre File", "", false],
+    ["warm", "Prepare fixes in the background while Options is open", "Chrome's built-in AI only", true],
   ];
   let prefs = Object.fromEntries(CHECKS.map((c) => [c[0], c[3]]));
   let checksOpen = false;
@@ -83,6 +84,79 @@
   const notes = new Map(); // taskId -> "Applied" / failure note
   let bulk = null; // { what: "prepare" | "apply", done, total, stop }
   let bulkMsg = "", noOnline = false, hydrated = false;
+  let warming = false; // fixes being prepared in the background
+  let aiChain = Promise.resolve(), aiPending = 0; // one AI request at a time
+
+  // ---------- prepared fixes, kept on this computer ----------
+  // A fix (the description it was made from, the values, the ticked links) is
+  // kept per task, so coming back shows it ready at once. It is used again only
+  // while the task's description is exactly the same (descHash from the list).
+  let fixCache = {}, fixTimer = 0;
+  const fixP = chrome.storage.local.get("descFixes").then((g) => { if (g && g.descFixes && typeof g.descFixes === "object") fixCache = g.descFixes; }).catch(() => {});
+  function writeFixes() {
+    clearTimeout(fixTimer);
+    fixTimer = setTimeout(() => {
+      const keys = Object.keys(fixCache);
+      if (keys.length > 300) keys.sort((a, b) => (fixCache[a].at || 0) - (fixCache[b].at || 0)).slice(0, keys.length - 300).forEach((k) => delete fixCache[k]);
+      try { chrome.storage.local.set({ descFixes: fixCache }); } catch (e) {}
+    }, 600);
+  }
+  function saveFix(id, ed) {
+    if (!ed || ed.before == null) return;
+    fixCache[id] = { h: F.hash(ed.before), before: ed.before, vals: ed.vals, orig: ed.orig, links: ed.links, pick: ed.pick, addFormat: ed.addFormat, edited: !!ed.edited, movedNote: !!ed.movedNote, at: Date.now() };
+    writeFixes();
+  }
+  function dropFix(id) { if (fixCache[id]) { delete fixCache[id]; writeFixes(); } }
+  // Put the kept fixes back on the rows whose description hasn't changed.
+  function restoreFixes() {
+    if (!rows) return;
+    let dropped = false;
+    for (const t of rows) {
+      const c = fixCache[t.id];
+      if (!c || eds.has(t.id)) continue;
+      if (!t.descHash || c.h !== t.descHash) { delete fixCache[t.id]; dropped = true; continue; }
+      eds.set(t.id, { addFormat: c.addFormat || 2, open: false, editing: false, vals: Object.assign({}, c.vals), orig: Object.assign({}, c.orig), links: c.links || [], pick: c.pick || [], before: c.before, edited: !!c.edited, movedNote: !!c.movedNote, ctx: null, msg: "Prepared earlier. Check the After column, change anything with ✎ Edit, then Apply.", tone: "" });
+    }
+    const ids = new Set(rows.map((t) => t.id));
+    for (const k of Object.keys(fixCache)) if (!ids.has(k)) { delete fixCache[k]; dropped = true; }
+    if (dropped) writeFixes();
+  }
+  // The list from the last visit (a few ms), so nothing waits on ClickUp.
+  let hydrateP = null;
+  function hydrate() {
+    if (!hydrateP) hydrateP = Promise.all([chrome.storage.local.get("descCheckLast").catch(() => null), fixP]).then(([g]) => {
+      const k = g && g.descCheckLast;
+      if (!rows && k && Array.isArray(k.rows)) { rows = k.rows; at = Number(k.at) || 0; }
+      restoreFixes();
+    });
+    return hydrateP;
+  }
+  // Chrome's built-in AI is ready on this computer (not just downloadable: the
+  // background work must never start a model download on its own).
+  async function builtinReady() {
+    try {
+      if (typeof LanguageModel === "undefined") return false;
+      return (await LanguageModel.availability({ expectedInputs: [{ type: "text", languages: ["en"] }], expectedOutputs: [{ type: "text", languages: ["en"] }] })) === "available";
+    } catch (e) { return false; }
+  }
+  // Prepare the fixes of the tasks that need one, one at a time, while the page
+  // is open - so the Descriptions tab has them ready whenever it is opened.
+  async function warm() {
+    if (warming || !on("warm") || !rows) return;
+    warming = true;
+    paint();
+    try {
+      for (const t of rows.slice()) {
+        if (!on("warm")) break;
+        if (!probs(t).length || t.done) continue;
+        const ed = eds.get(t.id);
+        if (ed && (ed.before != null || ed.busy)) continue;
+        while (bulk) await sleep(2000); // a Prepare fixes / Apply selected run goes first
+        await prepare(t.id, false, true, true);
+        await sleep(1500); // gentle on ClickUp (2 calls a task)
+      }
+    } finally { warming = false; paint(); }
+  }
 
   const css = document.createElement("style");
   css.textContent = `
@@ -112,6 +186,14 @@
   #insDescView .dc-tools input[type="search"], #insDescView .dc-tools select { font: inherit; font-size: 12px; padding: 5px 8px; border: 1px solid var(--border); border-radius: 7px; background: var(--card); color: var(--text); }
   #insDescView .dc-tools input[type="search"] { min-width: 220px; width: auto; }
   #insDescView .dc-tools select { width: auto; max-width: 260px; }
+  #insDescView .dc-tools .cu-filter { position: relative; }
+  #insDescView .dc-menu { left: 0; right: auto; min-width: 240px; max-width: 320px; }
+  #insDescView .dc-menu label { display: flex; gap: 7px; align-items: center; margin: 0; padding: 3px 4px; font-size: 12.5px; font-weight: 400; cursor: pointer; }
+  #insDescView .cu-filter-btn.on { border-color: var(--indigo); color: var(--indigo); }
+  #insDescView .dc-cap { text-transform: capitalize; }
+  #insDescView .dc-link { font: inherit; font-size: 12px; border: 0; background: none; color: var(--indigo); cursor: pointer; padding: 2px 4px; }
+  #insDescView .dc-link:hover { text-decoration: underline; }
+  #insDescView .dc-st-acts { display: flex; gap: 8px; margin-top: 4px; border-top: 1px solid var(--border); padding-top: 6px; }
   #insDescView .dc-checks { display: flex; flex-direction: column; gap: 5px; padding: 10px 12px; margin: 6px 0 10px; border: 1px solid var(--border); border-radius: 10px; background: var(--card); max-width: 520px; }
   #insDescView .dc-checks label { display: flex; gap: 7px; align-items: center; margin: 0; font-size: 12.5px; }
   #insDescView .dc-bulk { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; padding: 8px 10px; margin: 0 0 10px; border: 1px solid var(--border); border-radius: 10px; background: var(--card); font-size: 12px; }
@@ -169,6 +251,11 @@
       const ids = new Set(rows.map((t) => t.id));
       for (const id of [...eds.keys()]) if (!ids.has(id)) eds.delete(id);
       for (const id of [...picked]) if (!ids.has(id)) picked.delete(id);
+      // A fix made from an older description is dropped (the task changed).
+      for (const t of rows) { const ed = eds.get(t.id); if (ed && !ed.busy && ed.before != null && t.descHash && F.hash(ed.before) !== t.descHash) eds.delete(t.id); }
+      await fixP;
+      restoreFixes();
+      setTimeout(warm, 1000);
     } else error = r && r.reason === "not-configured" ? "Connect ClickUp first (ClickUp setup)." : (r && r.error) || "Couldn't read your tasks.";
     paint();
   }
@@ -176,10 +263,76 @@
   const inCat = (t, c) => c === "problems" ? probs(t).length > 0 : c === "good" ? !probs(t).length : probs(t).includes(c);
   // A category chip shows only while its check is on.
   const catOn = (k) => k === "problems" || k === "good" || k === "notFormatted" || (on(PREF_OF[k]) && (k !== "fileNotFormatted" || on("file")));
+  // ---------- ▾ Clients and ▾ Filter (like the Dashboard's Tasks card) ----------
+  // fClients: [] = every client, else the ticked ones.
+  // fDue: ticked due ranges (none ticked = any due date); "custom" = fFrom..fTo (day starts).
+  // fStatus: null = every status of an open task (finished ones hidden), else the ticked ones.
+  let fClients = [], fDue = [], fFrom = 0, fTo = 0, fStatus = null, menu = "", cliQ = "";
+  try {
+    const f = JSON.parse(localStorage.getItem("pcm.descFilter") || "null");
+    if (f && typeof f === "object") {
+      fClients = Array.isArray(f.clients) ? f.clients : [];
+      fDue = Array.isArray(f.due) ? f.due : [];
+      fFrom = Number(f.from) || 0; fTo = Number(f.to) || 0;
+      fStatus = Array.isArray(f.status) ? f.status : null;
+    }
+  } catch (e) {}
+  const saveFilter = () => { try { localStorage.setItem("pcm.descFilter", JSON.stringify({ clients: fClients, due: fDue, from: fFrom, to: fTo, status: fStatus })); } catch (e) {} };
+  const day0 = (ms) => { const d = new Date(ms); d.setHours(0, 0, 0, 0); return d.getTime(); };
+  const addD = (ms, n) => { const d = new Date(ms); d.setDate(d.getDate() + n); return d.getTime(); };
+  // Weeks start where "A week runs" (ClickUp setup) says: Sunday unless a Monday mode.
+  let weekStart = 0;
+  try { chrome.storage.local.get("settings").then((g) => { const m = g && g.settings && g.settings.clickupWeekMode; weekStart = /^mon/.test(String(m || "")) ? 1 : 0; }).catch(() => {}); } catch (e) {}
+  const wk0 = (ms) => addD(day0(ms), -((new Date(ms).getDay() - weekStart + 7) % 7));
+  const mo0 = (ms, n) => { const d = new Date(ms); return new Date(d.getFullYear(), d.getMonth() + (n || 0), 1).getTime(); };
+  const shortD = (ms) => new Date(ms).toLocaleDateString(undefined, { month: "short", day: "numeric" });
+  const DUE_OPTS = [
+    ["overdue", "Overdue", "Due before today and not finished"],
+    ["prevWeek", "Previous week", "Due any day last week"],
+    ["week", "This week", "Due any day this week"],
+    ["nextWeek", "Next week", "Due any day next week"],
+    ["prevMonth", "Previous month", "Due any day last month"],
+    ["month", "This month", "Due any day this month"],
+    ["nextMonth", "Next month", "Due any day next month"],
+    ["none", "No due date", "Tasks without a due date"],
+    ["custom", "Custom date / range", "Pick days in the calendar"],
+  ];
+  function dueIn(k, t) {
+    const due = Number(t.dueDateMs) || 0;
+    if (k === "none") return !due;
+    if (!due) return false;
+    const now = Date.now();
+    const range = (a, z) => due >= a && due < z;
+    if (k === "overdue") return due < day0(now) && !t.done;
+    if (k === "prevWeek") return range(addD(wk0(now), -7), wk0(now));
+    if (k === "week") return range(wk0(now), addD(wk0(now), 7));
+    if (k === "nextWeek") return range(addD(wk0(now), 7), addD(wk0(now), 14));
+    if (k === "prevMonth") return range(mo0(now, -1), mo0(now));
+    if (k === "month") return range(mo0(now), mo0(now, 1));
+    if (k === "nextMonth") return range(mo0(now, 1), mo0(now, 2));
+    if (k === "custom") return !fFrom || range(fFrom, addD(fTo || fFrom, 1));
+    return false;
+  }
+  const dueOk = (t) => !fDue.length || fDue.some((k) => dueIn(k, t));
+  const stKey = (t) => String(t.status || "").toLowerCase();
+  const statusOk = (t) => fStatus ? fStatus.includes(stKey(t)) : !t.done;
+  const clientOk = (t) => !fClients.length || fClients.includes(t.client || "");
+  // Every filter but the category chips.
+  const filtered = () => (rows || []).filter((t) => dueOk(t) && statusOk(t) && clientOk(t));
   function visible() {
     const q = query.trim().toLowerCase();
-    return (rows || []).filter((t) => inCat(t, cat) && (!client || t.client === client) && (!q || (t.name + " " + (t.client || "")).toLowerCase().includes(q)));
+    return filtered().filter((t) => inCat(t, cat) && (!q || (t.name + " " + (t.client || "")).toLowerCase().includes(q)));
   }
+  // Every status in the list, open ones first, each with its count.
+  function statusList() {
+    const m = new Map();
+    for (const t of rows || []) { const k = stKey(t); if (!k) continue; const e = m.get(k) || { k, n: 0, done: !!t.done }; e.n++; m.set(k, e); }
+    return [...m.values()].sort((a, b) => (a.done - b.done) || a.k.localeCompare(b.k));
+  }
+  // A click outside an open menu closes it.
+  document.addEventListener("click", (e) => {
+    if (menu && host && !(e.target.closest && e.target.closest("#insDescView .cu-filter"))) { menu = ""; paint(); }
+  });
   const byId = (id) => (rows || []).find((t) => t.id === id);
 
   // ---------- the fix of one task ----------
@@ -292,7 +445,7 @@
   // Read the task (description + its own comments), fill in what's missing:
   // File from the comments' links, the text fields from the AI. `again` asks
   // the AI again even for fields that already have a suggestion.
-  async function prepare(id, again, quiet) {
+  async function prepare(id, again, quiet, bg) {
     const t = byId(id);
     if (!t) return false;
     let ed = eds.get(id);
@@ -334,14 +487,27 @@
     const needClient = on("clientDescription") && fmtOf(t, ed) === 1 && (again ? !ed.edited : !String(ed.vals.clientDescription || "").trim()) && !String(ed.orig.clientDescription || "").trim();
     const needDesc = on("description") && (again ? !ed.edited : !String(ed.vals.description || "").trim()) && !String(ed.orig.description || "").trim();
     let note = "";
-    if ((needClient || needDesc || needPre) && window.PcmAI) {
-      ed.msg = "Writing the missing text with AI…";
-      if (!quiet) paint();
+    // In the background only Chrome's built-in AI is used (nothing is sent anywhere unasked).
+    const useAi = (needClient || needDesc || needPre) && window.PcmAI && (!bg || await builtinReady());
+    if (useAi && !ed.ctx) {
+      // A fix kept from an earlier visit has no comments with it: read them for the AI.
+      const ctx = await ask({ type: "DESC_CHECK_CONTEXT", taskId: id }, 60000);
+      if (ctx && ctx.ok) ed.ctx = ctx;
+    }
+    if (useAi && ed.ctx) {
+      // One AI request at a time: the others wait their turn and say so.
+      const ahead = aiPending;
+      aiPending++;
+      ed.msg = ahead ? "Waiting for the AI (" + ahead + " ahead)…" : "Writing the missing text with AI…";
+      paint();
       const run = () => window.PcmAI.generate(AI_SYSTEM, aiPrompt(t, ed.ctx), { schema: AI_SCHEMA });
+      const turn = aiChain.then(() => { ed.msg = "Writing the missing text with AI…"; paint(); return run(); });
+      aiChain = turn.catch(() => {}).then(() => { aiPending--; });
       let out = null;
-      try { out = readJson(await run()); }
+      try { out = readJson(await turn); }
       catch (e) {
-        if (e && e.code === "consent" && !noOnline) {
+        if (bg) note = "";
+        else if (e && e.code === "consent" && !noOnline) {
           if (confirm("This computer can't run Chrome's built-in AI, so the free online AI would read the task's name, description and comments. Use it?")) {
             window.PcmAI.allowOnline();
             try { out = readJson(await run()); } catch (e2) { note = "The AI didn't answer: " + (e2 && e2.message ? e2.message : e2); }
@@ -352,9 +518,10 @@
         if (needClient && out.clientDescription) ed.vals.clientDescription = clean(out.clientDescription);
         if (needDesc && out.description) ed.vals.description = clean(out.description);
         if (needPre && out.preDescription) ed.vals.preDescription = clean(out.preDescription);
-      } else if (!note) note = "The AI's answer couldn't be read: try Suggest again or ✎ Edit.";
+      } else if (!note && !bg) note = "The AI's answer couldn't be read: try Suggest again or ✎ Edit.";
     }
     ed.busy = false;
+    saveFix(id, ed);
     const left = counted(F.check(afterOf(t, ed), { pre: true }).problems);
     ed.msg = (ed.movedNote && !note ? "The note written in File was moved to Description. " : "") + (note || (left.length ? "After this fix it would still be: " + left.map((p) => F.PROBLEM_LABEL[p].toLowerCase()).join(", ") + ". Use ✎ Edit to fill it in." : "Check the After column, change anything with ✎ Edit, then Apply."));
     ed.tone = note ? "err" : "";
@@ -385,6 +552,7 @@
     t.format = r.format; t.problems = r.problems || [];
     t.values = Object.assign({}, r.values || {});
     eds.delete(id);
+    dropFix(id);
     picked.delete(id);
     notes.set(id, probs(t).length ? "Applied. Still: " + probs(t).map((p) => F.PROBLEM_LABEL[p].toLowerCase()).join(", ") : "Applied ✓");
     paint();
@@ -430,12 +598,14 @@
     }
     if (!catOn(cat)) cat = "problems";
     const counts = {};
-    for (const [k] of CATS) counts[k] = rows.filter((t) => inCat(t, k)).length;
+    const base = filtered();
+    for (const [k] of CATS) counts[k] = base.filter((t) => inCat(t, k)).length;
     const clients = [...new Set(rows.map((t) => t.client).filter(Boolean))].sort((a, b) => a.localeCompare(b));
     const list = visible();
-    const checked = CHECKS.filter((c) => on(c[0]) && (c[0] !== "fileStrict" || on("file"))).map((c) => c[1].replace(/, separated by commas$/, "")).join(", ");
+    const checked = CHECKS.filter((c) => c[0] !== "warm" && on(c[0]) && (c[0] !== "fileStrict" || on("file"))).map((c) => c[1].replace(/, separated by commas$/, "")).join(", ");
     const head = '<div class="ip-head"><h2>Descriptions</h2><span class="sp"></span><span class="ip-meta">' +
-      (loading ? "Refreshing…" : "Updated " + ago(at)) + " · " + rows.length + " open tasks checked</span>" +
+      (loading ? "Refreshing…" : "Updated " + ago(at)) + " · " + rows.filter((t) => !t.done).length + " open tasks checked" + (rows.some((t) => t.done) ? " (+ " + rows.filter((t) => t.done).length + " finished in 30 days)" : "") +
+      (() => { const need = filtered().filter((t) => probs(t).length); const ready = need.filter((t) => isReady(t, eds.get(t.id))).length; return need.length ? " · " + ready + " of " + need.length + " fixes ready" + (warming ? ", preparing more…" : "") : ""; })() + "</span>" +
       '<button type="button" class="ip-btn" id="dcChecks" aria-expanded="' + checksOpen + '">Checks ' + (checksOpen ? "▴" : "▾") + "</button></div>" +
       (checksOpen ? '<div class="dc-checks"><div class="dc-msg">Switch off what your team doesn\'t use. A task is flagged only for the checks that are on.</div>' +
         CHECKS.map((c) => '<label><input type="checkbox" data-check="' + c[0] + '"' + (on(c[0]) ? " checked" : "") + (c[0] === "fileStrict" && !on("file") ? " disabled" : "") + "> " + esc(c[1]) + (c[2] ? ' <span class="dc-msg">(' + esc(c[2]) + ")</span>" : "") + "</label>").join("") +
@@ -444,8 +614,26 @@
       (error ? '<p class="dc-msg err">' + esc(error) + "</p>" : "");
     const chips = '<div class="dc-chips" role="tablist">' + CATS.filter(([k]) => catOn(k)).map(([k, label]) =>
       '<button type="button" data-cat="' + k + '" class="' + (k === cat ? "on" : "") + '">' + esc(label) + "<b>" + counts[k] + "</b></button>").join("") + "</div>";
+    const cliCount = new Map();
+    for (const t of rows) if (t.client) cliCount.set(t.client, (cliCount.get(t.client) || 0) + 1);
+    const cq = cliQ.trim().toLowerCase();
+    const cliMenu = '<div class="cu-filter-menu cu-client-menu dc-menu"><input type="search" id="dcCliSearch" class="cu-client-search" placeholder="Search clients…" value="' + esc(cliQ) + '" autocomplete="off">' +
+      '<div class="cu-filter-group"><div class="cu-filter-h">Clients' + (fClients.length ? ' <button type="button" class="dc-link" data-cliall>All clients</button>' : "") + "</div>" +
+      clients.filter((c) => !cq || c.toLowerCase().includes(cq)).map((c) => '<label><input type="checkbox" data-cli="' + esc(c) + '"' + (fClients.includes(c) ? " checked" : "") + "> <span>" + esc(c) + ' <small class="dc-msg">' + (cliCount.get(c) || 0) + "</small></span></label>").join("") +
+      "</div></div>";
+    const sts = statusList();
+    const fCount = fDue.length + (fStatus ? 1 : 0);
+    const fltMenu = '<div class="cu-filter-menu dc-menu"><div class="cu-filter-bar"><div class="cu-filter-clear cu-filter-defaults"><button type="button" data-fclearall>Clear all</button></div></div>' +
+      '<div class="cu-filter-group"><div class="cu-filter-h">Due <small>(nothing ticked = any due date)</small></div>' +
+      DUE_OPTS.map(([k, l, tip]) => '<label title="' + esc(tip) + '"><input type="checkbox" data-due="' + k + '"' + (fDue.includes(k) ? " checked" : "") + "> <span>" + esc(k === "custom" && fDue.includes("custom") && fFrom ? l + ": " + shortD(fFrom) + (fTo && fTo !== fFrom ? " - " + shortD(fTo) : "") : l) + "</span></label>").join("") +
+      (fDue.includes("custom") ? '<button type="button" class="dc-link" data-pickdates>📅 Change dates</button>' : "") + "</div>" +
+      '<div class="cu-filter-group"><div class="cu-filter-h">Status <small>(finished = last 30 days)</small></div>' +
+      sts.map((s) => '<label><input type="checkbox" data-st="' + esc(s.k) + '"' + ((fStatus ? fStatus.includes(s.k) : !s.done) ? " checked" : "") + '> <span class="dc-cap">' + esc(s.k) + ' <small class="dc-msg">' + s.n + (s.done ? " · finished" : "") + "</small></span></label>").join("") +
+      '<div class="dc-st-acts"><button type="button" class="dc-link" data-stset="open">Open only</button><button type="button" class="dc-link" data-stset="all">All</button></div></div></div>';
     const tools = '<div class="dc-tools"><input type="search" id="dcSearch" placeholder="Search task or client" value="' + esc(query) + '">' +
-      '<select id="dcClient"><option value="">All clients</option>' + clients.map((c) => '<option value="' + esc(c) + '"' + (c === client ? " selected" : "") + ">" + esc(c) + "</option>").join("") + "</select></div>";
+      '<div class="cu-filter"><button type="button" class="cu-filter-btn' + (fClients.length ? " on" : "") + '" data-menu="clients" aria-expanded="' + (menu === "clients") + '">▾ Clients' + (fClients.length ? " · " + fClients.length : "") + "</button>" + (menu === "clients" ? cliMenu : "") + "</div>" +
+      '<div class="cu-filter"><button type="button" class="cu-filter-btn' + (fCount ? " on" : "") + '" data-menu="filter" aria-expanded="' + (menu === "filter") + '">▾ Filter' + (fCount ? " · " + fCount : "") + "</button>" + (menu === "filter" ? fltMenu : "") + "</div>" +
+      (fClients.length || fCount ? '<button type="button" class="dc-link" id="dcClearF">Clear filters</button>' : "") + "</div>";
     const sel = list.filter((t) => picked.has(t.id));
     const selAll = (rows || []).filter((t) => picked.has(t.id));
     const ready = selAll.filter((t) => isReady(t, eds.get(t.id))).length;
@@ -464,10 +652,10 @@
       : '<p class="dc-msg">' + (cat === "good" ? "No task has all its fields filled in yet." : "Nothing here: every task in this view has its fields filled in.") + "</p>";
     // Keep the search box's focus and caret, and a textarea's, across the repaint.
     const a = document.activeElement;
-    const keep = a && host.contains(a) && (a.id === "dcSearch" || a.matches("textarea[data-k]")) ? { id: a.id, k: a.getAttribute("data-k"), ed: a.closest(".dc-ed") && a.closest(".dc-ed").getAttribute("data-ed"), pos: a.selectionStart } : null;
+    const keep = a && host.contains(a) && (a.id === "dcSearch" || a.id === "dcCliSearch" || a.matches("textarea[data-k]")) ? { id: a.id, k: a.getAttribute("data-k"), ed: a.closest(".dc-ed") && a.closest(".dc-ed").getAttribute("data-ed"), pos: a.selectionStart } : null;
     host.innerHTML = head + chips + tools + bar + '<div class="ip-card">' + body + "</div>";
     if (keep) {
-      const el = keep.id === "dcSearch" ? host.querySelector("#dcSearch") : host.querySelector('.dc-ed[data-ed="' + CSS.escape(keep.ed || "") + '"] textarea[data-k="' + keep.k + '"]');
+      const el = keep.id === "dcSearch" || keep.id === "dcCliSearch" ? host.querySelector("#" + keep.id) : host.querySelector('.dc-ed[data-ed="' + CSS.escape(keep.ed || "") + '"] textarea[data-k="' + keep.k + '"]');
       if (el) { el.focus(); try { el.setSelectionRange(keep.pos, keep.pos); } catch (e) {} }
     }
     wire();
@@ -538,8 +726,49 @@
     host.querySelectorAll("[data-cat]").forEach((b) => { b.onclick = () => { cat = b.getAttribute("data-cat"); shown = 30; paint(); }; });
     const s = host.querySelector("#dcSearch");
     if (s) s.oninput = () => { query = s.value; shown = 30; paint(); };
-    const c = host.querySelector("#dcClient");
-    if (c) c.onchange = () => { client = c.value; shown = 30; paint(); };
+    host.querySelectorAll("[data-menu]").forEach((b) => { b.onclick = (e) => { e.stopPropagation(); const m = b.getAttribute("data-menu"); menu = menu === m ? "" : m; paint(); }; });
+    const cs = host.querySelector("#dcCliSearch");
+    if (cs) cs.oninput = () => { cliQ = cs.value; paint(); };
+    host.querySelectorAll("[data-cli]").forEach((x) => {
+      x.onchange = () => { const k = x.getAttribute("data-cli"); fClients = x.checked ? [...new Set(fClients.concat(k))] : fClients.filter((y) => y !== k); saveFilter(); shown = 30; paint(); };
+    });
+    const ca = host.querySelector("[data-cliall]");
+    if (ca) ca.onclick = () => { fClients = []; saveFilter(); shown = 30; paint(); };
+    const pickDates = () => {
+      if (!window.PcmCalendar || !window.PcmCalendar.open) return;
+      const use = (a, z) => { if (!fDue.includes("custom")) fDue = fDue.concat("custom"); fFrom = day0(a); fTo = day0(z || a); saveFilter(); shown = 30; paint(); };
+      window.PcmCalendar.open(host.querySelector('[data-menu="filter"]'), {
+        title: "Due dates for Descriptions",
+        onRange: (a, z) => use(a, z),
+        onDays: (list) => { const s = list.slice().sort((x, y) => x - y); use(s[0], s[s.length - 1]); },
+      });
+    };
+    host.querySelectorAll("[data-due]").forEach((x) => {
+      x.onchange = () => {
+        const k = x.getAttribute("data-due");
+        fDue = x.checked ? [...new Set(fDue.concat(k))] : fDue.filter((y) => y !== k);
+        if (k === "custom" && !x.checked) fFrom = fTo = 0;
+        saveFilter(); shown = 30; paint();
+        if (k === "custom" && x.checked) pickDates();
+      };
+    });
+    const pd = host.querySelector("[data-pickdates]");
+    if (pd) pd.onclick = (e) => { e.stopPropagation(); pickDates(); };
+    host.querySelectorAll("[data-st]").forEach((x) => {
+      x.onchange = () => {
+        const cur = fStatus ? fStatus.slice() : statusList().filter((s) => !s.done).map((s) => s.k);
+        const k = x.getAttribute("data-st");
+        fStatus = x.checked ? [...new Set(cur.concat(k))] : cur.filter((y) => y !== k);
+        saveFilter(); shown = 30; paint();
+      };
+    });
+    host.querySelectorAll("[data-stset]").forEach((b) => {
+      b.onclick = () => { fStatus = b.getAttribute("data-stset") === "all" ? statusList().map((s) => s.k) : null; saveFilter(); shown = 30; paint(); };
+    });
+    const fca = host.querySelector("[data-fclearall]");
+    if (fca) fca.onclick = () => { fDue = []; fFrom = fTo = 0; fStatus = null; saveFilter(); shown = 30; paint(); };
+    const cf = host.querySelector("#dcClearF");
+    if (cf) cf.onclick = () => { fClients = []; fDue = []; fFrom = fTo = 0; fStatus = null; menu = ""; saveFilter(); shown = 30; paint(); };
     const more = host.querySelector("#dcMore");
     if (more) more.onclick = () => { shown += 30; paint(); };
     const all = host.querySelector("#dcAll");
@@ -550,6 +779,7 @@
       x.onchange = () => {
         prefs[x.getAttribute("data-check")] = x.checked;
         paint();
+        if (x.getAttribute("data-check") === "warm" && x.checked) warm();
         ask({ type: "SET_SETTINGS", patch: { descChecks: Object.assign({}, prefs) } }, 15000);
       };
     });
@@ -579,7 +809,7 @@
       // What is typed is kept as it is typed; the After column follows it.
       el.querySelectorAll("textarea[data-k]").forEach((ta) => {
         ta.oninput = () => {
-          ed.vals[ta.getAttribute("data-k")] = ta.value; ed.edited = true;
+          ed.vals[ta.getAttribute("data-k")] = ta.value; ed.edited = true; saveFix(id, ed);
           if (ta.getAttribute("data-k") === "file") ed.pick = ed.links.filter((u) => F.linksIn(ta.value).includes(u));
           clearTimeout(ed._t); ed._t = setTimeout(paint, 250);
         };
@@ -592,7 +822,7 @@
           // The ticked links are the File value; links typed by hand stay.
           const typed = F.linksIn(ed.vals.file || "").filter((x) => !ed.links.includes(x));
           ed.vals.file = F.fileValue(typed.concat(ed.pick));
-          ed.edited = true;
+          ed.edited = true; saveFix(id, ed);
           paint();
         };
       });
@@ -602,16 +832,13 @@
   window.PcmDescCheck = {
     render(el) {
       host = el;
-      if (!rows && !hydrated) {
+      if (!hydrated) {
         // The last result first (a few ms), then a fresh read if it's old.
         hydrated = true;
         paint();
-        chrome.storage.local.get("descCheckLast").then((g) => {
-          const k = g && g.descCheckLast;
-          if (!rows && k && Array.isArray(k.rows)) { rows = k.rows; at = Number(k.at) || 0; }
-        }).catch(() => {}).then(() => {
+        hydrate().then(() => {
           if (!rows || Date.now() - at > 3 * 60000) load(false);
-          else paint();
+          else { paint(); warm(); }
         });
         return;
       }
@@ -621,6 +848,16 @@
     },
     refresh() { return load(true); },
   };
+  // Ready before it's opened: a few seconds after Options opens (on any tab),
+  // the list is brought up to date and the fixes are prepared in the background.
+  setTimeout(() => {
+    if (hydrated) return; // the tab was opened meanwhile: render() does it
+    hydrated = true;
+    hydrate().then(() => {
+      if (!rows || Date.now() - at > 3 * 60000) load(false);
+      else warm();
+    });
+  }, 4000);
   // options.js may have drawn Insights before this file loaded (the tab opens
   // on Descriptions when it was the last one used): draw now.
   try {

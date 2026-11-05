@@ -1861,21 +1861,40 @@ async function getDescCheck(cfg, force) {
     raw.push(...batch);
     if (batch.length < 100 || j.last_page === true) break;
   }
+  // Plus the ones finished in the last 30 days (a task completed with empty
+  // fields is what a reviewer looks for). The page hides them until their
+  // status is ticked in its Filter.
+  const doneRaw = [];
+  try {
+    for (let page = 0; page < 2; page++) {
+      const url = "https://api.clickup.com/api/v2/team/" + encodeURIComponent(cfg.teamId) + "/task?page=" + page +
+        "&subtasks=true&include_closed=true&assignees[]=" + encodeURIComponent(String(cfg.userId)) +
+        "&date_done_gt=" + (Date.now() - 30 * 86400000) + "&include_markdown_description=true";
+      const res = await cuRawFetch(token, url, { headers: { Authorization: token } });
+      if (!res.ok) break;
+      const j = await res.json().catch(() => null);
+      const batch = j && Array.isArray(j.tasks) ? j.tasks : [];
+      doneRaw.push(...batch.filter((t) => t && isTaskDone(t)));
+      if (batch.length < 100 || j.last_page === true) break;
+    }
+  } catch (e) {}
   const settings = await getSettings().catch(() => ({}));
   const F = globalThis.PcmDescFmt;
   const cut = (s) => { s = String(s || ""); return s.length > 600 ? s.slice(0, 598) + "…" : s; };
   // The weekly Extra Task never gets closing fields, so it isn't checked.
   const isExtra = (t) => globalThis.PcmDailyUpdate ? globalThis.PcmDailyUpdate.isExtra({ name: t.name }) : /^extras?\s+tasks?\b/i.test(t.name || "");
-  const tasks = raw.filter((t) => t && t.id != null && !isTaskDone(t) && !isExtra(t)).map((t) => {
+  const seenIds = new Set();
+  const tasks = raw.filter((t) => t && t.id != null && !isTaskDone(t)).concat(doneRaw).filter((t) => t && t.id != null && !isExtra(t) && !seenIds.has(String(t.id)) && seenIds.add(String(t.id))).map((t) => {
     const md = String(t.markdown_description || t.description || t.text_content || "");
     const v = F.check(md, { pre: true }); // every check; the page shows the ones switched on
     const vals = {};
     for (const k in v.values) vals[k] = cut(v.values[k]);
     return {
       id: String(t.id), name: t.name || "(untitled task)", url: taskUrlFor(t.id),
-      status: (t.status && t.status.status) || "", dueDateMs: Number(t.due_date) || null,
+      status: (t.status && t.status.status) || "", dueDateMs: Number(t.due_date) || null, done: isTaskDone(t),
       container: taskContainer(t), isSubtask: !!t.parent, parentId: t.parent ? String(t.parent) : undefined,
       format: v.format, problems: v.problems, values: vals, briefText: cut(md.replace(/\s+/g, " ").trim()),
+      descHash: F.hash(md), // a fix the page prepared earlier is reused only while this matches
     };
   });
   const data = { tasks, deadlineTasks: [], trackedTasks: [] };
@@ -11351,7 +11370,9 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
           const fields = (Array.isArray(task && task.custom_fields) ? task.custom_fields : [])
             .filter((f) => f && f.name && f.value != null && f.value !== "" && typeof f.value !== "object")
             .map((f) => f.name + ": " + String(f.value).slice(0, 300)).slice(0, 12);
-          sendResponse({ ok: true, comments, description: md.slice(0, 8000), fields, parentName: "" });
+          // The whole description: the page builds its preview from it, and Save
+          // compares it with ClickUp's (a cut copy would always read as "changed").
+          sendResponse({ ok: true, comments, description: md.slice(0, 60000), fields, parentName: "" });
         } catch (e) { sendResponse({ ok: false, error: String(e && e.message ? e.message : e) }); }
         break;
       }

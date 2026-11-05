@@ -189,5 +189,13 @@
     missingPreDescription: "Missing pre description",
     missingPreFile: "Missing pre file",
   };
-  g.PcmDescFmt = { check, apply, linksIn, fileState, fileValue, PROBLEM_LABEL, FORMAT1, FORMAT2 };
+  // A short fingerprint of a description (FNV-1a), so a fix prepared earlier is
+  // only reused while the task still reads exactly the same.
+  function hash(text) {
+    const s = String(text || "").replace(/\r\n?/g, "\n").trim();
+    let h = 0x811c9dc5;
+    for (let i = 0; i < s.length; i++) { h ^= s.charCodeAt(i); h = Math.imul(h, 0x01000193) >>> 0; }
+    return h.toString(16) + ":" + s.length;
+  }
+  g.PcmDescFmt = { hash, check, apply, linksIn, fileState, fileValue, PROBLEM_LABEL, FORMAT1, FORMAT2 };
 })(globalThis);
