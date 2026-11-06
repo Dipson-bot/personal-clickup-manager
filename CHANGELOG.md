@@ -1,5 +1,9 @@
 # Changelog
 
+## v4.4.1
+- Insights › Descriptions: a task with no fields is put fully into the old or new format - its existing text becomes the Pre Description and the links at its end the Pre File, so nothing is left outside the fields.
+- Insights › Descriptions: the AI only writes the Description from work the task shows as done; a to-do list, an audit of problems or a plan is no longer turned into "was fixed" sentences (the Description is left for you instead).
+
 ## v4.4.0
 - Insights › Descriptions: the AI no longer names the business or its site - it writes "…was implemented on the site.", since tasks, sheets and docs are already filed by client. Want the name in? Checks ▾ › Mention the business or site name. Fixes the AI wrote before are made again (ones you edited stay).
 - Insights › Descriptions: a task with only some of the lines (e.g. just File:) shows Incomplete format, and its fix adds every missing line - Client Description, Pre Description, Pre File, Description, File - in the old format unless you pick the new one. Lines added to a task now use the old format by default.

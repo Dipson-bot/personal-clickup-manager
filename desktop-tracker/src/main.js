@@ -206,6 +206,53 @@ function setExpanded(on) {
   }
 }
 
+// ---------- the extension's folder (Mac) ----------
+// Updating the extension means writing into its folder. On Windows the folder is
+// read from the browser's own settings; on a Mac that counts as reading another
+// app's data, so the person picks the folder once (it is then remembered).
+// The folder must hold this very extension: its manifest's key gives the id.
+function extIdOfFolder(dir) {
+  try {
+    const m = JSON.parse(fs.readFileSync(path.join(dir, "manifest.json"), "utf8"));
+    if (!m.key) return "";
+    const h = require("crypto").createHash("sha256").update(Buffer.from(String(m.key), "base64")).digest("hex").slice(0, 32);
+    return [...h].map((c) => String.fromCharCode(97 + parseInt(c, 16))).join("");
+  } catch (e) { return ""; }
+}
+async function chooseExtFolder(extId) {
+  const owner = win && !win.isDestroyed() ? win : undefined;
+  const saved = settings.extFolders && settings.extFolders[extId];
+  const r = await dialog.showOpenDialog(owner, { title: "Choose the Personal ClickUp Manager folder", message: "The folder you picked in Chrome › Extensions › Load unpacked (it has manifest.json in it)", defaultPath: saved || app.getPath("home"), properties: ["openDirectory"] });
+  if (r.canceled || !r.filePaths || !r.filePaths[0]) return "";
+  const dir = r.filePaths[0];
+  if (!extId || extIdOfFolder(dir) !== extId) {
+    await dialog.showMessageBox(owner, { type: "warning", message: "That isn't the extension's folder", detail: "Pick the Personal ClickUp Manager folder - the one you chose in Chrome › Extensions › Load unpacked. It has manifest.json directly inside." });
+    return "";
+  }
+  settings.extFolders = Object.assign({}, settings.extFolders, { [extId]: dir });
+  saveSettings();
+  return dir;
+}
+let askingFolder = null;
+async function macExtFolders(extId, op) {
+  const saved = settings.extFolders && settings.extFolders[extId];
+  if (saved && extIdOfFolder(saved) === extId) return [saved];
+  // Asked only when an update is starting ("locate"), and at most every 3 days after a "Not now".
+  if (op !== "locate" || Date.now() - (Number(settings.extFolderAskedAt) || 0) < 3 * 86400000) return [];
+  if (!askingFolder) askingFolder = (async () => {
+    settings.extFolderAskedAt = Date.now(); saveSettings();
+    const owner = win && !win.isDestroyed() ? win : undefined;
+    const r = await dialog.showMessageBox(owner, {
+      type: "question", buttons: ["Choose the folder", "Not now"], defaultId: 0, cancelId: 1,
+      message: "Install the new Personal ClickUp Manager for you?",
+      detail: "ClickUp Tracker can put new versions of the extension into its folder by itself. Choose that folder once (the one you picked in Chrome › Extensions › Load unpacked) - it is remembered, and ClickUp Tracker never looks through your browser's files to find it.",
+    });
+    return r.response === 0 ? chooseExtFolder(extId) : "";
+  })().finally(() => { askingFolder = null; });
+  const dir = await askingFolder;
+  return dir ? [dir] : [];
+}
+
 // ---------- the time in the menu bar (Mac) / the tray tooltip ----------
 const fmtD = (ms) => { const m = Math.round(Math.max(0, ms) / 60000); const h = Math.floor(m / 60); return h ? h + "h" + (m % 60 ? " " + (m % 60) + "m" : "") : m + "m"; };
 // With seconds (tray menu › Show seconds in the menu bar): "4h 49m 07s". Counted
@@ -298,6 +345,7 @@ function buildTray() {
       ? { label: "Also show the floating strip", type: "checkbox", checked: !!(win && win.isVisible()), toolTip: "The timer is in the menu bar; this adds the small floating window too", click: toggleWindow }
       : { label: win && win.isVisible() ? "Hide tracker" : "Show tracker", click: toggleWindow },
     ...(process.platform === "win32" ? [{ label: "On the taskbar", type: "checkbox", checked: settings.dock !== false, enabled: canDock(), toolTip: canDock() ? "" : "Needs the taskbar at the top or bottom of the screen, not auto-hidden", click: (m) => setDock(m.checked) }] : []),
+    ...(process.platform === "darwin" && Array.isArray(settings.trustedExt) && settings.trustedExt[0] ? [{ label: settings.extFolders && settings.extFolders[settings.trustedExt[0]] ? "Extension folder for updates ✓" : "Choose the extension folder for updates…", toolTip: "So ClickUp Tracker can install new versions of the extension for you", click: () => { chooseExtFolder(settings.trustedExt[0]).then(() => buildTray()); } }] : []),
     ...(process.platform === "darwin" ? [{ label: "Show the time in the menu bar", type: "checkbox", checked: settings.menubar !== false, click: (m) => { settings.menubar = m.checked; saveSettings(); syncSecsTimer(); paintTrayText(); } }] : []),
     ...(process.platform === "darwin" ? [{ label: "Menu bar shows", enabled: settings.menubar !== false, submenu: [
       { label: "This task and today", type: "radio", checked: !settings.menubarShow || settings.menubarShow === "both", click: () => { settings.menubarShow = "both"; saveSettings(); syncSecsTimer(); paintTrayText(); } },
@@ -485,7 +533,12 @@ function startLink() {
       req.on("data", (c) => { body += c; if (body.length > 4000) req.destroy(); });
       req.on("end", async () => {
         let out;
-        try { out = await extupdate.handle(origin, JSON.parse(body || "{}")); } catch (e) { out = { ok: false, error: String((e && e.message) || e) }; }
+        try {
+          const msg = JSON.parse(body || "{}");
+          // Mac: never read other browsers' files to find the folder (newer macOS
+          // blocks it: "ClickUp Tracker tried to access your data from other apps").
+          out = await extupdate.handle(origin, msg, process.platform === "darwin" ? { find: (id) => macExtFolders(id, msg.op) } : {});
+        } catch (e) { out = { ok: false, error: String((e && e.message) || e) }; }
         res.writeHead(200, { "Content-Type": "application/json" });
         res.end(JSON.stringify(out));
       });

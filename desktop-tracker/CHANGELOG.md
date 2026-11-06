@@ -1,5 +1,8 @@
 # ClickUp Tracker changelog
 
+## 0.4.5
+- Mac: no more "ClickUp Tracker tried to access your data from other apps" warning. To install new versions of the extension for you, the app used to look up the extension's folder in your browsers' settings files, which newer macOS blocks. Now you choose that folder once (it asks when an update arrives, or tray menu › Choose the extension folder for updates), and it is remembered. Windows works as before.
+
 ## 0.4.4
 - Mac: the time in the menu bar can count the seconds too - tray menu › Show seconds in the menu bar (off at first). It is counted on the Mac from when the timer started, so it adds no calls to ClickUp, and the digits keep the same width so the menu bar does not jiggle.
 - Mac: choose what the menu bar shows - tray menu › Menu bar shows › This task and today (as before), This task only, or Today only - for menu bars that are short on room.

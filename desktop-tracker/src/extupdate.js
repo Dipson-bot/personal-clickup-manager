@@ -82,7 +82,7 @@ const safePath = (p) => !!p && !p.startsWith("/") && !/^[a-zA-Z]:/.test(p) && !p
 
 async function locate(extId, nonce, find = findFolders) {
   if (!/^[a-p]{32}$/.test(extId) || !/^[a-z0-9]{8,64}$/.test(String(nonce || ""))) return { ok: false, error: "bad request" };
-  const folders = find(extId);
+  const folders = await find(extId);
   if (!folders.length) return { ok: false, reason: "not-found", error: "The browser has no folder on record for this extension (not installed from a folder?)" };
   let wrote = 0;
   for (const f of folders) { try { fs.writeFileSync(path.join(f, CHECK_FILE), String(nonce)); wrote++; } catch (e) {} }
@@ -94,7 +94,7 @@ async function install(extId, msg, find = findFolders, get = fetch) {
   if (!/^[a-p]{32}$/.test(extId) || !/^[a-z0-9]{8,64}$/.test(nonce) || !/^\d+(\.\d+){1,3}$/.test(version)) return { ok: false, error: "bad request" };
   if (!REPO_ZIP.test(zip)) return { ok: false, error: "only this project's GitHub releases are installed" };
   // The folder the extension proved it runs from (it read our code back).
-  const root = find(extId).find((f) => { try { return fs.readFileSync(path.join(f, CHECK_FILE), "utf8").trim() === nonce; } catch (e) { return false; } });
+  const root = (await find(extId)).find((f) => { try { return fs.readFileSync(path.join(f, CHECK_FILE), "utf8").trim() === nonce; } catch (e) { return false; } });
   if (!root) return { ok: false, reason: "not-found", error: "the extension's folder wasn't confirmed" };
   let cur;
   try { cur = JSON.parse(fs.readFileSync(path.join(root, "manifest.json"), "utf8")); } catch (e) { return { ok: false, error: "the installed manifest.json can't be read" }; }

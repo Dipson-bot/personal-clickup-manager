@@ -145,9 +145,26 @@
     const order = check(src).format === 1 || addFormat === 1 ? FORMAT1 : FORMAT2;
     const core = lines.some((l) => order.includes(l.label) || l.label === "Client Description");
     if (!core) {
+      // No format yet: the whole description goes INTO the format, nothing is
+      // left outside it. Its text is the task's brief -> Pre Description; the
+      // link-only lines at its end (documents the work starts from) -> Pre File.
       const fmt = addFormat === 1 ? FORMAT1 : FORMAT2;
-      const block = fmt.map((l) => l + ": " + qv(want[l] || "")).join("\n\n");
-      return (src.trim() ? src.replace(/\s+$/, "") + "\n\n" : "") + block;
+      const rows = src.replace(/\s+$/, "").split("\n");
+      const links = [];
+      while (rows.length) {
+        const last = rows[rows.length - 1].trim();
+        if (!last) { rows.pop(); continue; }
+        const ls = linksIn(last);
+        // A line of links only (nothing left once they are taken out).
+        const rest = ls.reduce((x, u) => x.split(u).join(" "), last).replace(/[\[\]()<>,;\s]+/g, "");
+        if (ls.length && !rest) { links.unshift(...ls); rows.pop(); continue; }
+        break;
+      }
+      // Double quotes inside would close the field early: single ones instead.
+      const body = rows.join("\n").replace(/["“”]/g, "'").trim();
+      if (body) want["Pre Description"] = body; // the task's own words win over any suggestion
+      if (links.length && !String(want["Pre File"] || "").trim()) want["Pre File"] = fileValue([...new Set(links)]);
+      return fmt.map((l) => l + ": " + qv(want[l] || "")).join("\n\n");
     }
     // Replace from the end so earlier offsets stay right; only the first of each label.
     const seen = new Set();
