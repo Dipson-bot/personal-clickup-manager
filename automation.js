@@ -17,6 +17,7 @@
     const to = setTimeout(() => { done = true; ok(null); }, ms || 30000);
     try { chrome.runtime.sendMessage(msg, (r) => { if (done) return; done = true; clearTimeout(to); void chrome.runtime.lastError; ok(r || null); }); } catch (e) { clearTimeout(to); ok(null); }
   });
+  const esc = (x) => String(x == null ? "" : x).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
   const fmtT = (ms) => new Date(ms).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
   const t12 = (hhmm) => { const [h, m] = String(hhmm || "17:00").split(":").map(Number); return { h12: ((h + 11) % 12) + 1, min: m || 0, pm: h >= 12 }; };
   const from12 = (h12, min, pm) => String((Number(h12) % 12) + (pm ? 12 : 0)).padStart(2, "0") + ":" + String(min).padStart(2, "0");
@@ -34,6 +35,22 @@
     .au-time { display: inline-flex; align-items: center; gap: 4px; flex: none; }
     .au-row select, .au-time select { width: auto !important; min-width: 0; flex: none; padding: 5px 6px; border-radius: 7px; border: 1px solid var(--border); background: var(--field, #fff); color: var(--text); font: inherit; font-size: 13px; }
     .au-box { border: 1px solid var(--border); border-radius: 10px; padding: 10px 12px; margin: 12px 0 0; }
+    .au-sbar { display: block; margin: 6px 0 2px; overflow: visible; }
+    .au-legend { display: flex; flex-wrap: wrap; gap: 4px 14px; font-size: 12px; color: var(--muted); }
+    .au-legend span { display: inline-flex; align-items: center; gap: 5px; }
+    .au-legend i { width: 12px; height: 10px; border-radius: 3px; display: inline-block; }
+    .au-legend i.dash { border: 2px dashed #6366f1; width: 10px; height: 6px; }
+    .au-pickbar input[type=text] { flex: 1 1 200px; }
+    .au-cmthead { display: flex !important; align-items: center; gap: 8px; margin: 0 !important; cursor: pointer; }
+    .au-cmt { width: 100%; box-sizing: border-box; margin: 8px 0 2px; padding: 8px 10px; border-radius: 8px; border: 1px solid var(--border); background: var(--field, #fff); color: var(--text); font: inherit; font-size: 13px; resize: vertical; }
+    .au-picklist { max-height: 260px; overflow: auto; border: 1px solid var(--border); border-radius: 8px; padding: 4px 8px; margin-top: 6px; }
+    .au-pick { display: flex !important; gap: 8px; align-items: flex-start; padding: 4px 0; border-top: 1px solid var(--border); font-size: 13px; cursor: pointer; }
+    .au-pick:first-child { border-top: 0; }
+    .au-stoprow { justify-content: space-between; border-top: 1px solid var(--border); padding-top: 6px; }
+    .au-stoprow > span { flex: 1 1 300px; }
+    .au-stoprow .au-st { display: block; margin: 2px 0 0; }
+    .au-primary { background: var(--indigo, #6366f1) !important; color: #fff !important; border-color: var(--indigo, #6366f1) !important; }
+    .au-primary:disabled { opacity: .5; }
     .au-box > b { display: block; margin-bottom: 2px; }
     .au-st { font-size: 12.5px; color: var(--muted); margin: 6px 0 0; }
     .au-st.ok { color: var(--green, #16a34a); }
@@ -236,6 +253,10 @@
     away.style.marginTop = "20px";
     panel.appendChild(away);
     buildSlackAway(away);
+    const stopCard = el("div", "au-card");
+    stopCard.style.marginTop = "20px";
+    panel.appendChild(stopCard);
+    buildStopAt(stopCard);
     const cheats = el("div", "au-card");
     cheats.style.marginTop = "20px";
     panel.appendChild(cheats);
@@ -845,6 +866,322 @@
   }
 
   // ---------- the console's commands, with buttons ----------
+  // ---------- Stop my timer: at a time, or when MY time on a task reaches a limit ----------
+  // Writes the same autoStopTasks rules as the console's /stopat; the background
+  // stops the timer (maybeAutoStop), checking ClickUp's own entries, so pauses and
+  // restarts move the stop later. Here: scope "mine" (only my own time on the task
+  // counts, not a teammate's) or "clock" (a time of day), for the running task or
+  // for tasks chosen with search + Client / Status / Due filters, and what the
+  // status becomes after it stops (the task's own ClickUp statuses).
+  function buildStopAt(card) {
+    const fmtD = (ms) => { const m = Math.max(0, Math.round((Number(ms) || 0) / 60000)); const h = Math.floor(m / 60); return h ? h + "h" + (m % 60 ? " " + (m % 60) + "m" : "") : m + "m"; };
+    const parseD = (v) => { v = String(v || "").trim().toLowerCase(); const hm = v.match(/^(\d+):(\d{1,2})$/); if (hm) return (Number(hm[1]) * 60 + Number(hm[2])) * 60000; let ms = 0, any = false; v.replace(/(\d+(?:\.\d+)?)\s*(h|m)/g, (_, n, u) => { any = true; ms += Number(n) * (u === "h" ? 3600000 : 60000); return ""; }); if (any) return Math.round(ms); return /^\d+(\.\d+)?$/.test(v) ? Math.round(Number(v) * 60000) : 0; };
+    const day0 = (ms) => { const d = new Date(ms); d.setHours(0, 0, 0, 0); return d.getTime(); };
+    const st = { who: "running", picked: new Set(), q: "", client: "", status: "", due: "", mode: "mine", dur: "2h", hhmm: "", then: "__usual", cmtOn: false, cmtText: "", cmtWhen: "stop", cmtAt: 0 };
+    let run = null, tasks = null, rules = {}, statuses = {}, at = 0, ticker = 0;
+    const saveRules = (r) => chrome.storage.local.set({ autoStopTasks: r }).catch(() => {});
+
+    card.innerHTML = "";
+    card.append(el("h2", "", "⏹ Stop my timer automatically"));
+    card.append(el("p", "sub", "Stop a task's timer at a time of day, or once YOUR time on it reaches a limit - a teammate's time on the same task doesn't count. If you pause, the stop moves later by the pause. Then set the status you want."));
+    const activeBox = el("div", "au-box"); // what is switched on now
+    const whoBox = el("div", "au-box");
+    const whenBox = el("div", "au-box");
+    const thenBox = el("div", "au-box");
+    const cmtBox = el("div", "au-box");
+    const picBox = el("div", "au-box");
+    const setRow = el("div", "au-row");
+    card.append(activeBox, whoBox, whenBox, thenBox, cmtBox, picBox, setRow);
+
+    // ---------- the rule being set ----------
+    function draft() {
+      if (st.mode === "clock") {
+        const [h, m] = String(st.hhmm || "").split(":").map(Number);
+        const d = new Date(); d.setHours(h || 0, m || 0, 0, 0);
+        return { scope: "clock", atMs: d.getTime(), ms: 0 };
+      }
+      return { scope: "mine", ms: parseD(st.dur), atMs: 0 };
+    }
+    const targets = () => st.who === "running" ? (run ? [{ id: run.taskId, name: run.taskName, listId: run.listId, status: run.status, client: "" }] : [])
+      : (tasks || []).filter((t) => st.picked.has(String(t.id))).map((t) => ({ id: String(t.id), name: t.name, listId: (t.container && t.container.listId) || "", status: t.status, client: t.client || "" }));
+    // Where the running task would stop under a rule.
+    function plan(rule) {
+      if (!run) return null;
+      const now = Date.now(), mine = run.myClosedMs + Math.max(0, now - run.startMs), others = run.othersMs + run.subtasksMs;
+      const stopAt = rule.scope === "clock" ? Number(rule.atMs) : now + Math.max(0, Number(rule.ms) - mine);
+      const myAtStop = rule.scope === "clock" ? mine + Math.max(0, stopAt - now) : Math.max(mine, Number(rule.ms));
+      return { now, mine, others, stopAt, myAtStop, total: others + myAtStop, past: stopAt <= now + 5000 };
+    }
+    const ruleText = (r) => r.scope === "clock" ? "at " + fmtT(Number(r.atMs) || 0) : "when " + (r.scope === "mine" ? "your time on it" : r.scope === "total" ? "its time in all" : "your time on it today") + " reaches " + fmtD(r.ms);
+    const thenText = (r) => (r.status ? "then " + r.status : r.action === "complete" ? "then complete" : r.keep ? "status unchanged" : "then to do (usual)") +
+      (r.comment && r.comment.text ? ", then comment \u201C" + String(r.comment.text).replace(/\s+/g, " ").slice(0, 60) + (String(r.comment.text).length > 60 ? "\u2026" : "") + "\u201D" + (r.comment.when === "at" && r.comment.sendAt ? " at " + new Date(r.comment.sendAt).toLocaleString([], { weekday: "short", hour: "numeric", minute: "2-digit" }) : " right away") : "");
+
+    // ---------- 0. what is switched on ----------
+    function paintActive() {
+      activeBox.innerHTML = "";
+      const all = Object.entries(rules);
+      const head = el("div", "au-row");
+      head.append(el("b", "", all.length ? "🟢 Active stops (" + all.length + ")" : "No stop is switched on"));
+      if (all.length > 1) { const off = el("button", "", "Turn all off"); off.type = "button"; off.onclick = async () => { if (!confirm("Turn off all " + all.length + " stops?")) return; rules = {}; await saveRules({}); send({ type: "TRACKER_PROGRESS" }); paintAll(); }; head.append(off); }
+      activeBox.append(head);
+      if (!all.length) { activeBox.append(el("div", "au-st", "Set one below. While one is on, a ⏱ chip at the top of the extension's pages says so and has an Off button.")); return; }
+      for (const [id, r] of all) {
+        const row = el("div", "au-row au-stoprow");
+        let live = "";
+        if (run && run.taskId === id) { const p = plan(r); live = p ? (p.past ? " · stopping now" : " · running: stops at " + fmtT(p.stopAt) + " (" + fmtD(p.stopAt - p.now) + " left)") : ""; }
+        else live = r.scope === "clock" ? " · applies if it's running then" : " · waits until you track it";
+        const txt = el("span", "");
+        txt.innerHTML = "<b>" + esc(r.name || id) + "</b> - " + esc(ruleText(r)) + ", " + esc(thenText(r)) + '<span class="au-st">' + esc(live) + "</span>";
+        const off = el("button", "", "Turn off"); off.type = "button";
+        off.onclick = async () => { const n = { ...rules }; delete n[id]; rules = n; await saveRules(n); send({ type: "TRACKER_PROGRESS" }); paintAll(); };
+        row.append(txt, off);
+        activeBox.append(row);
+      }
+    }
+
+    // ---------- 1. which task(s) ----------
+    let listEl = null, countEl = null;
+    function paintWho() {
+      whoBox.innerHTML = "";
+      whoBox.append(el("b", "", "1. Which task"));
+      const rb = (v, txt) => { const l = el("label"); const i = el("input"); i.type = "radio"; i.name = "auStopWho"; i.value = v; i.checked = st.who === v; i.onchange = () => { st.who = v; if (v === "pick" && !tasks) loadTasks(); paintWho(); paintThen(); paintPic(); paintSet(); }; l.append(i, document.createTextNode(txt)); return l; };
+      const r1 = el("div", "au-row"); r1.append(rb("running", "The task I'm tracking now" + (run ? ": " + run.taskName : " (no timer is running)")));
+      const r2 = el("div", "au-row"); r2.append(rb("pick", "Choose tasks (search, client, status, due)"));
+      whoBox.append(r1, r2);
+      if (st.who !== "pick") return;
+      if (!tasks) { whoBox.append(el("div", "au-st", "Reading your open tasks…")); return; }
+      const tools = el("div", "au-row au-pickbar");
+      const q = el("input"); q.type = "text"; q.placeholder = "Search task or client"; q.value = st.q;
+      q.oninput = () => { st.q = q.value; paintList(); };
+      const sel = (opts, val, on) => { const s = el("select"); for (const [v, t] of opts) { const o = el("option", "", t); o.value = v; s.appendChild(o); } s.value = val; s.onchange = () => on(s.value); return s; };
+      const clients = [...new Set(tasks.map((t) => t.client).filter(Boolean))].sort((a, b) => a.localeCompare(b));
+      const sts = [...new Set(tasks.map((t) => String(t.status || "").toLowerCase()).filter(Boolean))].sort();
+      tools.append(q,
+        sel([["", "All clients"], ...clients.map((c) => [c, c])], st.client, (v) => { st.client = v; paintList(); }),
+        sel([["", "All statuses"], ...sts.map((x) => [x, x])], st.status, (v) => { st.status = v; paintList(); }),
+        sel([["", "Any due date"], ["overdue", "Overdue"], ["today", "Due today"], ["week", "Due this week"], ["next", "Due next week"], ["none", "No due date"]], st.due, (v) => { st.due = v; paintList(); }));
+      const acts = el("div", "au-row");
+      const all = el("button", "", "Select all shown"); all.type = "button"; all.onclick = () => { for (const t of shown()) st.picked.add(String(t.id)); paintList(); paintThen(); paintSet(); };
+      const none = el("button", "", "Clear"); none.type = "button"; none.onclick = () => { st.picked.clear(); paintList(); paintThen(); paintSet(); };
+      countEl = el("span", "au-st");
+      acts.append(all, none, countEl);
+      listEl = el("div", "au-picklist");
+      whoBox.append(tools, acts, listEl);
+      paintList();
+    }
+    function shown() {
+      const q = st.q.trim().toLowerCase(), now = Date.now(), t0 = day0(now);
+      const mon = t0 - ((new Date(now).getDay() + 6) % 7) * 86400000;
+      return (tasks || []).filter((t) => {
+        if (q && !((t.name || "") + " " + (t.client || "")).toLowerCase().includes(q)) return false;
+        if (st.client && t.client !== st.client) return false;
+        if (st.status && String(t.status || "").toLowerCase() !== st.status) return false;
+        const d = Number(t.dueDateMs) || 0;
+        if (st.due === "none") return !d;
+        if (st.due && !d) return false;
+        if (st.due === "overdue") return d < t0;
+        if (st.due === "today") return d >= t0 && d < t0 + 86400000;
+        if (st.due === "week") return d >= mon && d < mon + 7 * 86400000;
+        if (st.due === "next") return d >= mon + 7 * 86400000 && d < mon + 14 * 86400000;
+        return true;
+      });
+    }
+    function paintList() {
+      if (!listEl) return;
+      const list = shown();
+      listEl.innerHTML = "";
+      for (const t of list.slice(0, 200)) {
+        const id = String(t.id);
+        const l = el("label", "au-pick");
+        const cb = el("input"); cb.type = "checkbox"; cb.checked = st.picked.has(id);
+        cb.onchange = () => { if (cb.checked) st.picked.add(id); else st.picked.delete(id); countEl.textContent = st.picked.size + " chosen"; paintThen(); paintSet(); };
+        const due = Number(t.dueDateMs) ? new Date(Number(t.dueDateMs)).toLocaleDateString([], { month: "short", day: "numeric" }) : "";
+        const txt = el("span", "");
+        txt.innerHTML = esc(t.name) + ' <span class="au-st">' + esc([t.client, t.status, due && "due " + due, rules[id] ? "⏱ stop set" : ""].filter(Boolean).join(" · ")) + "</span>";
+        l.append(cb, txt);
+        listEl.append(l);
+      }
+      if (!list.length) listEl.append(el("div", "au-st", "No task matches."));
+      countEl.textContent = st.picked.size + " chosen · " + list.length + " shown";
+    }
+
+    // ---------- 2. when ----------
+    function paintWhen() {
+      whenBox.innerHTML = "";
+      whenBox.append(el("b", "", "2. When it stops"));
+      const rb = (v, txt) => { const l = el("label"); const i = el("input"); i.type = "radio"; i.name = "auStopMode"; i.value = v; i.checked = st.mode === v; i.onchange = () => { st.mode = v; paintPic(); paintSet(); }; l.append(i, document.createTextNode(txt)); return l; };
+      const r1 = el("div", "au-row"), r2 = el("div", "au-row");
+      const dur = el("input"); dur.type = "text"; dur.value = st.dur; dur.style.flex = "0 0 90px"; dur.placeholder = "2h"; dur.title = "e.g. 2h, 1h 30m, 90m, 1:30";
+      dur.oninput = () => { st.dur = dur.value; st.mode = "mine"; r1.querySelector("input[type=radio]").checked = true; clearTimeout(dur._t); dur._t = setTimeout(() => { paintPic(); paintSet(); }, 300); };
+      r1.append(rb("mine", "When my own time on the task reaches"), dur);
+      if (!st.hhmm) { const d = new Date(Date.now() + 3600000); st.hhmm = String(d.getHours()).padStart(2, "0") + ":" + String(d.getMinutes()).padStart(2, "0"); }
+      const ts = timeSel(st.hhmm);
+      ts.addEventListener("au-change", () => { st.hhmm = ts.value(); st.mode = "clock"; r2.querySelector("input[type=radio]").checked = true; paintPic(); paintSet(); });
+      r2.append(rb("clock", "At a time today"), ts);
+      whenBox.append(r1, r2);
+    }
+
+    // ---------- 3. then: the status ----------
+    let thenSel = null;
+    async function paintThen() {
+      thenBox.innerHTML = "";
+      thenBox.append(el("b", "", "3. Then set the status to"));
+      const row = el("div", "au-row");
+      thenSel = el("select");
+      const opt = (v, t) => { const o = el("option", "", t); o.value = v; thenSel.appendChild(o); };
+      opt("__usual", "Usual: In progress → To do");
+      opt("__keep", "Don't change the status");
+      const ts = targets();
+      const lists = [...new Set(ts.map((t) => t.listId).filter(Boolean))];
+      const missing = lists.filter((l) => !statuses[l]);
+      if (missing.length) {
+        row.append(thenSel, el("span", "au-st", "Reading the statuses…"));
+        thenBox.append(row);
+        const r = await send({ type: "STOPAT_STATUSES", listIds: missing }, 30000);
+        if (r && r.ok) Object.assign(statuses, r.byList);
+        else for (const l of missing) statuses[l] = [];
+        if (card.isConnected) paintThen();
+        return;
+      }
+      // The statuses every chosen task has (several Lists: only the shared ones).
+      let common = null;
+      for (const l of lists) { const names = (statuses[l] || []).map((x) => x.status); common = common ? common.filter((n) => names.some((m) => m.toLowerCase() === n.toLowerCase())) : names; }
+      const typeOf = {};
+      for (const l of lists) for (const x of statuses[l] || []) typeOf[x.status.toLowerCase()] = x.type;
+      for (const n of common || []) opt(n, n.charAt(0).toUpperCase() + n.slice(1));
+      if (![...thenSel.options].some((o) => o.value === st.then)) st.then = "__usual";
+      thenSel.value = st.then;
+      thenSel.onchange = () => { st.then = thenSel.value; paintSet(); };
+      thenSel._typeOf = typeOf;
+      row.append(thenSel);
+      if (lists.length > 1) row.append(el("span", "au-st", "the statuses all chosen tasks have"));
+      else if (!ts.length) row.append(el("span", "au-st", "choose a task to see its statuses"));
+      thenBox.append(row);
+    }
+
+    // ---------- 4. then a comment (optional) ----------
+    // Posted right when the timer stops, or scheduled for a day and time (the
+    // extension's scheduled comments - retried if ClickUp refuses). @name in the
+    // box suggests teammates (mention.js: [data-mention]) and notifies them.
+    const fmtWhenAt = (ms) => new Date(ms).toLocaleString([], { weekday: "short", month: "short", day: "numeric", hour: "numeric", minute: "2-digit" });
+    function paintCmt() {
+      cmtBox.innerHTML = "";
+      const head = el("label", "au-cmthead");
+      const on = el("input"); on.type = "checkbox"; on.checked = st.cmtOn;
+      on.onchange = () => { st.cmtOn = on.checked; paintCmt(); paintSet(); };
+      head.append(on, el("b", "", "4. Then post a comment"), el("span", "au-st", " - optional"));
+      cmtBox.append(head);
+      if (!st.cmtOn) return;
+      const ta = el("textarea", "au-cmt");
+      ta.setAttribute("data-mention", "");
+      ta.rows = 3; ta.maxLength = 5000; ta.value = st.cmtText;
+      ta.placeholder = "What to say on the task - type @ and a name to notify a teammate";
+      ta.oninput = () => { st.cmtText = ta.value; paintSet(); };
+      cmtBox.append(ta);
+      const r1 = el("div", "au-row"), r2 = el("div", "au-row");
+      const rb = (v, txt) => { const l = el("label"); const i = el("input"); i.type = "radio"; i.name = "auCmtWhen"; i.value = v; i.checked = st.cmtWhen === v; i.onchange = () => { st.cmtWhen = v; paintCmt(); paintSet(); }; l.append(i, document.createTextNode(txt)); return l; };
+      r1.append(rb("stop", "Right when the timer stops"));
+      const pick = el("button", "", st.cmtAt ? "📅 " + fmtWhenAt(st.cmtAt) : "📅 Pick a day and time");
+      pick.type = "button";
+      pick.onclick = (e) => {
+        e.stopPropagation();
+        st.cmtWhen = "at";
+        if (!window.PcmCalendar || !window.PcmCalendar.pick) return;
+        const cur = st.cmtAt || Date.now() + 3600000;
+        const hh = new Date(cur);
+        window.PcmCalendar.pick(pick, { value: cur, time: true, timeValue: String(hh.getHours()).padStart(2, "0") + ":" + String(hh.getMinutes()).padStart(2, "0"), what: "day to send it",
+          onPick: (dayMs, hhmm) => {
+            if (!dayMs) return;
+            const d = new Date(dayMs); const [h, m] = String(hhmm || "09:00").split(":").map(Number);
+            d.setHours(h || 0, m || 0, 0, 0);
+            st.cmtAt = d.getTime(); st.cmtWhen = "at";
+            paintCmt(); paintSet();
+          }, onClose: () => {} });
+      };
+      r2.append(rb("at", "Schedule it for"), pick);
+      cmtBox.append(r1, r2);
+      if (st.cmtWhen === "at") cmtBox.append(el("div", "au-st", "It is put in the scheduled comments when the timer stops, and posted at that time (if that time has passed by then, right away)."));
+    }
+
+    // ---------- the picture (the running task) ----------
+    function bar(p) {
+      const W = 560, H = 54, max = Math.max(p.total, p.others + p.mine) * 1.08 || 1;
+      const x = (ms) => Math.round((ms / max) * W);
+      const xo = x(p.others), xm = x(p.others + p.mine), xs = x(p.total);
+      return '<svg viewBox="0 0 ' + W + " " + H + '" width="100%" height="' + H + '" role="img" aria-label="Stops at ' + esc(fmtT(p.stopAt)) + '" class="au-sbar">' +
+        '<rect x="0" y="14" width="' + W + '" height="18" rx="5" fill="var(--bg2, rgba(0,0,0,.06))"/>' +
+        (xo ? '<rect x="0" y="14" width="' + xo + '" height="18" rx="5" fill="#9ca3af"/>' : "") +
+        (xm > xo ? '<rect x="' + xo + '" y="14" width="' + (xm - xo) + '" height="18" fill="#6366f1"/>' : "") +
+        (xs > xm ? '<rect x="' + xm + '" y="15" width="' + (xs - xm) + '" height="16" fill="none" stroke="#6366f1" stroke-width="2" stroke-dasharray="5 4"/>' : "") +
+        '<line x1="' + xs + '" x2="' + xs + '" y1="6" y2="40" stroke="#dc2626" stroke-width="3"/>' +
+        '<text x="' + Math.min(W - 4, Math.max(4, xs)) + '" y="52" font-size="11" fill="#dc2626" text-anchor="' + (xs > W - 120 ? "end" : xs < 120 ? "start" : "middle") + '" font-weight="700">⏹ ' + esc(fmtT(p.stopAt)) + "</text>" +
+        (xm > 40 ? '<text x="' + xm + '" y="10" font-size="10" fill="var(--muted)" text-anchor="' + (xm > W - 60 ? "end" : "middle") + '">now</text>' : "") + "</svg>";
+    }
+    function paintPic() {
+      picBox.innerHTML = "";
+      const ts = targets(), rule = draft();
+      const valid = rule.scope === "clock" ? rule.atMs > 0 : rule.ms > 0;
+      if (!run || !ts.some((t) => t.id === run.taskId)) {
+        picBox.innerHTML = '<div class="au-st">' + (ts.length ? "The stop starts counting when you track " + (ts.length === 1 ? "it" : "one of them") + ": your own time on each task, from ClickUp's entries." + (rule.scope === "clock" ? " A time of day applies only if the task is running then." : "") : "Choose a task above.") + "</div>";
+        return;
+      }
+      const p = valid ? plan(rule) : null;
+      if (!p) { picBox.innerHTML = '<div class="au-st">Type a time above - the picture shows where it would stop.</div>'; return; }
+      picBox.innerHTML = '<div class="au-legend"><span><i style="background:#9ca3af"></i>Teammates ' + esc(fmtD(p.others)) + '</span><span><i style="background:#6366f1"></i>You so far ' + esc(fmtD(p.mine)) + '</span><span><i class="dash"></i>You until the stop ' + esc(fmtD(Math.max(0, p.myAtStop - p.mine))) + '</span><span><i style="background:#dc2626"></i>Stop</span></div>' +
+        bar(p) + '<div class="au-st ' + (p.past ? "err" : "ok") + '">' + (p.past ? "That moment has already passed - pick a later one." :
+          "<b>" + esc(run.taskName) + "</b> would stop at <b>" + esc(fmtT(p.stopAt)) + "</b>" + (rule.scope === "mine" ? " (in " + esc(fmtD(p.stopAt - p.now)) + " if you don't pause)" : "") + " - your time then " + esc(fmtD(p.myAtStop)) + ", the task's total " + esc(fmtD(p.total)) + ".") + "</div>";
+    }
+
+    // ---------- set ----------
+    function paintSet() {
+      setRow.innerHTML = "";
+      const ts = targets(), rule = draft();
+      const valid = rule.scope === "clock" ? rule.atMs > Date.now() + 5000 : rule.ms > 0;
+      const b = el("button", "au-primary", ts.length > 1 ? "Set the stop for " + ts.length + " tasks" : "Set the stop");
+      b.type = "button";
+      b.disabled = !ts.length || !valid;
+      b.onclick = async () => {
+        const then = st.then, typeOf = (thenSel && thenSel._typeOf) || {};
+        const r = { ...rules };
+        for (const t of ts) r[t.id] = { name: t.name || "", ms: rule.ms, atMs: rule.atMs || 0, scope: rule.scope, action: "stop", daily: false, firedDay: "",
+          status: then.startsWith("__") ? "" : then, statusType: then.startsWith("__") ? "" : (typeOf[then.toLowerCase()] || ""), keep: then === "__keep",
+          comment: st.cmtOn && st.cmtText.trim() ? { text: st.cmtText.trim().slice(0, 5000), when: st.cmtWhen, sendAt: st.cmtWhen === "at" ? st.cmtAt : 0 } : null };
+        rules = r; await saveRules(r);
+        send({ type: "TRACKER_PROGRESS" }); // the background works it out now and sets its alarm
+        st.picked.clear();
+        st.cmtOn = false; st.cmtText = ""; st.cmtAt = 0; st.cmtWhen = "stop";
+        paintAll();
+      };
+      const cmtBad = st.cmtOn && (!st.cmtText.trim() ? "Write the comment, or untick step 4." : st.cmtWhen === "at" && !st.cmtAt ? "Pick when to post the comment." : "");
+      if (cmtBad) b.disabled = true;
+      const why = el("span", "au-st", !ts.length ? "Choose a task first." : !valid ? (rule.scope === "clock" ? "Pick a time later today." : "Type how long, e.g. 2h.") : cmtBad);
+      setRow.append(b, why);
+    }
+    function paintAll() { paintActive(); paintWho(); paintWhen(); paintThen(); paintCmt(); paintPic(); paintSet(); }
+
+    async function loadTasks() {
+      const r = await send({ type: "CLICKUP_OPEN_TASKS" }, 60000);
+      tasks = r && r.ok && r.data && Array.isArray(r.data.tasks) ? r.data.tasks : [];
+      if (card.isConnected) { paintWho(); }
+    }
+    async function load() {
+      const g = await chrome.storage.local.get("autoStopTasks").catch(() => ({}));
+      rules = (g && g.autoStopTasks) || {};
+      const r = await send({ type: "STOPAT_PREVIEW" }, 30000);
+      run = r && r.ok && r.running ? r.running : null;
+      at = Date.now();
+      if (!run && st.who === "running") { st.who = "pick"; if (!tasks) loadTasks(); }
+      if (r && !r.ok) activeBox.append(el("p", "au-st err", r.reason === "not-configured" ? "Connect ClickUp first." : "Couldn't read the timer: " + (r.error || "no answer")));
+      paintAll();
+    }
+    // The live numbers move every 20 s; the timer itself is re-read every 2 minutes.
+    clearInterval(ticker);
+    ticker = setInterval(() => { if (!card.isConnected) { clearInterval(ticker); return; } if (Date.now() - at > 120000) load(); else { paintActive(); paintPic(); } }, 20000);
+    chrome.storage.onChanged.addListener((ch, area) => { if (area === "local" && ch.autoStopTasks && card.isConnected) { rules = ch.autoStopTasks.newValue || {}; paintActive(); } });
+    activeBox.append(el("div", "au-st", "Reading the running timer…"));
+    load();
+  }
+
   function buildCheats(card) {
     card.append(el("h2", "", "Commands"), el("p", "sub", "Everything the console (Ctrl+Shift+`) can do, here with buttons. Click a command to put it in the box below, add what it needs and press Enter. Hide this tab again with the button at the bottom (or /automation off)."));
     const act = el("div", "au-box");

@@ -147,7 +147,7 @@
     if (!core) {
       // No format yet: the whole description goes INTO the format, nothing is
       // left outside it. Its text is the task's brief -> Pre Description; the
-      // link-only lines at its end (documents the work starts from) -> Pre File.
+      // link-only lines at its end -> File.
       const fmt = addFormat === 1 ? FORMAT1 : FORMAT2;
       const rows = src.replace(/\s+$/, "").split("\n");
       const links = [];
@@ -163,7 +163,9 @@
       // Double quotes inside would close the field early: single ones instead.
       const body = rows.join("\n").replace(/["“”]/g, "'").trim();
       if (body) want["Pre Description"] = body; // the task's own words win over any suggestion
-      if (links.length && !String(want["Pre File"] || "").trim()) want["Pre File"] = fileValue([...new Set(links)]);
+      // The links go into File (Pre File is optional - the team's rule), next to any
+      // links the fix already put there, each once.
+      if (links.length) want["File"] = fileValue([...new Set(linksIn(String(want["File"] || "")).concat(links))]);
       return fmt.map((l) => l + ": " + qv(want[l] || "")).join("\n\n");
     }
     // Replace from the end so earlier offsets stay right; only the first of each label.

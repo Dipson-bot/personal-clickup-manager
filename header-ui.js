@@ -18,6 +18,7 @@
     bellOff: svg("<path d='M6 9a6 6 0 0 1 12 0c0 6 2.5 8 2.5 8h-17S6 15 6 9'/><path d='M10.3 20a2 2 0 0 0 3.4 0M3 3l18 18'/>"),
     moon: svg("<path d='M20 13.5A8 8 0 1 1 10.5 4a6.3 6.3 0 0 0 9.5 9.5z'/>"),
     sun: svg("<circle cx='12' cy='12' r='4'/><path d='M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4'/>"),
+    timer: svg("<circle cx='12' cy='14' r='7'/><path d='M12 14V10.5M10 3h4M12 3v4M18.5 7.5l1.5-1.5'/>"),
     dash: svg("<rect x='3' y='3' width='7' height='7' rx='1.5'/><rect x='14' y='3' width='7' height='7' rx='1.5'/><rect x='14' y='14' width='7' height='7' rx='1.5'/><rect x='3' y='14' width='7' height='7' rx='1.5'/>"),
   };
   const isPopup = !!document.querySelector(".header .header-actions");
@@ -49,6 +50,7 @@
     panelBtn: ["panel", "Open in the side panel"], optPanelBtn: ["panel", "Open in the side panel"],
     sideBtn: ["side", "Show the side panel on the left or right"],
     wrapBtn: ["wrap", "Wrap up the day"], optWrapBtn: ["wrap", "Wrap up the day"],
+    plainTimerBtn: ["timer", "Timer: stopwatch and countdown"], optPlainTimerBtn: ["timer", "Timer: stopwatch and countdown"],
     remBtn: ["alarm", ""], notifyBell: ["bell", ""],
     themeToggle: ["moon", "Switch light / dark"],
     manage: ["dash", "Open the dashboard (all settings)"],

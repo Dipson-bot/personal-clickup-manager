@@ -2159,6 +2159,20 @@ export async function setTaskDueDate(token, taskId, dueMs, hasTime) {
   return cuPut(token, "/task/" + encodeURIComponent(taskId), body);
 }
 
+// The statuses of one List, in ClickUp's order ([{ status, color, type }]) - what a
+// task in it can be set to. Cached an hour (they rarely change).
+const listStatusCache = new Map();
+export async function getListStatuses(token, listId) {
+  const k = String(listId || "");
+  if (!k) return [];
+  const c = listStatusCache.get(k);
+  if (c && Date.now() - c.at < 3600000) return c.v;
+  const j = await cuFetch(token, "/list/" + encodeURIComponent(k));
+  const v = (Array.isArray(j && j.statuses) ? j.statuses : []).slice().sort((a, b) => (Number(a.orderindex) || 0) - (Number(b.orderindex) || 0))
+    .map((x) => ({ status: String((x && x.status) || ""), color: String((x && x.color) || ""), type: String((x && x.type) || "") })).filter((x) => x.status);
+  listStatusCache.set(k, { at: Date.now(), v });
+  return v;
+}
 // Stop the currently-running timer for the token owner. Only call when something
 // is actually running - ClickUp errors ("no time entry running") otherwise.
 export async function stopTimer(token, teamId) {

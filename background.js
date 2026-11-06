@@ -27,7 +27,7 @@ import {
   linkifySheet,
 } from "./lib-drive.js";
 import { runAllAccounts, runAccountLogin, readAgentRouterLogin, URLS, GITHUB_KEEP_COOKIES } from "./lib-automation.js";
-import { getCommentRepliesLite, getTaskShareInfo, getTaskHoldInfo, fetchArchivedMine, unarchiveTask, getLatestCommentBy, getTaskCommentsLite, getTaskTimeEntries, deleteTimeEntry, getUserGroups, getUser, verifyToken, getTeams, fetchTodayEstimate, fetchWeeklySummary, fetchDateRangeEstimate, createTaskCache, fetchTeamMembers, fetchWorkspaceTags, cuTagNames, fmtDuration, findExtraTaskByName, parseTaskIdFromUrl, getCurrentTimeEntry, getRunningTaskProgress, startTimer, stopTimer, getTaskById, setTaskStatus, setTaskDates, taskUrlFor, clientLabelFromContainer, resolveSpaceNamesFor, taskContainer, cuPriorityName, isTaskDone, getSubtasksOfParent, getTaskTree, getTaskDetail, updateTimeEntry, setTaskDueDate, clearTaskTreeCache, listWorkspaceClients, cuRowAssignees, fetchDoneBetween, fetchDoneLite, fetchTrackedHistory, getTaskPanel, addTaskComment, postTaskComment, setTaskDescription, getTaskCommentLinks, getTaskCommentsFull, createTask, relateTasks, removeTaskAssignee, addTaskAssignee, postAssignedComment, addTimeEntry, weeklyWithToday, listClientFieldOptions, listReachableClients, bgToken, patientToken, cuRawFetch, getRelatedTasks, slimIndexTask, fetchTeamTasksPage, listAllLists, setPausedClients } from "./lib-clickup.js";
+import { getCommentRepliesLite, getTaskShareInfo, getTaskHoldInfo, fetchArchivedMine, unarchiveTask, getLatestCommentBy, getTaskCommentsLite, getTaskTimeEntries, deleteTimeEntry, getUserGroups, getUser, verifyToken, getTeams, fetchTodayEstimate, fetchWeeklySummary, fetchDateRangeEstimate, createTaskCache, fetchTeamMembers, fetchWorkspaceTags, cuTagNames, fmtDuration, findExtraTaskByName, parseTaskIdFromUrl, getCurrentTimeEntry, getRunningTaskProgress, startTimer, stopTimer, getTaskById, setTaskStatus, setTaskDates, taskUrlFor, clientLabelFromContainer, resolveSpaceNamesFor, taskContainer, cuPriorityName, isTaskDone, getSubtasksOfParent, getTaskTree, getTaskDetail, updateTimeEntry, setTaskDueDate, clearTaskTreeCache, listWorkspaceClients, cuRowAssignees, fetchDoneBetween, fetchDoneLite, fetchTrackedHistory, getTaskPanel, addTaskComment, postTaskComment, setTaskDescription, getTaskCommentLinks, getTaskCommentsFull, getListStatuses, createTask, relateTasks, removeTaskAssignee, addTaskAssignee, postAssignedComment, addTimeEntry, weeklyWithToday, listClientFieldOptions, listReachableClients, bgToken, patientToken, cuRawFetch, getRelatedTasks, slimIndexTask, fetchTeamTasksPage, listAllLists, setPausedClients } from "./lib-clickup.js";
 import { resolveRelayKey, pickProbeModel, probeRelay } from "./lib-availability.js";
 import { tidyCollect, tidyLines, tidyResolved, tidyDayOk, tidyUrgent, tidyDateShort } from "./lib-tidy.js";
 import "./lib-rules.js"; // globalThis.PcmRules - the Automation tab's rule blocks
@@ -6834,8 +6834,10 @@ const EST_ALARM_NEAR = "cu-est-near", EST_ALARM_MET = "cu-est-met";
 // (ClickUp setup › "Keep reminding me while it's over", default 15 min, 0 = off).
 const EST_ALARM_OVER = "cu-est-over";
 // Stop (or complete) a task once its tracked time reaches a set limit
-// (autoStopTasks { [taskId]: { name, ms, scope: "today" | "total", action: "stop" |
-// "complete", daily, firedDay } }). Checked against ClickUp's own entries every
+// (autoStopTasks { [taskId]: { name, ms, scope: "today" | "total" | "mine" | "clock",
+// atMs, action: "stop" | "complete", daily, firedDay } }). "today" = my time on it
+// today, "mine" = my time on it in all (a teammate's time doesn't count), "total" =
+// everyone's, "clock" = at a time of day (atMs). Checked against ClickUp's own entries every
 // time the running task's progress is worked out (each refresh, every start and
 // restart), so pauses and restarts can't throw it off; between those, an alarm
 // set for the moment the limit is reached checks again with fresh numbers.
@@ -6843,29 +6845,65 @@ const STOPAT_ALARM = "cu-stopat";
 async function maybeAutoStop(cfg, entry, progress, key, today) {
   const { autoStopTasks: rules } = await chrome.storage.local.get("autoStopTasks").catch(() => ({}));
   const rule = rules && rules[key];
-  if (!rule || !progress || !(Number(rule.ms) > 0) || (rule.daily && rule.firedDay === today)) { await chrome.alarms.clear(STOPAT_ALARM).catch(() => {}); return false; }
+  const clock = rule && rule.scope === "clock";
+  if (!rule || !progress || !(clock ? Number(rule.atMs) > 0 : Number(rule.ms) > 0) || (rule.daily && rule.firedDay === today)) { await chrome.alarms.clear(STOPAT_ALARM).catch(() => {}); return false; }
   const now = Date.now();
+  // A stop-at-a-time that passed while this task wasn't running is over: it must not
+  // stop the task the next time it's started.
+  if (clock && now > Number(rule.atMs) + 120000) {
+    const next = { ...rules }; delete next[key];
+    await chrome.storage.local.set({ autoStopTasks: next }).catch(() => {});
+    await chrome.alarms.clear(STOPAT_ALARM).catch(() => {});
+    return false;
+  }
   const dayStart = new Date(now).setHours(0, 0, 0, 0);
-  const tracked = rule.scope === "total"
-    ? Number(progress.trackedMs) || 0
+  const tracked = rule.scope === "total" ? Number(progress.trackedMs) || 0
+    : rule.scope === "mine" ? Number(progress.myTrackedMs) || 0
     : (Number(progress.closedTodayMs) || 0) + Math.max(0, now - Math.max(Number(entry.startMs) || now, dayStart));
-  const left = Number(rule.ms) - tracked;
+  const left = clock ? Number(rule.atMs) - now : Number(rule.ms) - tracked;
   if (left > 15000) { chrome.alarms.create(STOPAT_ALARM, { when: now + left + 2000 }); return false; }
   const name0 = progress.taskName || entry.taskName || rule.name || "this task";
   try {
     await stopTimer(cfg.token, cfg.teamId);
-    if (rule.action === "complete") await setTaskStatus(cfg.token, key, "complete");
-    else cuStoppedToDo(cfg, key, 0);
+    // Then: the status picked in Automation (any of the task's statuses), "don't
+    // change it" (keep), complete, or the usual stopped -> to do.
+    if (rule.status) await setTaskStatus(cfg.token, key, rule.status);
+    else if (rule.action === "complete") await setTaskStatus(cfg.token, key, "complete");
+    else if (!rule.keep) cuStoppedToDo(cfg, key, 0);
+    const doneLike = rule.action === "complete" || /^(closed|done)$/.test(String(rule.statusType || ""));
     const next = { ...rules };
     if (rule.daily) next[key] = { ...rule, firedDay: today }; else delete next[key];
     await chrome.storage.local.set({ autoStopTasks: next, runningProgress: null });
     await chrome.alarms.clear(STOPAT_ALARM).catch(() => {});
     await scheduleEstimateAlarms(null);
-    if (rule.action === "complete") await advanceAutoRun(cfg, key).catch(() => {});
+    if (doneLike) await advanceAutoRun(cfg, key).catch(() => {});
     const st = (await getClickupState().catch(() => null)) || {};
-    if (rule.action === "complete" && String(st.activeTaskId || "") === key) await setClickupState({ ...st, activeTaskId: null });
-    await notify("clickup-stopat-" + Date.now(), rule.action === "complete" ? "Completed at your limit \u2713" : "Timer stopped at your limit \u2713",
-      "\u201C" + name0 + "\u201D reached " + fmtDuration(Number(rule.ms)) + (rule.scope === "total" ? " in all" : " today") + ", so the timer was stopped" + (rule.action === "complete" ? " and the task marked complete" : "") + "." + (rule.daily ? " Same again tomorrow." : ""),
+    if (doneLike && String(st.activeTaskId || "") === key) await setClickupState({ ...st, activeTaskId: null });
+    if (rule.status) await patchStateTask(key, { status: rule.status }).catch(() => {});
+    // Then a comment (Automation › Stop my timer › 4.): posted now, or put in the
+    // scheduled comments (heldComments, posted at sendAt by the every-minute check).
+    // If ClickUp won't take it now, it waits there and is tried again - never lost.
+    let cmtNote = "";
+    const cmt = rule.comment && String(rule.comment.text || "").trim();
+    if (cmt) {
+      const sendAt = rule.comment.when === "at" ? Number(rule.comment.sendAt) || 0 : 0;
+      const queue = async (whenMs) => heldUpdate(key, (l) => l.concat({ id: "sa" + Date.now().toString(36), text: cmt.slice(0, 5000), auto: true, at: Date.now(), sendAt: whenMs, taskName: name0, url: taskUrlFor(key) }));
+      if (sendAt > Date.now() + 30000) {
+        await queue(sendAt);
+        cmtNote = " Your comment is scheduled for " + new Date(sendAt).toLocaleString([], { weekday: "short", hour: "numeric", minute: "2-digit" }) + ".";
+      } else {
+        try {
+          const members = ((await getClickupState().catch(() => null)) || {}).members;
+          await addTaskComment(cfg.token, key, cmt.slice(0, 5000), members);
+          cmtNote = " Your comment was posted.";
+        } catch (e) {
+          await queue(Date.now()).catch(() => {});
+          cmtNote = " Your comment will be posted in a minute (ClickUp didn't take it yet).";
+        }
+      }
+    }
+    await notify("clickup-stopat-" + Date.now(), doneLike ? "Completed at your limit \u2713" : "Timer stopped at your limit \u2713",
+      "\u201C" + name0 + "\u201D " + (clock ? "reached " + new Date(Number(rule.atMs)).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" }) : "reached " + fmtDuration(Number(rule.ms)) + (rule.scope === "total" ? " in all" : rule.scope === "mine" ? " of your time" : " today")) + ", so the timer was stopped" + (rule.status ? " and the status set to " + rule.status : rule.action === "complete" ? " and the task marked complete" : "") + "." + cmtNote + (rule.daily ? " Same again tomorrow." : ""),
       undefined, taskUrlFor(key));
     clearFilterCache();
     setTimeout(() => { refreshClickup({ includeTasks: true }).catch(() => {}); }, 2000);
@@ -10803,7 +10841,24 @@ scheduleAgentRouterAlarms().catch(() => {});
 scheduleWrapUpAlarm().catch(() => {});
 applyIdleInterval().catch(() => {});
 try { chrome.idle.onStateChanged.addListener((st) => { onIdleStateChanged(st).catch(() => {}); }); } catch (e) {}
+// ⏱ Timer: a countdown the person set rings even when notifications are muted
+// (they asked for it) - the chime plus a notification.
+const PLAIN_TIMER_ALARM = "plain-timer";
+async function plainTimerDone() {
+  const g = await chrome.storage.local.get("plainTimer").catch(() => ({}));
+  const st = g && g.plainTimer;
+  if (!st || !st.cd || !st.cd.running || Number(st.cd.endAt) > Date.now() + 1500) return;
+  st.cd = Object.assign({}, st.cd, { running: false, remainingMs: 0, done: true });
+  await chrome.storage.local.set({ plainTimer: st }).catch(() => {});
+  const m = Math.round((Number(st.cd.durMs) || 0) / 60000);
+  const len = m >= 60 ? Math.floor(m / 60) + "h" + (m % 60 ? " " + (m % 60) + "m" : "") : m ? m + "m" : "";
+  try {
+    await chrome.notifications.create("plain-timer-" + Date.now(), { type: "basic", iconUrl: chrome.runtime.getURL("icons/icon128.png"), title: "⏱ Time's up", message: (len ? "Your " + len + " countdown" : "Your countdown") + " has finished.", priority: 2, requireInteraction: true });
+  } catch (e) {}
+  await playNotificationSound(true).catch(() => {});
+}
 chrome.alarms.onAlarm.addListener(async (alarm) => {
+  if (alarm.name === PLAIN_TIMER_ALARM) { await plainTimerDone().catch(() => {}); return; }
   if (await isHelperOnly()) { // helper only: updates and the WordPress relay, nothing else
     if (alarm.name === UPDATE_ALARM) { await checkForUpdate().catch(() => {}); await maybeAutoUpdate().catch(() => {}); await wpRelayTick().catch(() => {}); }
     return;
@@ -11416,6 +11471,14 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         } catch (e) {
           sendResponse({ ok: false, error: String(e && e.message ? e.message : e), changed: e && e.code === "changed" });
         }
+        break;
+      }
+      case "PLAIN_TIMER_ALARM": {
+        // ⏱ Timer (plain-timer.js): a countdown's end time, or 0 to cancel it.
+        const at = Number(msg.endAt) || 0;
+        if (at > Date.now()) await chrome.alarms.create(PLAIN_TIMER_ALARM, { when: at });
+        else await chrome.alarms.clear(PLAIN_TIMER_ALARM);
+        sendResponse({ ok: true });
         break;
       }
       case "CLICKUP_TASK_DESCRIPTION": {
@@ -13420,6 +13483,37 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         // tracker.js watchPlacement) through the pinned Tracker tab.
         sendResponse({ ok: true });
         setTimeout(() => { autoFloatNow().catch((e) => diagLog("auto-float", "reopen: " + (e && e.message ? e.message : e))); }, 400);
+        break;
+      }
+      case "STOPAT_STATUSES": {
+        // Automation › Stop my timer: the statuses each List offers (for "then set it to").
+        try {
+          const cfg = await getClickupConfig();
+          if (!cfg || !cfg.token) { sendResponse({ ok: false, reason: "not-configured" }); break; }
+          const ids = [...new Set((Array.isArray(msg.listIds) ? msg.listIds : []).map(String).filter(Boolean))].slice(0, 25);
+          const byList = {};
+          for (const id of ids) byList[id] = await getListStatuses(cfg.token, id).catch(() => []);
+          sendResponse({ ok: true, byList });
+        } catch (e) { sendResponse({ ok: false, error: String(e && e.message ? e.message : e) }); }
+        break;
+      }
+      case "STOPAT_PREVIEW": {
+        // Automation › Stop my timer: the running task's time, split into mine and
+        // the others' - also for a task without an estimate.
+        try {
+          const cfg = await getClickupConfig();
+          if (!cfg || !cfg.token || !cfg.teamId) { sendResponse({ ok: false, reason: "not-configured" }); break; }
+          const entry = await getCurrentTimeEntry(cfg.token, cfg.teamId);
+          if (!entry) { sendResponse({ ok: true, running: null }); break; }
+          const { cuOthersRefusedAt } = await chrome.storage.local.get("cuOthersRefusedAt").catch(() => ({}));
+          const now = Date.now();
+          const p = await getRunningTaskProgress(cfg.token, cfg.teamId, entry.taskId, entry.startMs, now, { meId: cfg.userId, tryOthers: !(Number(cuOthersRefusedAt) > now - 86400000), anyway: true });
+          const live = Math.max(0, now - entry.startMs);
+          const tk = await getTaskById(cfg.token, entry.taskId).catch(() => null);
+          sendResponse({ ok: true, at: now, running: { taskId: String(entry.taskId), taskName: (p && p.taskName) || entry.taskName || "", startMs: entry.startMs, listId: (tk && tk.listId) ? String(tk.listId) : "", status: (tk && tk.status) || "",
+            myClosedMs: p ? Math.max(0, (Number(p.myTrackedMs) || 0) - live) : 0, othersMs: p ? Number(p.othersMs) || 0 : 0, subtasksMs: p ? Number(p.subtasksMs) || 0 : 0,
+            closedTodayMs: p ? Number(p.closedTodayMs) || 0 : 0, estimateMs: p ? Number(p.estimateMs) || 0 : 0 } });
+        } catch (e) { sendResponse({ ok: false, error: String(e && e.message ? e.message : e) }); }
         break;
       }
       case "TRACKER_PROGRESS": {

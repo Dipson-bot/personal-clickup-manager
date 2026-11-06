@@ -60,6 +60,7 @@
     ["preDescription", "Pre Description", "", false],
     ["preFile", "Pre File", "", false],
     ["warm", "Prepare fixes in the background while Options is open", "Chrome's built-in AI only", true],
+    ["learn", "Learn from my edits - the AI follows how you rewrite its text", "kept on this computer", true],
     ["nameSite", "Mention the business or site name in AI text", "off: it just says the site - tasks are already filed by client", false],
     ["clientFromDesc", "No client request in the task? Write Client Description as a rephrase of the Description", "off: it is left empty for a person to fill", false],
   ];
@@ -71,6 +72,31 @@
   const counted = (list) => (list || []).filter((p) => p === "notFormatted" || p === "incompleteFormat" || (on(PREF_OF[p]) && (p !== "fileNotFormatted" || on("file"))));
   const probs = (t) => counted(t.problems);
   let aiNotes = ""; // Checks ▾ › Your instructions for the AI (settings.descAiNotes)
+  // Learning from edits (Checks ▾ › Learn from my edits): when an After fix the
+  // user changed by hand is applied, what the AI wrote and what the user made of
+  // it are kept on this computer (descStyleExamples, the last 20), and the next
+  // suggestions get the latest few as STYLE examples - never as facts.
+  let learned = [];
+  try { chrome.storage.local.get("descStyleExamples").then((g) => { if (g && Array.isArray(g.descStyleExamples)) learned = g.descStyleExamples; }).catch(() => {}); } catch (e) {}
+  const LEARN_FIELDS = { description: "Description", clientDescription: "Client Description", preDescription: "Pre Description" };
+  function learnFrom(t, ed) {
+    if (!on("learn") || ed.manual == null) return;
+    const ai = F.check(afterOf(t, ed)).values, mine = F.check(ed.manual).values;
+    const add = [];
+    for (const k of Object.keys(LEARN_FIELDS)) {
+      const a = String(ai[k] || "").trim(), m = String(mine[k] || "").trim();
+      if (!a || !m || a === m || String(ed.orig[k] || "").trim()) continue; // only text the AI wrote and the user changed
+      add.push({ field: k, task: String(t.name || "").slice(0, 120), ai: a.slice(0, 400), mine: m.slice(0, 400), at: Date.now() });
+    }
+    if (!add.length) return;
+    learned = add.concat(learned).slice(0, 20);
+    try { chrome.storage.local.set({ descStyleExamples: learned }); } catch (e) {}
+  }
+  function learnedText() {
+    if (!on("learn") || !learned.length) return "";
+    const ex = learned.slice(0, 4).map((x) => "- " + LEARN_FIELDS[x.field] + " for a task called \"" + x.task + "\": the AI wrote \"" + x.ai.replace(/\s+/g, " ").slice(0, 260) + "\"; the user changed it to \"" + x.mine.replace(/\s+/g, " ").slice(0, 260) + "\"").join("\n");
+    return "\nHow the user rewrote earlier suggestions for OTHER tasks - follow their STYLE (length, tone, wording, what they keep or leave out), but NEVER take any facts, pages or names from them:\n" + ex + "\n";
+  }
   function readPrefs(st) {
     if (st && typeof st.descAiNotes === "string") aiNotes = st.descAiNotes;
     const d = st && st.descChecks;
@@ -93,12 +119,21 @@
   const scrolledTo = new Set(); // fixes whose Now / After boxes were opened at the first change
   // ⚡ Quick review: the ready fixes one after another in a big view - Apply &
   // next / Skip / Back, and the arrow keys (→ ↓ next, ← ↑ back, Enter apply, Esc close).
-  let qr = null; // { ids, i, applied, skipped }
+  // Every fix applied (from the list or Quick review), kept on this computer so
+  // "N applied" doesn't start from 0 and they can be looked at again:
+  // descAppliedLog [{ id, name, client, at, before, after }], newest first, the last 300.
+  let appliedLog = [];
+  try { chrome.storage.local.get("descAppliedLog").then((g) => { if (g && Array.isArray(g.descAppliedLog)) { appliedLog = g.descAppliedLog; paint(); } }).catch(() => {}); } catch (e) {}
+  function logApplied(t, before, after) {
+    appliedLog = [{ id: String(t.id), name: String(t.name || ""), client: String(t.client || ""), at: Date.now(), before: String(before || "").slice(0, 4000), after: String(after || "").slice(0, 4000) }].concat(appliedLog).slice(0, 300);
+    try { chrome.storage.local.set({ descAppliedLog: appliedLog }); } catch (e) {}
+  }
+  let qr = null; // { ids, i, applied, view: "queue" | "applied", open: index of an applied fix shown }
   const qrId = () => (qr && qr.i < qr.ids.length ? qr.ids[qr.i] : "");
-  function qrOpen() {
+  function qrOpen(view) {
     const ids = visible().filter((t) => isReady(t, eds.get(t.id))).map((t) => t.id);
-    if (!ids.length) return;
-    qr = { ids, i: 0, applied: 0, skipped: 0 };
+    if (!ids.length && view !== "applied") return;
+    qr = { ids, i: 0, applied: 0, skipped: 0, view: view === "applied" ? "applied" : "queue", open: -1 };
     document.documentElement.classList.add("dc-qr-on");
     paint();
   }
@@ -116,6 +151,7 @@
   }
   document.addEventListener("keydown", (e) => {
     if (!qr || !host || !host.isConnected) return;
+    if (qr.view === "applied") { if (e.key === "Escape") { e.preventDefault(); qrClose(); } return; }
     const typing = e.target && (e.target.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(e.target.tagName));
     if (e.key === "Escape") { if (typing) e.target.blur(); else qrClose(); e.preventDefault(); return; }
     if (typing || e.altKey || e.ctrlKey || e.metaKey) return;
@@ -123,6 +159,23 @@
     else if (e.key === "ArrowLeft" || e.key === "ArrowUp") { e.preventDefault(); qrGo(-1); }
     else if (e.key === "Enter") { e.preventDefault(); qrApply(); }
   });
+  // The applied fixes: newest first, each with its description before / after.
+  function appliedHtml() {
+    if (!appliedLog.length) return '<div class="dc-qr-done"><p>Nothing applied yet. Fixes you apply (here or in the list) show up here.</p></div>';
+    const when = (ms) => { const d = new Date(ms), today = new Date(); const sameDay = d.toDateString() === today.toDateString(); return (sameDay ? "Today " : d.toLocaleDateString([], { weekday: "short", month: "short", day: "numeric" }) + ", ") + d.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" }); };
+    return '<div class="dc-applied">' + appliedLog.map((x, i) => {
+      const openIt = qr.open === i;
+      let h = '<div class="dc-arow"><button type="button" class="dc-tw" data-qr="open-' + i + '" title="' + (openIt ? "Hide" : "Show what was written") + '">' + (openIt ? "▾" : "▸") + "</button>" +
+        '<span class="dc-aname">' + esc(x.name) + (x.client ? ' <span class="dc-client">· ' + esc(x.client) + "</span>" : "") + "</span>" +
+        '<span class="dc-msg">' + esc(when(x.at)) + "</span>" +
+        '<a class="ip-btn dc-cu" href="https://app.clickup.com/t/' + encodeURIComponent(x.id) + '" target="_blank" rel="noopener">Open in ClickUp ↗</a></div>';
+      if (openIt) {
+        const d = diffLines(x.before, x.after);
+        h += '<div class="dc-cmp" style="margin:6px 0 10px 28px"><div class="dc-col"><h4>Before</h4>' + docHtml(d.left, "(empty)") + '</div><div class="dc-col"><h4>Applied</h4>' + docHtml(d.right, "(empty)") + "</div></div>";
+      }
+      return h;
+    }).join("") + "</div>";
+  }
   function qrHtml() {
     if (!qr) return "";
     const id = qrId(), t = id ? byId(id) : null, ed = id ? eds.get(id) : null;
@@ -141,8 +194,11 @@
         '<button type="button" class="ip-btn dc-btn-primary" data-qr="apply"' + (busy || !isReady(t, ed) ? " disabled" : "") + ' title="Write this fix to ClickUp and go to the next one (Enter)">' + (busy ? esc(ed.msg || "Saving…") : "Apply & next ⏎") + "</button></div>";
     }
     return '<div class="dc-qr-back" data-qr="backdrop"><div class="dc-qr" role="dialog" aria-label="Quick review">' +
-      '<div class="dc-qr-h"><h3>⚡ Quick review</h3><span class="dc-msg">' + qr.applied + " applied · " + qr.ids.length + ' to go</span><span class="sp"></span><button type="button" class="dc-hbtn" data-qr="close" title="Close (Esc)">✕ Close</button></div>' +
-      body + "</div></div>";
+      '<div class="dc-qr-h"><h3>⚡ Quick review</h3>' +
+      '<button type="button" class="dc-qrtab' + (qr.view === "applied" ? " on" : "") + '" data-qr="view-applied" title="The fixes you applied (kept on this computer)">✓ All applied (' + appliedLog.length + ")</button>" +
+      '<button type="button" class="dc-qrtab' + (qr.view === "queue" ? " on" : "") + '" data-qr="view-queue" title="The fixes still to go">' + qr.ids.length + " to go</button>" +
+      '<span class="sp"></span><button type="button" class="dc-hbtn" data-qr="close" title="Close (Esc)">✕ Close</button></div>' +
+      (qr.view === "applied" ? appliedHtml() : body) + "</div></div>";
   }
   // 💬 Comments: the extension's task panel (task-panel.js) opened on its Comments
   // tab under the task - the same comments, replies, files and reply box as
@@ -338,6 +394,12 @@
   #insDescView .dc-qr .dc-doc { max-height: 46vh; }
   #insDescView .dc-qr-nav { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-top: 12px; padding-top: 12px; border-top: 1px solid var(--border); }
   #insDescView .dc-qr-done { text-align: center; padding: 30px 10px; }
+  #insDescView .dc-qrtab { font: inherit; font-size: 12px; font-weight: 600; padding: 4px 11px; border-radius: 999px; border: 1px solid var(--border); background: var(--card); color: var(--muted); cursor: pointer; }
+  #insDescView .dc-qrtab.on { background: var(--indigo); border-color: var(--indigo); color: #fff; }
+  #insDescView .dc-applied { max-height: 70vh; overflow: auto; }
+  #insDescView .dc-arow { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; padding: 6px 0; border-top: 1px solid var(--border); }
+  #insDescView .dc-arow:first-child { border-top: 0; }
+  #insDescView .dc-aname { flex: 1 1 260px; font-weight: 600; min-width: 0; }
   #insDescView .dc-qr-done h3 { margin: 0 0 6px; }
   #insDescView .dc-checks { display: flex; flex-direction: column; gap: 5px; padding: 10px 12px; margin: 6px 0 10px; border: 1px solid var(--border); border-radius: 10px; background: var(--card); max-width: 520px; }
   #insDescView .dc-checks label { display: flex; gap: 7px; align-items: center; margin: 0; font-size: 12.5px; }
@@ -595,7 +657,7 @@
   function aiSystem() {
     const names = on("nameSite")
       ? "Name the site by its domain or the business by its name instead of vague words such as 'the website' or 'the site'. "
-      : "Do NOT name the business, the brand or the domain: say 'the site' or 'the page' (a page path such as /services/ is fine). For example: 'Author page schema was implemented on the site.' ";
+      : "Do NOT name the business, the brand or the domain: say 'the site' or 'the page' (a page path such as /services/ is fine). ";
     return "You fill in the closing fields of a ClickUp task for an SEO and website agency. Use only the facts in the task details and in the task's own comments. Never invent results, numbers, links, names or dates. " +
       "Write confident, plain English in the past tense: say what was done, not what it may do. " + names + "Avoid hedging words (may, might, could, helps to, aims to). " +
       "These texts can be sent to the business itself in reports, so NEVER use the words client, clients, customer, customers or any word for them (account, the business owner, the company we work for); write about the work and the pages. " +
@@ -603,6 +665,18 @@
   }
   // Words that must not reach a text the business itself may read.
   const BANNED_RE = /\b(client|clients|client's|clients'|customer|customers|customer's)\b/i;
+  // Is a text built from this task? Its content words (common work words left out)
+  // must mostly appear in the task's own title, description, fields or comments -
+  // otherwise the AI took them from somewhere else (an example, another task).
+  const GENERIC = new Set("that this with from have been were their there which when where what work task tasks site page pages done completed complete completion implemented implement updated update checked check verified verify added made created reviewed review fixed fixing confirmed ensure ensured correctly properly live also each both into over after before then them they your more part parts was were has had the and for are its can will all any new old now same".split(" "));
+  function ungrounded(text, t, ctx) {
+    const words = (String(text || "").toLowerCase().match(/[a-z][a-z0-9-]{3,}/g) || []).filter((w) => !GENERIC.has(w));
+    if (words.length < 3) return false;
+    const src = [t.name, t.client, ctx && ctx.description, ...(((ctx && ctx.comments) || []).map((c) => c.text)), ...((ctx && ctx.fields) || [])].join(" ").toLowerCase();
+    const stem = (w) => w.replace(/(ing|ed|es|s)$/, "");
+    const hit = words.filter((w) => src.includes(w) || src.includes(stem(w))).length;
+    return hit / words.length < 0.5;
+  }
   const AI_SCHEMA = { type: "object", properties: { clientDescription: { type: "string" }, description: { type: "string" }, preDescription: { type: "string" } }, required: ["clientDescription", "description", "preDescription"] };
   const fmtDate = (ms) => new Date(ms).toLocaleDateString(undefined, { month: "short", day: "numeric" });
   // The client's site(s): the domains in the task's description and comments
@@ -630,10 +704,12 @@
       ((ctx.fields || []).length ? "Other fields: " + ctx.fields.join("; ") + "\n" : "") +
       "\nThis task's own comments (newest first):\n" + (comments || "(none)") + "\n\n" +
       "Write three things:\n" +
-      "clientDescription: the request this task came from, as the reference for doing it - the business's own request restated as an instruction (e.g. 'Make the phone number clickable on every city page.'). Take it only from where the details show their own request (a forwarded message, an email, 'client said', 'client asked', 'as per client'). It is NOT a summary of the work, and must not contain the word client or customer. " + (on("clientFromDesc") ? "If the details don't contain their request, write it instead as a short request-style rephrase of what this task is about, based on its Description and title (e.g. 'Add author page schema on the site.') - never leave it empty." : "If the details don't contain their request, return an empty string.") + "\n" +
+      "clientDescription: the request this task came from, as the reference for doing it - the business's own request restated as an instruction. Take it only from where the details show their own request (a forwarded message, an email, 'client said', 'client asked', 'as per client'). It is NOT a summary of the work, and must not contain the word client or customer. " + (on("clientFromDesc") ? "If the details don't contain their request, write it instead as a short request-style rephrase of what this task is about, based on its Description and title - never leave it empty." : "If the details don't contain their request, return an empty string.") + "\n" +
       "description: the closing statement in 1 to 3 sentences: what was done, on which pages of the site" + (on("nameSite") ? " (by domain)" : " (say 'the site'; a page path is fine, no domain or business name)") + ", and how it was checked. Confident and specific. Only state work the details show as DONE (the task's comments, or a finished status with notes of what was done). If the task's text is a list of things to do, an audit of problems or a plan, that is NOT work done: return an empty string for description rather than turning the to-do items into 'was fixed' sentences.\n" +
       "preDescription: 1 or 2 sentences on what the task is meant to do (the plan), from its title and description.\n" +
+      "Every fact must come from THIS task's title, description, fields or comments. If they say little (e.g. only that it was done), write a short line built from the task's title and what the comments say, and nothing more.\n" +
       "If the details don't say something, leave it out rather than guessing.\n" +
+      learnedText() +
       (aiNotes.trim() ? "\nThe user's standing instructions (follow them):\n" + aiNotes.trim().slice(0, 1500) + "\n" : "") +
       (extra && extra.trim() ? "\nFor this task the user asks: " + extra.trim().slice(0, 500) + "\n" : "") +
       'Return JSON: {"clientDescription": "...", "description": "...", "preDescription": "..."}';
@@ -760,10 +836,16 @@
         // ...or the business / site was named while that is switched off.
         const named = (x) => { if (on("nameSite") || !x) return false; const low = String(x).toLowerCase(); const nm = clientName(t).toLowerCase(); return (nm.length >= 4 && low.includes(nm)) || sitesOf(t, ed.ctx).some((dm) => low.includes(dm)); };
         const outText = (x) => [x.clientDescription, x.description, x.preDescription].join(" ");
-        if (out && (BANNED_RE.test(outText(out)) || named(outText(out)))) {
-          const again2 = await window.PcmAI.generate(aiSystem(), aiPrompt(t, ed.ctx, ((extra || "") + " Reword it: do not use the words client, clients, customer or customers (or any word for them) anywhere - just describe the work" + (on("nameSite") ? " and name the site" : " and say 'the site' - do not name the business, brand or domain") + ".").trim()), { schema: AI_SCHEMA }).catch(() => "");
+        const madeUp = (x) => ungrounded(x.description, t, ed.ctx) || ungrounded(x.preDescription, t, ed.ctx);
+        if (out && (BANNED_RE.test(outText(out)) || named(outText(out)) || madeUp(out))) {
+          const why = (madeUp(out) ? " Your last answer mentioned things that are NOT in this task - use only this task's own title, description and comments." : "") +
+            (BANNED_RE.test(outText(out)) || named(outText(out)) ? " Reword it: do not use the words client, clients, customer or customers (or any word for them) anywhere - just describe the work" + (on("nameSite") ? " and name the site." : " and say 'the site' - do not name the business, brand or domain.") : "");
+          const again2 = await window.PcmAI.generate(aiSystem(), aiPrompt(t, ed.ctx, ((extra || "") + why).trim()), { schema: AI_SCHEMA }).catch(() => "");
           const o2 = readJson(again2);
           if (o2) out = o2;
+          // Still not about this task: those parts are left for a person.
+          if (out && ungrounded(out.description, t, ed.ctx)) { out.description = ""; ed.madeUp = true; }
+          if (out && ungrounded(out.preDescription, t, ed.ctx)) out.preDescription = "";
         }
       }
       catch (e) {
@@ -794,7 +876,9 @@
     // Already explained when the client's request wasn't found: not repeated below.
     const left = counted(F.check(afterOf(t, ed), { pre: true }).problems).filter((p) => !(ed.noClientAsk && p === "missingClientDescription"));
     const slipped = ["clientDescription", "description", "preDescription"].some((k) => ed.vals[k] && ed.vals[k] !== ed.orig[k] && BANNED_RE.test(ed.vals[k]));
-    ed.msg = (slipped && !note ? "⚠ The AI still used the word client or customer: reword it in After fix before applying. " : "") + (ed.movedNote && !note ? "The note written in File was moved to Description. " : "") + (ed.noClientAsk && !note && !on("clientFromDesc") && on("clientDescription") && fmtOf(t, ed) === 1 ? "The client's request isn't in this task or its comments, so Client Description is left empty: paste it with ✎ Edit. " : "") + (note || (left.length ? "After this fix it would still be: " + left.map((p) => F.PROBLEM_LABEL[p].toLowerCase()).join(", ") + ". Use ✎ Edit to fill it in." : "Check the After column, change anything with ✎ Edit, then Apply."));
+    const madeUpNote = ed.madeUp && !note ? "The AI's Description wasn't based on this task, so it's left empty - write it in After fix. " : "";
+    ed.madeUp = false;
+    ed.msg = madeUpNote + (slipped && !note ? "⚠ The AI still used the word client or customer: reword it in After fix before applying. " : "") + (ed.movedNote && !note ? "The note written in File was moved to Description. " : "") + (ed.noClientAsk && !note && !on("clientFromDesc") && on("clientDescription") && fmtOf(t, ed) === 1 ? "The client's request isn't in this task or its comments, so Client Description is left empty: paste it with ✎ Edit. " : "") + (note || (left.length ? "After this fix it would still be: " + left.map((p) => F.PROBLEM_LABEL[p].toLowerCase()).join(", ") + ". Use ✎ Edit to fill it in." : "Check the After column, change anything with ✎ Edit, then Apply."));
     ed.tone = note ? "err" : "";
     paint();
     return true;
@@ -820,11 +904,13 @@
       paint();
       return false;
     }
-    // ClickUp confirmed: the row shows the new verdict.
+    // ClickUp confirmed: the row shows the new verdict - and an edited fix teaches the AI.
+    try { learnFrom(t, ed); } catch (e) {}
     t.format = r.format; t.problems = r.problems || [];
     t.values = Object.assign({}, r.values || {});
     eds.delete(id);
     dropFix(id);
+    try { logApplied(t, ed.before, text); } catch (e) {}
     // Quick review: this one is done, the next ready fix takes its place.
     if (qr && qr.ids[qr.i] === id) { qr.ids.splice(qr.i, 1); qr.applied++; }
     picked.delete(id);
@@ -876,7 +962,7 @@
     for (const [k] of CATS) counts[k] = base.filter((t) => inCat(t, k)).length;
     const clients = [...new Set(rows.map((t) => t.client).filter(Boolean))].sort((a, b) => a.localeCompare(b));
     const list = visible();
-    const checked = CHECKS.filter((c) => c[0] !== "warm" && c[0] !== "nameSite" && c[0] !== "clientFromDesc" && on(c[0]) && (c[0] !== "fileStrict" || on("file"))).map((c) => c[1].replace(/, separated by commas$/, "")).join(", ");
+    const checked = CHECKS.filter((c) => c[0] !== "warm" && c[0] !== "nameSite" && c[0] !== "learn" && c[0] !== "clientFromDesc" && on(c[0]) && (c[0] !== "fileStrict" || on("file"))).map((c) => c[1].replace(/, separated by commas$/, "")).join(", ");
     const head = '<div class="ip-head"><h2>Descriptions</h2><span class="sp"></span><span class="ip-meta">' +
       (loading ? "Refreshing…" : "Updated " + ago(at)) + " · " + rows.filter((t) => !t.done).length + " open tasks checked" + (rows.some((t) => t.done) ? " (+ " + rows.filter((t) => t.done).length + " finished in 30 days)" : "") +
       (() => { const need = filtered().filter((t) => probs(t).length); const ready = need.filter((t) => isReady(t, eds.get(t.id))).length; return need.length ? " · " + ready + " of " + need.length + " fixes ready" + (warming ? ", preparing more…" : "") : ""; })() + "</span>" +
@@ -884,6 +970,7 @@
       (checksOpen ? '<div class="dc-checks"><div class="dc-msg">Switch off what your team doesn\'t use. A task is flagged only for the checks that are on.</div>' +
         CHECKS.map((c) => '<label><input type="checkbox" data-check="' + c[0] + '"' + (on(c[0]) ? " checked" : "") + (c[0] === "fileStrict" && !on("file") ? " disabled" : "") + "> " + esc(c[1]) + (c[2] ? ' <span class="dc-msg">(' + esc(c[2]) + ")</span>" : "") + "</label>").join("") +
         '<div class="dc-msg">Not formatted (none of the fields) is always checked.</div>' +
+        (learned.length ? '<div class="au-row" style="margin-top:6px"><span class="dc-msg">It has learned from ' + learned.length + " of your edits.</span> " + '<button type="button" class="dc-link" id="dcForget">Forget what it learned</button></div>' : "") +
         '<label for="dcAiNotes" style="display:block;margin-top:8px;font-weight:600">Your instructions for the AI <span class="dc-msg" style="font-weight:400">- used for every suggestion</span></label>' +
         '<textarea id="dcAiNotes" class="dc-ainotes" rows="3" placeholder="e.g. Name the site, never write &quot;the client\'s website&quot;. Short, confident past tense. Mention the pages that were changed.">' + esc(aiNotes) + "</textarea>" +
         '<div class="dc-msg">Saved as you type. Fixes already prepared keep their wording until you press ✨ Suggest again.</div></div>' : "") +
@@ -918,7 +1005,8 @@
     const page = list.slice(0, shown);
     const allOpen = page.length > 0 && page.every((t) => { const e = eds.get(t.id); return e && e.open; });
     const bar = list.length ? '<div class="dc-bulk">' +
-      (() => { const n = list.filter((t) => isReady(t, eds.get(t.id))).length; return '<button type="button" class="ip-btn dc-btn-primary" id="dcQuick"' + (n ? "" : " disabled") + ' title="Go through the ready fixes one by one: Apply & next, Skip, Back - or the arrow keys">⚡ Quick review (' + n + ")</button>"; })() +
+      (() => { const n = list.filter((t) => isReady(t, eds.get(t.id))).length; return '<button type="button" class="ip-btn dc-btn-primary" id="dcQuick"' + (n ? "" : " disabled") + ' title="Go through the ready fixes one by one: Apply & next, Skip, Back - or the arrow keys">⚡ Quick review (' + n + ")</button>" +
+        '<button type="button" class="ip-btn" id="dcApplied" title="The fixes you applied - what each description was and what was written">✓ All applied (' + appliedLog.length + ")</button>"; })() +
       '<button type="button" class="ip-btn" id="dcOpenAll" title="' + (allOpen ? "Close every task shown" : "Open every task shown (" + page.length + "): fixes not prepared yet are prepared one after another") + '">' + (allOpen ? "▴ Close all" : "▾ Open all " + page.length) + "</button>" +
       (cat !== "good" ?
       '<label><input type="checkbox" id="dcAll"' + (allOn ? " checked" : "") + (bulk ? " disabled" : "") + "> Select all " + list.length + "</label>" +
@@ -1084,10 +1172,21 @@
   function wire() {
     const qb = host.querySelector("#dcQuick");
     if (qb) qb.onclick = () => qrOpen();
+    const ab = host.querySelector("#dcApplied");
+    if (ab) ab.onclick = () => qrOpen("applied");
     host.querySelectorAll("[data-qr]").forEach((b) => {
       const k = b.getAttribute("data-qr");
       if (k === "backdrop") { b.onclick = (e) => { if (e.target === b) qrClose(); }; return; }
-      b.onclick = (e) => { e.stopPropagation(); if (k === "close") qrClose(); else if (k === "back") qrGo(-1); else if (k === "skip") qrGo(1); else if (k === "apply") qrApply(); };
+      b.onclick = (e) => {
+        e.stopPropagation();
+        if (k === "close") qrClose();
+        else if (k === "back") qrGo(-1);
+        else if (k === "skip") qrGo(1);
+        else if (k === "apply") qrApply();
+        else if (k === "view-applied") { qr.view = "applied"; qr.open = -1; paint(); }
+        else if (k === "view-queue") { qr.view = "queue"; paint(); }
+        else if (k.startsWith("open-")) { const i = Number(k.slice(5)); qr.open = qr.open === i ? -1 : i; paint(); }
+      };
     });
     host.querySelectorAll("[data-cat]").forEach((b) => { b.onclick = () => { cat = b.getAttribute("data-cat"); shown = 30; paint(); }; });
     const s = host.querySelector("#dcSearch");
@@ -1206,6 +1305,8 @@
       x.oninput = () => { const ed = eds.get(id); if (ed) ed.ask = x.value; };
       x.onkeydown = (e) => { if (e.key === "Enter") { e.preventDefault(); const ed = eds.get(id); prepare(id, true, false, false, ed && ed.ask); } };
     });
+    const fg = host.querySelector("#dcForget");
+    if (fg) fg.onclick = () => { if (!confirm("Forget the " + learned.length + " edits it learned from?")) return; learned = []; try { chrome.storage.local.set({ descStyleExamples: [] }); } catch (e) {} paint(); };
     const an = host.querySelector("#dcAiNotes");
     if (an) an.oninput = () => {
       aiNotes = an.value;

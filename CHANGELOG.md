@@ -1,5 +1,12 @@
 # Changelog
 
+## v4.4.2
+- ⏱ Timer in the top bar of the popup, the side panel and the Options page (one shared timer): a plain stopwatch (Start, Pause, Lap, Reset) and a countdown (5m to 1h, or type your own) that keeps going with the popup closed and rings with a notification when it ends. Not connected to tasks or ClickUp.
+- Insights › Descriptions: when a task with no fields is put into the format, the links at the end of its text now go into File (not Pre File, which is optional), next to any links found in its comments.
+- Insights › Descriptions: the fixes you applied are kept - ✓ All applied (in Quick review and above the list) lists them with what each description was before and after, and the count no longer starts from 0 each time.
+- Insights › Descriptions: the AI learns from your edits - change its text in After fix and Apply, and later suggestions follow your style (kept on this computer; Checks ▾ › Learn from my edits / Forget what it learned).
+- Insights › Descriptions: the AI no longer writes things that aren't in the task (it had copied a sample sentence into an unrelated report task): text not based on the task's own title, description and comments is asked again, and left empty if it still isn't.
+
 ## v4.4.1
 - Insights › Descriptions: a task with no fields is put fully into the old or new format - its existing text becomes the Pre Description and the links at its end the Pre File, so nothing is left outside the fields.
 - Insights › Descriptions: the AI only writes the Description from work the task shows as done; a to-do list, an audit of problems or a plan is no longer turned into "was fixed" sentences (the Description is left for you instead).

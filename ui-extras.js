@@ -20,6 +20,9 @@
   const EXTRA_RE = /\bextra\s*\(?s?\)?\s*tasks?\b/i;
 
   // ---------- stop / complete at a set time (autoStopTasks, enforced in the background) ----------
+  // What a limit is, in words: "at 2:46 PM", "2h of your time", "2h today", "2h in all".
+  const ruleWhen = (r) => r.scope === "clock" ? "at " + new Date(Number(r.atMs) || 0).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })
+    : fmtLimit(r.ms) + (r.scope === "mine" ? " of your time" : r.scope === "total" ? " in all" : " today");
   const fmtLimit = (ms) => { const m = Math.round((Number(ms) || 0) / 60000); const h = Math.floor(m / 60); return h ? h + "h" + (m % 60 ? " " + (m % 60) + "m" : "") : m + "m"; };
   // "1h 20m", "1.5h", "80m", "80" (minutes), "1:20".
   function parseLimit(s) {
@@ -39,7 +42,7 @@
     if (a === "list") {
       const all = Object.entries(rules);
       if (!all.length) { line("no stop-at limits set", "mu"); return; }
-      for (const [, r] of all) line((r.action === "complete" ? "complete " : "stop ") + "\u201C" + (r.name || "?") + "\u201D at " + fmtLimit(r.ms) + (r.scope === "total" ? " in all" : " today") + (r.daily ? ", every day" + (r.firedDay ? " (done today)" : "") : ", once"), "hl");
+      for (const [, r] of all) line((r.action === "complete" ? "complete " : "stop ") + "\u201C" + (r.name || "?") + "\u201D " + (r.scope === "clock" ? "" : "at ") + ruleWhen(r) + (r.daily ? ", every day" + (r.firedDay ? " (done today)" : "") : ", once"), "hl");
       line("/stopat off - the running task's one   /stopat clear - all of them", "mu");
       return;
     }
@@ -334,7 +337,7 @@
     if (arBoxes || autoTab) out.push({ key: "arboxes", text: "\u2460 Run boxes", btn: arBoxes ? "Hide" : "Show", run: arBoxes ? hideArBoxes : showAr, tip: arBoxes ? "Numbered boxes in the task list: click tasks in the order they should run (during a run: click a waiting one to take it out, another to add it at the end)" : "Show the numbered boxes in the task list, to pick tasks to run one after another" });
     if (boxes || autoTab) out.push({ key: "boxes", text: "\u2611 Tick boxes", btn: boxes ? "Hide" : "Show", run: boxes ? hideBoxes : showAc, tip: boxes ? "Tick a task to have it complete at its estimate" : "Show tick boxes in the task list, to mark tasks that complete at their estimate" });
     const ns = Object.keys(stops).length;
-    if (ns) out.push({ key: "stopat", text: "\u23F1 " + ns + " stop-at", btn: "Off", run: async () => { await chrome.storage.local.set({ autoStopTasks: {} }); stops = {}; paintBar(); }, tip: Object.values(stops).map((r) => (r.action === "complete" ? "complete " : "stop ") + (r.name || "") + " at " + fmtLimit(r.ms) + (r.scope === "total" ? " in all" : " today") + (r.daily ? ", every day" : "")).join("\n") });
+    if (ns) out.push({ key: "stopat", text: "\u23F1 " + ns + " stop-at", btn: "Off", run: async () => { await chrome.storage.local.set({ autoStopTasks: {} }); stops = {}; paintBar(); }, tip: Object.values(stops).map((r) => (r.action === "complete" ? "complete " : "stop ") + (r.name || "") + " " + (r.scope === "clock" ? "" : "at ") + ruleWhen(r) + (r.daily ? ", every day" : "")).join("\n") });
     if (note) out.push({ key: "note", text: note, btn: "", run: null, tip: "" });
     return out;
   }
