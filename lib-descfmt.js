@@ -116,6 +116,8 @@
     if (!core) problems.push("notFormatted");
     else {
       format = has("Client Description") ? 1 : 2;
+      // Some of the format's lines are there, not all: the fix adds the missing ones.
+      if (["Pre Description", "Pre File", "Description", "File"].some((l) => !has(l))) problems.push("incompleteFormat");
       if (format === 1 && !values.clientDescription) problems.push("missingClientDescription");
       if (!values.description) problems.push("missingDescription");
       const fs = fileState(values.file);
@@ -182,6 +184,7 @@
 
   const PROBLEM_LABEL = {
     notFormatted: "Not formatted",
+    incompleteFormat: "Incomplete format",
     missingClientDescription: "Missing client description",
     missingDescription: "Missing description",
     missingFile: "Missing file",

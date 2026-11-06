@@ -1,5 +1,9 @@
 # ClickUp Tracker changelog
 
+## 0.4.4
+- Mac: the time in the menu bar can count the seconds too - tray menu › Show seconds in the menu bar (off at first). It is counted on the Mac from when the timer started, so it adds no calls to ClickUp, and the digits keep the same width so the menu bar does not jiggle.
+- Mac: choose what the menu bar shows - tray menu › Menu bar shows › This task and today (as before), This task only, or Today only - for menu bars that are short on room.
+
 ## 0.4.3
 - Tells the extension which task it sees tracking, so a timer started here or in ClickUp shows on the extension's pages within a minute.
 - Safer link with the extension: only Personal ClickUp Manager (the extension this app was set up with, and any you allow) can talk to the app. Any other browser extension that tries gets an Allow / Don't allow question first.

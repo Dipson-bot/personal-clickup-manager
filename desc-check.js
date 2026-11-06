@@ -37,6 +37,7 @@
   const CATS = [
     ["problems", "Needs fixing"],
     ["notFormatted", "Not formatted"],
+    ["incompleteFormat", "Incomplete format"],
     ["missingClientDescription", "Missing client description"],
     ["missingDescription", "Missing description"],
     ["missingFile", "Missing file"],
@@ -45,7 +46,7 @@
     ["missingPreFile", "Missing pre file"],
     ["good", "All good"],
   ];
-  const TONE = { notFormatted: "bad", missingClientDescription: "warn", missingDescription: "warn", missingFile: "warn", fileNotFormatted: "warn", missingPreDescription: "warn", missingPreFile: "warn" };
+  const TONE = { notFormatted: "bad", incompleteFormat: "warn", missingClientDescription: "warn", missingDescription: "warn", missingFile: "warn", fileNotFormatted: "warn", missingPreDescription: "warn", missingPreFile: "warn" };
   // Format 1 / 2 by name: the old format has Client Description, the new one doesn't.
   const FMT_NAME = { 1: "Old format", 2: "New format" };
 
@@ -59,13 +60,15 @@
     ["preDescription", "Pre Description", "", false],
     ["preFile", "Pre File", "", false],
     ["warm", "Prepare fixes in the background while Options is open", "Chrome's built-in AI only", true],
+    ["nameSite", "Mention the business or site name in AI text", "off: it just says the site - tasks are already filed by client", false],
+    ["clientFromDesc", "No client request in the task? Write Client Description as a rephrase of the Description", "off: it is left empty for a person to fill", false],
   ];
   let prefs = Object.fromEntries(CHECKS.map((c) => [c[0], c[3]]));
   let checksOpen = false;
   const on = (k) => prefs[k] !== false;
   const PREF_OF = { missingClientDescription: "clientDescription", missingDescription: "description", missingFile: "file", fileNotFormatted: "fileStrict", missingPreDescription: "preDescription", missingPreFile: "preFile" };
   // The problems that count with the checks switched on.
-  const counted = (list) => (list || []).filter((p) => p === "notFormatted" || (on(PREF_OF[p]) && (p !== "fileNotFormatted" || on("file"))));
+  const counted = (list) => (list || []).filter((p) => p === "notFormatted" || p === "incompleteFormat" || (on(PREF_OF[p]) && (p !== "fileNotFormatted" || on("file"))));
   const probs = (t) => counted(t.problems);
   let aiNotes = ""; // Checks ▾ › Your instructions for the AI (settings.descAiNotes)
   function readPrefs(st) {
@@ -88,6 +91,59 @@
   let bulkMsg = "", noOnline = false, hydrated = false;
   let warming = false; // fixes being prepared in the background
   const scrolledTo = new Set(); // fixes whose Now / After boxes were opened at the first change
+  // ⚡ Quick review: the ready fixes one after another in a big view - Apply &
+  // next / Skip / Back, and the arrow keys (→ ↓ next, ← ↑ back, Enter apply, Esc close).
+  let qr = null; // { ids, i, applied, skipped }
+  const qrId = () => (qr && qr.i < qr.ids.length ? qr.ids[qr.i] : "");
+  function qrOpen() {
+    const ids = visible().filter((t) => isReady(t, eds.get(t.id))).map((t) => t.id);
+    if (!ids.length) return;
+    qr = { ids, i: 0, applied: 0, skipped: 0 };
+    document.documentElement.classList.add("dc-qr-on");
+    paint();
+  }
+  function qrClose() { qr = null; document.documentElement.classList.remove("dc-qr-on"); paint(); }
+  function qrGo(step) {
+    if (!qr) return;
+    if (step > 0) qr.i = Math.min(qr.ids.length, qr.i + 1);
+    else qr.i = Math.max(0, qr.i - 1);
+    paint();
+  }
+  async function qrApply() {
+    const id = qrId();
+    if (!id) return;
+    await apply(id); // on success apply() moves Quick review on to the next fix
+  }
+  document.addEventListener("keydown", (e) => {
+    if (!qr || !host || !host.isConnected) return;
+    const typing = e.target && (e.target.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(e.target.tagName));
+    if (e.key === "Escape") { if (typing) e.target.blur(); else qrClose(); e.preventDefault(); return; }
+    if (typing || e.altKey || e.ctrlKey || e.metaKey) return;
+    if (e.key === "ArrowRight" || e.key === "ArrowDown") { e.preventDefault(); qrGo(1); }
+    else if (e.key === "ArrowLeft" || e.key === "ArrowUp") { e.preventDefault(); qrGo(-1); }
+    else if (e.key === "Enter") { e.preventDefault(); qrApply(); }
+  });
+  function qrHtml() {
+    if (!qr) return "";
+    const id = qrId(), t = id ? byId(id) : null, ed = id ? eds.get(id) : null;
+    let body;
+    if (!t || !ed) {
+      body = '<div class="dc-qr-done"><h3>All done</h3><p>' + plural(qr.applied, "fix") + " applied" + (qr.ids.length ? ", " + qr.ids.length + " left as " + (qr.ids.length === 1 ? "it was" : "they were") : "") + '.</p>' + (qr.ids.length ? '<button type="button" class="ip-btn" data-qr="back">← Back to them</button> ' : "") + '<button type="button" class="ip-btn dc-btn-primary" data-qr="close">Close</button></div>';
+    } else {
+      const busy = !!ed.busy;
+      body = '<div class="dc-qr-title"><b>' + esc(t.name) + "</b>" + (t.client ? ' <span class="dc-client">· ' + esc(t.client) + "</span>" : "") + "</div>" +
+        editorHtml(t, ed) +
+        '<div class="dc-qr-nav">' +
+        '<button type="button" class="ip-btn" data-qr="back"' + (qr.i === 0 ? " disabled" : "") + ' title="Previous (← or ↑)">← Back</button>' +
+        '<span class="dc-msg">' + (qr.i + 1) + " of " + qr.ids.length + " · ← → or ↑ ↓ to move · Enter applies</span>" +
+        '<span class="sp"></span>' +
+        '<button type="button" class="ip-btn" data-qr="skip" title="Leave this one as it is (→ or ↓)">Skip →</button>' +
+        '<button type="button" class="ip-btn dc-btn-primary" data-qr="apply"' + (busy || !isReady(t, ed) ? " disabled" : "") + ' title="Write this fix to ClickUp and go to the next one (Enter)">' + (busy ? esc(ed.msg || "Saving…") : "Apply & next ⏎") + "</button></div>";
+    }
+    return '<div class="dc-qr-back" data-qr="backdrop"><div class="dc-qr" role="dialog" aria-label="Quick review">' +
+      '<div class="dc-qr-h"><h3>⚡ Quick review</h3><span class="dc-msg">' + qr.applied + " applied · " + qr.ids.length + ' to go</span><span class="sp"></span><button type="button" class="dc-hbtn" data-qr="close" title="Close (Esc)">✕ Close</button></div>' +
+      body + "</div></div>";
+  }
   // 💬 Comments: the extension's task panel (task-panel.js) opened on its Comments
   // tab under the task - the same comments, replies, files and reply box as
   // everywhere else. One at a time (the panel is one); it follows its slot when
@@ -131,13 +187,21 @@
   // kept per task, so coming back shows it ready at once. It is used again only
   // while the task's description is exactly the same (descHash from the list).
   let fixCache = {}, fixTimer = 0;
-  const fixP = chrome.storage.local.get("descFixes2").then((g) => { if (g && g.descFixes2 && typeof g.descFixes2 === "object") fixCache = g.descFixes2; try { chrome.storage.local.remove("descFixes"); } catch (e) {} }).catch(() => {});
+  const fixP = chrome.storage.local.get(["descFixes3", "descFixes2"]).then((g) => {
+    if (g && g.descFixes3 && typeof g.descFixes3 === "object") fixCache = g.descFixes3;
+    else if (g && g.descFixes2 && typeof g.descFixes2 === "object") {
+      // Made before "don't name the business" (4.4.0): only the ones edited by hand are kept.
+      for (const [k, v] of Object.entries(g.descFixes2)) if (v && (v.edited || v.manual != null)) fixCache[k] = v;
+      try { chrome.storage.local.set({ descFixes3: fixCache }); } catch (e) {}
+    }
+    try { chrome.storage.local.remove(["descFixes", "descFixes2"]); } catch (e) {}
+  }).catch(() => {});
   function writeFixes() {
     clearTimeout(fixTimer);
     fixTimer = setTimeout(() => {
       const keys = Object.keys(fixCache);
       if (keys.length > 300) keys.sort((a, b) => (fixCache[a].at || 0) - (fixCache[b].at || 0)).slice(0, keys.length - 300).forEach((k) => delete fixCache[k]);
-      try { chrome.storage.local.set({ descFixes2: fixCache }); } catch (e) {}
+      try { chrome.storage.local.set({ descFixes3: fixCache }); } catch (e) {}
     }, 600);
   }
   function saveFix(id, ed) {
@@ -263,6 +327,18 @@
   #insDescView .dc-meta { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; margin: 0 0 10px; font-size: 12.5px; }
   #insDescView .dc-meta .dc-msg { font-size: 11px; text-transform: uppercase; letter-spacing: .05em; }
   #insDescView .dc-late { color: var(--red); font-weight: 600; }
+  html.dc-qr-on, html.dc-qr-on body { overflow: hidden; }
+  #insDescView .dc-qr-back { position: fixed; inset: 0; z-index: 2000; background: rgba(15, 23, 42, .45); display: flex; align-items: flex-start; justify-content: center; padding: 32px 16px; overflow: auto; }
+  #insDescView .dc-qr { width: min(1180px, 100%); background: var(--card); color: var(--text); border: 1px solid var(--border); border-radius: 14px; box-shadow: 0 20px 50px rgba(0,0,0,.25); padding: 16px 20px 18px; }
+  #insDescView .dc-qr-h { display: flex; align-items: center; gap: 10px; margin: 0 0 8px; }
+  #insDescView .dc-qr-h h3 { margin: 0; font-size: 16px; }
+  #insDescView .dc-qr-h .sp, #insDescView .dc-qr-nav .sp { flex: 1; }
+  #insDescView .dc-qr-title { font-size: 15px; margin: 0 0 8px; }
+  #insDescView .dc-qr .dc-ed { margin-left: 0; }
+  #insDescView .dc-qr .dc-doc { max-height: 46vh; }
+  #insDescView .dc-qr-nav { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-top: 12px; padding-top: 12px; border-top: 1px solid var(--border); }
+  #insDescView .dc-qr-done { text-align: center; padding: 30px 10px; }
+  #insDescView .dc-qr-done h3 { margin: 0 0 6px; }
   #insDescView .dc-checks { display: flex; flex-direction: column; gap: 5px; padding: 10px 12px; margin: 6px 0 10px; border: 1px solid var(--border); border-radius: 10px; background: var(--card); max-width: 520px; }
   #insDescView .dc-checks label { display: flex; gap: 7px; align-items: center; margin: 0; font-size: 12.5px; }
   #insDescView .dc-bulk { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; padding: 8px 10px; margin: 0 0 10px; border: 1px solid var(--border); border-radius: 10px; background: var(--card); font-size: 12px; }
@@ -307,7 +383,8 @@
   document.head.appendChild(css);
 
   // A task with no fields gets the new format unless the old one was picked last.
-  const lastFormat = () => { try { return localStorage.getItem("pcm.descFormat") === "1" ? 1 : 2; } catch (e) { return 2; } };
+  // Lines added to a task: the old format (with Client Description) unless the new one was picked last.
+  const lastFormat = () => { try { return localStorage.getItem("pcm.descFormat") === "2" ? 2 : 1; } catch (e) { return 1; } };
   const rememberFormat = (n) => { try { localStorage.setItem("pcm.descFormat", String(n)); } catch (e) {} };
 
   async function load(force) {
@@ -335,7 +412,7 @@
 
   const inCat = (t, c) => c === "problems" ? probs(t).length > 0 : c === "good" ? !probs(t).length : probs(t).includes(c);
   // A category chip shows only while its check is on.
-  const catOn = (k) => k === "problems" || k === "good" || k === "notFormatted" || (on(PREF_OF[k]) && (k !== "fileNotFormatted" || on("file")));
+  const catOn = (k) => k === "problems" || k === "good" || k === "notFormatted" || k === "incompleteFormat" || (on(PREF_OF[k]) && (k !== "fileNotFormatted" || on("file")));
   // ---------- ▾ Clients and ▾ Filter (like the Dashboard's Tasks card) ----------
   // fClients: [] = every client, else the ticked ones.
   // fDue: ticked due ranges (none ticked = any due date); "custom" = fFrom..fTo (day starts).
@@ -419,7 +496,12 @@
     "Description": "the closing statement: what was done, where, and how it was checked",
     "File": "links only, separated by commas",
   };
-  const fmtOf = (t, ed) => t.format || ed.addFormat;
+  // A task without Client Description and with lines missing (only "File:", say) can
+  // be completed in either format: the choice is the user's (ed.addFormat).
+  const incomplete = (t) => (t.problems || []).includes("incompleteFormat");
+  const needChoice = (t) => !t.format || (t.format === 2 && incomplete(t));
+  const fmtOf = (t, ed) => (needChoice(t) ? ed.addFormat : t.format);
+  const presentOf = (ed) => { if (ed._presFor !== ed.before) { ed._presFor = ed.before; ed._pres = F.check(ed.before || "").present; } return ed._pres; };
   // The fields the editor offers: the ones switched on in Checks ▾ (Client
   // Description only in the old format).
   const fieldsFor = (t, ed) => [
@@ -456,15 +538,23 @@
       const k = KEY[label];
       let v = String(ed.vals[k] || "").replace(/["“”]/g, "'").replace(/\s+\n/g, "\n").trim();
       if (label === "File") v = fileOf(v);
-      if (t.format && v === String(ed.orig[k] || "").trim()) continue;
+      if (t.format && v === String(ed.orig[k] || "").trim() && presentOf(ed).includes(label)) continue;
       set[label] = v;
+    }
+    // An incomplete format: every line it lacks goes in (empty unless the fix fills it).
+    if (t.format && ed.before != null) {
+      for (const label of fmtOf(t, ed) === 1 ? F.FORMAT1 : F.FORMAT2) {
+        if (presentOf(ed).includes(label) || label in set) continue;
+        if (!all && ed.use && ed.use[label] === false) continue;
+        set[label] = "";
+      }
     }
     return set;
   }
   function afterOf(t, ed) {
     const set = changesOf(t, ed);
     if (!Object.keys(set).length && t.format) return ed.before;
-    return F.apply(ed.before, set, t.format ? undefined : ed.addFormat);
+    return F.apply(ed.before, set, needChoice(t) ? ed.addFormat : undefined);
   }
   // What Apply writes: the After text typed by hand, else the ticked parts put in.
   const finalOf = (t, ed) => (ed.manual != null ? ed.manual : afterOf(t, ed));
@@ -500,10 +590,17 @@
     ? lines.map((l) => '<div class="' + l.k + '">' + (esc(l.x) || "&nbsp;") + "</div>").join("")
     : '<div class="gap">' + esc(empty) + "</div>") + "</div>";
 
-  const AI_SYSTEM = "You fill in the closing fields of a ClickUp task for an SEO and website agency. Use only the facts in the task details and in the task's own comments. Never invent results, numbers, links, names or dates. " +
-    "Write confident, plain English in the past tense: say what was done, not what it may do. Name the site by its domain or the business by its name instead of vague words such as 'the website' or 'the site'. Avoid hedging words (may, might, could, helps to, aims to). " +
-    "These texts can be sent to the business itself in reports, so NEVER use the words client, clients, customer, customers or any word for them (account, the business owner, the company we work for); write about the work, the pages and the site or business by name. " +
-    "No em dashes, no emojis, no markdown, no quotation marks around the text. If the user gives instructions, follow them as long as they don't ask you to invent facts.";
+  // Business / site names: off by default (Checks ▾ › Mention the business or site
+  // name) - tasks, sheets and docs are already filed by client, so "the site" is enough.
+  function aiSystem() {
+    const names = on("nameSite")
+      ? "Name the site by its domain or the business by its name instead of vague words such as 'the website' or 'the site'. "
+      : "Do NOT name the business, the brand or the domain: say 'the site' or 'the page' (a page path such as /services/ is fine). For example: 'Author page schema was implemented on the site.' ";
+    return "You fill in the closing fields of a ClickUp task for an SEO and website agency. Use only the facts in the task details and in the task's own comments. Never invent results, numbers, links, names or dates. " +
+      "Write confident, plain English in the past tense: say what was done, not what it may do. " + names + "Avoid hedging words (may, might, could, helps to, aims to). " +
+      "These texts can be sent to the business itself in reports, so NEVER use the words client, clients, customer, customers or any word for them (account, the business owner, the company we work for); write about the work and the pages. " +
+      "No em dashes, no emojis, no markdown, no quotation marks around the text. If the user gives instructions, follow them as long as they don't ask you to invent facts.";
+  }
   // Words that must not reach a text the business itself may read.
   const BANNED_RE = /\b(client|clients|client's|clients'|customer|customers|customer's)\b/i;
   const AI_SCHEMA = { type: "object", properties: { clientDescription: { type: "string" }, description: { type: "string" }, preDescription: { type: "string" } }, required: ["clientDescription", "description", "preDescription"] };
@@ -526,15 +623,15 @@
     const brief = String(ctx.description || t.briefText || "").replace(/\s+/g, " ").slice(0, 1800);
     const sites = sitesOf(t, ctx);
     return "Task title: " + t.name + "\n" +
-      (clientName(t) ? "Business: " + clientName(t) + "\n" : "") +
-      (sites.length ? "Site: " + sites.join(", ") + "\n" : "") +
+      (on("nameSite") && clientName(t) ? "Business: " + clientName(t) + "\n" : "") +
+      (on("nameSite") && sites.length ? "Site: " + sites.join(", ") + "\n" : "") +
       (t.status ? "Status: " + t.status + "\n" : "") +
       (brief ? "Task description: " + brief + "\n" : "") +
       ((ctx.fields || []).length ? "Other fields: " + ctx.fields.join("; ") + "\n" : "") +
       "\nThis task's own comments (newest first):\n" + (comments || "(none)") + "\n\n" +
       "Write three things:\n" +
-      "clientDescription: the request this task came from, as the reference for doing it - the business's own request restated as an instruction (e.g. 'Make the phone number clickable on every city page.'). Take it only from where the details show their own request (a forwarded message, an email, 'client said', 'client asked', 'as per client'). It is NOT a summary of the work, and must not contain the word client or customer. If the details don't contain their request, return an empty string.\n" +
-      "description: the closing statement in 1 to 3 sentences: what was done, on which pages or URLs of the site (by domain), and how it was checked. Confident and specific.\n" +
+      "clientDescription: the request this task came from, as the reference for doing it - the business's own request restated as an instruction (e.g. 'Make the phone number clickable on every city page.'). Take it only from where the details show their own request (a forwarded message, an email, 'client said', 'client asked', 'as per client'). It is NOT a summary of the work, and must not contain the word client or customer. " + (on("clientFromDesc") ? "If the details don't contain their request, write it instead as a short request-style rephrase of what this task is about, based on its Description and title (e.g. 'Add author page schema on the site.') - never leave it empty." : "If the details don't contain their request, return an empty string.") + "\n" +
+      "description: the closing statement in 1 to 3 sentences: what was done, on which pages of the site" + (on("nameSite") ? " (by domain)" : " (say 'the site'; a page path is fine, no domain or business name)") + ", and how it was checked. Confident and specific.\n" +
       "preDescription: 1 or 2 sentences on what the task is meant to do (the plan), from its title and description.\n" +
       "If the details don't say something, leave it out rather than guessing.\n" +
       (aiNotes.trim() ? "\nThe user's standing instructions (follow them):\n" + aiNotes.trim().slice(0, 1500) + "\n" : "") +
@@ -653,15 +750,18 @@
       aiPending++;
       ed.msg = ahead ? "Waiting for the AI (" + ahead + " ahead)…" : "Writing the missing text with AI…";
       paint();
-      const run = () => window.PcmAI.generate(AI_SYSTEM, aiPrompt(t, ed.ctx, extra), { schema: AI_SCHEMA });
+      const run = () => window.PcmAI.generate(aiSystem(), aiPrompt(t, ed.ctx, extra), { schema: AI_SCHEMA });
       const turn = aiChain.then(() => { ed.msg = "Writing the missing text with AI…"; paint(); return run(); });
       aiChain = turn.catch(() => {}).then(() => { aiPending--; });
       let out = null;
       try {
         out = readJson(await turn);
         // "client" / "customer" slipped in: asked once more to reword it.
-        if (out && BANNED_RE.test([out.clientDescription, out.description, out.preDescription].join(" "))) {
-          const again2 = await window.PcmAI.generate(AI_SYSTEM, aiPrompt(t, ed.ctx, ((extra || "") + " Reword it: do not use the words client, clients, customer or customers (or any word for them) anywhere - name the business or site, or just describe the work.").trim()), { schema: AI_SCHEMA }).catch(() => "");
+        // ...or the business / site was named while that is switched off.
+        const named = (x) => { if (on("nameSite") || !x) return false; const low = String(x).toLowerCase(); const nm = clientName(t).toLowerCase(); return (nm.length >= 4 && low.includes(nm)) || sitesOf(t, ed.ctx).some((dm) => low.includes(dm)); };
+        const outText = (x) => [x.clientDescription, x.description, x.preDescription].join(" ");
+        if (out && (BANNED_RE.test(outText(out)) || named(outText(out)))) {
+          const again2 = await window.PcmAI.generate(aiSystem(), aiPrompt(t, ed.ctx, ((extra || "") + " Reword it: do not use the words client, clients, customer or customers (or any word for them) anywhere - just describe the work" + (on("nameSite") ? " and name the site" : " and say 'the site' - do not name the business, brand or domain") + ".").trim()), { schema: AI_SCHEMA }).catch(() => "");
           const o2 = readJson(again2);
           if (o2) out = o2;
         }
@@ -694,7 +794,7 @@
     // Already explained when the client's request wasn't found: not repeated below.
     const left = counted(F.check(afterOf(t, ed), { pre: true }).problems).filter((p) => !(ed.noClientAsk && p === "missingClientDescription"));
     const slipped = ["clientDescription", "description", "preDescription"].some((k) => ed.vals[k] && ed.vals[k] !== ed.orig[k] && BANNED_RE.test(ed.vals[k]));
-    ed.msg = (slipped && !note ? "⚠ The AI still used the word client or customer: reword it in After fix before applying. " : "") + (ed.movedNote && !note ? "The note written in File was moved to Description. " : "") + (ed.noClientAsk && !note && on("clientDescription") && fmtOf(t, ed) === 1 ? "The client's request isn't in this task or its comments, so Client Description is left empty: paste it with ✎ Edit. " : "") + (note || (left.length ? "After this fix it would still be: " + left.map((p) => F.PROBLEM_LABEL[p].toLowerCase()).join(", ") + ". Use ✎ Edit to fill it in." : "Check the After column, change anything with ✎ Edit, then Apply."));
+    ed.msg = (slipped && !note ? "⚠ The AI still used the word client or customer: reword it in After fix before applying. " : "") + (ed.movedNote && !note ? "The note written in File was moved to Description. " : "") + (ed.noClientAsk && !note && !on("clientFromDesc") && on("clientDescription") && fmtOf(t, ed) === 1 ? "The client's request isn't in this task or its comments, so Client Description is left empty: paste it with ✎ Edit. " : "") + (note || (left.length ? "After this fix it would still be: " + left.map((p) => F.PROBLEM_LABEL[p].toLowerCase()).join(", ") + ". Use ✎ Edit to fill it in." : "Check the After column, change anything with ✎ Edit, then Apply."));
     ed.tone = note ? "err" : "";
     paint();
     return true;
@@ -725,6 +825,8 @@
     t.values = Object.assign({}, r.values || {});
     eds.delete(id);
     dropFix(id);
+    // Quick review: this one is done, the next ready fix takes its place.
+    if (qr && qr.ids[qr.i] === id) { qr.ids.splice(qr.i, 1); qr.applied++; }
     picked.delete(id);
     notes.set(id, probs(t).length ? "Applied. Still: " + probs(t).map((p) => F.PROBLEM_LABEL[p].toLowerCase()).join(", ") : "Applied ✓");
     paint();
@@ -774,7 +876,7 @@
     for (const [k] of CATS) counts[k] = base.filter((t) => inCat(t, k)).length;
     const clients = [...new Set(rows.map((t) => t.client).filter(Boolean))].sort((a, b) => a.localeCompare(b));
     const list = visible();
-    const checked = CHECKS.filter((c) => c[0] !== "warm" && on(c[0]) && (c[0] !== "fileStrict" || on("file"))).map((c) => c[1].replace(/, separated by commas$/, "")).join(", ");
+    const checked = CHECKS.filter((c) => c[0] !== "warm" && c[0] !== "nameSite" && c[0] !== "clientFromDesc" && on(c[0]) && (c[0] !== "fileStrict" || on("file"))).map((c) => c[1].replace(/, separated by commas$/, "")).join(", ");
     const head = '<div class="ip-head"><h2>Descriptions</h2><span class="sp"></span><span class="ip-meta">' +
       (loading ? "Refreshing…" : "Updated " + ago(at)) + " · " + rows.filter((t) => !t.done).length + " open tasks checked" + (rows.some((t) => t.done) ? " (+ " + rows.filter((t) => t.done).length + " finished in 30 days)" : "") +
       (() => { const need = filtered().filter((t) => probs(t).length); const ready = need.filter((t) => isReady(t, eds.get(t.id))).length; return need.length ? " · " + ready + " of " + need.length + " fixes ready" + (warming ? ", preparing more…" : "") : ""; })() + "</span>" +
@@ -816,6 +918,7 @@
     const page = list.slice(0, shown);
     const allOpen = page.length > 0 && page.every((t) => { const e = eds.get(t.id); return e && e.open; });
     const bar = list.length ? '<div class="dc-bulk">' +
+      (() => { const n = list.filter((t) => isReady(t, eds.get(t.id))).length; return '<button type="button" class="ip-btn dc-btn-primary" id="dcQuick"' + (n ? "" : " disabled") + ' title="Go through the ready fixes one by one: Apply & next, Skip, Back - or the arrow keys">⚡ Quick review (' + n + ")</button>"; })() +
       '<button type="button" class="ip-btn" id="dcOpenAll" title="' + (allOpen ? "Close every task shown" : "Open every task shown (" + page.length + "): fixes not prepared yet are prepared one after another") + '">' + (allOpen ? "▴ Close all" : "▾ Open all " + page.length) + "</button>" +
       (cat !== "good" ?
       '<label><input type="checkbox" id="dcAll"' + (allOn ? " checked" : "") + (bulk ? " disabled" : "") + "> Select all " + list.length + "</label>" +
@@ -847,7 +950,7 @@
       const sel = window.getSelection();
       edFocus = { el: ed.edEl, area: document.activeElement, range: sel && sel.rangeCount ? sel.getRangeAt(0).cloneRange() : null };
     }
-    host.innerHTML = head + chips + tools + bar + '<div class="ip-card">' + body + "</div>";
+    host.innerHTML = head + chips + tools + bar + '<div class="ip-card">' + body + "</div>" + qrHtml();
     host.querySelectorAll(".dc-ed[data-ed]").forEach((el) => {
       const id = el.getAttribute("data-ed");
       const d = el.querySelectorAll(".dc-doc");
@@ -910,7 +1013,7 @@
       (ed && ed.busy ? ' <span class="dc-msg">' + esc(ed.msg) + "</span>" : ready ? ' <span class="chip c-good">Fix ready</span>' : "") +
       (note ? ' <span class="dc-msg ' + (/^Applied/.test(note) ? "good" : "err") + '">' + esc(note) + "</span>" : "") +
       (ready ? ' <button type="button" class="ip-btn dc-btn-primary" data-apply="' + esc(t.id) + '"' + (bulk ? " disabled" : "") + ">Apply</button>" : "") +
-      "</div>" + (isOpen ? editorHtml(t, ed) + '<div class="dc-cmtslot" data-id="' + esc(t.id) + '"></div>' : "") + "</div>";
+      "</div>" + (isOpen && qrId() !== t.id ? editorHtml(t, ed) + '<div class="dc-cmtslot" data-id="' + esc(t.id) + '"></div>' : "") + "</div>";
   }
 
   // The task's status in ClickUp's colours, roughly: done green, review purple,
@@ -931,8 +1034,8 @@
   function editorHtml(t, ed) {
     let h = '<div class="dc-ed" data-ed="' + esc(t.id) + '">' + metaHtml(t);
     if (ed.before == null) return h + '<div class="dc-msg' + (ed.tone ? " " + ed.tone : "") + '">' + esc(ed.msg || "Reading this task…") + "</div></div>";
-    if (!t.format) {
-      h += '<div class="dc-fmt"><span>This task has no fields yet. Add:</span>' +
+    if (needChoice(t)) {
+      h += '<div class="dc-fmt"><span>' + (t.format ? "Some lines are missing. Complete it as:" : "This task has no fields yet. Add:") + "</span>" +
         '<label><input type="radio" name="dcf_' + esc(t.id) + '" value="1"' + (ed.addFormat === 1 ? " checked" : "") + "> Old format (with Client Description)</label>" +
         '<label><input type="radio" name="dcf_' + esc(t.id) + '" value="2"' + (ed.addFormat === 2 ? " checked" : "") + "> New format (without Client Description)</label></div>";
     }
@@ -979,6 +1082,13 @@
   }
 
   function wire() {
+    const qb = host.querySelector("#dcQuick");
+    if (qb) qb.onclick = () => qrOpen();
+    host.querySelectorAll("[data-qr]").forEach((b) => {
+      const k = b.getAttribute("data-qr");
+      if (k === "backdrop") { b.onclick = (e) => { if (e.target === b) qrClose(); }; return; }
+      b.onclick = (e) => { e.stopPropagation(); if (k === "close") qrClose(); else if (k === "back") qrGo(-1); else if (k === "skip") qrGo(1); else if (k === "apply") qrApply(); };
+    });
     host.querySelectorAll("[data-cat]").forEach((b) => { b.onclick = () => { cat = b.getAttribute("data-cat"); shown = 30; paint(); }; });
     const s = host.querySelector("#dcSearch");
     if (s) s.oninput = () => { query = s.value; shown = 30; paint(); };
@@ -1036,6 +1146,10 @@
         prefs[x.getAttribute("data-check")] = x.checked;
         paint();
         if (x.getAttribute("data-check") === "warm" && x.checked) warm();
+        if (x.getAttribute("data-check") === "nameSite") {
+          for (const [k, e] of [...eds.entries()]) if (!e.busy && !e.edited && e.manual == null) { eds.delete(k); delete fixCache[k]; scrolledTo.delete(k); }
+          writeFixes(); paint(); warm();
+        }
         ask({ type: "SET_SETTINGS", patch: { descChecks: Object.assign({}, prefs) } }, 15000);
       };
     });

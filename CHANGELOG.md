@@ -1,5 +1,11 @@
 # Changelog
 
+## v4.4.0
+- Insights › Descriptions: the AI no longer names the business or its site - it writes "…was implemented on the site.", since tasks, sheets and docs are already filed by client. Want the name in? Checks ▾ › Mention the business or site name. Fixes the AI wrote before are made again (ones you edited stay).
+- Insights › Descriptions: a task with only some of the lines (e.g. just File:) shows Incomplete format, and its fix adds every missing line - Client Description, Pre Description, Pre File, Description, File - in the old format unless you pick the new one. Lines added to a task now use the old format by default.
+- Insights › Descriptions: new setting in Checks ▾ - when the client's request is not in the task, write Client Description as a rephrase of the Description instead of leaving it empty (off at first).
+- Insights › Descriptions: ⚡ Quick review goes through the ready fixes one at a time in a big view - Apply & next, Skip, Back, or the keys (Enter applies, → ↓ next, ← ↑ back, Esc closes); you can still edit a fix there before applying it.
+
 ## v4.3.9
 - Team hub (Help & issues, Admin users): no more "Lock timeout". Reading the hub (the user list, threads, notices, client notes, reminder checks) no longer waits for other people's writes, and a check-in that changed nothing writes nothing. Update the hub script once: Admin › Copy the latest script & open the editor, paste, Save, then Manage deployments › Edit › New version.
 - Insights › Descriptions: edit the After fix right in its box with the notes editor (paste from an AI with its formatting and tables, links, and screenshots or files attached to the task), and untick any part of a fix you do not want - Apply writes exactly what After shows. The separate edit boxes are gone. 💬 Comments inside an opened task shows its comments with the reply box, without leaving the page. Click anywhere on a task's bar to open it; an opened task shows its status and due date; the chips on each bar line up.

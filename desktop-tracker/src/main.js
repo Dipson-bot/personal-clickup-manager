@@ -208,12 +208,17 @@ function setExpanded(on) {
 
 // ---------- the time in the menu bar (Mac) / the tray tooltip ----------
 const fmtD = (ms) => { const m = Math.round(Math.max(0, ms) / 60000); const h = Math.floor(m / 60); return h ? h + "h" + (m % 60 ? " " + (m % 60) + "m" : "") : m + "m"; };
-function timeText() {
+// With seconds (tray menu › Show seconds in the menu bar): "4h 49m 07s". Counted
+// here from the timer's start time - no extra ClickUp calls.
+const fmtS = (ms) => { const t = Math.floor(Math.max(0, ms) / 1000), h = Math.floor(t / 3600), m = Math.floor(t / 60) % 60, sec = String(t % 60).padStart(2, "0"); return h ? h + "h " + String(m).padStart(2, "0") + "m " + sec + "s" : m + "m " + sec + "s"; };
+const secsOn = () => process.platform === "darwin" && settings.menubar !== false && !!settings.menubarSecs && settings.menubarShow !== "day";
+function timeText(withSecs) {
+  const fmt = withSecs ? fmtS : fmtD;
   const run = state && state.running, t = state && state.task;
   if (!run) return "";
   const tracked = (t ? (t.totalClosedMs != null ? t.totalClosedMs : t.closedMs) + (Number(t.othersMs) || 0) + (Number(t.subtasksMs) || 0) : 0) + Math.max(0, Date.now() - run.startMs), est = t ? t.estimateMs : 0;
-  if (!est) return fmtD(tracked);
-  return tracked - est >= 60000 ? "+" + fmtD(tracked - est) + " over" : fmtD(tracked) + " / " + fmtD(est);
+  if (!est) return fmt(tracked);
+  return tracked - est >= 60000 ? "+" + fmt(tracked - est) + " over" : fmt(tracked) + " / " + fmtD(est);
 }
 function paintTrayText() {
   if (!tray) return;
@@ -221,7 +226,23 @@ function paintTrayText() {
   tray.setToolTip("ClickUp Tracker" + (state && state.running ? " - " + (state.running.taskName || "") + " - " + tt : " - no timer running") + (today ? " · " + today : ""));
   // Mac menu bar: this task's time and today's, e.g. "25m / 1h · 3h 10m/7h".
   const todayShort = state && state.today ? fmtD(state.today.closedMs + (state.running ? Math.max(0, Date.now() - state.running.startMs) : 0)) + "/" + fmtD(state.today.targetMs) : "";
-  if (process.platform === "darwin") tray.setTitle(settings.menubar !== false && !settings.hiddenByExt && tt ? " " + tt + (todayShort ? " · " + todayShort : "") : "");
+  if (process.platform === "darwin") {
+    // What the menu bar shows (tray menu › Menu bar shows): this task and today
+    // (default), this task only, or today only - the menu bar is short on room.
+    const what = settings.menubarShow === "task" || settings.menubarShow === "day" ? settings.menubarShow : "both";
+    const task = secsOn() && what !== "day" ? timeText(true) : tt;
+    const parts = what === "task" ? [task] : what === "day" ? [todayShort] : (task ? [task, todayShort] : []);
+    const text = parts.filter(Boolean).join(" · ");
+    // Same-width digits, so the menu bar doesn't jiggle as the seconds change.
+    tray.setTitle(settings.menubar !== false && !settings.hiddenByExt && text ? " " + text : "", { fontType: "monospacedDigit" });
+  }
+}
+// Every second while seconds are on and a timer runs; otherwise the 15 s repaint is enough.
+let secsTimer = null;
+function syncSecsTimer() {
+  const want = secsOn() && !!(state && state.running);
+  if (want && !secsTimer) secsTimer = setInterval(paintTrayText, 1000);
+  else if (!want && secsTimer) { clearInterval(secsTimer); secsTimer = null; }
 }
 
 // ---------- the actions menu (the strip's ▾, the tray) ----------
@@ -277,7 +298,13 @@ function buildTray() {
       ? { label: "Also show the floating strip", type: "checkbox", checked: !!(win && win.isVisible()), toolTip: "The timer is in the menu bar; this adds the small floating window too", click: toggleWindow }
       : { label: win && win.isVisible() ? "Hide tracker" : "Show tracker", click: toggleWindow },
     ...(process.platform === "win32" ? [{ label: "On the taskbar", type: "checkbox", checked: settings.dock !== false, enabled: canDock(), toolTip: canDock() ? "" : "Needs the taskbar at the top or bottom of the screen, not auto-hidden", click: (m) => setDock(m.checked) }] : []),
-    ...(process.platform === "darwin" ? [{ label: "Show the time in the menu bar", type: "checkbox", checked: settings.menubar !== false, click: (m) => { settings.menubar = m.checked; saveSettings(); paintTrayText(); } }] : []),
+    ...(process.platform === "darwin" ? [{ label: "Show the time in the menu bar", type: "checkbox", checked: settings.menubar !== false, click: (m) => { settings.menubar = m.checked; saveSettings(); syncSecsTimer(); paintTrayText(); } }] : []),
+    ...(process.platform === "darwin" ? [{ label: "Menu bar shows", enabled: settings.menubar !== false, submenu: [
+      { label: "This task and today", type: "radio", checked: !settings.menubarShow || settings.menubarShow === "both", click: () => { settings.menubarShow = "both"; saveSettings(); syncSecsTimer(); paintTrayText(); } },
+      { label: "This task only", type: "radio", checked: settings.menubarShow === "task", click: () => { settings.menubarShow = "task"; saveSettings(); syncSecsTimer(); paintTrayText(); } },
+      { label: "Today only", type: "radio", checked: settings.menubarShow === "day", click: () => { settings.menubarShow = "day"; saveSettings(); syncSecsTimer(); paintTrayText(); } },
+    ] }] : []),
+    ...(process.platform === "darwin" ? [{ label: "Show seconds in the menu bar", type: "checkbox", checked: !!settings.menubarSecs, enabled: settings.menubar !== false, toolTip: "Counted on this Mac from when the timer started - no extra calls to ClickUp", click: (m) => { settings.menubarSecs = m.checked; saveSettings(); syncSecsTimer(); paintTrayText(); } }] : []),
     { label: "Refresh now", click: () => refresh(true) },
     { type: "separator" },
     { label: "Size", submenu: [
@@ -813,6 +840,7 @@ app.whenReady().then(async () => {
   setInterval(watchPointer, 70); // quick enough that a click on the strip is never let through
   setInterval(keepOnTop, 1500);                      // back above the taskbar if Windows covered it
   setInterval(paintTrayText, 15000);                 // menu-bar time / tooltip
+  setInterval(syncSecsTimer, 2000);                  // seconds on: a 1 s repaint only while a timer runs
   screen.on("display-metrics-changed", () => { if (win && docked() && !expanded && !peekBase) placeStrip(dockBounds()); });
   setInterval(() => refresh(), 60000);       // the timer, today's time, next tasks
   setInterval(() => checkComments(false), 30000); // each task at most every 3 minutes
