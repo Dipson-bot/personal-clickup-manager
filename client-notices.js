@@ -33,6 +33,9 @@
   // { until: ms } for an hour / until tomorrow / a week, or { ids: [...] } = until a
   // notice that isn't one of those arrives. A line on the Dashboard says so.
   let hideFor = null;
+  // The card's own ▾ Hide / ▸ Show (storage cnoteFold): folds the card to its title
+  // line, nothing else changes (pills, banner and pop-ups stay).
+  let folded = false;
   const hiddenNow = (n) => !!hideFor && ((Number(hideFor.until) > Date.now()) || (Array.isArray(hideFor.ids) && hideFor.ids.includes(n.id)));
   // Showing: not hidden here, not judged unimportant, and still current - until a
   // week after its last date, or two weeks after it was posted when it names none.
@@ -197,10 +200,13 @@
         '<button type="button" class="cn-btn" data-cn-hide="' + esc(n.id) + '" title="Hide it on this computer">Got it - hide</button>' +
         '<button type="button" class="cn-btn" data-cn-noimp="' + esc(n.id) + '" title="Not a client instruction - hide it">Not important</button></div></div>';
     });
-    const html = '<div class="cn-top"><h2>⚠️ Client notices <span class="hint">(from the clients\' Slack channels)</span></h2>' +
+    const fold = '<button type="button" class="cn-btn cn-fold" data-cn-fold="1" title="' + (folded ? "Show the notices" : "Fold this card to one line (nothing else is hidden)") + '">' + (folded ? "▸ Show" : "▾ Hide") + "</button>";
+    if (folded) host.classList.add("cn-folded"); else host.classList.remove("cn-folded");
+    const html = '<div class="cn-top"><h2>⚠️ Client notices <span class="hint">' + (folded ? esc(list.length + " notice" + (list.length === 1 ? "" : "s")) : "(from the clients\' Slack channels)") + '</span></h2>' +
+      (folded ? fold + "</div>" :
       '<button type="button" class="cn-btn" data-cn-refresh="1" title="Look in the client channels now">Check Slack now</button>' +
       '<select class="cn-btn cn-hide" title="Hide every client notice for a while - this card, the banner, the ⚠ on tasks and the pop-ups. A line here says until when, with Show now."><option value="">Hide all ▾</option>' +
-      '<option value="1h">For 1 hour</option><option value="day">Until tomorrow</option><option value="week">For a week</option><option value="new">Until a new notice arrives</option><option value="off">Turn off (General › Features)</option></select></div>' + items.join("");
+      '<option value="1h">For 1 hour</option><option value="day">Until tomorrow</option><option value="week">For a week</option><option value="new">Until a new notice arrives</option><option value="off">Turn off (General › Features)</option></select>' + fold + "</div>" + items.join(""));
     if (html !== lastCard) { lastCard = html; host.innerHTML = html; }
   }
   let lastCard = "";
@@ -208,6 +214,12 @@
     const b = e.target.closest("button");
     if (!b) return;
     if (b.dataset.cnShow) { b.disabled = true; await showAll(); return; }
+    if (b.dataset.cnFold) {
+      folded = !folded;
+      try { await chrome.storage.local.set({ cnoteFold: folded }); } catch (err) {}
+      paint();
+      return;
+    }
     if (b.dataset.cnHide || b.dataset.cnNoimp) {
       dismissed[b.dataset.cnHide || b.dataset.cnNoimp] = b.dataset.cnNoimp ? "noimp" : Date.now();
       try { await chrome.storage.local.set({ cnoteDismissed: dismissed }); } catch (err) {}
@@ -327,9 +339,10 @@
   .cnote-card[hidden] { display: none !important; }
   .cnote-card .cn-top { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
   .cnote-card .cn-top h2 { margin: 0; flex: 1; font-size: 15px; }
-  .cnote-card.cn-quiet { padding: 8px 14px; }
+  .cnote-card.cn-quiet, .cnote-card.cn-folded { padding: 8px 14px; }
   .cnote-card .cn-hidden { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; font-size: 12.5px; color: var(--muted); }
-  .cnote-card select.cn-hide { cursor: pointer; }
+  .cnote-card select.cn-hide { cursor: pointer; width: auto; flex: none; margin: 0; }
+  .cnote-card .cn-top .cn-btn { flex: none; }
   .cnote-card .cn-item { border-top: 1px solid var(--border); padding: 10px 0 4px; margin-top: 8px; border-radius: 6px; transition: background .4s; }
   .cnote-card .cn-item.flash { background: rgba(234, 88, 12, .12); }
   .cnote-card .cn-head { display: flex; align-items: baseline; gap: 6px; flex-wrap: wrap; font-size: 13px; }
@@ -352,7 +365,8 @@
 
   async function load() {
     try {
-      const g = await chrome.storage.local.get(["clientNotices", "cnoteDismissed", "settings", "cnoteHide"]);
+      const g = await chrome.storage.local.get(["clientNotices", "cnoteDismissed", "settings", "cnoteHide", "cnoteFold"]);
+      folded = g.cnoteFold === true;
       allOff = !!(g.settings && g.settings.cnoteOff);
       hideFor = g.cnoteHide && typeof g.cnoteHide === "object" ? g.cnoteHide : null;
       notices = (g.clientNotices && Array.isArray(g.clientNotices.list)) ? g.clientNotices.list : [];
@@ -365,6 +379,7 @@
       if (area !== "local") return;
       if (ch.clientNotices) { notices = (ch.clientNotices.newValue && ch.clientNotices.newValue.list) || []; paint(); runAi(); }
       if (ch.cnoteDismissed) { dismissed = ch.cnoteDismissed.newValue || {}; paint(); }
+      if (ch.cnoteFold) { folded = ch.cnoteFold.newValue === true; paint(); }
       if (ch.cnoteHide) { hideFor = ch.cnoteHide.newValue && typeof ch.cnoteHide.newValue === "object" ? ch.cnoteHide.newValue : null; paint(); }
       if (ch.settings) { const off = !!(ch.settings.newValue && ch.settings.newValue.cnoteOff); if (off !== allOff) { allOff = off; paint(); } }
     });

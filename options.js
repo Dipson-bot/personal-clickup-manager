@@ -3229,6 +3229,7 @@ function renderClickupSettings(cu) {
   $("cuAwayMin").value = cu.awayMin != null ? String(cu.awayMin) : "15";
   $("cuWrapUp").checked = cu.wrapUp !== false;
   if ($("cuExtraAutoClose")) $("cuExtraAutoClose").checked = cu.extraAutoClose !== false;
+  if ($("cuExtraEven")) $("cuExtraEven").checked = cu.extraEven === true;
   if ($("cuWarnEmpty")) $("cuWarnEmpty").checked = cu.warnEmptyComplete !== false;
   if ($("cuRelatedOn")) $("cuRelatedOn").checked = cu.relatedOn !== false;
   if ($("cuOverRepeat") && document.activeElement !== $("cuOverRepeat")) $("cuOverRepeat").value = String(cu.overRepeatMin != null ? cu.overRepeatMin : 15);
@@ -7642,6 +7643,7 @@ $("cuSave").onclick = async () => {
         clickupAwayMin: awayMin,
         clickupWrapUp: $("cuWrapUp").checked,
         clickupExtraAutoClose: $("cuExtraAutoClose") ? $("cuExtraAutoClose").checked : true,
+        clickupExtraEven: $("cuExtraEven") ? $("cuExtraEven").checked : false,
         clickupWarnEmptyComplete: $("cuWarnEmpty") ? $("cuWarnEmpty").checked : true,
         clickupRelatedOn: $("cuRelatedOn") ? $("cuRelatedOn").checked : true,
         clickupOverRepeatMin: $("cuOverRepeat") && $("cuOverRepeat").value !== "" ? Number($("cuOverRepeat").value) : 15,

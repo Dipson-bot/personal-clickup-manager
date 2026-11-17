@@ -2702,6 +2702,10 @@ export async function fetchExtendedTaskEstimate({ token, teamId, taskUrl, todayB
 // days after today share what remains once today is counted (today's part, or
 // what today has already used if that's more). Days before today aren't set here.
 // days: the occurrence's working days (ms, midnight); spentBefore: used before today.
+// ClickUp setup › "Split my Extra Task evenly": every working day keeps the plain
+// estimate / 5 (7h -> 1h 24m) instead of the weekly-budget share above.
+let extraEven = false;
+export function setExtraEvenSplit(on) { extraEven = !!on; }
 export function extraLeftShares(days, estimateMs, spentBefore, spentToday, today) {
   const out = new Map();
   const live = [...new Set(days || [])].filter((d) => d >= today).sort((a, b) => a - b);
@@ -2734,6 +2738,7 @@ function extraDaysLeft(task, today) {
 // spentToday: today's tracked time, or null when it isn't known (then what's left
 // after everything tracked is shared evenly by the days left, today included).
 function extraShareLeft(task, dayTs, base, spentToday) {
+  if (extraEven) return base;
   if (!task || !EXTRA_TASK_NAME_RE.test(task.name || "") || task.done || isTaskDone(task) || !(Number(base) > 0)) return base;
   const today = new Date().setHours(0, 0, 0, 0), day = new Date(dayTs).setHours(0, 0, 0, 0);
   if (day < today) return base;
@@ -3094,7 +3099,7 @@ export async function fetchWeeklySummary({ token, teamId, userId, taskUrls = [],
     }
     const exDone = extraTask ? !!extraTask.done : !!(extraCfg && extraCfg.done);
     const today0 = new Date().setHours(0, 0, 0, 0);
-    if (!exDone && perDay.some((p) => p.ts === today0)) {
+    if (!exDone && !extraEven && perDay.some((p) => p.ts === today0)) {
       const spentOn = (ts) => (byDayTask.get(ts) && byDayTask.get(ts).get(exId)) || 0;
       const exEst = extraTask ? Number(extraTask.estimateMs) || 0 : (extraCfg && Number(extraCfg.estimateMs)) || [...extraByDay.values()].reduce((a, v) => a + v, 0);
       const days = perDay.filter((p) => (extraByDay.get(p.ts) || 0) > 0).map((p) => p.ts);

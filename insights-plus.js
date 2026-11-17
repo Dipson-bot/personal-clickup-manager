@@ -174,6 +174,14 @@
   #insPlusView .ip-rmain { display: flex; gap: 22px; align-items: center; flex-wrap: wrap; }
   #insPlusView .ip-rbig { display: flex; flex-direction: column; align-items: center; gap: 4px; flex: none; }
   #insPlusView .ip-rcap { font-weight: 700; font-size: 13px; }
+  #insPlusView .ip-rdelta { font-weight: 700; font-size: 13px; margin-top: 2px; text-align: center; }
+  #insPlusView .ip-rdelta span { font-weight: 500; color: var(--muted); font-size: 12px; }
+  #insPlusView .ip-rwhy { margin: 14px 0 0; padding: 10px 12px; border: 1px solid var(--border); border-radius: 10px; display: grid; gap: 8px; }
+  #insPlusView .ip-rwhy h4 { margin: 0; font-size: 13.5px; }
+  #insPlusView .ip-rwhy-row { font-size: 12.5px; line-height: 1.45; }
+  #insPlusView .ip-rwhy-row .pts { font-weight: 700; }
+  #insPlusView .ip-rwhy-row .why { color: var(--text); overflow-wrap: anywhere; }
+  #insPlusView .ip-rwhy-row .tip { color: var(--muted); }
   #insPlusView svg.ring { width: auto; display: block; overflow: visible; }
   #insPlusView svg.ring .rt { fill: var(--text); font-weight: 700; }
   #insPlusView .ip-rparts { display: grid; gap: 12px; flex: 1 1 320px; }
@@ -724,6 +732,69 @@
     const wsum = parts.reduce((a, p) => a + p.w, 0);
     return { parts, overall: wsum ? parts.reduce((a, p) => a + p.s * p.w, 0) / wsum : null };
   }
+  // Rating vs the period before: { chip, box } or null when there's no such period
+  // in the history (6 / 12 months, or too little history).
+  const PREV_NAME = { week: "last week", month: "last month", all: "the 12 weeks before" };
+  function perfWhy(o) {
+    if (!PREV_NAME[o.ringP] || o.R.overall == null || !perf) return null;
+    let from;
+    if (o.ringP === "week") from = addDays(o.thisMon, -7);
+    else if (o.ringP === "month") { const d = new Date(o.pFrom); from = new Date(d.getFullYear(), d.getMonth() - 1, 1).getTime(); }
+    else from = addDays(o.pFrom, -84);
+    const to = o.pFrom; // up to (not including) the start of this period
+    if (dayStart(perf.fromTs) > from + 2 * DAY) return null; // the history doesn't reach back that far
+    const work = [];
+    for (let d = from; d < to; d = addDays(d, 1)) if (isWorkday(d)) work.push(d);
+    const tracked = work.reduce((a, d) => a + (Number(perf.days[d]) || 0), 0);
+    const pd = o.done.filter((t) => t.doneAt >= from && t.doneAt < to);
+    const P = ratingParts({ tracked, target: work.length * o.tMs, dated: pd.filter((t) => t.dueDateMs > 0), acc: pd.filter((t) => t.estimateMs > 0 && t.spentMs > 0), late: o.late });
+    if (P.overall == null) return null;
+    const prevName = PREV_NAME[o.ringP];
+    const diff = Math.round(o.R.overall) - Math.round(P.overall);
+    const arrow = diff > 0 ? "▲ " + diff : diff < 0 ? "▼ " + -diff : "＝";
+    const col = diff > 0 ? "var(--green)" : diff < 0 ? "var(--red)" : "var(--muted)";
+    const chip = '<div class="ip-rdelta" style="color:' + col + '" title="' + esc("Your rating " + prevName + " was " + Math.round(P.overall)) + '">' + arrow + ' <span>vs ' + esc(prevName) + " (" + Math.round(P.overall) + ")</span></div>";
+    // Each part: before -> now, and how many points it moved the overall (its weight in this period).
+    const wsum = o.R.parts.reduce((a, p) => a + p.w, 0) || 1;
+    const keys = ["hours", "deadlines", "estimates"];
+    const fmtH = (ms) => fmt(Math.max(0, ms));
+    const rows = keys.map((k) => {
+      const now = o.R.parts.find((p) => p.k === k), was = P.parts.find((p) => p.k === k);
+      if (!now && !was) return null;
+      const d = now && was ? now.s - was.s : 0;
+      // Its share of the change: how far it moved, times its weight now (only when rated in both periods).
+      const pts = now && was ? (d * now.w) / wsum : 0;
+      let why = "", tip = "";
+      if (k === "hours" && now) {
+        const short = o.pWork.length * o.tMs - o.pTracked;
+        why = fmtH(o.pTracked) + " tracked of " + fmtH(o.pWork.length * o.tMs) + (short > 60000 ? " - " + fmtH(short) + " short" : " - on target");
+        if (short > 60000) tip = "Track your full " + fmt(o.tMs) + " each working day - meetings and small jobs go on the Extra Task.";
+      }
+      if (k === "deadlines" && now) {
+        const lateOnes = o.pDated.filter(o.late).sort((a, b) => o.daysLate(b) - o.daysLate(a));
+        why = lateOnes.length ? lateOnes.slice(0, 3).map((t) => "“" + t.name + "” " + plural(o.daysLate(t), "day") + " late").join("; ") + (lateOnes.length > 3 ? " and " + (lateOnes.length - 3) + " more" : "") : "every finished task was on time";
+        if (lateOnes.length) tip = "Finish before the due date, or move the due date in time when a task is held up - a day late costs much less than a week.";
+      }
+      if (k === "estimates" && now) {
+        const off = o.pAcc.map((t) => ({ t, r: t.spentMs / t.estimateMs })).filter((x) => Math.abs(x.r - 1) > 0.25).sort((a, b) => Math.abs(b.r - 1) - Math.abs(a.r - 1));
+        why = off.length ? off.slice(0, 3).map((x) => "“" + x.t.name + "” took " + fmt(x.t.spentMs) + " for a " + fmt(x.t.estimateMs) + " estimate").join("; ") + (off.length > 3 ? " and " + (off.length - 3) + " more" : "") : "finished tasks came close to their estimates";
+        if (off.length) tip = off.some((x) => x.r > 1) ? "Give tasks a realistic estimate before starting, and raise it in ClickUp as soon as the work grows." : "Tasks took less than estimated - lower the estimate to what they really take.";
+      }
+      if (!now) why = "no finished task to rate in this period yet, " + prevName + " it was " + Math.round(was.s);
+      return { k, label: (now || was).label, now, was, d, pts, why, tip };
+    }).filter(Boolean).sort((a, b) => Math.abs(b.pts) - Math.abs(a.pts));
+    const head = diff === 0 ? "Same as " + prevName + " (" + Math.round(P.overall) + ")" : (diff < 0 ? "Down " + -diff : "Up " + diff) + " from " + Math.round(P.overall) + " " + prevName;
+    // What the parts rated in both periods don't explain: a part rated in one period only (nothing finished yet, say).
+    const gone = rows.filter((r) => !r.now || !r.was), rest = diff - rows.reduce((a, r) => a + Math.round(r.pts), 0);
+    const restLine = gone.length && Math.abs(rest) >= 1 ? '<div class="ip-rwhy-row"><div class="why"><b style="color:' + (rest > 0 ? "var(--green)" : "var(--red)") + '">' + (rest > 0 ? "+" : "") + rest + "</b> because " + esc(gone.map((r) => r.label.toLowerCase()).join(" and ")) + (gone.length > 1 ? " are" : " is") + " rated in only one of the two periods, so your rating rests on the other parts" + (rest < 0 && gone.every((r) => !r.now) ? " - finishing tasks on time and close to their estimate brings " + (gone.length > 1 ? "them" : "it") + " back." : ".") + "</div></div>" : "";
+    const box = '<div class="ip-rwhy"><h4>What changed · ' + esc(head) + "</h4>" + rows.map((r) => {
+      const mv = r.now && r.was ? Math.round(r.pts) : 0;
+      const c = mv > 0 ? "var(--green)" : mv < 0 ? "var(--red)" : "var(--muted)";
+      return '<div class="ip-rwhy-row"><div class="t"><b>' + esc(r.label) + "</b> " + (r.now && r.was ? '<span class="ip-meta">' + Math.round(r.was.s) + " → " + Math.round(r.now.s) + "</span>" : r.now ? '<span class="ip-meta">new this period: ' + Math.round(r.now.s) + "</span>" : "") +
+        (mv ? ' <span class="pts" style="color:' + c + '">' + (mv > 0 ? "+" : "") + mv + " to your rating</span>" : "") + '</div><div class="why">' + esc(r.why) + "</div>" + (r.tip && (r.now ? r.now.s < 85 : false) ? '<div class="tip">To raise it: ' + esc(r.tip) + "</div>" : "") + "</div>";
+    }).join("") + restLine + "</div>";
+    return { chip, box, prev: P.overall, diff };
+  }
   function nameOf(id) {
     id = String(id);
     if (perf && perf.names && perf.names[id]) return perf.names[id];
@@ -841,6 +912,9 @@
     const pDated = pDone.filter((t) => t.dueDateMs > 0);
     const pAcc = pDone.filter((t) => t.estimateMs > 0 && t.spentMs > 0);
     const R = ratingParts({ tracked: pTracked, target: pWork.length * tMs, dated: pDated, acc: pAcc, late });
+    // The period before (last week / last month / the 12 weeks before), rated the
+    // same way - so the rating says if it went up or down, and which part moved it.
+    const W = perfWhy({ ringP, pFrom, thisMon, today, tMs, R, pTracked, pWork, pDated, pAcc, done, late, daysLate });
     const pLabel = RING_P;
     // By client: deadlines + estimates on what was finished, and the time tracked in the period.
     const cMs = new Map();
@@ -862,8 +936,9 @@
         : '<div class="ip-empty"><b>Not available yet.</b> ' + (since ? "Your tracked time starts on " + esc(since) + " - about " + have + " month" + (have === 1 ? "" : "s") + " ago" : "There is no tracked time in the last " + months + " months") + ". The " + months + "-month review opens once you have " + months + " months of work here.</div>";
       rg += "</div>";
     } else {
-    rg += '<div class="ip-rmain"><div class="ip-rbig">' + ringSvg(R.overall, 132, 13) + '<div class="ip-rcap">' + (R.overall == null ? "Not enough data yet" : R.overall >= 85 ? "Excellent" : R.overall >= 70 ? "Good" : R.overall >= 55 ? "Fair" : "Needs attention") + "</div></div>" +
+    rg += '<div class="ip-rmain"><div class="ip-rbig">' + ringSvg(R.overall, 132, 13) + '<div class="ip-rcap">' + (R.overall == null ? "Not enough data yet" : R.overall >= 85 ? "Excellent" : R.overall >= 70 ? "Good" : R.overall >= 55 ? "Fair" : "Needs attention") + "</div>" + (W ? W.chip : "") + "</div>" +
       '<div class="ip-rparts">' + (R.parts.length ? R.parts.map((p) => '<div class="ip-rpart"><div class="t"><b>' + esc(p.label) + '</b><span class="sc" style="color:' + ringColor(p.s) + '">' + Math.round(p.s) + '</span></div><div class="tr"><i style="width:' + Math.max(2, Math.round(p.s)) + "%;background:" + ringColor(p.s) + '"></i></div><small>' + esc(p.sub) + " · counts " + p.w + "%</small></div>").join("") : '<p class="ip-meta">Nothing to rate in this period yet' + (ringP === "week" ? " - the week has just started." : ".") + "</p>") + "</div></div>";
+    if (W) rg += W.box;
     rg += '<p class="hint" style="margin:10px 0 0">Out of 100: time tracked against your ' + fmt(tMs) + " working days (40%), deadlines met on the tasks you finished - a day late counts much less than a week late (35%) - and how close tasks came to their estimate (25%). Overdue tasks still open don't lower it: a big pile of work isn't held against you, only how the finished work went. Weekends and company holidays never count.</p>";
     if (cRows.length) {
       rg += '<h3 style="margin:16px 0 8px">By client</h3><div class="ip-rclients">' + cRows.map((r) =>

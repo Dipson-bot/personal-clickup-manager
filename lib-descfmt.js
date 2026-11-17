@@ -87,7 +87,9 @@
   }
   // File value: "ok" (only links, comma separated), "empty" or "bad".
   function fileState(raw) {
-    const s = String(raw || "").trim();
+    // ClickUp sometimes makes the whole list one link: [a.com,b.com](a.com,b.com).
+    // A link whose text is exactly its own address is just that text.
+    const s = String(raw || "").trim().replace(/\[([^\]]+)\]\(([^)]+)\)/g, (m, txt, url) => (txt.trim() === url.trim() ? txt.trim() : m));
     if (!s) return "empty";
     if (/\n/.test(s)) return "bad";
     const parts = s.split(/["“”]?\s*,\s*["“”]?/);

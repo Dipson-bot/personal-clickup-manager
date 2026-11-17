@@ -1,5 +1,12 @@
 # Changelog
 
+## v4.4.3
+- Insights › Descriptions: a File where ClickUp turned the whole comma list of links into one link (its text is the same as its address) no longer shows as File not formatted. A link on words, like [screenshot](...), still does.
+- New setting: ClickUp setup › "Split my Extra Task evenly over the week". Ticked, every working day gets the same part of the Extra Task (7h = 1h 24m a day) in Due today, This week by day, Due tomorrow and the popup, instead of the days left sharing what's left of it (which, after a quiet week, could put almost all 7h on Friday). Off by default.
+- The toolbar icon no longer shows a red ! over your hours when Agent Router needs you (that stays as the count on Agent Router in Options and its notice), and a task past its estimate turns the badge red instead of replacing the hours with !.
+- Client notices card: a simple ▾ Hide / ▸ Show button folds it to one line with the count, and opens it again (remembered; the ⚠ on tasks stays). Hide all ▾ still hides them for a while. Its buttons now sit on one row.
+- Insights › Performance: your rating now says how it compares with last week or last month (▼ 9 vs last week (93)), and a What changed box shows which part moved it and by how many points, names the tasks behind it (finished late, far over or under their estimate, hours short) and what to do to raise it again.
+
 ## v4.4.2
 - ⏱ Timer in the top bar of the popup, the side panel and the Options page (one shared timer): a plain stopwatch (Start, Pause, Lap, Reset) and a countdown (5m to 1h, or type your own) that keeps going with the popup closed and rings with a notification when it ends. Not connected to tasks or ClickUp.
 - Insights › Descriptions: when a task with no fields is put into the format, the links at the end of its text now go into File (not Pre File, which is optional), next to any links found in its comments.

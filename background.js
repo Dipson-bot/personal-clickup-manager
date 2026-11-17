@@ -27,7 +27,7 @@ import {
   linkifySheet,
 } from "./lib-drive.js";
 import { runAllAccounts, runAccountLogin, readAgentRouterLogin, URLS, GITHUB_KEEP_COOKIES } from "./lib-automation.js";
-import { getCommentRepliesLite, getTaskShareInfo, getTaskHoldInfo, fetchArchivedMine, unarchiveTask, getLatestCommentBy, getTaskCommentsLite, getTaskTimeEntries, deleteTimeEntry, getUserGroups, getUser, verifyToken, getTeams, fetchTodayEstimate, fetchWeeklySummary, fetchDateRangeEstimate, createTaskCache, fetchTeamMembers, fetchWorkspaceTags, cuTagNames, fmtDuration, findExtraTaskByName, parseTaskIdFromUrl, getCurrentTimeEntry, getRunningTaskProgress, startTimer, stopTimer, getTaskById, setTaskStatus, setTaskDates, taskUrlFor, clientLabelFromContainer, resolveSpaceNamesFor, taskContainer, cuPriorityName, isTaskDone, getSubtasksOfParent, getTaskTree, getTaskDetail, updateTimeEntry, setTaskDueDate, clearTaskTreeCache, listWorkspaceClients, cuRowAssignees, fetchDoneBetween, fetchDoneLite, fetchTrackedHistory, getTaskPanel, addTaskComment, postTaskComment, setTaskDescription, getTaskCommentLinks, getTaskCommentsFull, getListStatuses, createTask, relateTasks, removeTaskAssignee, addTaskAssignee, postAssignedComment, addTimeEntry, weeklyWithToday, listClientFieldOptions, listReachableClients, bgToken, patientToken, cuRawFetch, getRelatedTasks, slimIndexTask, fetchTeamTasksPage, listAllLists, setPausedClients } from "./lib-clickup.js";
+import { getCommentRepliesLite, getTaskShareInfo, getTaskHoldInfo, fetchArchivedMine, unarchiveTask, getLatestCommentBy, getTaskCommentsLite, getTaskTimeEntries, deleteTimeEntry, getUserGroups, getUser, verifyToken, getTeams, fetchTodayEstimate, fetchWeeklySummary, fetchDateRangeEstimate, createTaskCache, fetchTeamMembers, fetchWorkspaceTags, cuTagNames, fmtDuration, findExtraTaskByName, parseTaskIdFromUrl, getCurrentTimeEntry, getRunningTaskProgress, startTimer, stopTimer, getTaskById, setTaskStatus, setTaskDates, taskUrlFor, clientLabelFromContainer, resolveSpaceNamesFor, taskContainer, cuPriorityName, isTaskDone, getSubtasksOfParent, getTaskTree, getTaskDetail, updateTimeEntry, setTaskDueDate, clearTaskTreeCache, listWorkspaceClients, cuRowAssignees, fetchDoneBetween, fetchDoneLite, fetchTrackedHistory, getTaskPanel, addTaskComment, postTaskComment, setTaskDescription, getTaskCommentLinks, getTaskCommentsFull, getListStatuses, createTask, relateTasks, removeTaskAssignee, addTaskAssignee, postAssignedComment, addTimeEntry, weeklyWithToday, listClientFieldOptions, listReachableClients, bgToken, patientToken, cuRawFetch, getRelatedTasks, slimIndexTask, fetchTeamTasksPage, listAllLists, setPausedClients, setExtraEvenSplit } from "./lib-clickup.js";
 import { resolveRelayKey, pickProbeModel, probeRelay } from "./lib-availability.js";
 import { tidyCollect, tidyLines, tidyResolved, tidyDayOk, tidyUrgent, tidyDateShort } from "./lib-tidy.js";
 import "./lib-rules.js"; // globalThis.PcmRules - the Automation tab's rule blocks
@@ -4813,6 +4813,7 @@ async function clickupPublic() {
     awayMin: Number(settings.clickupAwayMin) || 15,
     wrapUp: settings.clickupWrapUp !== false,
     extraAutoClose: settings.clickupExtraAutoClose !== false,
+    extraEven: settings.clickupExtraEven === true,
     warnEmptyComplete: settings.clickupWarnEmptyComplete !== false,
     overRepeatMin: Number.isFinite(Number(settings.clickupOverRepeatMin)) ? Number(settings.clickupOverRepeatMin) : 15,
     relatedOn: settings.clickupRelatedOn !== false,
@@ -6100,6 +6101,7 @@ async function refreshClickupImpl({ includeTasks = false, viaAlarm = false, forc
   if (!cfg || !cfg.token) return { ok: false, reason: "not-configured" };
   if (!cfg.teamId || cfg.userId == null) return { ok: false, reason: "incomplete-setup" };
   const settings = await getSettings();
+  setExtraEvenSplit(settings.clickupExtraEven === true);
   const targetHours = Number(settings.clickupTargetHours) || 0;
   // Auto-detect the "Extra(s) Task(s)" task by name (no manual URL needed) and
   // fold it into the configured-task set, so today / weekly / filter all see it.
@@ -6578,6 +6580,7 @@ function isPausedRow(t) {
 }
 try {
   effectivePausedClients().then(rememberPaused).then(setPausedClients).catch(() => {});
+  getSettings().then((s) => setExtraEvenSplit(s.clickupExtraEven === true)).catch(() => {});
   chrome.storage.onChanged.addListener(async (ch, area) => {
     if (area !== "local" || !(ch.pausedClients || ch.myPausedClients || ch.myResumedClients)) return;
     setPausedClients(rememberPaused(await effectivePausedClients()));
@@ -7851,11 +7854,14 @@ async function updateBadge() {
     const n0 = (was && was.n) || 0;
     if (n0 !== attention) await chrome.storage.local.set({ arAttention: { n: attention, since: attention > 0 && n0 > 0 ? (was.since || Date.now()) : attention > 0 ? Date.now() : 0 } });
   } catch (e) {}
+  // Agent Router only uses the badge when ClickUp shows nothing there: a login
+  // that needs you is the count on Agent Router in Options (+ its notification),
+  // never a red "!" covering the day's hours.
   let text = "";
   let color = "#6b7280";
   if (accounts.length === 0) text = "";
   else if (attention > 0) {
-    text = "!";
+    text = String(attention);
     color = "#ef4444";
   } else if (pending > 0) {
     text = String(pending);
@@ -7864,10 +7870,9 @@ async function updateBadge() {
     text = "✓";
     color = "#22c55e";
   }
-  // ClickUp progress rides the same badge, but a login that "needs you" keeps
-  // priority (it's time-sensitive and actionable). Otherwise show the day's
-  // estimate: "✓" once the target is met, else whole hours accumulated so far.
-  if (settings.clickupBadge !== false && attention === 0) {
+  // ClickUp progress wins the badge (an Agent Router problem no longer hides it):
+  // "✓" once the target is met, else whole hours accumulated so far.
+  if (settings.clickupBadge !== false) {
     const cfg = await getClickupConfig();
     const st = await getClickupState();
     if (cfg && cfg.token && st && Number(st.targetMs) > 0 && !st.error) {
@@ -7893,12 +7898,12 @@ async function updateBadge() {
       }
     }
   }
-  // The running task past its own estimate wins the badge: a red "!".
+  // The running task past its own estimate turns the badge red (its text stays).
   try {
     const { runningProgress: rp } = await chrome.storage.local.get("runningProgress");
     if (rp && Number(rp.estimateMs) > 0 && rp.startMs) {
       const tracked = (Number(rp.closedMs) || 0) + Math.max(0, Date.now() - Number(rp.startMs));
-      if (tracked - Number(rp.estimateMs) >= 60000) { text = "!"; color = "#dc2626"; }
+      if (tracked - Number(rp.estimateMs) >= 60000) { if (!text) text = "!"; color = "#dc2626"; }
     }
   } catch (e) {}
   try {
@@ -12648,6 +12653,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         }
         if (p.clickupWrapUp !== undefined) patch.clickupWrapUp = !!p.clickupWrapUp;
         if (p.clickupExtraAutoClose !== undefined) patch.clickupExtraAutoClose = !!p.clickupExtraAutoClose;
+        if (p.clickupExtraEven !== undefined) patch.clickupExtraEven = !!p.clickupExtraEven;
         if (p.clickupWarnEmptyComplete !== undefined) patch.clickupWarnEmptyComplete = !!p.clickupWarnEmptyComplete;
         if (p.clickupRelatedOn !== undefined) patch.clickupRelatedOn = !!p.clickupRelatedOn;
         if (p.clickupOverRepeatMin !== undefined) patch.clickupOverRepeatMin = Math.max(0, Math.min(120, Math.round(Number(p.clickupOverRepeatMin) || 0)));
@@ -12702,6 +12708,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
             : [];
           patch.clickupDeadlineTaskUrls = arr;
         }
+        const evenBefore = (await getSettings()).clickupExtraEven === true;
         const next = await setSettings(patch);
         if (patch.clickupSyncMin !== undefined) await ensureAlarm(CLICKUP_ALARM, { periodInMinutes: syncMinutes(next) }).catch(() => {});
         applyIdleInterval().catch(() => {});
@@ -12710,6 +12717,14 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         // estimate itself, so refetch from the API. The weeklyTo toggle is cheap:
         // it just re-renders from the cached Mon→today / Mon→Friday aggregates
         // (fetchWeeklySummary already computed both), so no network here.
+        if (patch.clickupExtraEven !== undefined && patch.clickupExtraEven !== evenBefore) {
+          // The Extra Task's share per day changed: every card and filter counts again.
+          setExtraEvenSplit(patch.clickupExtraEven);
+          clearFilterCache();
+          sendResponse({ ok: true, settings: next });
+          rebuildListsFor("Extra Task split", { includeTasks: true, forceWeeks: true, forceWeekly: true }).catch(() => {});
+          break;
+        }
         if (patch.clickupMultiDay !== undefined) {
           // Every card and filter counts differently now: rebuild them all.
           clearFilterCache();
