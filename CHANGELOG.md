@@ -1,5 +1,10 @@
 # Changelog
 
+## v4.4.5
+- Client notices: a menu on the card shows one kind only (Work paused, Deadline, No site changes, Client instruction…) or all of them grouped by kind; it remembers your choice.
+- Client notices: "Work paused" is only shown when the client's message really says to stop, pause or hold work - a message about discussing or planning work ("Discuss completed work… on Friday") now shows as a client instruction. A notice only labels a client; it never pauses their tasks.
+- Insights > Performance: a dev task you were only added to for the review no longer counts the developers' hours against your estimate - even when they have been unassigned since. Any task where other people tracked time now rates only your own time (and, for its deadline, the last day you worked on it).
+
 ## v4.4.4
 - New (off by default): copy one-time codes sent to you in Slack DMs. Turn on General › Features › "Copy one-time codes sent to me in Slack DMs": when someone sends you a code like 932442 in a direct message, it goes on your clipboard with a notification, ready to paste. Only messages from others, under 3 minutes old, that are just a code; nothing is saved. Needs Slack connected.
 - Client notices in the popup and side panel now have Hide next to Details (the same as Got it - hide on the Dashboard).

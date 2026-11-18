@@ -22,7 +22,18 @@
     deadline: { icon: "⏰", label: "Deadline" }, approval: { icon: "✋", label: "Waiting on approval" }, access: { icon: "🔑", label: "Access change" },
     other: { icon: "📣", label: "Client instruction" },
   };
-  const kindOf = (n) => KINDS[n.kind] || (n.ai ? KINDS.other : { icon: "⚠️", label: "Possible client instruction" });
+  // "Work paused" only when the message itself says to stop / pause / hold work.
+  // The browser's small AI sometimes calls a planning or review message a pause
+  // ("Discuss completed work... on Friday"); then it is shown as an instruction.
+  // A notice only ever LABELS a client - nothing here pauses their tasks.
+  const STOP_RE = /\b(pause[ds]?|pausing|on hold|hold off|put (?:\w+ ){0,3}on hold|stop(?:s|ped|ping)?\b|halt\w*|suspend\w*|terminat\w*|cancel\w*|until further notice|no (?:more|further) work|end(?:s|ed|ing)? (?:the |our )?(?:engagement|contract|services|work)|freez\w*)/i;
+  const kindKey = (n) => (n.kind === "pause" && !STOP_RE.test(String(n.text || "")) ? "other" : n.kind);
+  const kindOf = (n) => KINDS[kindKey(n)] || (n.ai ? KINDS.other : { icon: "⚠️", label: "Possible client instruction" });
+  // The card's category menu (storage cnoteView, this computer): "all" newest
+  // first, "group" = by kind (most urgent kinds first), or one kind only.
+  const KIND_ORDER = ["pause", "freeze", "deadline", "focus", "approval", "access", "other", ""];
+  const catOf = (n) => (KINDS[kindKey(n)] ? kindKey(n) : n.ai ? "other" : "");
+  let view = "all";
 
   let notices = [], dismissed = {}, openTasks = null, tasksAsked = false;
   // General › Features › Show client notices (settings.cnoteOff): off = no card,
@@ -144,6 +155,8 @@
     host.addEventListener("click", onCardClick);
     // Hide all ▾: for a while, until a new notice, or off.
     host.addEventListener("change", async (e) => {
+      const cs = e.target.closest && e.target.closest("select.cn-cat");
+      if (cs) { view = cs.value === "maybe" ? "" : cs.value; try { await chrome.storage.local.set({ cnoteView: view }); } catch (err) {} paint(); return; }
       const sel = e.target.closest && e.target.closest("select.cn-hide");
       if (!sel || !sel.value) return;
       const v = sel.value, now = Date.now();
@@ -180,7 +193,21 @@
       host.hidden = true; host.innerHTML = ""; lastCard = ""; host.classList.remove("cn-quiet"); return;
     }
     host.hidden = false; host.classList.remove("cn-quiet");
-    const items = list.map((n) => {
+    const cats = KIND_ORDER.filter((c) => list.some((n) => catOf(n) === c));
+    const v = view === "all" || view === "group" || cats.includes(view) ? view : "all";
+    const byTime = (a, b) => Number(b.at) - Number(a.at);
+    const shownList = v === "all" ? list.slice().sort(byTime)
+      : v === "group" ? list.slice().sort((a, b) => KIND_ORDER.indexOf(catOf(a)) - KIND_ORDER.indexOf(catOf(b)) || byTime(a, b))
+      : list.filter((n) => catOf(n) === v).sort(byTime);
+    const catName = (c) => (KINDS[c] ? KINDS[c].icon + " " + KINDS[c].label : "⚠️ Possible client instruction");
+    const catSel = '<select class="cn-btn cn-cat" title="Show one kind of notice, or all of them grouped by kind">' +
+      '<option value="all"' + (v === "all" ? " selected" : "") + ">All · newest first (" + list.length + ")</option>" +
+      '<option value="group"' + (v === "group" ? " selected" : "") + ">All · grouped by kind</option>" +
+      cats.map((c) => '<option value="' + esc(c || "maybe") + '"' + (v === c && v !== "all" ? " selected" : "") + ">" + esc(catName(c)) + " (" + list.filter((n) => catOf(n) === c).length + ")</option>").join("") + "</select>";
+    let lastCat = null;
+    const items = shownList.map((n) => {
+      const sub = v === "group" && catOf(n) !== lastCat ? '<div class="cn-group">' + esc(catName(catOf(n))) + "</div>" : "";
+      lastCat = catOf(n);
       const k = kindOf(n);
       const tasks = (openTasks || []).filter((t) => touches(n, t)).sort((a, b) => (Number(a.dueDateMs) || 9e15) - (Number(b.dueDateMs) || 9e15)).slice(0, 12);
       const before = n.fromMs ? dayBefore(n.fromMs) : 0;
@@ -190,7 +217,7 @@
           tasks.map((t) => '<div class="cn-task"><a href="' + esc(t.url || "#") + '" target="_blank" rel="noopener">' + esc(t.name) + "</a>" +
             ' <span class="hint">' + (t.dueDateMs ? "due " + esc(fmtDay(Number(t.dueDateMs))) : "no due date") + "</span>" +
             (before && before >= dayStart(Date.now()) ? ' <button type="button" class="cn-btn" data-cn-due="' + esc(t.id) + '" data-cn-ms="' + before + '" data-cn-was="' + (Number(t.dueDateMs) || 0) + '" title="Set its due date to ' + esc(fmtDay(before)) + ' in ClickUp, so it\'s done before the client\'s date">Due → ' + esc(fmtDay(before)) + "</button>" : "") + "</div>").join("") + "</div>";
-      return '<div class="cn-item" data-cn="' + esc(n.id) + '"><div class="cn-head"><span class="cn-kind">' + k.icon + " " + esc(k.label) + "</span> <b>" + esc(n.client) + "</b>" +
+      return sub + '<div class="cn-item" data-cn="' + esc(n.id) + '"><div class="cn-head"><span class="cn-kind">' + k.icon + " " + esc(k.label) + "</span> <b>" + esc(n.client) + "</b>" +
         (when(n) ? ' <span class="cn-when">' + esc(when(n)) + "</span>" : "") +
         ' <span class="hint">' + esc(new Date(Number(n.at)).toLocaleString([], { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" })) + (n.by ? " · found by " + esc(n.by) : "") + "</span></div>" +
         '<div class="cn-sum">' + esc(say(n)) + "</div>" +
@@ -204,6 +231,7 @@
     if (folded) host.classList.add("cn-folded"); else host.classList.remove("cn-folded");
     const html = '<div class="cn-top"><h2>⚠️ Client notices <span class="hint">' + (folded ? esc(list.length + " notice" + (list.length === 1 ? "" : "s")) : "(from the clients\' Slack channels)") + '</span></h2>' +
       (folded ? fold + "</div>" :
+      (cats.length > 1 || v !== "all" ? catSel : "") +
       '<button type="button" class="cn-btn" data-cn-refresh="1" title="Look in the client channels now">Check Slack now</button>' +
       '<select class="cn-btn cn-hide" title="Hide every client notice for a while - this card, the banner, the ⚠ on tasks and the pop-ups. A line here says until when, with Show now."><option value="">Hide all ▾</option>' +
       '<option value="1h">For 1 hour</option><option value="day">Until tomorrow</option><option value="week">For a week</option><option value="new">Until a new notice arrives</option><option value="off">Turn off (General › Features)</option></select>' + fold + "</div>" + items.join(""));
@@ -314,7 +342,7 @@
     const ymd = (ms) => { const d = new Date(ms); return d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0") + "-" + String(d.getDate()).padStart(2, "0"); };
     const prompt = "A message was posted in the Slack channel of our client \"" + n.client + "\" on " + new Date(Number(n.at)).toDateString() + " (" + ymd(Number(n.at)) + ").\n" +
       "Decide if it carries an instruction from the client that changes what our team should do or when (stop or hold work, no changes to the website from a date, a new priority, a deadline or launch date, waiting for approval, a change of access or developer).\n" +
-      "kind: freeze = no website changes; focus = work on something else instead; pause = stop work; deadline; approval; access; other; none = not an instruction (then important=false).\n" +
+      "kind: freeze = no website changes; focus = work on something else instead; pause = the client tells us to STOP or HOLD work (pause, on hold, stop, terminate) - a meeting, a call, discussing, reviewing or planning work is NOT pause (use other); deadline; approval; access; other; none = not an instruction (then important=false).\n" +
       "summary: one short sentence, plain words, what the team must do, with the date.\n" +
       "from / until: the dates it applies, as YYYY-MM-DD, worked out from the posting date (\"this Wednesday\" = the next Wednesday after it); \"\" when none.\n" +
       "siteTasks: the numbers of the tasks below that change the client's website (content edits, pages, plugins, speed, schema, redirects...) and so are affected by a freeze; [] when none.\n\n" +
@@ -328,6 +356,7 @@
       const j = m ? JSON.parse(m[0]) : null;
       if (!j || typeof j !== "object") return null;
       if (j.kind === "none") j.important = false;
+      if (j.kind === "pause" && !STOP_RE.test(String(n.text || ""))) j.kind = "other"; // no stop / hold wording in the message: not a pause
       const okDay = (v) => (/^\d{4}-\d{2}-\d{2}$/.test(String(v || "")) ? String(v) : "");
       return { important: j.important !== false, kind: KINDS[j.kind] ? j.kind : j.kind === "none" ? "none" : "other", summary: String(j.summary || "").slice(0, 300), from: okDay(j.from), until: okDay(j.until), siteTasks: j.siteTasks };
     } finally { try { s.destroy(); } catch (e) {} }
@@ -346,7 +375,8 @@
   .cnote-card .cn-top h2 { margin: 0; flex: 1; font-size: 15px; }
   .cnote-card.cn-quiet, .cnote-card.cn-folded { padding: 8px 14px; }
   .cnote-card .cn-hidden { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; font-size: 12.5px; color: var(--muted); }
-  .cnote-card select.cn-hide { cursor: pointer; width: auto; flex: none; margin: 0; }
+  .cnote-card select.cn-hide, .cnote-card select.cn-cat { cursor: pointer; width: auto; flex: none; margin: 0; }
+  .cnote-card .cn-group { margin: 12px 0 0; font-size: 12px; font-weight: 700; text-transform: uppercase; letter-spacing: .04em; color: var(--muted, #6b7280); }
   .cnote-card .cn-top .cn-btn { flex: none; }
   .cnote-card .cn-item { border-top: 1px solid var(--border); padding: 10px 0 4px; margin-top: 8px; border-radius: 6px; transition: background .4s; }
   .cnote-card .cn-item.flash { background: rgba(234, 88, 12, .12); }
@@ -372,8 +402,9 @@
 
   async function load() {
     try {
-      const g = await chrome.storage.local.get(["clientNotices", "cnoteDismissed", "settings", "cnoteHide", "cnoteFold"]);
+      const g = await chrome.storage.local.get(["clientNotices", "cnoteDismissed", "settings", "cnoteHide", "cnoteFold", "cnoteView"]);
       folded = g.cnoteFold === true;
+      if (typeof g.cnoteView === "string") view = g.cnoteView;
       allOff = !!(g.settings && g.settings.cnoteOff);
       hideFor = g.cnoteHide && typeof g.cnoteHide === "object" ? g.cnoteHide : null;
       notices = (g.clientNotices && Array.isArray(g.clientNotices.list)) ? g.clientNotices.list : [];

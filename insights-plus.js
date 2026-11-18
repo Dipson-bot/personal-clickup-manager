@@ -722,11 +722,18 @@
   // deadline by the last day YOU worked on it - someone else running over or
   // closing it late doesn't lower your rating. One you never tracked on isn't
   // rated for you at all.
+  // Shared = several assignees now, OR other people tracked time on it (a dev task
+  // you were added to only to review: the devs may have been unassigned since, but
+  // ClickUp's total still holds their hours). Either way only your time counts.
   function myPart(t, hist) {
-    if (!(Number(t.na) > 1) || !hist) return t;
+    if (!hist || !hist.taskMs) return t;
     const id = String(t.id);
-    const mine = Number(hist.taskMs && hist.taskMs[id]) || 0;
-    if (!mine) return null;
+    const mine = Number(hist.taskMs[id]) || 0;
+    const shared = Number(t.na) > 1 || (Number(t.spentMs) || 0) > mine + 5 * 60000;
+    if (!shared) return t;
+    // None of its time is yours: no estimate to judge you on. Still yours alone
+    // (only assignee) -> its deadline counts; shared with others -> not rated.
+    if (!mine) return Number(t.na) > 1 ? null : { ...t, spentMs: 0, shared: true };
     let last = 0;
     for (const [d, m] of Object.entries(hist.byDay || {})) if (m && Number(m[id]) > 0 && Number(d) > last) last = Number(d);
     const doneAt = last ? Math.min(t.doneAt, last + DAY - 1) : t.doneAt;
