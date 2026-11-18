@@ -301,7 +301,7 @@ function actionItems() {
   if (run) {
     items.push({ label: short(run.taskName) + "  ·  " + timeText(), enabled: false });
     items.push({ label: "■ Stop", click: go({ type: "stop" }) });
-    if (!t.isExtra) items.push({ label: "✓ Done", click: go({ type: "complete" }) });
+    if (!t.isExtra) items.push({ label: "✓ Done", click: go({ type: "complete" }) }, { label: "✓ Done today (due date set to today)", click: go({ type: "doneToday" }) });
     if (!t.isExtra && state.extra) items.push({ label: "⇄ Switch to the Extra Task (Meeting)", click: go({ type: "extra", note: "Meeting" }) }, { label: "⇄ Switch to the Extra Task", click: go({ type: "extra" }) });
     if (t.isExtra && state.last) items.push({ label: "↩ Back to " + short(state.last.name), click: go({ type: "resume" }) });
   } else {
@@ -312,6 +312,26 @@ function actionItems() {
   }
   return items;
 }
+// ---------- commands (typed in the comment box: /automation, /automation off) ----------
+// /automation adds an Automation item to the ▾ menu: the running task completes
+// itself at its estimate. The extension does the completing (its autoCompleteTasks
+// and "finish a little early" time); the change reaches it with its next
+// once-a-minute knock (extCmds), and it reports what is marked back (extAuto).
+let extAuto = { ids: [], lead: null };
+const extCmds = [];
+const autoWant = new Map(); // taskId -> on, until the extension has it
+function autoMarked(taskId) { const id = String(taskId); return autoWant.has(id) ? autoWant.get(id) : extAuto.ids.includes(id); }
+function automationItems(run, t) {
+  if (!settings.cheatAuto || !run || t.isExtra) return [];
+  const lead = extAuto.lead && Number(extAuto.lead.min) ? " (" + extAuto.lead.min + "m early" + (extAuto.lead.vary ? ", varied" : "") + ")" : "";
+  const id = String(run.taskId);
+  return [{ label: "Automation", submenu: [
+    { label: "Complete this task by itself at its estimate" + lead, type: "checkbox", checked: autoMarked(id), click: (m) => { autoWant.set(id, m.checked); extCmds.push({ type: "autoComplete", taskId: id, name: String(run.taskName || "").slice(0, 200), on: m.checked }); } },
+    { label: autoWant.has(id) ? "Saving… (applies within a minute)" : "Done by the extension in the browser", enabled: false },
+    { type: "separator" },
+    { label: "Hide Automation here", click: () => { settings.cheatAuto = false; saveSettings(); } },
+  ] }];
+}
 function showStripMenu() {
   if (!win) return;
   const run = state && state.running, t = (state && state.task) || {};
@@ -319,6 +339,7 @@ function showStripMenu() {
     ...actionItems(),
     { type: "separator" },
     ...(run ? [{ label: "⤢ Bigger view (note, comments, files)", click: () => send("big", true) }] : []),
+    ...automationItems(run, t),
     ...(run && t.url ? [{ label: "Open in ClickUp", click: () => shell.openExternal(t.url) }] : []),
     { label: "Refresh now", click: () => refresh() },
     { label: "Move off the taskbar (floating window)", click: () => setDock(false) },
@@ -554,6 +575,7 @@ function startLink() {
       res.writeHead(200, { "Content-Type": "application/json" });
       res.end(JSON.stringify({ app: "clickup-tracker", version: app.getVersion(), signedIn: !!cu,
         // The timer this app sees running (so the extension shows it at once, even when it was started here or in ClickUp).
+        cmds: m.auto ? extCmds.splice(0, 20) : [], // only to the main extension (it reports what is marked)
         timer: state && state.running && state.running.taskId ? { taskId: String(state.running.taskId), taskName: String(state.running.taskName || "").slice(0, 200), startMs: Number(state.running.startMs) || 0 } : null, user: (cu && cu.username) || "", shown: isMac ? !settings.hiddenByExt : !!(win && !win.isDestroyed() && win.isVisible()), platform: process.platform, folders: true, folderFiles: true, extUpdate: true }));
     });
   });
@@ -658,6 +680,10 @@ async function filesOp(m) {
     return { ok: true, ...r };
   }
   if (op === "list") return { ok: true, ...clientdirs.listClientFiles(clientsRoot(), links, m.client) };
+  // "Sync everything" (extension Drive Sync): every client file, one file in / out.
+  if (op === "syncList") return { ok: true, ...clientdirs.syncList(clientsRoot(), links) };
+  if (op === "syncRead") return { ok: true, ...clientdirs.syncRead(clientsRoot(), links, m.key) };
+  if (op === "syncWrite") return { ok: true, ...clientdirs.syncWrite(clientsRoot(), links, m.key, m.b64, m.mtime) };
   if (op === "read") return { ok: true, ...clientdirs.readClientFile(clientsRoot(), links, m.client, m.rel) };
   if (op === "openFile") { const err = await shell.openPath(clientdirs.clientFilePath(clientsRoot(), links, m.client, m.rel)); return { ok: !err, error: err || undefined }; }
   if (op === "showFile") { shell.showItemInFolder(clientdirs.clientFilePath(clientsRoot(), links, m.client, m.rel)); return { ok: true }; }
@@ -673,6 +699,10 @@ async function filesOp(m) {
 
 let linking = false;
 async function fromExtension(m) {
+  if (m.auto && Array.isArray(m.auto.ids)) {
+    extAuto = { ids: m.auto.ids.map(String).slice(0, 200), lead: m.auto.lead || null };
+    for (const [id, on] of [...autoWant]) if (extAuto.ids.includes(id) === on) autoWant.delete(id); // the extension has it now
+  }
   // The strip style picked in the extension (General › Floating tracker › Strip style).
   if (STYLES.includes(m.style) && m.style !== settings.stripStyle) { settings.stripStyle = m.style; saveSettings(); send("settings", publicSettings()); }
   if (typeof m.anim === "boolean" && m.anim !== (settings.stripAnim !== false)) { settings.stripAnim = m.anim; saveSettings(); send("settings", publicSettings()); }
@@ -831,7 +861,12 @@ async function doAction(a) {
       await cu.stopTimer();
       await cu.setStatus(run.taskId, "to do").catch(() => {});
       lastStopped = state.task && state.task.isExtra ? lastStopped : { id: run.taskId, name: run.taskName };
-    } else if (a.type === "complete" && run) {
+    } else if (a.type === "cheat") {
+      const c = String(a.cmd || "").trim().toLowerCase();
+      if (!/^\/automation(\s+(on|off))?$/.test(c)) throw new Error("Unknown command");
+      settings.cheatAuto = !/off$/.test(c); saveSettings();
+      return { ok: true, msg: settings.cheatAuto ? "Automation is in the ▾ menu ✓" : "Automation hidden" };
+    } else if ((a.type === "complete" || a.type === "doneToday") && run) {
       if (state.task && state.task.isExtra) throw new Error("The recurring Extra Task can't be completed here.");
       if (settings.warnEmpty !== false && (await nothingToShow(run.taskId))) {
         const r = await dialog.showMessageBox(win && !win.isDestroyed() ? win : undefined, {
@@ -842,6 +877,8 @@ async function doAction(a) {
         if (r.response !== 0) return { ok: true, cancelled: true };
       }
       await cu.stopTimer().catch(() => {});
+      // Done today: the due date becomes today (the day it was really finished).
+      if (a.type === "doneToday") { const d = new Date(); d.setHours(17, 0, 0, 0); await cu.setDue(run.taskId, d.getTime()); }
       await cu.setStatus(run.taskId, "complete");
       if (resumeTask && resumeTask.id === run.taskId) resumeTask = null;
     } else if (a.type === "start" || a.type === "extra" || a.type === "resume") {

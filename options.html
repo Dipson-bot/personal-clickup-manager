@@ -221,6 +221,9 @@
   /* Keep the Sign in/out + Sync now buttons together as one right-aligned group so
      a longer status label can never strand "Sync now" on its own line. */
   .drivesync-actions { display: flex; gap: 8px; margin-left: auto; flex-wrap: wrap; }
+  .drive2-box { border: 1px solid var(--border, #e5e7eb); border-radius: 8px; padding: 10px 12px; margin-top: 8px; font-size: 13px; }
+  .drive2-alert { margin-top: 10px; padding: 8px 10px; border-radius: 8px; background: rgba(245,158,11,.12); border: 1px solid rgba(245,158,11,.45); font-size: 13px; line-height: 1.5; }
+  .drive2-alert button { margin-left: 6px; }
   .drivesync-dot { width: 9px; height: 9px; border-radius: 50%; background: var(--muted); flex-shrink: 0; }
   .drivesync-dot.on { background: var(--green); }
   .drivesync-dot.running { background: var(--blue); animation: drive-pulse 1s infinite; }
@@ -2262,6 +2265,11 @@
   <!-- ===================== Site monitor ===================== -->
   <style>
     .sm-php { font-weight: 600; }
+    .sm-host a { font-weight: 600; }
+    .sm-hostedit { border: 0; background: none; padding: 0 2px; cursor: pointer; color: var(--muted); font-size: 12px; }
+    .sm-hostedit:hover { color: var(--text); }
+    .sm-host.sm-editing { display: inline-flex; flex-wrap: wrap; gap: 4px; align-items: center; }
+    .sm-hostin { width: 300px; max-width: 100%; padding: 2px 6px; font-size: 12px; }
     #siteMonitorStatus .imp-row { flex-wrap: wrap; row-gap: 4px; } /* the buttons go under the text only when the window is too narrow for both */
     #siteMonitorStatus .sm-headrow { flex-wrap: wrap; gap: 6px 10px; }
     #siteMonitorStatus .sm-headrow .cu-subhead { margin: 0; }
@@ -2670,6 +2678,10 @@
       <label for="slackTagChannel" style="margin:0;font-weight:400;">List Slack <b>@channel / @here</b> messages too <span class="hint">- in Insights › Slack: @channel / @here, no reply yet (they can hold up a task, e.g. "no site changes this week"). Messages that tag you by name are always listed.</span></label>
     </div>
     <div class="checkbox">
+      <input type="checkbox" id="slackOtpCopy" />
+      <label for="slackOtpCopy" style="margin:0;font-weight:400;">Copy <b>one-time codes</b> sent to me in Slack DMs <span class="hint">- when someone sends you a code (like 932442) in a direct message, it goes on your clipboard with a notification, ready to paste. Needs Slack connected. Off by default.</span> <span class="hint" id="slackOtpMsg"></span></label>
+    </div>
+    <div class="checkbox">
       <input type="checkbox" id="showCnotes" />
       <label for="showCnotes" style="margin:0;font-weight:400;">Show <b>client notices</b> <span class="hint">- the Dashboard card, the popup banner and the ⚠ on tasks for instructions found in the clients' Slack channels. Turning it off hides all of them.</span></label>
     </div>
@@ -2813,6 +2825,28 @@
       </span>
     </div>
     <div class="hint" id="optLastSyncLine" style="margin-top:8px;display:none;"></div>
+    <div class="checkbox" style="margin-top:12px;">
+      <input type="checkbox" id="syncEverything" />
+      <label for="syncEverything" style="margin:0;"><b>Sync everything with my other computers</b> <span class="hint">- office and home laptop: turn it on on both (same Google account). Also keeps your history, the files saved here and your <b>client folders</b> the same on both, through <b>My Drive › Personal ClickUp Manager › Clients</b> (needs the ClickUp Tracker app on both). Deleting a file on one leaves it on the other; one changed on both is kept twice.</span></label>
+    </div>
+    <div class="hint" id="syncAllLine" style="margin:4px 0 0 26px;"></div>
+    <div class="drive2-alert" id="driveMovedNotice" style="display:none;"></div>
+    <details id="driveTwo" style="margin-top:10px;">
+      <summary style="cursor:pointer;font-size:13px;font-weight:600;">Two Google accounts (Drive almost full?)</summary>
+      <div class="drive2-box">
+        <b>Spare Google Drive</b>
+        <p class="hint" style="margin:4px 0 8px;line-height:1.5;">Only if you add one: when your main Drive has less than 200 MB free, <b>new</b> client-folder files go to this second Google account's Drive (same <b>Personal ClickUp Manager › Clients</b> folder there). Files already in the main Drive stay there. Your settings and history stay in the main account. Needs <b>Sync everything</b> on, and the same spare added on your other computer.</p>
+        <div class="hint" id="spareLine" style="margin-bottom:8px;"></div>
+        <div class="btns"><button type="button" id="spareAdd">Add a spare Google account</button><button type="button" id="spareRemove" style="display:none;">Remove the spare</button></div>
+      </div>
+      <div class="drive2-box">
+        <b>Move everything to another Google account</b>
+        <p class="hint" style="margin:4px 0 8px;line-height:1.5;">Copies everything this extension keeps in your current Google Drive - accounts, settings, history, saved files and the client folders - to another account's Drive, then switches Drive Sync to it. Nothing on this computer changes. Your other computer switches by itself when that Google account is signed in on its browser (otherwise it asks). Google Docs / Sheets you exported stay where they are.</p>
+        <div class="checkbox" style="margin:0 0 8px;"><input type="checkbox" id="moveTrashOld" /><label for="moveTrashOld" style="margin:0;">Afterwards, move the old client-folder copies to the old Drive's <b>trash</b> (the space comes back when the trash is emptied - Google empties it after 30 days)</label></div>
+        <div class="hint" id="moveLine" style="margin-bottom:8px;"></div>
+        <div class="btns"><button type="button" id="moveStart">Move to another Google account…</button><button type="button" id="moveContinue" style="display:none;">Continue</button><button type="button" id="moveCancel" style="display:none;">Stop</button><button type="button" id="moveClear" style="display:none;">OK</button></div>
+      </div>
+    </details>
     <details id="driveWhere" style="margin-top:10px;">
       <summary style="cursor:pointer;font-size:13px;font-weight:600;">Where is it saved?</summary>
       <p class="hint" style="margin:8px 0;line-height:1.55;">

@@ -161,6 +161,11 @@ class ClickUp {
     await this.req("/task/" + encodeURIComponent(taskId), { method: "PUT", body: JSON.stringify({ status }) });
     this.taskCache.delete(String(taskId));
   }
+  // A date-only due date ("Done today" sets today's).
+  async setDue(taskId, ms) {
+    await this.req("/task/" + encodeURIComponent(taskId), { method: "PUT", body: JSON.stringify({ due_date: Number(ms), due_date_time: false }) });
+    this.taskCache.delete(String(taskId));
+  }
   async stopTimer() { await this.req("/team/" + this.teamId + "/time_entries/stop", { method: "POST" }); }
   async startTimer(taskId, description) {
     const body = { tid: String(taskId) };

@@ -233,11 +233,13 @@
         (st.last ? '<button data-act="resume" title="' + esc(st.last.name) + '">&#8617; Resume last</button>' : "") + '<span class="sp"></span><button data-act="menu" title="More">&#9662;</button></div>';
     }
     const t = st.task || {}, run = st.running;
-    const meta = [t.client, t.dueDateMs ? "due " + new Date(t.dueDateMs).toLocaleDateString([], { month: "short", day: "numeric" }) : ""].filter(Boolean).join(" · ");
-    return '<div class="row"><a class="nm" data-url="' + esc(t.url || "") + '" title="' + esc(run.taskName) + '">' + esc(run.taskName || "(task)") + '</a><button class="x" data-act="big" title="Bigger view: note, comments, files">&#10529;</button></div>' +
+    const meta = t.dueDateMs ? "due " + new Date(t.dueDateMs).toLocaleDateString([], { month: "short", day: "numeric" }) : "";
+    // "Task name… | Client…": each cut short to fit, the whole of it on hover.
+    return '<div class="row"><span class="ttl"><a class="nm" data-url="' + esc(t.url || "") + '" title="' + esc(run.taskName) + '">' + esc(run.taskName || "(task)") + '</a>' +
+      (t.client ? '<span class="sep">|</span><span class="cl" title="' + esc(t.client) + '">' + esc(t.client) + "</span>" : "") + '</span><button class="x" data-act="big" title="Bigger view: note, comments, files">&#10529;</button></div>' +
       '<div class="sub"><span id="pkAll"></span>' + (meta ? " \u00b7 " + esc(meta) : "") + "</div>" +
       '<div class="btns">' + (t.isExtra ? (st.last ? '<button class="pri" data-act="resume" title="Stop the Extra Task and go back to: ' + esc(st.last.name) + '">&#8617; Back to task</button>' : "")
-        : (st.extra ? '<button data-act="extra" title="Stop this timer and start the Extra Task now">&#8644; Extra Task</button>' : "")) +
+        : '<button data-act="doneToday" title="Done today: complete it and set its due date to today (stops the timer)">&#10003; Today</button>' + (st.extra ? '<button data-act="extra" title="Stop this timer and start the Extra Task now">&#8644; Extra</button>' : "")) +
       '<span class="sp"></span><button data-act="stop">&#9632; Stop</button>' + (t.isExtra ? "" : '<button data-act="complete">&#10003; Done</button>') + '<button data-act="menu" title="More">&#9662;</button></div>';
   }
   function stripRowHtml() {
@@ -268,7 +270,7 @@
       '<div class="row"><div class="trk"><b id="bar"></b></div><span class="tm" id="time"></span></div>' +
       (compact() ? "" : '<div class="row"><input class="xin" id="cmt" maxlength="2000" placeholder="Comment + Enter" title="Paste screenshots with Ctrl+V, drop files here, or use the paperclip" /><button class="x" data-act="pick" id="pick" title="Attach files">&#128206;</button><button class="x" data-act="clearfiles" id="clr" hidden>&#10005;</button><span class="sub" id="cmsg"></span></div>') +
       '<div class="row"><span class="sub" id="today" style="font-size:11.5px"></span><span class="btns"><button data-act="stop">&#9632; Stop</button>' +
-      (t.isExtra ? "" : '<button data-act="complete">&#10003; Done</button>') + "</span></div></div>";
+      (t.isExtra ? "" : '<button data-act="doneToday" title="Done today: complete it and set its due date to today (stops the timer)">&#10003; Today</button>' + '<button data-act="complete">&#10003; Done</button>') + "</span></div></div>";
   }
   function idleHtml(isFull) {
     const nexts = (st.nexts || []).slice(0, compact() ? 1 : 2);
@@ -290,7 +292,7 @@
       '<div class="bsec" id="drop"><div class="bh">Comment on the task</div><textarea class="xin" id="cmt" placeholder="Write a comment. Paste a screenshot with Ctrl+V, or drop files here. Ctrl+Enter posts."></textarea>' +
       '<div class="files" id="files"></div><div class="row"><button class="x" data-act="pick">&#128206; Attach</button><span class="sub" id="cmsg"></span><span class="btns"><button class="x pri" data-act="post">Comment</button></span></div></div>' +
       '<div class="bsec"><div class="bh">Comments</div><div id="clist" class="sub" style="white-space:normal">Loading…</div></div>' +
-      '<div class="bfoot"><span class="btns" style="margin-left:0"><button data-act="stop">&#9632; Stop</button>' + (t.isExtra ? "" : '<button data-act="complete">&#10003; Done</button>') +
+      '<div class="bfoot"><span class="btns" style="margin-left:0"><button data-act="stop">&#9632; Stop</button>' + (t.isExtra ? "" : '<button data-act="doneToday" title="Done today: complete it and set its due date to today (stops the timer)">&#10003; Today</button>' + '<button data-act="complete">&#10003; Done</button>') +
       (t.isExtra && st.last ? '<button class="pri" data-act="resume">&#8617; Back to task</button>' : "") + "</span></div>";
   }
   function paintComments() {
@@ -349,6 +351,12 @@
     const c = $("cmt");
     const text = (c ? c.value : draft.text).trim();
     if (!run || (!text && !draft.files.length)) return true;
+    if (!draft.files.length && /^\/automation(\s+(on|off))?$/i.test(text)) {
+      const r = await T.action({ type: "cheat", cmd: text });
+      if (r && r.ok) { draft.text = ""; if (c) c.value = ""; }
+      msg("cmsg", r && r.ok ? (r.msg || "Done ✓") : ((r && r.error) || "Unknown command"), !(r && r.ok));
+      return true;
+    }
     msg("cmsg", draft.files.length ? "Uploading…" : "Posting…");
     const r = await T.action({ type: "comment", taskId: run.taskId, text, files: draft.files });
     if (r && r.ok) {
@@ -412,11 +420,17 @@
     if (act === "xopen") return extraPanel();
     if (act === "menu") return T.menu();
     busy = true; b.disabled = true;
-    if (act === "stop" || act === "complete" || act === "resume") { if (pending()) await postComment(); }
+    if (act === "stop" || act === "complete" || act === "doneToday" || act === "resume") { if (pending()) await postComment(); }
     const r = await T.action({ type: act, taskId: b.dataset.id });
     busy = false;
     if (r && !r.ok) { const col = card.querySelector(".col") || card; const m = document.createElement("div"); m.className = "sub err"; m.textContent = r.error; col.appendChild(m); }
     if (big && act !== "resume") setBig(false);
+  });
+  // Ctrl+Shift+` opens the bigger view with the box ready for a command.
+  document.addEventListener("keydown", (e) => {
+    if (!(e.ctrlKey && e.shiftKey && e.code === "Backquote") || !(st && st.running)) return;
+    e.preventDefault();
+    Promise.resolve(big ? null : setBig(true)).then(() => setTimeout(() => { const c = $("cmt"); if (c) { c.value = "/"; c.focus(); } }, 250));
   });
   $("fileIn").onchange = (e) => { addFiles(e.target.files || []); e.target.value = ""; };
   $("badge").onclick = () => setBig(true);

@@ -75,12 +75,68 @@ export async function getFileToken(interactive = true) {
   const now = Date.now();
   const { driveFileToken: c } = await chrome.storage.local.get("driveFileToken");
   if (c && c.token && c.expiresAt > now + 60000) return c.token;
-  let r = await launchAuth({ interactive: false, scope: SCOPE_FILE });
-  if (!r && interactive) r = await launchAuth({ interactive: true, scope: SCOPE_FILE });
+  // The same Google account as Drive Sync (login_hint), and checked: a token for
+  // another account would put the client folders in the wrong Drive.
+  const hint = await getDriveAccount();
+  let r = await launchAuth({ interactive: false, scope: SCOPE_FILE, loginHint: hint });
+  if (!r && interactive) r = await launchAuth({ interactive: true, scope: SCOPE_FILE, loginHint: hint, prompt: hint ? "" : "select_account" });
   if (!r || !r.token) return null;
+  if (hint) {
+    try {
+      const res = await fetch("https://www.googleapis.com/drive/v3/about?fields=user(emailAddress)", { headers: { Authorization: "Bearer " + r.token } });
+      const j = res.ok ? await res.json() : null;
+      const email = j && j.user && j.user.emailAddress;
+      if (email && email.toLowerCase() !== hint.toLowerCase()) return null;
+    } catch (e) {}
+  }
   await chrome.storage.local.set({ driveFileToken: { token: r.token, expiresAt: now + (r.expiresIn - 60) * 1000 } });
   return r.token;
 }
+// ---------- a token for a NAMED Google account (two-account Drive Sync) ----------
+// The spare Drive and "Move everything to another Google account" need a token
+// for an account other than the connected one, without touching it.
+//  email: the account (silent renewal with login_hint); pick: show Google's
+//  account chooser instead. The token's account is always checked.
+export const SCOPE_APPDATA = SCOPE;
+export const SCOPE_DRIVE_FILE = SCOPE_FILE;
+export const SCOPE_BOTH = SCOPE + " " + SCOPE_FILE;
+const acctTokens = new Map();
+async function whoIs(token) {
+  try {
+    const res = await fetch("https://www.googleapis.com/drive/v3/about?fields=user(emailAddress,displayName)", { headers: { Authorization: "Bearer " + token } });
+    const j = res.ok ? await res.json() : null;
+    return { email: (j && j.user && j.user.emailAddress) || "", name: (j && j.user && j.user.displayName) || "" };
+  } catch (e) { return { email: "", name: "" }; }
+}
+export async function accountToken({ email = "", scope = SCOPE_BOTH, interactive = false, pick = false } = {}) {
+  const key = (e) => String(e || "").toLowerCase() + "|" + scope;
+  const c = email && !pick ? acctTokens.get(key(email)) : null;
+  if (c && c.expiresAt > Date.now() + 60000) return c;
+  let r = email && !pick ? await launchAuth({ interactive: false, prompt: "none", scope, loginHint: email }) : null;
+  if (!r && interactive) r = await launchAuth({ interactive: true, scope, loginHint: pick ? "" : email, prompt: pick || !email ? "select_account" : "" });
+  if (!r || !r.token) return null;
+  const who = await whoIs(r.token);
+  if (!who.email) return null;
+  if (email && !pick && who.email.toLowerCase() !== String(email).toLowerCase()) return null;
+  const out = { token: r.token, expiresAt: Date.now() + (r.expiresIn - 60) * 1000, email: who.email, name: who.name };
+  acctTokens.set(key(who.email), out);
+  return out;
+}
+// Make another Google account THE Drive Sync account (after a move, or when the
+// other computer moved): no sign-out, nothing on this computer is wiped.
+// t = accountToken(...) with SCOPE_BOTH.
+export async function adoptDriveAccount(t) {
+  memToken = t.token;
+  memTokenExpiresAt = t.expiresAt;
+  lastSilentFailAt = 0;
+  await chrome.storage.local.set({
+    driveAccount: { email: t.email, name: t.name || "" },
+    authCache: { accessToken: t.token, expiresAt: t.expiresAt },
+    driveFileToken: { token: t.token, expiresAt: t.expiresAt },
+  });
+  await chrome.storage.local.remove("driveExportToken"); // re-made for the new account when next needed
+}
+
 // Exports to Google Sheets / Docs sign in with their OWN Google client (the
 // "Personal ClickUp Manager" project made for exports), whose project has the
 // Google Sheets API on - so every link in an exported sheet can be made
@@ -264,7 +320,9 @@ async function tokenRefresh(allowInteractive) {
   let result = await launchAuth({ interactive: false, prompt: "none", loginHint: hint });
   if (!result && hint) result = await launchAuth({ interactive: false, prompt: "none" }); // stale hint
   // 4. Last resort: interactive (only if caller allows it)
-  if (!result && allowInteractive) result = await launchAuth({ interactive: true, loginHint: hint });
+  // No account connected yet (first sign-in, or after Sign out to switch): Google's
+  // account chooser, so a second Google account can be picked.
+  if (!result && allowInteractive) result = await launchAuth({ interactive: true, loginHint: hint, prompt: hint ? "" : "select_account" });
   if (!result) { lastSilentFailAt = Date.now(); return null; }
   lastSilentFailAt = 0;
 

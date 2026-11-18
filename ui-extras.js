@@ -135,6 +135,12 @@
   // task already tracking can be set to complete itself at its estimate (the
   // background's autoCompleteTasks check runs on every progress tick).
   let autoTab = false;
+  // When a marked task completes: "at its estimate" or "10m before its estimate" (Automation › When auto-complete finishes a task).
+  let acLead = null;
+  const acWhen = () => { const m = Number(acLead && acLead.min) || 0; return m ? (acLead.vary ? "about " : "") + m + "m before its estimate" : "at its estimate"; };
+  chrome.storage.local.get("autoCompleteLead").then((g) => { acLead = (g && g.autoCompleteLead) || null; paintNow(); relabelDrop(); }).catch(() => {});
+  try { chrome.storage.onChanged.addListener((ch, area) => { if (area === "local" && ch.autoCompleteLead) { acLead = ch.autoCompleteLead.newValue || null; paintNow(); relabelDrop(); } }); } catch (e) {}
+  function relabelDrop() { const z = document.querySelector("#xaDrop .xa-z"); if (z) z.innerHTML = "\u23F1 Complete " + acWhen().replace("its ", "") + " <small>drop a task here</small>"; }
   function paintNow() {
     const box = document.getElementById("cuNow");
     if (!box) return;
@@ -160,8 +166,8 @@
     const txt = on ? "⏱ Auto-complete on" : "⏱ Auto-complete";
     if (b.textContent !== txt) b.textContent = txt; // (only on change: the observer below sees our own edits)
     b.classList.toggle("on", on);
-    b.title = on ? "Completes itself when its tracked time reaches its estimate - click to turn off"
-      : "Click so that when this task's tracked time reaches its estimate, the timer stops and the task is marked complete";
+    b.title = on ? "Completes itself " + acWhen() + " - click to turn off"
+      : "Click so that " + acWhen() + " the timer stops and the task is marked complete";
   }
   chrome.storage.local.get("automationTab").then((g) => { autoTab = !!(g && g.automationTab); paintNow(); paintDrop(); paintBar(); }).catch(() => {});
   try {
@@ -401,7 +407,7 @@
     for (const t of ok) next[String(t.id)] = { name: t.name || "", at: Date.now() };
     marked = next;
     await chrome.storage.local.set({ autoCompleteTasks: next });
-    setNote("\u23F1 " + (ok.length === 1 ? "\u201C" + String(ok[0].name || "").slice(0, 50) + "\u201D completes" : ok.length + " tasks complete") + " at " + (ok.length === 1 ? "its" : "their") + " estimate" + (skip ? " (" + skip + " skipped: no estimate)" : ""));
+    setNote("\u23F1 " + (ok.length === 1 ? "\u201C" + String(ok[0].name || "").slice(0, 50) + "\u201D completes" : ok.length + " tasks complete") + " " + (ok.length === 1 ? acWhen() : acWhen().replace("its", "their")) + (skip ? " (" + skip + " skipped: no estimate)" : ""));
   }
   async function dropRun(tasks) {
     const ok = tasks.filter((t) => canMark(t)), skip = tasks.length - ok.length;
@@ -434,7 +440,7 @@
       };
       z.title = "Drop the task on one of these";
       z.hidden = !dropOn;
-      z.append(zone("\u23F1 Complete at estimate", "drop a task here", dropComplete), zone("\u25B6 Run in order", "drop tasks here, one after another", dropRun));
+      z.append(zone("\u23F1 Complete " + acWhen().replace("its ", ""), "drop a task here", dropComplete), zone("\u25B6 Run in order", "drop tasks here, one after another", dropRun));
     }
     if (z.nextSibling !== anchor) anchor.parentNode.insertBefore(z, anchor);
   }
@@ -452,7 +458,7 @@
         chip = document.createElement("span");
         chip.className = "ac-chip";
         chip.textContent = "\u23F1"; // short: the row keeps its room (full wording in the hover)
-        chip.title = "Auto-complete: completes itself (and stops the timer) when its tracked time reaches its estimate";
+        chip.title = "Auto-complete: completes itself (and stops the timer) " + acWhen();
         const nm = wrap.querySelector(".nm");
         if (nm && nm.nextSibling) wrap.insertBefore(chip, nm.nextSibling); else wrap.appendChild(chip);
       } else if (!on && chip) chip.remove();

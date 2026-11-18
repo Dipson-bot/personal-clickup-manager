@@ -159,4 +159,73 @@ function readClientFile(root, links, client, rel) {
   return { name: path.basename(p), size: st.size, mtime: st.mtimeMs, b64: fs.readFileSync(p).toString("base64") };
 }
 
-module.exports = { key, safeName, matchFolder, clientDir, writeTask, writeClientFile, inside, listClientFiles, clientFilePath, readClientFile };
+// ---------- "Sync everything" (the extension's Drive Sync card) ----------
+// Every file in the client folders, as "<client folder>/<path inside it>": the
+// folders under the root, plus clients pointed at a folder somewhere else (by
+// that folder's name). Skips task briefs (made from ClickUp anyway), code
+// folders, hidden and Office lock files. The extension copies them both ways
+// through the user's Google Drive (lib-syncall.js).
+function syncTops(root, links) {
+  const tops = new Map();
+  try { for (const d of fs.readdirSync(root, { withFileTypes: true })) if (d.isDirectory() && !d.name.startsWith(".")) tops.set(d.name, path.join(root, d.name)); } catch (e) {}
+  for (const dir of Object.values(links || {})) {
+    if (!dir || !fs.existsSync(dir)) continue;
+    const n = path.basename(dir);
+    if (n && !tops.has(n)) tops.set(n, dir);
+  }
+  return tops;
+}
+function syncList(root, links, max = 5000) {
+  const files = [];
+  for (const [top, dir] of syncTops(root, links)) {
+    const walk = (d, rel, depth) => {
+      let ents = [];
+      try { ents = fs.readdirSync(d, { withFileTypes: true }); } catch (e) { return; }
+      for (const e of ents) {
+        if (files.length >= max) return;
+        if (e.name.startsWith(".") || e.name.startsWith("~$") || /^(desktop\.ini|thumbs\.db)$/i.test(e.name) || /\.pcm-sync-tmp$/.test(e.name)) continue;
+        const r = rel ? rel + "/" + e.name : e.name;
+        if (e.isDirectory()) { if (depth < 6 && !SKIP_DIRS.test(e.name)) walk(path.join(d, e.name), r, depth + 1); continue; }
+        if (!e.isFile()) continue;
+        try { const st = fs.statSync(path.join(d, e.name)); files.push({ key: top + "/" + r, size: st.size, mtime: Math.round(st.mtimeMs) }); } catch (x) {}
+      }
+    };
+    walk(dir, "", 0);
+  }
+  return { root, files };
+}
+// A key back to a path - always inside its client folder (no "..", no drive letters).
+function syncPath(root, links, key, create) {
+  const parts = String(key || "").replace(/\\/g, "/").split("/").filter(Boolean);
+  if (parts.length < 2 || parts.some((p) => p === "." || p === "..")) throw new Error("Bad path.");
+  const top = parts.shift();
+  const tops = syncTops(root, links);
+  const base = tops.get(top) || path.join(root, safeName(top, 120));
+  const segs = parts.map((p) => safeName(p, 180));
+  const p = path.join(base, ...segs);
+  const r = path.relative(base, p);
+  if (!r || r.startsWith("..") || path.isAbsolute(r)) throw new Error("Not in the client folders.");
+  if (create) fs.mkdirSync(path.dirname(p), { recursive: true });
+  return p;
+}
+function syncRead(root, links, key) {
+  const p = syncPath(root, links, key, false);
+  const st = fs.statSync(p);
+  if (st.size > MAX_FILE) throw new Error("File over 30 MB.");
+  return { size: st.size, mtime: Math.round(st.mtimeMs), b64: fs.readFileSync(p).toString("base64") };
+}
+// Writes the file and gives it its original modified time, so both computers
+// agree on it. Writes to a temp name first, so a half-written file never
+// replaces a good one.
+function syncWrite(root, links, key, b64, mtime) {
+  const buf = Buffer.from(String(b64 || ""), "base64");
+  if (buf.length > MAX_FILE) throw new Error("File over 30 MB.");
+  const p = syncPath(root, links, key, true);
+  const tmp = p + ".pcm-sync-tmp";
+  fs.writeFileSync(tmp, buf);
+  fs.renameSync(tmp, p);
+  const t = Number(mtime) > 0 ? new Date(Number(mtime)) : new Date();
+  try { fs.utimesSync(p, t, t); } catch (e) {}
+  return { size: buf.length, mtime: Math.round(fs.statSync(p).mtimeMs) };
+}
+module.exports = { key, safeName, matchFolder, clientDir, writeTask, writeClientFile, inside, listClientFiles, clientFilePath, readClientFile, syncList, syncPath, syncRead, syncWrite };

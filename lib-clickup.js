@@ -746,6 +746,7 @@ export async function fetchDoneLite(token, teamId, userId, fromTs, toTs) {
         parentId: t.parent != null ? String(t.parent) : null, container: taskContainer(t),
         dueDateMs: Number(t.due_date) || 0, doneAt: Number(t.date_done || t.date_closed) || 0,
         estimateMs: Number(t.time_estimate) || 0, spentMs: Number(t.time_spent) || 0,
+        na: Array.isArray(t.assignees) ? t.assignees.length : 0, // how many people share it (the rating judges your part)
       });
     }
     if (tasks.length < 100 || (j && j.last_page === true)) break;

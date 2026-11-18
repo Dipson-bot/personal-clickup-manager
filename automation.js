@@ -253,6 +253,10 @@
     away.style.marginTop = "20px";
     panel.appendChild(away);
     buildSlackAway(away);
+    const leadCard = el("div", "au-card");
+    leadCard.style.marginTop = "20px";
+    panel.appendChild(leadCard);
+    buildAcLead(leadCard);
     const stopCard = el("div", "au-card");
     stopCard.style.marginTop = "20px";
     panel.appendChild(stopCard);
@@ -873,6 +877,31 @@
   // counts, not a teammate's) or "clock" (a time of day), for the running task or
   // for tasks chosen with search + Client / Status / Due filters, and what the
   // status becomes after it stops (the task's own ClickUp statuses).
+  // ---------- Auto-complete: finish a little before the estimate ----------
+  // storage autoCompleteLead { min, vary } - read by the background's auto-complete check.
+  async function buildAcLead(card) {
+    card.append(el("h2", "", "\u23F1 When auto-complete finishes a task"));
+    card.append(el("p", "sub", "A task marked to complete itself (\u23F1 Auto-complete, tick boxes, the drop box or a run in order) normally completes when its tracked time reaches its estimate. Finish it a little earlier instead, so your tasks don't all stop exactly on their estimate."));
+    const g = await chrome.storage.local.get("autoCompleteLead").catch(() => ({}));
+    const cur = (g && g.autoCompleteLead) || { min: 0, vary: false };
+    const row = el("div", "au-row");
+    const min = el("input"); min.type = "number"; min.min = "0"; min.max = "60"; min.step = "1"; min.style.width = "64px"; min.value = String(Number(cur.min) || 0);
+    const vary = el("input"); vary.type = "checkbox"; vary.id = "auAcVary"; vary.checked = !!cur.vary;
+    const vl = el("label", "", "Vary it per task (each one between half and one and a half of that, always the same for that task)"); vl.htmlFor = "auAcVary";
+    const msg = el("span", "au-st", "");
+    row.append(el("span", "", "Finish"), min, el("span", "", "minutes before the estimate (0 = at the estimate)"));
+    const row2 = el("div", "au-row"); row2.append(vary, vl, msg);
+    const hint = el("p", "sub", "Never more than a quarter of the estimate early: with 10 minutes, a 15m task still runs about 11m and a 2h task stops at 1h 50m.");
+    card.append(row, row2, hint);
+    const save = async () => {
+      const m = Math.max(0, Math.min(60, Math.round(Number(min.value) || 0)));
+      min.value = String(m);
+      await chrome.storage.local.set({ autoCompleteLead: { min: m, vary: !!vary.checked } }).catch(() => {});
+      msg.textContent = "Saved \u2713 - " + (m ? (vary.checked ? "about " : "") + m + "m before the estimate" : "at the estimate");
+    };
+    min.addEventListener("change", save);
+    vary.addEventListener("change", save);
+  }
   function buildStopAt(card) {
     const fmtD = (ms) => { const m = Math.max(0, Math.round((Number(ms) || 0) / 60000)); const h = Math.floor(m / 60); return h ? h + "h" + (m % 60 ? " " + (m % 60) + "m" : "") : m + "m"; };
     const parseD = (v) => { v = String(v || "").trim().toLowerCase(); const hm = v.match(/^(\d+):(\d{1,2})$/); if (hm) return (Number(hm[1]) * 60 + Number(hm[2])) * 60000; let ms = 0, any = false; v.replace(/(\d+(?:\.\d+)?)\s*(h|m)/g, (_, n, u) => { any = true; ms += Number(n) * (u === "h" ? 3600000 : 60000); return ""; }); if (any) return Math.round(ms); return /^\d+(\.\d+)?$/.test(v) ? Math.round(Number(v) * 60000) : 0; };
@@ -1031,6 +1060,7 @@
       const opt = (v, t) => { const o = el("option", "", t); o.value = v; thenSel.appendChild(o); };
       opt("__usual", "Usual: In progress → To do");
       opt("__keep", "Don't change the status");
+      opt("__complete", "Complete (mark the task done)"); // always there - the List's own statuses follow once a task is chosen
       const ts = targets();
       const lists = [...new Set(ts.map((t) => t.listId).filter(Boolean))];
       const missing = lists.filter((l) => !statuses[l]);
@@ -1048,7 +1078,7 @@
       for (const l of lists) { const names = (statuses[l] || []).map((x) => x.status); common = common ? common.filter((n) => names.some((m) => m.toLowerCase() === n.toLowerCase())) : names; }
       const typeOf = {};
       for (const l of lists) for (const x of statuses[l] || []) typeOf[x.status.toLowerCase()] = x.type;
-      for (const n of common || []) opt(n, n.charAt(0).toUpperCase() + n.slice(1));
+      for (const n of common || []) if (n.toLowerCase() !== "complete") opt(n, n.charAt(0).toUpperCase() + n.slice(1));
       if (![...thenSel.options].some((o) => o.value === st.then)) st.then = "__usual";
       thenSel.value = st.then;
       thenSel.onchange = () => { st.then = thenSel.value; paintSet(); };
@@ -1143,7 +1173,7 @@
       b.onclick = async () => {
         const then = st.then, typeOf = (thenSel && thenSel._typeOf) || {};
         const r = { ...rules };
-        for (const t of ts) r[t.id] = { name: t.name || "", ms: rule.ms, atMs: rule.atMs || 0, scope: rule.scope, action: "stop", daily: false, firedDay: "",
+        for (const t of ts) r[t.id] = { name: t.name || "", ms: rule.ms, atMs: rule.atMs || 0, scope: rule.scope, action: then === "__complete" ? "complete" : "stop", daily: false, firedDay: "",
           status: then.startsWith("__") ? "" : then, statusType: then.startsWith("__") ? "" : (typeOf[then.toLowerCase()] || ""), keep: then === "__keep",
           comment: st.cmtOn && st.cmtText.trim() ? { text: st.cmtText.trim().slice(0, 5000), when: st.cmtWhen, sendAt: st.cmtWhen === "at" ? st.cmtAt : 0 } : null };
         rules = r; await saveRules(r);
@@ -1198,6 +1228,7 @@
         rows: [["Without it", "tracking", "tracking", "alert: estimate reached", "keeps tracking until you stop it"],
           ["With auto-complete", "tracking", "tracking", "\u2713 stops + completes", "-", true]],
         notes: ["Turn it on: <b>\u23F1 Auto-complete</b> in the Tracking now bar (the task running now), or <b>Tick boxes</b> and tick the tasks, or start dragging a task - two drop boxes appear above the list - and drop it on <b>Complete at estimate</b>.",
+          "To finish a little earlier than the estimate (so not every task stops right on it), set <b>When auto-complete finishes a task</b> above.",
           "It works mid-tracking: turn it on any time before the estimate is reached.",
           "The task needs an estimate. A task without one gets a dimmed box."],
         go: [["/autocomplete boxes", "Show tick boxes"]] },

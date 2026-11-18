@@ -267,9 +267,14 @@
       const anchor = document.getElementById("pcmNoticeBar") || document.querySelector(".status-row");
       const header = document.querySelector(".header");
       if (anchor) anchor.before(host); else if (header) header.after(host); else return;
-      host.addEventListener("click", (e) => { const a = e.target.closest("[data-cn-open]"); if (a) { e.preventDefault(); openCard(a.dataset.cnOpen); } });
+      host.addEventListener("click", async (e) => {
+        const h = e.target.closest("[data-cn-bhide]");
+        if (h) { e.preventDefault(); dismissed[h.dataset.cnBhide] = Date.now(); try { await chrome.storage.local.set({ cnoteDismissed: dismissed }); } catch (err) {} paint(); return; }
+        const a = e.target.closest("[data-cn-open]"); if (a) { e.preventDefault(); openCard(a.dataset.cnOpen); }
+      });
     }
-    host.innerHTML = list.map((n) => { const k = kindOf(n); return '<div class="cn-bar"><span>' + k.icon + '</span><div class="tx"><b>' + esc(n.client) + ": " + esc(k.label) + (when(n) ? " " + esc(when(n)) : "") + "</b>" + esc(say(n).slice(0, 140)) + '</div><a href="#" data-cn-open="' + esc(n.id) + '">Details</a></div>'; }).join("");
+    host.innerHTML = list.map((n) => { const k = kindOf(n); return '<div class="cn-bar"><span>' + k.icon + '</span><div class="tx"><b>' + esc(n.client) + ": " + esc(k.label) + (when(n) ? " " + esc(when(n)) : "") + "</b>" + esc(say(n).slice(0, 140)) + '</div><span class="cn-bacts"><a href="#" data-cn-open="' + esc(n.id) + '">Details</a><a href="#" data-cn-bhide="' + esc(n.id) + '" title="Hide this notice on this computer (same as Got it - hide on the Dashboard)">Hide</a></span></div>'; }).join("");
+    if (!list.length) host.innerHTML = "";
   }
 
   // ---------- Chrome's built-in AI: what the notice says ----------
@@ -360,6 +365,8 @@
   .cnote-card .cn-btn, .cn-bar a { font: inherit; font-size: 11.5px; padding: 2px 9px; border-radius: 7px; border: 1px solid var(--border); background: var(--card); color: var(--text); cursor: pointer; text-decoration: none; }
   .cn-bar { display: flex; align-items: flex-start; gap: 8px; padding: 8px 10px; border-radius: 10px; margin: 0 0 10px; font-size: 12px; line-height: 1.45; border: 1px solid rgba(234, 88, 12, .45); background: rgba(234, 88, 12, .1); }
   .cn-bar .tx { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+  .cn-bar .cn-bacts { display: flex; flex-direction: column; gap: 4px; flex: none; }
+  .cn-bar .cn-bacts a { text-align: center; }
   .cn-bar b { display: block; }`;
   (document.head || document.documentElement).appendChild(css);
 

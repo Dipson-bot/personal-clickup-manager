@@ -715,6 +715,23 @@
       '<circle cx="' + size / 2 + '" cy="' + size / 2 + '" r="' + r + '" fill="none" stroke="' + ringColor(score) + '" stroke-width="' + stroke + '" stroke-linecap="round" stroke-dasharray="' + (c * p).toFixed(1) + " " + c.toFixed(1) + '" transform="rotate(-90 ' + size / 2 + " " + size / 2 + ')"/>' +
       '<text x="50%" y="50%" text-anchor="middle" dominant-baseline="central" class="rt" style="font-size:' + Math.round(size * 0.26) + 'px">' + (score == null ? "—" : Math.round(score)) + "</text></svg>";
   }
+  // How well one task's estimate held: 1 at or under it, falling to 0 at twice it.
+  const estScore = (t) => { const r = t.spentMs / t.estimateMs; return r <= 1 ? 1 : Math.max(0, 2 - r); };
+  // A finished task as the rating sees it: YOUR part. A task shared by several
+  // people counts only your own tracked time against the estimate, and its
+  // deadline by the last day YOU worked on it - someone else running over or
+  // closing it late doesn't lower your rating. One you never tracked on isn't
+  // rated for you at all.
+  function myPart(t, hist) {
+    if (!(Number(t.na) > 1) || !hist) return t;
+    const id = String(t.id);
+    const mine = Number(hist.taskMs && hist.taskMs[id]) || 0;
+    if (!mine) return null;
+    let last = 0;
+    for (const [d, m] of Object.entries(hist.byDay || {})) if (m && Number(m[id]) > 0 && Number(d) > last) last = Number(d);
+    const doneAt = last ? Math.min(t.doneAt, last + DAY - 1) : t.doneAt;
+    return { ...t, spentMs: mine, doneAt, shared: true };
+  }
   // One rating out of 100 from the parts there is data for: time tracked against
   // the working-day target (40%), deadlines met (35%), estimates that held (25%).
   function ratingParts(o) {
@@ -728,7 +745,8 @@
       const cost = o.dated.reduce((a, t) => a + (o.late(t) ? Math.min(1, Math.max(1, Math.ceil((t.doneAt - (dayStart(t.dueDateMs) + DAY)) / DAY)) / 7) : 0), 0);
       parts.push({ k: "deadlines", w: 35, s: (1 - cost / o.dated.length) * 100, label: "Deadlines met", sub: on + " of " + o.dated.length + " on time" });
     }
-    if (o.acc.length) { const sc = o.acc.reduce((a, t) => a + Math.max(0, 1 - Math.abs(t.spentMs / t.estimateMs - 1)), 0) / o.acc.length; parts.push({ k: "estimates", w: 25, s: sc * 100, label: "Estimates held", sub: plural(o.acc.length, "task") + " compared" }); }
+    // Finishing under the estimate is never a penalty - only going over it is.
+    if (o.acc.length) { const sc = o.acc.reduce((a, t) => a + estScore(t), 0) / o.acc.length; parts.push({ k: "estimates", w: 25, s: sc * 100, label: "Estimates held", sub: plural(o.acc.length, "task") + " compared" }); }
     const wsum = parts.reduce((a, p) => a + p.w, 0);
     return { parts, overall: wsum ? parts.reduce((a, p) => a + p.s * p.w, 0) / wsum : null };
   }
@@ -776,9 +794,9 @@
         if (lateOnes.length) tip = "Finish before the due date, or move the due date in time when a task is held up - a day late costs much less than a week.";
       }
       if (k === "estimates" && now) {
-        const off = o.pAcc.map((t) => ({ t, r: t.spentMs / t.estimateMs })).filter((x) => Math.abs(x.r - 1) > 0.25).sort((a, b) => Math.abs(b.r - 1) - Math.abs(a.r - 1));
-        why = off.length ? off.slice(0, 3).map((x) => "“" + x.t.name + "” took " + fmt(x.t.spentMs) + " for a " + fmt(x.t.estimateMs) + " estimate").join("; ") + (off.length > 3 ? " and " + (off.length - 3) + " more" : "") : "finished tasks came close to their estimates";
-        if (off.length) tip = off.some((x) => x.r > 1) ? "Give tasks a realistic estimate before starting, and raise it in ClickUp as soon as the work grows." : "Tasks took less than estimated - lower the estimate to what they really take.";
+        const off = o.pAcc.map((t) => ({ t, r: t.spentMs / t.estimateMs })).filter((x) => x.r > 1.05).sort((a, b) => b.r - a.r);
+        why = off.length ? off.slice(0, 3).map((x) => "“" + x.t.name + "” took " + fmt(x.t.spentMs) + (x.t.shared ? " (your part)" : "") + " for a " + fmt(x.t.estimateMs) + " estimate").join("; ") + (off.length > 3 ? " and " + (off.length - 3) + " more" : "") : "no finished task went over its estimate (finishing early is fine)";
+        if (off.length) tip = "Give tasks a realistic estimate before starting, and raise it in ClickUp as soon as the work grows.";
       }
       if (!now) why = "no finished task to rate in this period yet, " + prevName + " it was " + Math.round(was.s);
       return { k, label: (now || was).label, now, was, d, pts, why, tip };
@@ -864,7 +882,7 @@
     const onT = (xs) => xs.filter((x) => x.ms >= tMs * 0.98).length;
     const avg = (xs) => xs.length ? xs.reduce((a, x) => a + x.ms, 0) / xs.length : 0;
     // The weekly Extra Task is your own time bucket (often closed a day late): not a deadline or a deliverable.
-    const done = (perf.done || []).filter((t) => t.doneAt && !/\bextra(?:\(s\)|s)?\s+task(?:\(s\)|s)?\b/i.test(t.name || ""));
+    const done = (perf.done || []).filter((t) => t.doneAt && !/\bextra(?:\(s\)|s)?\s+task(?:\(s\)|s)?\b/i.test(t.name || "")).map((t) => myPart(t, perf)).filter(Boolean);
     const dated = done.filter((t) => t.dueDateMs > 0);
     const late = (t) => t.doneAt > dayStart(t.dueDateMs) + DAY - 1;
     const daysLate = (t) => Math.max(1, Math.ceil((t.doneAt - (dayStart(t.dueDateMs) + DAY)) / DAY));
@@ -890,7 +908,7 @@
     const byClient = new Map();
     for (const [tid, ms] of Object.entries(perf.taskMs || {})) { const c = clientOf.get(String(tid)) || "Other"; byClient.set(c, (byClient.get(c) || 0) + ms); }
     const top = [...byClient.entries()].sort((a, b) => b[1] - a[1]).slice(0, 8);
-    const hasDetail = perf.v === 2;
+    const hasDetail = perf.v >= 2;
     const needNew = '<p class="ip-meta">Task-level details arrive with the next history refresh (a few seconds).</p>';
 
     // ---- Rating rings ----
@@ -956,7 +974,7 @@
       kpi("days", rDays ? rOn + " / " + rDays : "—", "days at " + fmt(tMs) + "+ (last 4 weeks)", pastWork.length ? onT(pastWork) + " of " + pastWork.length + " over " + weeks.length + " weeks" : "", rDays ? (rOn / rDays >= 0.8 ? "good" : "warn") : "") +
       kpi("avg", fmt(avg(recent)), "average per working day (4 weeks)", weeks.length + "-week average " + fmt(avg(pastWork))) +
       kpi("deadlines", onTimePct(dRecent) == null ? "—" : onTimePct(dRecent) + "%", "deadlines met (4 weeks)", plural(dRecent.length, "finished task") + " with a due date", onTimePct(dRecent) == null ? "" : onTimePct(dRecent) >= 85 ? "good" : onTimePct(dRecent) >= 65 ? "warn" : "bad") +
-      kpi("accuracy", ratios.length ? "×" + (Math.round(medRatio * 100) / 100) : "—", "time taken vs estimate (median)", ratios.length ? (medRatio > 1.1 ? "usually more than estimated" : medRatio < 0.9 ? "usually less than estimated" : "estimates about right") + " · " + within + "% within ±25%" : "nothing to compare yet", ratios.length ? (medRatio >= 0.85 && medRatio <= 1.2 ? "good" : "warn") : "") +
+      kpi("accuracy", ratios.length ? "×" + (Math.round(medRatio * 100) / 100) : "—", "time taken vs estimate (median)", ratios.length ? (medRatio > 1.1 ? "usually more than estimated" : medRatio < 0.9 ? "usually less than estimated" : "estimates about right") + " · " + within + "% within ±25%" : "nothing to compare yet", ratios.length ? (medRatio <= 1.2 ? "good" : "warn") : "") +
       "</div>";
     if (drill && drill.card === "kpi") {
       let title = "", body = "";

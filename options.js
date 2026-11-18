@@ -952,6 +952,119 @@ $("optGoogleBtn").onclick = async () => {
   await load();
 };
 
+// Drive Sync › Sync everything with my other computers (settings.syncEverything).
+if ($("syncEverything")) {
+  const fmtWhen = (t) => new Date(t).toLocaleString([], { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" });
+  const paintSyncAll = () => chrome.storage.local.get(["settings", "syncAllStatus"]).then((g) => {
+    const on = !!(g.settings && g.settings.syncEverything), st = g.syncAllStatus, line = $("syncAllLine");
+    $("syncEverything").checked = on;
+    if (!line) return;
+    if (!on) { line.textContent = ""; return; }
+    if (!st) { line.textContent = "Starting…"; return; }
+    const moved = (Number(st.up) || 0) + (Number(st.down) || 0);
+    if (st.running) { line.textContent = "Syncing client folders…" + (moved ? " " + moved + " file" + (moved === 1 ? "" : "s") + " so far" : ""); return; }
+    if (!st.ok) { line.textContent = "⚠ " + (st.msg || "Client folders not synced."); return; }
+    const bits = ["✓ Client folders synced " + fmtWhen(st.at)];
+    if (Number(st.total)) bits.push(st.total + " files here");
+    if (st.up) bits.push(st.up + " sent");
+    if (st.down) bits.push(st.down + " received");
+    if (st.conflicts) bits.push(st.conflicts + " changed on both (kept as conflicted copy)");
+    if (st.left) bits.push(st.left + " more in a minute");
+    if (st.tooBig) bits.push(st.tooBig + " over 30 MB skipped");
+    if (st.errors) bits.push(st.errors + " couldn't be copied (" + String(st.firstError || "").slice(0, 120) + ")");
+    line.textContent = bits.join(" · ");
+  }).catch(() => {});
+  paintSyncAll();
+  chrome.storage.onChanged.addListener((ch, area) => { if (area === "local" && (ch.syncAllStatus || ch.settings)) paintSyncAll(); });
+  $("syncEverything").onchange = () => { send({ type: "SET_SETTINGS", patch: { syncEverything: $("syncEverything").checked } }).then(paintSyncAll).catch(() => {}); };
+}
+// Drive Sync › Two Google accounts: a spare Drive, and moving everything to another account.
+if ($("driveTwo")) {
+  const gb = (n) => (n == null || !isFinite(n) ? "" : n >= 1073741824 ? (n / 1073741824).toFixed(1) + " GB" : Math.round(n / 1048576) + " MB");
+  const say = (id, t) => { const el = $(id); if (el) el.textContent = t; };
+  const show = (id, on) => { const el = $(id); if (el) el.style.display = on ? "" : "none"; };
+  const paintTwo = () => chrome.storage.local.get(["driveSpare", "driveSpareShared", "driveMoveJob", "driveMovedNotice", "driveMovedFollowed", "syncAllStatus", "driveAccount", "settings"]).then((g) => {
+    const sp = g.driveSpare, shared = g.driveSpareShared && g.driveSpareShared.email, st = g.syncAllStatus || {};
+    const main = (g.driveAccount && g.driveAccount.email) || "";
+    const syncOn = !!(g.settings && g.settings.syncEverything);
+    if (sp && sp.email) {
+      const bits = ["✓ Spare: " + sp.email];
+      if (st.spareFree != null) bits.push(gb(st.spareFree) + " free there");
+      if (st.mainFree != null) bits.push(gb(st.mainFree) + " free in the main Drive");
+      if (st.mainFull) bits.push("new files are going to the spare");
+      if (!syncOn) bits.push("turn on Sync everything to use it");
+      say("spareLine", bits.join(" · "));
+      $("spareAdd").textContent = "Add a spare Google account"; show("spareAdd", false); show("spareRemove", true);
+      $("spareAdd").dataset.email = "";
+    } else if (shared && shared.toLowerCase() !== main.toLowerCase()) {
+      say("spareLine", "Your other computer uses " + shared + " as a spare Drive - connect it here too.");
+      $("spareAdd").textContent = "Connect " + shared; $("spareAdd").dataset.email = shared; show("spareAdd", true); show("spareRemove", false);
+    } else {
+      say("spareLine", main ? "No spare Drive." + (st.mainFree != null ? " " + gb(st.mainFree) + " free in your main Drive." : "") : "Sign in to Drive Sync first.");
+      $("spareAdd").textContent = "Add a spare Google account"; $("spareAdd").dataset.email = ""; show("spareAdd", true); show("spareRemove", false);
+    }
+    // The other computer moved Drive Sync.
+    const nb = $("driveMovedNotice"), mv = g.driveMovedNotice, fol = g.driveMovedFollowed;
+    if (nb) {
+      if (mv && mv.to) {
+        nb.style.display = "";
+        nb.innerHTML = "";
+        nb.append("⚠ Your other computer moved Drive Sync to " + mv.to + ". ");
+        const b = document.createElement("button"); b.type = "button"; b.textContent = "Switch this computer to " + mv.to;
+        b.onclick = async () => { b.disabled = true; b.textContent = "Signing in…"; const r = await send({ type: "DRIVE_SWITCH_TO", email: mv.to }, 120000).catch(() => null); if (!r || !r.ok) { b.disabled = false; b.textContent = "Switch this computer to " + mv.to; alert((r && r.error) || "Google sign-in didn't finish."); } await load(); paintTwo(); };
+        nb.append(b);
+      } else if (fol && fol.to && Date.now() - fol.at < 7 * 864e5) {
+        nb.style.display = ""; nb.textContent = "✓ Drive Sync followed your other computer to " + fol.to + ".";
+      } else nb.style.display = "none";
+    }
+    // The move.
+    const job = g.driveMoveJob;
+    show("moveStart", !job || /done|cancelled/.test(job.state));
+    show("moveContinue", !!(job && job.state === "paused"));
+    show("moveCancel", !!(job && /running|paused/.test(job.state)));
+    show("moveClear", !!(job && /done|cancelled/.test(job.state)));
+    if (!job) { say("moveLine", ""); return; }
+    const files = (Number(job.copied) || 0) + (Number(job.same) || 0);
+    const prog = job.total ? files + " of " + job.total + " client files" : "";
+    const fail = job.failed ? Object.keys(job.failed).length : 0;
+    let t;
+    if (job.state === "cancelled") t = "Stopped. Drive Sync still uses " + job.from + ".";
+    else if (job.state === "done") t = "✓ Moved to " + job.to + " - Drive Sync uses it now." + (job.total ? " " + files + " client files copied." : "") + (job.trashed ? " " + job.trashed + " old copies moved to " + job.from + "'s trash (empty it to free the space now)." : " To free the old Drive: delete the Personal ClickUp Manager folder there, and Google Drive settings › Manage apps › this extension › Delete hidden app data.");
+    else if (job.state === "paused") t = "⏸ Paused: " + (job.msg || "") + (prog ? " (" + prog + " so far)" : "");
+    else t = "Moving to " + job.to + "… " + (job.phase === "appdata" ? "copying settings, accounts and history" : job.phase === "files" ? "copying client folders" + (prog ? ": " + prog : "") : job.phase === "switch" ? "switching Drive Sync over" : job.phase === "trash" ? "moving the old copies to the old Drive's trash (" + (job.trashed || 0) + " so far)" : "");
+    if (fail) t += " · " + fail + " couldn't be copied (" + String(job.firstError || "").slice(0, 120) + ")";
+    say("moveLine", t);
+  }).catch(() => {});
+  paintTwo();
+  chrome.storage.onChanged.addListener((ch, area) => { if (area === "local" && (ch.driveSpare || ch.driveSpareShared || ch.driveMoveJob || ch.driveMovedNotice || ch.driveMovedFollowed || ch.syncAllStatus || ch.driveAccount)) paintTwo(); });
+  $("spareAdd").onclick = async () => {
+    const b = $("spareAdd"), email = b.dataset.email || "";
+    b.disabled = true;
+    const r = await send({ type: "DRIVE_SPARE_ADD", email }, 120000).catch(() => null);
+    b.disabled = false;
+    if (!r || !r.ok) alert((r && r.error) || "Google sign-in didn't finish.");
+    paintTwo();
+  };
+  $("spareRemove").onclick = async () => {
+    if (!confirm("Remove the spare Google Drive?\n\nFiles already in it stay there (nothing is deleted). They stop syncing, and are sent to your main Drive again when it has room - remove it on your other computer too.")) return;
+    await send({ type: "DRIVE_SPARE_REMOVE" }).catch(() => {});
+    paintTwo();
+  };
+  $("moveStart").onclick = async () => {
+    const trashOld = $("moveTrashOld").checked;
+    const ok = confirm("Move everything to another Google account?\n\nNext, Google asks which account to move to. Everything this extension keeps in your current Drive is copied there (anything it saved in that account before is replaced), then Drive Sync switches to it. Nothing on this computer changes." +
+      (trashOld ? "\n\nAfterwards, the old client-folder copies are moved to the OLD Drive's trash (you can restore them from the trash for 30 days)." : "\n\nThe old Drive keeps its copies until you delete them."));
+    if (!ok) return;
+    const b = $("moveStart"); b.disabled = true;
+    const r = await send({ type: "DRIVE_MOVE_START", trashOld }, 180000).catch(() => null);
+    b.disabled = false;
+    if (!r || !r.ok) alert((r && r.error) || "Google sign-in didn't finish.");
+    paintTwo();
+  };
+  $("moveContinue").onclick = async () => { const r = await send({ type: "DRIVE_MOVE_CONTINUE" }, 180000).catch(() => null); if (!r || !r.ok) alert((r && r.error) || "Couldn't continue."); paintTwo(); };
+  $("moveCancel").onclick = async () => { if (!confirm("Stop the move?\n\nDrive Sync keeps using your current account; copies already made stay in the new Drive.")) return; await send({ type: "DRIVE_MOVE_CANCEL" }).catch(() => {}); paintTwo(); };
+  $("moveClear").onclick = async () => { await send({ type: "DRIVE_MOVE_CLEAR" }).catch(() => {}); paintTwo(); };
+}
 $("optSyncNow").onclick = async () => {
   optDriveBusy = "sync";
   renderDriveSync(optLastState || {});
@@ -10016,7 +10129,7 @@ let smKickNote = ""; // why an automatic catch-up check didn't start, shown in t
 // comes in, and the page redraws (not while you're typing in or editing a row).
 let smLiveT = 0;
 chrome.storage.onChanged.addListener((ch, area) => {
-  if (area !== "local" || !(ch.siteMonitorState || ch.siteMonitorChecking || ch.sitePhp || ch.wpPhpRelay || ch.wpPhpProgress || ch.smMineOnly)) return;
+  if (area !== "local" || !(ch.siteMonitorState || ch.siteMonitorChecking || ch.sitePhp || ch.wpPhpRelay || ch.wpPhpProgress || ch.smMineOnly || ch.siteHosting)) return;
   clearTimeout(smLiveT);
   smLiveT = setTimeout(async () => {
     const box = $("siteMonitorStatus");
@@ -10131,7 +10244,7 @@ function renderSiteMonitorStatus(cfg) {
     return;
   }
   // Background replies { ok, state } - read the state object, not the wrapper.
-  Promise.all([send({ type: "GET_SITE_MONITOR_STATE" }), chrome.storage.local.get(["siteSnooze", "siteOff", "siteMonitorChecking", "sitePhp", "wpPhpRelay", "wpPhpProgress", "phpSheetUrl", "smMineOnly"]).catch(() => ({})),
+  Promise.all([send({ type: "GET_SITE_MONITOR_STATE" }), chrome.storage.local.get(["siteSnooze", "siteOff", "siteMonitorChecking", "sitePhp", "wpPhpRelay", "wpPhpProgress", "phpSheetUrl", "smMineOnly", "siteHosting"]).catch(() => ({})),
     window.PcmMyClients ? window.PcmMyClients().catch(() => []) : Promise.resolve([])]).then(([resp, sg, mineNames]) => {
     // Only my clients (the Clients tab's list): just their sites are shown, counted
     // and checked (the background skips the rest too); the others stay saved.
@@ -10187,7 +10300,16 @@ function renderSiteMonitorStatus(cfg) {
       const wpNo = pRec && !pRec.php && pRec.wpErr ? " (WordPress: " + pRec.wpErr + ")" : "";
       const phpTxt = isOff ? "" : ' · <span class="sm-php ' + pz.k + '" title="' + escapeHtml((pz.tip ? pz.tip + " " : "") + wpNo + " " + PHP2SHELL_TIP + (pRec && pRec.at ? (pRec.src === "sheet" ? " From the team sheet, " : pRec.src === "wp" ? " From WordPress Site Health, " : " Seen in the server's reply, ") + new Date(pRec.at).toLocaleString() + "." : " Not read yet - it's noted at the next check.")) + '">' + escapeHtml((pRec ? pz.text : "PHP version not read yet") + (pz.k === "hidden" && phpWhyNot(pRec || {}) ? " - " + phpWhyNot(pRec || {}) : "")) + "</span>";
       const u = escapeHtml(s.url);
-      return '<div class="imp-row" data-sm-row="' + u + '"><div class="imp-entry"><b>' + label + '</b><br><span class="hint">' + statusText + speed + phpTxt + " · last check: " + lastCheckText + (st.fails && st.up !== false ? " · " + st.fails + " failed check(s)" : "") + why + snoozeTxt + "</span></div>"
+      // 🖥 Hosting: who hosts it and its control panel (background hostingDetect, or set by hand).
+      const hz = ((sg && sg.siteHosting) || {})[s.url];
+      const hzName = hz && hz.provider ? hz.provider + (hz.install ? " \u00b7 " + hz.install : hz.server && !hz.panel ? " \u00b7 " + hz.server : "") : "";
+      const hzTip = hz ? (hz.src === "you" ? "Set by you. " : "Found from the domain's DNS" + (hz.server ? " (server " + hz.server + ")" : "") + ". ") + (hz.panel ? "Opens " + hz.panel : "") : "";
+      const hostTxt = ' \u00b7 <span class="sm-host">\uD83D\uDDA5 ' + (!hz ? '<span class="hint">hosting not looked up yet</span>'
+        : hz.provider && hz.panel ? '<a href="' + escapeHtml(hz.panel) + '" target="_blank" rel="noopener" title="' + escapeHtml(hzTip) + '">' + escapeHtml(hzName) + "</a>"
+        : hz.provider ? '<span title="' + escapeHtml(hzTip) + '">' + escapeHtml(hzName) + "</span>"
+        : '<span class="hint" title="' + escapeHtml(hz.cf ? "Cloudflare sits in front of this site and hides the real server. Set the hosting link yourself with the pencil." : "Nothing in the domain's DNS names a known host" + (hz.server ? " (server " + hz.server + ")" : "") + ". Set the hosting link yourself with the pencil.") + '">' + (hz.cf ? "hosting hidden (Cloudflare)" : "hosting unknown" + (hz.server ? " \u00b7 " + escapeHtml(hz.server) : "")) + "</span>")
+        + ' <button type="button" class="sm-hostedit" data-sm-host="' + u + '" data-sm-panel="' + escapeHtml((hz && hz.panel) || "") + '" title="Set the hosting link yourself (e.g. the cPanel or WP Engine address)">\u270E</button></span>';
+      return '<div class="imp-row" data-sm-row="' + u + '"><div class="imp-entry"><b>' + label + '</b><br><span class="hint">' + statusText + speed + phpTxt + hostTxt + " · last check: " + lastCheckText + (st.fails && st.up !== false ? " · " + st.fails + " failed check(s)" : "") + why + snoozeTxt + "</span></div>"
         + '<div class="sm-acts"><label class="sm-on" title="Untick to stop checking this site (and its alerts) - whether or not the client is with us. Tick it again to start."><input type="checkbox" data-sm-on="' + u + '"' + (isOff ? "" : " checked") + " /> Monitor</label>"
         + '<button type="button" class="sm-check" data-sm-url="' + u + '" title="Check this site right now"' + (isOff ? " disabled" : "") + ">Check</button>"
         + '<button type="button" class="sm-check sm-wp1" data-sm-wp="' + u + '" title="Read this site\'s PHP version from its WordPress Site Health page (a WordPress sign-in already in Chrome - this profile or your WordPress profile)"' + (isOff ? " disabled" : "") + ">\uD83D\uDD11</button>"
@@ -10221,7 +10343,7 @@ function renderSiteMonitorStatus(cfg) {
       '<div><button type="button" class="sm-act" data-sm-phpsave="1">Use these versions</button> <span class="hint" data-sm-phpmsg></span></div></div>' +
       '<div class="hint sm-wpmsg" data-sm-wpmsg>' + wpStatusText(sg && sg.wpPhpRelay, sg && sg.wpPhpProgress) + "</div></div>" : "";
     const mineBox = mineCount ? '<label class="sm-mine" title="Show, count and check only the sites of the clients on your Clients tab (from your tasks). The other sites stay saved; untick to see and check them again."><input type="checkbox" data-sm-mine="1"' + (mineOnly ? " checked" : "") + " /> Only my clients (" + mineCount + ")</label>" + (mineOnly ? ' <span class="hint">' + (cfg.sites.length - mineCount) + " other site" + (cfg.sites.length - mineCount === 1 ? "" : "s") + " not shown or checked</span>" : "") : "";
-    el.innerHTML = '<div class="sm-headrow"><div class="cu-subhead">Current status</div>' + mineBox + '<button type="button" class="sm-act" data-sm-add="1">+ Add site</button></div>' + banner + phpBox + '<div id="smBlankLine" class="hint"></div><div id="smAddSlot"></div>' + rows;
+    el.innerHTML = '<div class="sm-headrow"><div class="cu-subhead">Current status</div>' + mineBox + '<button type="button" class="sm-act" data-sm-hostfind="1" title="Look up who hosts each site and the link to its control panel, from each domain\'s DNS (nothing is asked of the sites themselves). Links you set by hand are kept.">\uD83D\uDDA5 Find hosting</button><button type="button" class="sm-act" data-sm-add="1">+ Add site</button></div>' + banner + phpBox + '<div id="smBlankLine" class="hint"></div><div id="smAddSlot"></div>' + rows;
     const mb = el.querySelector("[data-sm-mine]");
     if (mb) mb.onchange = async () => { await chrome.storage.local.set({ smMineOnly: mb.checked }); renderSiteMonitorStatus(cfg); };
     const pp = el.querySelector("[data-sm-phppaste]"), pbox = el.querySelector(".sm-phppaste");
@@ -10425,6 +10547,34 @@ if ($("siteMonitorStatus")) $("siteMonitorStatus").addEventListener("click", asy
   if (un) { smSetSnooze(un.dataset.smUnsnooze, 0); return; }
   const chk = t.closest(".sm-check");
   if (chk && !chk.disabled) { smCheckNow(chk.dataset.smUrl, chk); return; }
+  const hf = t.closest("[data-sm-hostfind]");
+  if (hf) {
+    hf.disabled = true; hf.textContent = "Finding hosting\u2026";
+    const r = await send({ type: "SITE_HOSTING_FIND" }).catch(() => null);
+    hf.textContent = r && r.ok ? "\u2713 Looked up " + r.n + " site" + (r.n === 1 ? "" : "s") : "Couldn't: " + ((r && r.error) || "no answer");
+    setTimeout(async () => renderSiteMonitorStatus(await getSiteMonitorConfigOpt()), 1500);
+    return;
+  }
+  const he = t.closest("[data-sm-host]");
+  if (he) {
+    const span = he.closest(".sm-host");
+    if (!span || span.querySelector("input")) return;
+    span.classList.add("sm-editing");
+    const url = he.dataset.smHost;
+    span.innerHTML = '\uD83D\uDDA5 <input type="url" class="sm-hostin" placeholder="Control panel address, e.g. https://server.example.com:2083/" /> <button type="button" class="sm-act" data-sm-hostsave="1">Save</button> <button type="button" class="sm-act" data-sm-hostauto="1" title="Forget your link and look it up again">Automatic</button> <button type="button" class="sm-act" data-sm-hostcancel="1">Cancel</button> <span class="hint" data-sm-hostmsg></span>';
+    const inp = span.querySelector("input"); inp.value = he.dataset.smPanel || ""; inp.focus(); inp.select();
+    const done = async () => renderSiteMonitorStatus(await getSiteMonitorConfigOpt());
+    const save = async (panel) => {
+      const msg = span.querySelector("[data-sm-hostmsg]"); msg.textContent = panel ? "Saving\u2026" : "Looking it up\u2026";
+      const r = await send({ type: "SITE_HOSTING_SET", url, panel }).catch(() => null);
+      if (r && r.ok) { span.classList.remove("sm-editing"); done(); } else msg.textContent = "Couldn't: " + ((r && r.error) || "no answer");
+    };
+    span.querySelector("[data-sm-hostsave]").onclick = () => save(inp.value.trim());
+    span.querySelector("[data-sm-hostauto]").onclick = () => save("");
+    span.querySelector("[data-sm-hostcancel]").onclick = () => { span.classList.remove("sm-editing"); done(); };
+    inp.addEventListener("keydown", (ev) => { if (ev.key === "Enter") save(inp.value.trim()); if (ev.key === "Escape") { span.classList.remove("sm-editing"); done(); } });
+    return;
+  }
   const add = t.closest("[data-sm-add]");
   if (add) {
     const slot = $("smAddSlot");
@@ -11089,7 +11239,7 @@ const ADMIN_FILES = [
   "manifest.json", "background.js", "popup.html", "popup.js", "options.html", "options.js", "phone-timer.js",
   "offscreen.html", "offscreen.js", "update.html", "update.js", "auto-update.html", "auto-update.js", "wrapup.html", "wrapup.js",
   "notify-menu.js", "export-tasks.js", "lib-zip.js", "lib-unzip.js", "lib-automation.js",
-  "lib-availability.js", "lib-clickup.js", "lib-crypto.js", "lib-tidy.js", "lib-drive.js", "lib-descfmt.js", "desc-check.js", "plain-timer.js", "find-many.js", "week-fold.js", "ar-status.js", "automation.js", "lib-rules.js", "nav-badges.js", "simple-view.js", "task-panel.js", "lib-updater.js", "offscreen-updater.js", "celebrate.js", "celebrate.html", "celebrate-window.js", "fx.js", "pcm-help.js", "tracker.html", "tracker.js", "bulk-edit.js", "pcm-search.js", "lib-taskfiles.js", "task-files.js", "reminders.js", "hub.js", "task-sort.js", "breakdown.js", "calendar.js", "notices.js", "insights-plus.js", "header-ui.js", "weather.js", "paused-clients.js", "client-notices.js", "lib-dailyupdate.js", "undo.js", "share.html", "plan-apply.js", "task-notes.js", "task-dupes.js", "rollup-help.js", "md-notes.js", "mention.js", "long-list.js", "local-tasks.js", "ui-extras.js", "assignees.js", "add-time.js", "team-hub.gs", "vendor/pdf.min.js", "vendor/pdf.worker.min.js", "vendor/pdfjs-LICENSE.txt",
+  "lib-availability.js", "lib-clickup.js", "lib-crypto.js", "lib-tidy.js", "lib-drive.js", "lib-syncall.js", "lib-drivemove.js", "lib-descfmt.js", "desc-check.js", "plain-timer.js", "find-many.js", "week-fold.js", "ar-status.js", "automation.js", "lib-rules.js", "nav-badges.js", "simple-view.js", "task-panel.js", "lib-updater.js", "offscreen-updater.js", "celebrate.js", "celebrate.html", "celebrate-window.js", "fx.js", "pcm-help.js", "tracker.html", "tracker.js", "bulk-edit.js", "pcm-search.js", "lib-taskfiles.js", "task-files.js", "reminders.js", "hub.js", "task-sort.js", "breakdown.js", "calendar.js", "notices.js", "insights-plus.js", "header-ui.js", "weather.js", "paused-clients.js", "client-notices.js", "lib-dailyupdate.js", "undo.js", "share.html", "plan-apply.js", "task-notes.js", "task-dupes.js", "rollup-help.js", "md-notes.js", "mention.js", "long-list.js", "local-tasks.js", "ui-extras.js", "assignees.js", "add-time.js", "team-hub.gs", "vendor/pdf.min.js", "vendor/pdf.worker.min.js", "vendor/pdfjs-LICENSE.txt",
   "icons/icon16.png", "icons/icon48.png", "icons/icon128.png", "icons/celebrate.png", "icons/sad.png",
   "sounds/notify.wav", "sounds/danger.mp3", "sounds/winner.wav",
   "README.md", "CHANGELOG.md",
@@ -11490,6 +11640,16 @@ function applyArVisibility(st) {
   if (!arVisible(st) && document.querySelector('.panel.on[data-panel="agent"]') && typeof showOptTab === "function") showOptTab("dashboard");
 }
 
+// Slack: copy one-time codes from DMs (settings.slackOtpCopy, off by default).
+if ($("slackOtpCopy")) {
+  const otpMsg = () => chrome.storage.local.get(["otpWatch", "slackSession"]).then((g) => {
+    const m = $("slackOtpMsg"); if (!m) return;
+    m.textContent = !$("slackOtpCopy").checked ? "" : !(g.slackSession && g.slackSession.token) ? "- connect Slack first (Clients › Slack channels › Connect)" : g.otpWatch && g.otpWatch.err ? "- " + g.otpWatch.err : "- watching your DMs";
+  }).catch(() => {});
+  chrome.storage.local.get("settings").then((g) => { $("slackOtpCopy").checked = !!(g && g.settings && g.settings.slackOtpCopy); otpMsg(); }).catch(() => {});
+  $("slackOtpCopy").onchange = () => { send({ type: "SET_SETTINGS", patch: { slackOtpCopy: $("slackOtpCopy").checked } }).then(otpMsg).catch(() => {}); };
+  chrome.storage.onChanged.addListener((ch, area) => { if (area === "local" && (ch.otpWatch || ch.slackSession)) otpMsg(); });
+}
 // Slack: @channel / @here in the tagged lists on / off (settings.slackTagChannel).
 if ($("slackTagChannel")) {
   chrome.storage.local.get("settings").then((g) => { $("slackTagChannel").checked = !(g && g.settings && g.settings.slackTagChannel === false); }).catch(() => {});
@@ -11794,7 +11954,7 @@ if ($("admCalCard")) {
 // Where the timer shows (Floating window / Taskbar / Both / Neither) is picked once
 // and kept; the Dashboard card invites people to try the taskbar until they pick.
 const DESK_REL = "https://github.com/Dipson-bot/personal-clickup-manager/releases";
-const DESK_TAG = "desktop-v0.4.5";
+const DESK_TAG = "desktop-v0.4.6";
 let deskOs = "";
 async function deskPlatform() {
   if (deskOs) return deskOs;

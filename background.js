@@ -25,7 +25,13 @@ import {
   pullTaskFiles,
   driveQuota,
   linkifySheet,
+  accountToken,
+  adoptDriveAccount,
+  SCOPE_APPDATA,
+  SCOPE_DRIVE_FILE,
+  SCOPE_BOTH,
 } from "./lib-drive.js";
+import { driveFree, newMoveJob, moveStep, remapSyncState, readMoved, writeMoved } from "./lib-drivemove.js"; // two Google accounts in Drive Sync
 import { runAllAccounts, runAccountLogin, readAgentRouterLogin, URLS, GITHUB_KEEP_COOKIES } from "./lib-automation.js";
 import { getCommentRepliesLite, getTaskShareInfo, getTaskHoldInfo, fetchArchivedMine, unarchiveTask, getLatestCommentBy, getTaskCommentsLite, getTaskTimeEntries, deleteTimeEntry, getUserGroups, getUser, verifyToken, getTeams, fetchTodayEstimate, fetchWeeklySummary, fetchDateRangeEstimate, createTaskCache, fetchTeamMembers, fetchWorkspaceTags, cuTagNames, fmtDuration, findExtraTaskByName, parseTaskIdFromUrl, getCurrentTimeEntry, getRunningTaskProgress, startTimer, stopTimer, getTaskById, setTaskStatus, setTaskDates, taskUrlFor, clientLabelFromContainer, resolveSpaceNamesFor, taskContainer, cuPriorityName, isTaskDone, getSubtasksOfParent, getTaskTree, getTaskDetail, updateTimeEntry, setTaskDueDate, clearTaskTreeCache, listWorkspaceClients, cuRowAssignees, fetchDoneBetween, fetchDoneLite, fetchTrackedHistory, getTaskPanel, addTaskComment, postTaskComment, setTaskDescription, getTaskCommentLinks, getTaskCommentsFull, getListStatuses, createTask, relateTasks, removeTaskAssignee, addTaskAssignee, postAssignedComment, addTimeEntry, weeklyWithToday, listClientFieldOptions, listReachableClients, bgToken, patientToken, cuRawFetch, getRelatedTasks, slimIndexTask, fetchTeamTasksPage, listAllLists, setPausedClients, setExtraEvenSplit } from "./lib-clickup.js";
 import { resolveRelayKey, pickProbeModel, probeRelay } from "./lib-availability.js";
@@ -33,6 +39,7 @@ import { tidyCollect, tidyLines, tidyResolved, tidyDayOk, tidyUrgent, tidyDateSh
 import "./lib-rules.js"; // globalThis.PcmRules - the Automation tab's rule blocks
 import "./lib-dailyupdate.js"; // globalThis.PcmDailyUpdate - the Daily Tasks Update text (wrap-up page + scheduled send)
 import "./lib-descfmt.js"; // globalThis.PcmDescFmt - Insights > Descriptions (closing fields check)
+import { syncClientFolders } from "./lib-syncall.js"; // Drive Sync › Sync everything: client folders both ways
 
 // ---- Helper only ----
 // A Chrome profile ticked as "signed in to the clients' WordPress" (Site monitor)
@@ -374,7 +381,24 @@ function syncTaskFiles() {
     const tok = await getValidToken(false).catch(() => null);
     if (!tok) return { ok: false, reason: "signed-out" };
     const local = await tfAll();
-    const { taskFilesChangedAt = 0, taskFilesPushedAt = 0 } = await chrome.storage.local.get(["taskFilesChangedAt", "taskFilesPushedAt"]);
+    const { taskFilesChangedAt = 0, taskFilesPushedAt = 0, taskFilesGone } = await chrome.storage.local.get(["taskFilesChangedAt", "taskFilesPushedAt", "taskFilesGone"]);
+    // Sync everything: both ways - files saved on the other computer come here
+    // (not ones deleted here), and Drive keeps every file from both.
+    if (settings.syncEverything) {
+      const remote = await pullTaskFiles(tok).catch(() => null);
+      const recs = remote && Array.isArray(remote.files) ? remote.files.filter((r) => r && r.id && r.ck) : [];
+      const have = new Set(local.map((r) => r.id)), gone = new Set(Array.isArray(taskFilesGone) ? taskFilesGone : []);
+      const add = recs.filter((r) => !have.has(r.id) && !gone.has(r.id));
+      if (add.length) await tfPutMany(add);
+      const mine = local.map(({ blob, ...rest }) => rest);
+      const ids = new Set(mine.map((r) => r.id));
+      const union = [...mine, ...recs.filter((r) => !ids.has(r.id))];
+      if (add.length || union.length !== recs.length || taskFilesChangedAt > taskFilesPushedAt) {
+        await pushTaskFiles(tok, { v: 1, at: Date.now(), files: union });
+        await chrome.storage.local.set({ taskFilesPushedAt: Date.now() });
+      }
+      return { ok: true, merged: add.length, total: union.length };
+    }
     // Restore only on a computer that has never changed its Task files (a new
     // install / second computer) - if the user deleted them all here, the empty
     // list is pushed instead, so deleted files don't come back.
@@ -1028,6 +1052,136 @@ async function checkOneSite(url, timeoutMs = SITE_MONITOR_CHECK_TIMEOUT_MS, plai
   }
 }
 
+// ---------- Hosting provider per site (Site monitor › 🖥 Hosting) ----------
+// Who hosts each client site and the link to its control panel (WP Engine
+// install, the InMotion cPanel on its own server name, Kinsta...). Found WITHOUT
+// asking the client's server anything extra: the domain's DNS (CNAME, and the
+// server's own name from reverse DNS) through Google's public DNS, plus what the
+// regular 5-minute check already received (headers, a WP Engine address in the
+// page). Behind Cloudflare the real server is hidden: then it says so and the
+// link can be set by hand (✎). Storage siteHosting { [url]: { provider, panel,
+// server, install, cf, src "auto"|"you", at } } - kept in Drive Sync.
+// [pattern on a DNS / server name, provider, panel link (from the matched name)]
+const HOSTING_TABLE = [
+  [/(?:^|\.)wpengine(?:powered)?\.com$/i, "WP Engine", () => "https://my.wpengine.com/"],
+  [/(?:^|\.)inmotionhosting\.com$|(?:^|\.)servconfig\.com$/i, "InMotion Hosting", (n) => (/^[a-z0-9-]+\.(?:inmotionhosting|servconfig)\.com$/i.test(n) ? "https://" + n + ":2083/" : "https://amp.inmotionhosting.com/")],
+  [/(?:^|\.)kinsta\.(?:cloud|com)$/i, "Kinsta", () => "https://my.kinsta.com/"],
+  [/(?:^|\.)(?:siteground\.[a-z.]+|sgvps\.net|sgcpanel\.com|sgsrv\d*\.com)$/i, "SiteGround", () => "https://my.siteground.com/"],
+  [/(?:^|\.)cloudwaysapps\.com$|(?:^|\.)cloudways\.com$/i, "Cloudways", () => "https://platform.cloudways.com/"],
+  [/(?:^|\.)(?:flywheelsites|flywheelstaging|getflywheel)\.com$/i, "Flywheel", () => "https://app.getflywheel.com/"],
+  [/(?:^|\.)(?:pantheonsite\.io|pantheon\.io)$/i, "Pantheon", () => "https://dashboard.pantheon.io/"],
+  [/(?:^|\.)bluehost\.com$/i, "Bluehost", () => "https://my.bluehost.com/"],
+  [/(?:^|\.)(?:hostgator\.com|websitewelcome\.com)$/i, "HostGator", () => "https://portal.hostgator.com/"],
+  [/(?:^|\.)a2hosting\.com$/i, "A2 Hosting", () => "https://my.a2hosting.com/"],
+  [/(?:^|\.)(?:hstgr\.(?:io|cloud)|hostinger\.[a-z.]+)$/i, "Hostinger", () => "https://hpanel.hostinger.com/"],
+  [/(?:^|\.)(?:web-hosting\.com|namecheaphosting\.com)$/i, "Namecheap", () => "https://ap.www.namecheap.com/"],
+  [/(?:^|\.)(?:secureserver\.net|godaddysites\.com|myftpupload\.com)$/i, "GoDaddy", () => "https://account.godaddy.com/products"],
+  [/(?:^|\.)dreamhost(?:ps)?\.com$/i, "DreamHost", () => "https://panel.dreamhost.com/"],
+  [/(?:^|\.)liquidweb\.com$|(?:^|\.)nexcess\.net$/i, "Liquid Web / Nexcess", () => "https://my.liquidweb.com/"],
+  [/(?:^|\.)greengeeks\.(?:com|net)$/i, "GreenGeeks", () => "https://my.greengeeks.com/"],
+  [/(?:^|\.)(?:wpx\.net|wpxhosting\.com)$/i, "WPX", () => "https://wpx.net/my-account/"],
+  [/(?:^|\.)rocket\.net$|(?:^|\.)onrocket\.site$/i, "Rocket.net", () => "https://control.rocket.net/"],
+  [/(?:^|\.)(?:wordpress\.com|wpcomstaging\.com)$/i, "WordPress.com", () => "https://wordpress.com/sites"],
+  [/(?:^|\.)myshopify\.com$|(?:^|\.)shops\.myshopify\.com$/i, "Shopify", () => "https://admin.shopify.com/"],
+  [/(?:^|\.)(?:wixdns\.net|wix\.com|wixsite\.com)$/i, "Wix", () => "https://manage.wix.com/"],
+  [/(?:^|\.)squarespace\.com$/i, "Squarespace", () => "https://account.squarespace.com/"],
+  [/(?:^|\.)(?:webflow\.io|proxy-ssl\.webflow\.com|webflow\.com)$/i, "Webflow", () => "https://webflow.com/dashboard"],
+  [/(?:^|\.)(?:netlify\.app|netlify\.com)$/i, "Netlify", () => "https://app.netlify.com/"],
+  [/(?:^|\.)(?:vercel-dns\.com|vercel\.app)$/i, "Vercel", () => "https://vercel.com/dashboard"],
+  [/(?:^|\.)(?:amazonaws\.com|awsglobalaccelerator\.com|lightsail\.aws)$/i, "Amazon Web Services", () => "https://console.aws.amazon.com/"],
+  [/(?:^|\.)(?:googleusercontent\.com|bc\.googleusercontent\.com)$/i, "Google Cloud", () => "https://console.cloud.google.com/"],
+  [/(?:^|\.)(?:linodeusercontent\.com|members\.linode\.com|akamaitechnologies\.com)$/i, "Linode / Akamai", () => "https://cloud.linode.com/"],
+  [/(?:^|\.)(?:vultrusercontent\.com|vultr\.com)$/i, "Vultr", () => "https://my.vultr.com/"],
+  [/(?:^|\.)(?:contaboserver\.net)$/i, "Contabo", () => "https://my.contabo.com/"],
+  [/(?:^|\.)(?:your-server\.de|hetzner\.(?:com|de|cloud))$/i, "Hetzner", () => "https://accounts.hetzner.com/"],
+  [/(?:^|\.)(?:ovh\.net|ovh\.com|ip-[\d-]+\.eu)$/i, "OVHcloud", () => "https://www.ovh.com/manager/"],
+];
+// What the regular check's reply says about the host (no extra request).
+function hostingFromReply(res, html) {
+  const h = (k) => String((res && res.headers && res.headers.get(k)) || "");
+  const out = { cf: /cloudflare/i.test(h("server")) || !!h("cf-ray") };
+  if (/wp ?engine/i.test(h("x-powered-by")) || h("wpe-backend") || h("x-wpe-loopback-upstream-addr")) out.provider = "WP Engine";
+  else if (h("x-kinsta-cache") || /kinsta/i.test(h("server"))) out.provider = "Kinsta";
+  else if (h("x-pantheon-styx-hostname")) out.provider = "Pantheon";
+  else if (h("x-flywheel-cache") || /flywheel/i.test(h("server"))) out.provider = "Flywheel";
+  else if (/hostinger/i.test(h("platform") + h("server") + h("x-powered-by"))) out.provider = "Hostinger";
+  else if (h("x-sg-cache") || h("x-siteground-optimizer") || h("host-header") === "6b7412fb82ca5edfd0917e3957f05d89") out.provider = "SiteGround";
+  else if (h("x-nf-request-id")) out.provider = "Netlify";
+  else if (h("x-vercel-id")) out.provider = "Vercel";
+  // A WP Engine install name in the page: <install>.wpengine.com / .wpenginepowered.com.
+  const m = [...String(html || "").slice(0, 400000).matchAll(/\b([a-z0-9][a-z0-9-]{1,40})\.wpengine(?:powered)?\.com\b/gi)].map((x) => x[1].toLowerCase()).filter((x) => !/^(?:www|wp|my|sni|cdn|cdn\d*|api|origin|secure|ssl)$/.test(x));
+  if (m.length) { out.install = m[0]; out.provider = out.provider || "WP Engine"; }
+  return out;
+}
+async function dnsAsk(name, type) {
+  try {
+    const r = await fetch("https://dns.google/resolve?name=" + encodeURIComponent(name) + "&type=" + type, { cache: "no-store" });
+    const j = r.ok ? await r.json() : null;
+    // Answers, then the Authority section (marked auth) - e.g. who runs an IP's reverse zone.
+    const one = (a, auth) => ({ type: Number(a.type), data: String(a.data || "").replace(/\.$/, "").toLowerCase(), auth });
+    return [...((j && j.Answer) || []).map((a) => one(a, false)), ...((j && j.Authority) || []).map((a) => one(a, true))];
+  } catch (e) { return []; }
+}
+function hostingMatch(name) {
+  const n = String(name || "").toLowerCase().replace(/\.$/, "");
+  for (const [re, provider, panel] of HOSTING_TABLE) if (re.test(n)) return { provider, panel: panel(n) };
+  return null;
+}
+async function hostingDetect(url, reply) {
+  let host = "";
+  try { host = new URL(url).hostname.toLowerCase(); } catch (e) { return null; }
+  const apex = host.replace(/^www\./, "");
+  const names = [];
+  // CNAMEs of the address and of www (e.g. example.wpengine.com).
+  for (const n of [...new Set([host, "www." + apex])]) for (const a of await dnsAsk(n, "CNAME")) if (a.type === 5) names.push(a.data);
+  // The server's own name from its IP (e.g. server123.inmotionhosting.com).
+  const ips = (await dnsAsk(host, "A")).filter((a) => a.type === 1).map((a) => a.data);
+  let server = "", zoneOwner = "";
+  if (ips[0]) {
+    const ptr = await dnsAsk(ips[0].split(".").reverse().join(".") + ".in-addr.arpa", "PTR");
+    server = (ptr.find((a) => a.type === 12 && !a.auth) || {}).data || "";
+    if (server) names.push(server);
+    // No name on this IP: whoever runs its address block's reverse zone (its SOA,
+    // e.g. ns.inmotionhosting.com) still says who the host is - not which server.
+    else zoneOwner = ((ptr.find((a) => a.type === 6 && a.auth) || {}).data || "").split(/\s+/)[0].replace(/\.$/, "");
+  }
+  const rp = reply || {};
+  const out = { provider: "", panel: "", server, install: "", cf: !!rp.cf, src: "auto", at: Date.now() };
+  for (const n of names) { const m = hostingMatch(n); if (m) { out.provider = m.provider; out.panel = m.panel; break; } }
+  // Known only from the reverse zone: the host's own account panel (its server isn't known).
+  if (!out.provider && zoneOwner) { const t = HOSTING_TABLE.find((x) => x[0].test(zoneOwner)); if (t) { out.provider = t[1]; out.panel = t[2](""); out.server = ""; out.zone = zoneOwner; } }
+  if (!out.provider && rp.provider) { const m = HOSTING_TABLE.find((x) => x[1] === rp.provider); out.provider = rp.provider; out.panel = m ? m[2]("") : ""; }
+  // WP Engine: the install from the CNAME label, else from the page.
+  if (out.provider === "WP Engine") {
+    const lab = names.map((n) => (n.match(/^([a-z0-9-]+)\.wpengine(?:powered)?\.com$/) || [])[1]).find((x) => x && !/^(?:wp|sni|www|cdn\d*|origin)$/.test(x));
+    out.install = lab || rp.install || "";
+    out.panel = out.install ? "https://my.wpengine.com/installs/" + out.install : "https://my.wpengine.com/";
+  }
+  // Cloudflare in front and nothing else known: its IPs hide the real server.
+  if (!out.provider && (rp.cf || /cloudflare/i.test(server))) { out.cf = true; out.server = ""; }
+  return out;
+}
+async function hostingSaveMany(map) {
+  const cur = (await chrome.storage.local.get("siteHosting")).siteHosting || {};
+  for (const [u, v] of Object.entries(map)) if (!(cur[u] && cur[u].src === "you")) cur[u] = v; // never over a link set by hand
+  await chrome.storage.local.set({ siteHosting: cur });
+}
+const siteHostingSeen = new Map(); // url -> what the last check's reply said
+async function hostingFill(urls, force) {
+  const cur = (await chrome.storage.local.get("siteHosting")).siteHosting || {};
+  const out = {};
+  let n = 0;
+  for (const u of urls) {
+    const c = cur[u];
+    if (c && c.src === "you") continue;
+    if (!force && c && Date.now() - (Number(c.at) || 0) < 30 * 86400000) continue;
+    const d = await hostingDetect(u, siteHostingSeen.get(u)).catch(() => null);
+    if (d) { out[u] = d; n++; }
+    await new Promise((r) => setTimeout(r, 400)); // gentle on the DNS service
+  }
+  if (n) await hostingSaveMany(out);
+  return out;
+}
 // The PHP version a site's server states in its reply headers ("X-Powered-By:
 // PHP/8.1.27", or in "Server"), noted during the normal check - no extra request.
 // "" when it doesn't say (many hosts hide it). Saved per site (storage sitePhp)
@@ -1073,6 +1227,7 @@ async function readOneSite(url, timeoutMs, confirming = false) {
   try {
     const html = await res.text();
     try { sitePhpSeen.set(url, phpFromHeaders(res, html)); } catch (e) {}
+    try { siteHostingSeen.set(url, hostingFromReply(res, html)); } catch (e) {}
     clearTimeout(timer);
     const ms = Date.now() - t0;
     // A Cloudflare "checking your browser" page isn't an outage.
@@ -1347,6 +1502,12 @@ async function checkSitesImpl(opts = {}) {
       sp[s.url] = { ...(prev || {}), ...h, at: Date.now() }; n++; // keeps a failed WordPress read's reason
     }
     if (n) await chrome.storage.local.set({ sitePhp: sp });
+  } catch (e) {}
+  // Hosting (Site monitor › 🖥): up to 4 sites with none yet, each run - DNS only.
+  try {
+    const hz = (await chrome.storage.local.get("siteHosting")).siteHosting || {};
+    const todo = sites.map((s) => s.url).filter((u) => !hz[u]).slice(0, 4);
+    if (todo.length) hostingFill(todo, false).catch(() => {});
   } catch (e) {}
   let failed = sites.filter((s) => !res(s).ok);
   // Sites that answered are settled: decide and save them now, before the waits.
@@ -1658,7 +1819,7 @@ async function getPerfHistory(force, weeks) {
   const mine = perfHistory && String(perfHistory.userId) === String(cfg.userId) ? perfHistory : null;
   const span = Math.max(want, (mine && Number(mine.weeks)) || PERF_WEEKS);
   const ttl = span > PERF_WEEKS ? 24 * 3600000 : PERF_TTL_MS;
-  const fresh = mine && mine.v === 2 && (Number(mine.weeks) || PERF_WEEKS) >= want && Date.now() - (mine.at || 0) < (force ? 10 * 60000 : ttl);
+  const fresh = mine && mine.v === 3 && (Number(mine.weeks) || PERF_WEEKS) >= want && Date.now() - (mine.at || 0) < (force ? 10 * 60000 : ttl);
   if (fresh) return { ok: true, data: mine };
   const cst = await getClickupState().catch(() => null);
   if (cst && cst.rateLimitedUntil > Date.now()) return { ok: true, data: mine, busy: true };
@@ -1674,12 +1835,12 @@ async function getPerfHistory(force, weeks) {
     const holder = { tasks: done };
     await annotateClients(cfg.token, holder, settings.cuClientLevel || "auto").catch(() => {});
     const slim = (holder.tasks || done).map((t) => ({ id: t.id, name: t.name, url: t.url, parentId: t.parentId, client: t.client || "",
-      dueDateMs: t.dueDateMs, doneAt: t.doneAt, estimateMs: t.estimateMs, spentMs: t.spentMs }));
+      dueDateMs: t.dueDateMs, doneAt: t.doneAt, estimateMs: t.estimateMs, spentMs: t.spentMs, na: t.na || 0 }));
     // The first day with tracked time: how long you have been working here, as far
     // as this history can tell (a 6-month review needs 6 months of it).
     const tracked = Object.keys(days).map(Number).filter((d) => days[d] > 0);
     const firstDay = tracked.length ? Math.min(...tracked) : 0;
-    const data = { v: 2, at: Date.now(), userId: String(cfg.userId), fromTs, toTs, weeks: span, firstDay, days, taskMs, byDay: hist.byDay, names: hist.names, done: slim };
+    const data = { v: 3, at: Date.now(), userId: String(cfg.userId), fromTs, toTs, weeks: span, firstDay, days, taskMs, byDay: hist.byDay, names: hist.names, done: slim };
     await chrome.storage.local.set({ perfHistory: data });
     return data;
   })().finally(() => { perfBuild = null; });
@@ -3274,14 +3435,20 @@ async function pushAllToDrive(tok, accounts) {
 // Each key carries its own "last changed" stamp (extrasStamps) so the newest copy
 // wins per key: a fresh install adopts the Drive copy, while a newer local edit is
 // never overwritten by an older remote one.
-const EXTRA_KEYS = ["autoRules", "siteMonitorConfig", "theme", "cuFilter", "cuFilterMode", "cuFilterDefault", "customSounds", "cuManualOrder", "siteDirSeen", "reminders", "clientNotes", "taskNotes", "taskPins", "planOverrides", "localTasks", "cuDupesOk"];
+const EXTRA_KEYS = ["autoRules", "siteMonitorConfig", "theme", "cuFilter", "cuFilterMode", "cuFilterDefault", "customSounds", "cuManualOrder", "siteDirSeen", "reminders", "clientNotes", "taskNotes", "taskPins", "planOverrides", "localTasks", "cuDupesOk", "siteHosting"];
+// Drive Sync › "Sync everything with my other computers" (settings.syncEverything)
+// also carries the history kept on each computer.
+const EXTRA_KEYS_MORE = ["descAppliedLog", "descStyleExamples", "cnoteDismissed", "cnoteFold", "siteOff", "siteSnooze", "sitePhp", "smMineOnly", "autoCompleteLead", "driveSpareShared"];
+const EXTRA_KEYS_ALL = [...EXTRA_KEYS, ...EXTRA_KEYS_MORE];
+async function extraKeys() { const s = await getSettings().catch(() => ({})); return s.syncEverything ? EXTRA_KEYS_ALL : EXTRA_KEYS; }
 const EXTRAS_MAX_SOUNDS = 1500000; // skip very large custom-sound files in the Drive copy
 async function collectExtras() {
-  const got = await chrome.storage.local.get([...EXTRA_KEYS, "extrasStamps"]);
+  const KEYS = await extraKeys();
+  const got = await chrome.storage.local.get([...KEYS, "extrasStamps"]);
   const stamps = (got.extrasStamps && typeof got.extrasStamps === "object") ? got.extrasStamps : {};
   const values = {};
   const outStamps = {};
-  for (const k of EXTRA_KEYS) {
+  for (const k of KEYS) {
     if (got[k] === undefined) continue;
     if (k === "customSounds" && JSON.stringify(got[k]).length > EXTRAS_MAX_SOUNDS) continue;
     values[k] = got[k];
@@ -3302,10 +3469,11 @@ async function adoptRemoteAdmin(remote) {
 }
 async function adoptRemoteExtras(remote) {
   if (!remote || !remote.values || typeof remote.values !== "object") return;
-  const got = await chrome.storage.local.get([...EXTRA_KEYS, "extrasStamps"]);
+  const KEYS = await extraKeys();
+  const got = await chrome.storage.local.get([...KEYS, "extrasStamps"]);
   const stamps = { ...((got.extrasStamps && typeof got.extrasStamps === "object") ? got.extrasStamps : {}) };
   const patch = {};
-  for (const k of EXTRA_KEYS) {
+  for (const k of KEYS) {
     if (!(k in remote.values)) continue;
     const rAt = Number(remote.stamps && remote.stamps[k]) || 0;
     const lAt = Number(stamps[k]) || 0;
@@ -3327,7 +3495,7 @@ async function adoptRemoteExtras(remote) {
 let extrasPushTimer = null;
 chrome.storage.onChanged.addListener((changes, area) => {
   if (area !== "local" || changes.extrasStamps) return;
-  const keys = EXTRA_KEYS.filter((k) => changes[k]);
+  const keys = EXTRA_KEYS_ALL.filter((k) => changes[k]);
   if (!keys.length) return;
   (async () => {
     const { extrasStamps } = await chrome.storage.local.get("extrasStamps");
@@ -3659,7 +3827,11 @@ async function deskLink(force) {
   const show = place === "taskbar" || place === "both";
   let r = null;
   const style = ["B", "L", "F", "H", "J"].includes(s.stripStyle) ? s.stripStyle : "B", anim = s.stripAnim !== false, warnEmpty = s.clickupWarnEmptyComplete !== false;
-  try { r = await deskPost({ show, style, anim, warnEmpty, ext: chrome.runtime.id }); } catch (e) { r = null; }
+  // What completes itself at its estimate (the tracker's hidden Automation item shows it).
+  const ag = await chrome.storage.local.get(["autoCompleteTasks", "autoCompleteLead"]).catch(() => ({}));
+  // (Not from a helper profile: the tracker hands its changes only to the main extension.)
+  const auto = (await isHelperOnly()) ? undefined : { ids: Object.keys(ag.autoCompleteTasks || {}).slice(0, 200), lead: ag.autoCompleteLead || null };
+  try { r = await deskPost({ show, style, anim, warnEmpty, auto, ext: chrome.runtime.id }); } catch (e) { r = null; }
   if (!r || r.app !== "clickup-tracker") {
     const out = { ...da, running: false, checkedAt: Date.now() };
     await chrome.storage.local.set({ deskApp: out });
@@ -3668,6 +3840,18 @@ async function deskLink(force) {
   if (!r.signedIn) {
     const cfg = await getClickupConfig().catch(() => null);
     if (cfg && cfg.token) { try { r = (await deskPost({ show, style, anim, warnEmpty, ext: chrome.runtime.id, token: cfg.token, teamId: cfg.teamId || "" })) || r; } catch (e) {} }
+  }
+  // Changes made in the tracker's Automation item.
+  if (Array.isArray(r.cmds) && r.cmds.length) {
+    const { autoCompleteTasks: ac } = await chrome.storage.local.get("autoCompleteTasks").catch(() => ({}));
+    const marks = { ...(ac || {}) };
+    for (const c of r.cmds.slice(0, 20)) {
+      if (!c || c.type !== "autoComplete" || !c.taskId) continue;
+      const id = String(c.taskId);
+      if (c.on) marks[id] = marks[id] || { name: String(c.name || "").slice(0, 200), at: Date.now() };
+      else delete marks[id];
+    }
+    await chrome.storage.local.set({ autoCompleteTasks: marks }).catch(() => {});
   }
   const out = { ...da, running: true, seenAt: Date.now(), checkedAt: Date.now(), version: String(r.version || ""), signedIn: !!r.signedIn, user: String(r.user || ""), shown: r.shown !== false, folders: !!r.folders };
   if (r.timer && r.timer.taskId) {
@@ -6833,6 +7017,18 @@ async function advanceAutoRun(cfg, doneId) {
   } catch (e) { diagLog("auto-run", String(e && e.message ? e.message : e)); }
 }
 const EST_ALARM_NEAR = "cu-est-near", EST_ALARM_MET = "cu-est-met";
+// Auto-complete a little before the estimate (Automation tab, storage
+// autoCompleteLead { min, vary }), so finished tasks don't all stop exactly on
+// their estimate. vary: each task its own fixed amount, 0.5x-1.5x of min (from its
+// id, so it never changes). Never more than a quarter of the estimate early.
+function acLeadMs(lead, taskId, estMs) {
+  const base = Math.max(0, Math.min(120, Number(lead && lead.min) || 0)) * 60000;
+  if (!base || !(Number(estMs) > 0)) return 0;
+  let ms = base;
+  if (lead.vary) { let h = 0; for (const c of String(taskId)) h = (h * 31 + c.charCodeAt(0)) >>> 0; h = Math.imul(h ^ (h >>> 16), 0x45d9f3b) >>> 0; h = (h ^ (h >>> 16)) >>> 0; ms = base * (0.5 + (h % 1001) / 1000); }
+  return Math.round(Math.min(ms, Number(estMs) * 0.25) / 60000) * 60000;
+}
+async function readAcLead() { try { const g = await chrome.storage.local.get("autoCompleteLead"); return (g && g.autoCompleteLead) || null; } catch (e) { return null; } }
 // While the running task stays past its estimate: a reminder every few minutes
 // (ClickUp setup › "Keep reminding me while it's over", default 15 min, 0 = off).
 const EST_ALARM_OVER = "cu-est-over";
@@ -6944,7 +7140,9 @@ async function scheduleEstimateAlarms(entry, progress, settings, seenNear, seenM
   const thresholdMs = nearLeadMs(settings, progress.estimateMs);
   const nearAt = crossAt - thresholdMs;
   if (notifyOn && !seenNear && thresholdMs > 0 && nearAt > now + 5000) chrome.alarms.create(EST_ALARM_NEAR, { when: nearAt });
-  if (!seenMet && crossAt > now + 5000) chrome.alarms.create(EST_ALARM_MET, { when: crossAt });
+  const acAt = autoOn ? crossAt - acLeadMs(await readAcLead(), entry.taskId, progress.estimateMs) : crossAt;
+  const metAt = acAt > now + 5000 && acAt < crossAt ? acAt : crossAt;
+  if (!seenMet && metAt > now + 5000) chrome.alarms.create(EST_ALARM_MET, { when: metAt });
   // Already over (or about to be): the repeating reminder runs from the crossing on.
   const every = Number(settings.clickupOverRepeatMin);
   const repeatMin = Number.isFinite(every) ? every : 15;
@@ -7076,7 +7274,8 @@ async function maybeNotifyRunningTask(cfg) {
   // it complete. Never the Extra Task or a configured recurring / multi-day task
   // (daily buckets). A task shared with others can be marked - the person chose it.
   const { autoCompleteTasks: acMarked } = await chrome.storage.local.get("autoCompleteTasks").catch(() => ({}));
-  if (acMarked && acMarked[key] && progress && progress.estimateMs > 0 && progress.trackedMs >= progress.estimateMs && runningMet[key] !== stamp) {
+  const acLead = acMarked && acMarked[key] && progress ? acLeadMs(await readAcLead(), key, progress.estimateMs) : 0;
+  if (acMarked && acMarked[key] && progress && progress.estimateMs > 0 && progress.trackedMs >= progress.estimateMs - acLead && runningMet[key] !== stamp) {
     const name0 = progress.taskName || entry.taskName || "this task";
     const configured = (Array.isArray(settings.clickupDeadlineTaskUrls) ? settings.clickupDeadlineTaskUrls : []).some((u) => parseTaskIdFromUrl(u) === key);
     const isExtra = /\bextra\s*\(?s?\)?\s*tasks?\b/i.test(name0);
@@ -7099,7 +7298,7 @@ async function maybeNotifyRunningTask(cfg) {
         await scheduleEstimateAlarms(null);
         await advanceAutoRun(cfg, key);
         await notify("clickup-autocomplete-" + Date.now(), "Completed automatically ✓",
-          "\"" + name0 + "\" reached its " + fmtDuration(progress.estimateMs) + " estimate, so the timer was stopped and the task marked complete.",
+          "\"" + name0 + "\" " + (acLead ? "reached its finish time (" + fmtDuration(acLead) + " before its " + fmtDuration(progress.estimateMs) + " estimate)" : "reached its " + fmtDuration(progress.estimateMs) + " estimate") + ", so the timer was stopped and the task marked complete.",
           undefined, taskUrlFor(key));
         clearFilterCache();
         // Not awaited: this can run inside a refresh, which must finish first.
@@ -7988,8 +8187,8 @@ async function ensureOffscreenDocument() {
   if (offscreenCreating) { await offscreenCreating; return; }
   offscreenCreating = chrome.offscreen.createDocument({
     url: "offscreen.html",
-    reasons: ["AUDIO_PLAYBACK", "BLOBS"],
-    justification: "Play a chime when a reminder notification appears, and unpack update packages to install new versions in the background.",
+    reasons: ["AUDIO_PLAYBACK", "BLOBS", "CLIPBOARD"],
+    justification: "Play a chime when a reminder notification appears, unpack update packages to install new versions in the background, and copy a one-time code from a Slack DM when that is switched on.",
   });
   try {
     await offscreenCreating;
@@ -8478,9 +8677,124 @@ async function autoSyncIfSignedIn(opts) {
   if (await isHelperOnly()) return; // no Drive sync in a helper profile
   try {
     if (!(await isSignedIn())) return; // no valid/silently-refreshable token
+    await followDriveMove().catch(() => {}); // the other computer moved Drive Sync to another account
     await syncNow(opts);
     syncTaskFiles().catch(() => {}); // Task files backup / restore
+    if (!(opts && opts.light)) runSyncAll(false).catch(() => {}); // Sync everything: client folders
   } catch (e) {}
+}
+// ---------- Drive Sync › Sync everything: the client folders (lib-syncall.js) ----------
+// Through the taskbar app (it reaches the folders) and a visible Drive folder.
+// Status in storage syncAllStatus for the Drive Sync card. A big first sync
+// moves part of it per run and comes back a minute later for the rest.
+const SYNC_ALL_MORE_ALARM = "sync-all-more";
+let syncAllRunning = null;
+function runSyncAll(interactive) {
+  if (syncAllRunning) return syncAllRunning;
+  syncAllRunning = (async () => {
+    const s = await getSettings().catch(() => ({}));
+    if (!s.syncEverything) return { ok: false, reason: "off" };
+    const say = (st) => chrome.storage.local.set({ syncAllStatus: { at: Date.now(), ...st } }).catch(() => {});
+    const g0 = await chrome.storage.local.get(["driveMoveJob", "driveSpare", "driveSpareShared"]);
+    if (g0.driveMoveJob && /running|paused/.test(g0.driveMoveJob.state)) { await say({ ok: false, reason: "moving", msg: "Waiting for the move to the other Google account to finish." }); return { ok: false, reason: "moving" }; }
+    await say({ running: true });
+    const tok = await getFileToken(!!interactive).catch(() => null);
+    if (!tok) { await say({ ok: false, reason: "google", msg: "Google Drive access is needed - press Sync now and allow it." }); return { ok: false, reason: "google" }; }
+    const mainAcct = await getDriveAccount().catch(() => "");
+    // Spare Drive: set up on the other computer but not here yet -> wait, so
+    // files kept there aren't missed or sent again.
+    const shared = g0.driveSpareShared && g0.driveSpareShared.email;
+    if (shared && !g0.driveSpare && shared.toLowerCase() !== mainAcct.toLowerCase()) { await say({ ok: false, reason: "spare-here", spareEmail: shared, msg: "Your other computer keeps some client files in a spare Google Drive (" + shared + "). Connect it on this computer too (Two Google accounts, below)." }); return { ok: false, reason: "spare-here" }; }
+    let spare = null, spareFree = null;
+    if (g0.driveSpare && g0.driveSpare.email) {
+      const st = await accountToken({ email: g0.driveSpare.email, scope: SCOPE_DRIVE_FILE, interactive: !!interactive }).catch(() => null);
+      if (!st) { await say({ ok: false, reason: "spare-google", msg: "The spare Google Drive (" + g0.driveSpare.email + ") needs signing in again - press Sync now." }); return { ok: false, reason: "spare-google" }; }
+      const sq = await driveFree(st.token).catch(() => null);
+      spareFree = sq ? sq.free : null;
+      spare = { token: st.token, full: !!(sq && sq.free < 200 * 1048576) };
+    }
+    const q = await driveQuota(tok).catch(() => null);
+    const mainFull = !!(q && q.limit && q.limit - q.usage < 200 * 1048576);
+    const mainFree = q && q.limit ? q.limit - q.usage : null;
+    if (mainFull && (!spare || spare.full)) { await notifyDriveFull(q, "Client folders sync is paused").catch(() => {}); await say({ ok: false, reason: "full", mainFree, spareFree, msg: spare ? "Both Google Drives are (almost) full - client folders aren't copied until there is room." : "Your Google Drive is (almost) full - client folders aren't copied until there is room. Add a spare Google account or move to another one (Two Google accounts, below)." }); return { ok: false, reason: "full" }; }
+    let r;
+    try {
+      r = await syncClientFolders({ token: tok, spare, mainFull, account: mainAcct, desk: deskFiles, get: async (k) => (await chrome.storage.local.get(k))[k], set: (k, v) => chrome.storage.local.set({ [k]: v }), onProgress: (o) => say({ running: true, ...o }) });
+    } catch (e) {
+      if (e && e.auth) await chrome.storage.local.remove("driveFileToken").catch(() => {});
+      await say({ ok: false, reason: "error", msg: String((e && e.message) || e) });
+      return { ok: false, error: String((e && e.message) || e) };
+    }
+    if (!r.ok) {
+      await say({ ok: false, reason: r.reason, msg: r.reason === "no-app" ? "Client folders need the ClickUp Tracker taskbar app running on this computer." : r.reason === "app-old" ? "Update the ClickUp Tracker taskbar app to sync the client folders." : (r.error || "Couldn't read the client folders.") });
+      return r;
+    }
+    await say({ ok: true, ...r, mainFull, mainFree, spareFree });
+    if (r.left > 0) chrome.alarms.create(SYNC_ALL_MORE_ALARM, { delayInMinutes: 1 });
+    return r;
+  })().finally(() => { syncAllRunning = null; });
+  return syncAllRunning;
+}
+
+// ---------- Drive Sync › Two Google accounts (lib-drivemove.js) ----------
+// Move everything to another Google account: a job in storage (driveMoveJob)
+// run a step at a time; a 1-minute alarm picks it up again if the worker stops.
+const DRIVE_MOVE_ALARM = "drive-move";
+let driveMoveRunning = null;
+function runDriveMove() {
+  if (driveMoveRunning) return driveMoveRunning;
+  driveMoveRunning = (async () => {
+    const save = (job) => chrome.storage.local.set({ driveMoveJob: { ...job, at: Date.now() } });
+    for (let i = 0; i < 60; i++) {
+      let { driveMoveJob: job } = await chrome.storage.local.get("driveMoveJob");
+      if (!job || job.state !== "running") return;
+        if (job.phase === "done") { await save({ ...job, state: "done", doneAt: Date.now(), map: {}, trashedIds: {} }); runSyncAll(false).catch(() => {}); return; }
+      try {
+        const to = await accountToken({ email: job.to, scope: SCOPE_BOTH });
+        const fromFile = await accountToken({ email: job.from, scope: SCOPE_DRIVE_FILE });
+        const fromApp = job.phase === "appdata" || job.phase === "switch" ? await accountToken({ email: job.from, scope: SCOPE_APPDATA }) : fromFile;
+        if (!to || !fromFile || !fromApp) { await save({ ...job, state: "paused", msg: "Google needs you to sign in again - press Continue." }); return; }
+        if (job.phase === "switch") {
+          // Everything is in the new Drive: leave the note for the other computer,
+          // switch Drive Sync over, and point the client-folder sync at the copies.
+          await writeMoved(fromApp.token, { to: job.to, from: job.from, at: Date.now() });
+          await adoptDriveAccount(to);
+          const { syncAllState } = await chrome.storage.local.get("syncAllState");
+          if (syncAllState) await chrome.storage.local.set({ syncAllState: remapSyncState(syncAllState, job) });
+          await chrome.storage.local.remove("driveMovedNotice");
+          job = { ...job, phase: job.trashOld ? "trash" : "done", switchedAt: Date.now() };
+          await save(job);
+          syncNow().catch(() => {});
+          continue;
+        }
+        job = await moveStep({ fromApp: fromApp.token, fromFile: fromFile.token, to: to.token, job });
+        await save(job);
+      } catch (e) {
+        await save({ ...job, state: "paused", msg: e && e.full ? "The new Google Drive is full - free space there, then press Continue." : e && e.auth ? "Google needs you to sign in again - press Continue." : String((e && e.message) || e).slice(0, 200) });
+        return;
+      }
+    }
+    chrome.alarms.create(DRIVE_MOVE_ALARM, { delayInMinutes: 1 });
+  })().finally(() => { driveMoveRunning = null; });
+  return driveMoveRunning;
+}
+// The other computer moved Drive Sync (a "moved to" note in the old account's
+// hidden app data): follow it - silently when that Google account is signed in
+// on this browser, otherwise the Drive Sync card asks (driveMovedNotice).
+let followMoveAt = 0;
+async function followDriveMove() {
+  if (Date.now() - followMoveAt < 10 * 60000) return;
+  followMoveAt = Date.now();
+  const { driveMoveJob: job } = await chrome.storage.local.get("driveMoveJob");
+  if (job && /running|paused/.test(job.state)) return; // this computer is the one moving
+  const me = await getDriveAccount();
+  const tok = await getValidToken(false);
+  if (!me || !tok) return;
+  const note = await readMoved(tok).catch(() => null);
+  if (!note || !note.to || note.to.toLowerCase() === me.toLowerCase()) return;
+  const t = await accountToken({ email: note.to, scope: SCOPE_BOTH }).catch(() => null);
+  if (t) { await adoptDriveAccount(t); await chrome.storage.local.remove("driveMovedNotice"); await chrome.storage.local.set({ driveMovedFollowed: { from: me, to: note.to, at: Date.now() } }); return; }
+  await chrome.storage.local.set({ driveMovedNotice: { from: me, to: note.to, at: Date.now() } });
 }
 
 // ---------- Update check (GitHub Releases) ----------
@@ -9599,6 +9913,91 @@ async function slackTab() {
 }
 // A call to Slack's web API with the session. mode "tab": made from inside a Slack
 // tab (when Chrome doesn't send Slack's cookie with the extension's own request).
+// ---- Slack: copy a one-time code sent to me in a DM (General › Features,
+// settings.slackOtpCopy, off by default) ----
+// Every 5 s while on: one client.counts call says which DMs / group DMs have
+// something new; only those are read. A message from someone else, under 3
+// minutes old, that is just a code (6-8 digits, or 4-5 with code / OTP / 2FA /
+// PIN / verification next to it) goes on the clipboard with a notification.
+// The code itself is never stored (otpWatch keeps only what was already seen).
+const OTP_ALARM = "slack-otp";
+async function otpAlarm(settings) {
+  const s = settings || (await getSettings().catch(() => ({})));
+  if (s.slackOtpCopy) await ensureAlarm(OTP_ALARM, { periodInMinutes: 0.5 });
+  else await chrome.alarms.clear(OTP_ALARM).catch(() => {});
+}
+function otpIn(text) {
+  const t = String(text || "").replace(/<[^>|]*\|?([^>]*)>/g, "$1").replace(/[*_~`]/g, "").trim();
+  if (!t || t.length > 160) return "";
+  const nums = t.match(/(?<![\d.,:\/-])\d{4,8}(?![\d.,:\/-]*\d)/g) || [];
+  if (nums.length !== 1) return "";
+  const n = nums[0], rest = t.replace(n, " ").replace(/[^A-Za-z ]+/g, " ").trim();
+  const words = rest ? rest.split(/\s+/).length : 0;
+  const keyword = /\b(code|otp|2fa|pin|passcode|verification|verify|auth|login)\b/i.test(rest);
+  if (n.length >= 6) return words <= 4 || keyword ? n : "";
+  return keyword && words <= 6 ? n : "";
+}
+let otpRunning = false;
+async function otpBurst() {
+  if (otpRunning) return;
+  otpRunning = true;
+  try {
+    // 6 checks 5 s apart: the 30 s alarm starts the next round, so it's about every 5 s.
+    for (let i = 0; i < 6; i++) {
+      const s = await getSettings().catch(() => ({}));
+      if (!s.slackOtpCopy) return;
+      await otpPoll().catch((e) => diagLog("slack-otp", String(e && e.message ? e.message : e)));
+      if (i < 5) await new Promise((r) => setTimeout(r, 5000));
+    }
+  } finally { otpRunning = false; }
+}
+async function otpPoll() {
+  const g = await chrome.storage.local.get(["slackSession", "otpWatch"]);
+  const s = g.slackSession;
+  if (!s || !s.token) return;
+  const w = g.otpWatch && typeof g.otpWatch === "object" ? g.otpWatch : { since: Date.now(), seen: {} };
+  const seen = { ...(w.seen || {}) };
+  const r = await slackApi("client.counts", { thread_counts_by_channel: "false" }, s);
+  if (!r || !r.ok) {
+    const err = "Slack didn't list your DMs (" + ((r && r.error) || "no answer") + ")";
+    if (w.err !== err) await chrome.storage.local.set({ otpWatch: { ...w, err } });
+    return;
+  }
+  const sinceS = Math.max(Number(w.since) || Date.now(), Date.now() - 3 * 60000) / 1000;
+  const dms = [...(r.ims || []), ...(r.mpims || [])].filter((c) => c && c.id && Number(c.latest) > sinceS && Number(c.latest) > (Number(seen[c.id]) || 0));
+  for (const c of dms.slice(0, 5)) {
+    const oldest = String(Math.max(sinceS, Number(seen[c.id]) || 0));
+    const h = await slackApi("conversations.history", { channel: c.id, oldest, limit: "10" }, s).catch(() => null);
+    seen[c.id] = Number(c.latest);
+    const msgs = (h && h.ok && h.messages) || [];
+    // Newest first from Slack: the newest code wins.
+    for (const m of msgs) {
+      if (!m || m.subtype || !m.user || m.user === s.userId) continue;
+      const code = otpIn(m.text);
+      if (!code) continue;
+      const copied = await otpCopy(code);
+      let who = "someone";
+      try { const u = await slackApi("users.info", { user: m.user }, s); if (u && u.ok && u.user) who = (u.user.profile && (u.user.profile.display_name || u.user.profile.real_name)) || u.user.real_name || u.user.name || who; } catch (e) {}
+      await notify("slack-otp-" + Date.now(), copied ? "Code " + code + " copied" : "Code " + code, (copied ? "From " + who + " in Slack - paste it with Ctrl+V." : "From " + who + " in Slack (couldn't copy it - type it in)."), undefined).catch(() => {});
+      break;
+    }
+  }
+  // Forget DMs not touched for a day (the list stays small).
+  const dayAgo = Date.now() / 1000 - 86400;
+  for (const k of Object.keys(seen)) if (Number(seen[k]) < dayAgo) delete seen[k];
+  await chrome.storage.local.set({ otpWatch: { since: w.since || Date.now(), seen, err: "", at: Date.now() } });
+}
+async function otpCopy(text) {
+  try {
+    await ensureOffscreenDocument();
+    for (let i = 0; i < 10; i++) {
+      const r = await chrome.runtime.sendMessage({ target: "offscreen", type: "COPY_TEXT", text }).catch(() => null);
+      if (r) return !!r.ok;
+      await new Promise((res) => setTimeout(res, 100));
+    }
+  } catch (e) {}
+  return false;
+}
 async function slackApi(method, params, s) {
   const body = { token: s.token, ...(params || {}) };
   const url = "https://" + (s.domain || "slack.com") + "/api/" + method;
@@ -10809,6 +11208,7 @@ async function ensurePeriodicAlarms() {
   await ensureAlarm(BALANCE_ALARM, { periodInMinutes: 5 });
   // Client site uptime monitor - only fires if a site goes down.
   await ensureAlarm(SITE_MONITOR_ALARM, { periodInMinutes: SITE_MONITOR_PERIOD_MIN });
+  await otpAlarm(syncS).catch(() => {});
 }
 ensurePeriodicAlarms();
 // Clear stale "running" flags + backfill login checkpoints once per worker start,
@@ -10940,10 +11340,16 @@ chrome.alarms.onAlarm.addListener(async (alarm) => {
       const cfg = await getClickupConfig().catch(() => null);
       await maybeNotifyRunningTask(cfg).catch(() => {});
     }
+  } else if (alarm.name === OTP_ALARM) {
+    otpBurst().catch(() => {});
   } else if (alarm.name === BALANCE_ALARM) {
     pollBalancesInBackground().catch(() => {});
   } else if (alarm.name === SYNC_ALARM) {
     autoSyncIfSignedIn();
+  } else if (alarm.name === SYNC_ALL_MORE_ALARM) {
+    await runSyncAll(false).catch(() => {});
+  } else if (alarm.name === DRIVE_MOVE_ALARM) {
+    await runDriveMove().catch(() => {});
   } else if (alarm.name === SITE_MONITOR_ALARM) {
     // Awaited so the worker stays alive through the fetches + the state write -
     // fire-and-forget risks suspension before checkSites persists its results.
@@ -11671,6 +12077,38 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         } catch (e) { diagLog("sites", "check now: " + ((e && e.message) || e)); sendResponse({ ok: false, reason: String(e && e.message ? e.message : e) }); }
         break;
       }
+      case "SITE_HOSTING_FIND": {
+        // Site monitor › 🖥 Find hosting: every site (or the ones asked), looked up again.
+        try {
+          const cfg = await getSiteMonitorConfig();
+          const urls = Array.isArray(msg.urls) && msg.urls.length ? msg.urls : (cfg.sites || []).map((s) => s.url).filter(Boolean);
+          const found = await hostingFill(urls.slice(0, 300), true);
+          sendResponse({ ok: true, n: Object.keys(found).length });
+        } catch (e) { sendResponse({ ok: false, error: String(e && e.message ? e.message : e) }); }
+        break;
+      }
+      case "SITE_HOSTING_SET": {
+        // A hosting link typed by hand (✎), or "" to go back to the automatic one.
+        try {
+          const u = String(msg.url || "");
+          const cur = (await chrome.storage.local.get("siteHosting")).siteHosting || {};
+          let panel = String(msg.panel || "").trim();
+          if (panel && !/^https?:\/\//i.test(panel)) panel = "https://" + panel;
+          if (panel) {
+            let ph = ""; try { ph = new URL(panel).hostname; } catch (e) { sendResponse({ ok: false, error: "That isn't a web address" }); break; }
+            const m = hostingMatch(ph);
+            const inst = (panel.match(/my\.wpengine\.com\/installs\/([a-z0-9-]+)/i) || [])[1] || "";
+            cur[u] = { provider: (m && m.provider) || ph.replace(/^(?:www|my|portal|panel|app|account|accounts|hpanel|control)\./, ""), panel, server: "", install: inst.toLowerCase(), cf: false, src: "you", at: Date.now() };
+            await chrome.storage.local.set({ siteHosting: cur });
+          } else {
+            delete cur[u];
+            await chrome.storage.local.set({ siteHosting: cur });
+            await hostingFill([u], true);
+          }
+          sendResponse({ ok: true });
+        } catch (e) { sendResponse({ ok: false, error: String(e && e.message ? e.message : e) }); }
+        break;
+      }
       case "GET_SITE_MONITOR_STATE": {
         const state = (await chrome.storage.local.get("siteMonitorState"))["siteMonitorState"] || {};
         sendResponse({ ok: true, state });
@@ -12180,6 +12618,16 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       case "SET_SETTINGS": {
         const prevSettings = await getSettings();
         const next = await setSettings(msg.patch || {});
+        if (msg.patch && "syncEverything" in msg.patch && !prevSettings.syncEverything && next.syncEverything) {
+          // Everything now: push the history at once, then the files (Google may ask once).
+          autoSyncIfSignedIn().catch(() => {});
+          runSyncAll(true).catch(() => {});
+        }
+        if (msg.patch && "slackOtpCopy" in msg.patch && !!prevSettings.slackOtpCopy !== !!next.slackOtpCopy) {
+          await chrome.storage.local.set({ otpWatch: next.slackOtpCopy ? { since: Date.now(), seen: {}, err: "" } : null });
+          await otpAlarm(next).catch(() => {});
+          if (next.slackOtpCopy) otpBurst().catch(() => {});
+        }
         if (msg.patch && "fxIconRing" in msg.patch) updateBadge().catch(() => {}); // ring on/off right away
         await scheduleAgentRouterAlarms(next).catch(() => {});
         applyIdleInterval().catch(() => {});
@@ -14538,6 +14986,81 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         }
         break;
       }
+      // ---- Drive Sync › Two Google accounts ----
+      case "DRIVE_SPARE_ADD": {
+        // A spare Google account: Google's chooser, or (msg.email) the one the other computer uses.
+        const main = await getDriveAccount();
+        if (!main) { sendResponse({ ok: false, error: "Sign in to Drive Sync first." }); break; }
+        const t = await accountToken(msg.email ? { email: msg.email, scope: SCOPE_DRIVE_FILE, interactive: true } : { scope: SCOPE_DRIVE_FILE, interactive: true, pick: true }).catch(() => null);
+        if (!t) { sendResponse({ ok: false, error: msg.email ? "Couldn't sign in to " + msg.email + " - pick that account in Google's window." : "Google sign-in didn't finish." }); break; }
+        if (t.email.toLowerCase() === main.toLowerCase()) { sendResponse({ ok: false, error: "That is your main Drive Sync account - pick a different Google account." }); break; }
+        await chrome.storage.local.set({ driveSpare: { email: t.email, name: t.name, at: Date.now() }, driveSpareShared: { email: t.email, at: Date.now() } });
+        runSyncAll(true).catch(() => {});
+        sendResponse({ ok: true, email: t.email });
+        break;
+      }
+      case "DRIVE_SPARE_REMOVE": {
+        await chrome.storage.local.remove("driveSpare");
+        await chrome.storage.local.set({ driveSpareShared: { email: "", at: Date.now() } });
+        sendResponse({ ok: true });
+        break;
+      }
+      case "DRIVE_MOVE_START": {
+        const from = await getDriveAccount();
+        if (!from) { sendResponse({ ok: false, error: "Sign in to Drive Sync first." }); break; }
+        const cur = (await chrome.storage.local.get("driveMoveJob")).driveMoveJob;
+        if (cur && /running|paused/.test(cur.state)) { sendResponse({ ok: false, error: "A move is already in progress." }); break; }
+        // The old account's tokens first (asks only if Google needs it), then the new account.
+        const fa = await accountToken({ email: from, scope: SCOPE_APPDATA, interactive: true }).catch(() => null);
+        const ff = await accountToken({ email: from, scope: SCOPE_DRIVE_FILE, interactive: true }).catch(() => null);
+        if (!fa || !ff) { sendResponse({ ok: false, error: "Couldn't reach your current Google account (" + from + ")." }); break; }
+        const t = await accountToken({ scope: SCOPE_BOTH, interactive: true, pick: true }).catch(() => null);
+        if (!t) { sendResponse({ ok: false, error: "Google sign-in didn't finish." }); break; }
+        if (t.email.toLowerCase() === from.toLowerCase()) { sendResponse({ ok: false, error: "That is the account Drive Sync already uses - pick the new one." }); break; }
+        const sp = (await chrome.storage.local.get("driveSpare")).driveSpare;
+        if (sp && sp.email && sp.email.toLowerCase() === t.email.toLowerCase()) { sendResponse({ ok: false, error: "That is your spare Drive - remove it as the spare first." }); break; }
+        await chrome.storage.local.set({ driveMoveJob: newMoveJob({ from, to: t.email, toName: t.name, trashOld: !!msg.trashOld }) });
+        runDriveMove().catch(() => {});
+        sendResponse({ ok: true, to: t.email });
+        break;
+      }
+      case "DRIVE_MOVE_CONTINUE": {
+        const { driveMoveJob: job } = await chrome.storage.local.get("driveMoveJob");
+        if (!job || job.state !== "paused") { sendResponse({ ok: false }); break; }
+        // Sign in again where Google asked for it.
+        const ok1 = await accountToken({ email: job.to, scope: SCOPE_BOTH, interactive: true }).catch(() => null);
+        const ok2 = await accountToken({ email: job.from, scope: SCOPE_DRIVE_FILE, interactive: true }).catch(() => null);
+        const ok3 = job.phase === "appdata" || job.phase === "switch" ? await accountToken({ email: job.from, scope: SCOPE_APPDATA, interactive: true }).catch(() => null) : ok2;
+        if (!ok1 || !ok2 || !ok3) { sendResponse({ ok: false, error: "Google sign-in didn't finish." }); break; }
+        await chrome.storage.local.set({ driveMoveJob: { ...job, state: "running", msg: "" } });
+        runDriveMove().catch(() => {});
+        sendResponse({ ok: true });
+        break;
+      }
+      case "DRIVE_MOVE_CANCEL": {
+        // Before the switch: nothing changes here (copies already made stay in the
+        // new Drive). After it, only the trash step is left - stop that.
+        const { driveMoveJob: job } = await chrome.storage.local.get("driveMoveJob");
+        if (job) await chrome.storage.local.set({ driveMoveJob: { ...job, state: job.switchedAt ? "done" : "cancelled", map: {}, trashedIds: {}, at: Date.now() } });
+        sendResponse({ ok: true });
+        break;
+      }
+      case "DRIVE_MOVE_CLEAR": {
+        await chrome.storage.local.remove(["driveMoveJob", "driveMovedFollowed"]);
+        sendResponse({ ok: true });
+        break;
+      }
+      case "DRIVE_SWITCH_TO": {
+        // The other computer moved Drive Sync: sign in to that account here.
+        const t = msg.email ? await accountToken({ email: msg.email, scope: SCOPE_BOTH, interactive: true }).catch(() => null) : null;
+        if (!t) { sendResponse({ ok: false, error: "Couldn't sign in to " + (msg.email || "it") + " - pick that account in Google's window." }); break; }
+        await adoptDriveAccount(t);
+        await chrome.storage.local.remove("driveMovedNotice");
+        syncNow().catch(() => {});
+        runSyncAll(false).catch(() => {});
+        sendResponse({ ok: true });
+        break;
+      }
       case "GOOGLE_SIGN_OUT": {
         // Sign-out is destructive LOCALLY on purpose: we wipe this identity's
         // synced accounts so a DIFFERENT Google account can sign in and show ITS
@@ -14547,6 +15070,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         // re-signing into this same account restores everything.
         try { await syncNow(); } catch (e) {}
         await driveSignOut();
+        await chrome.storage.local.remove(["driveMovedNotice", "driveMovedFollowed"]).catch(() => {});
         // Clear this identity's local footprint: the encrypted accounts, the
         // plaintext count, and everything derived from them (login status, live
         // balances, credit-detection baselines, availability chips). The ClickUp
@@ -14569,6 +15093,8 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         setDriveBusy("sync");
         try {
           const r = await syncNow();
+          syncTaskFiles().catch(() => {});
+          runSyncAll(true).catch(() => {});
           sendResponse({ ok: r.ok, statusOk: r.ok, accountsPushed: r.ok, reason: r.reason, syncedAt: r.syncedAt || null });
         } finally {
           setDriveBusy("");

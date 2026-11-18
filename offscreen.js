@@ -64,6 +64,21 @@ function drainQueue() {
   playNext();
 }
 
+// A one-time code from a Slack DM onto the clipboard (background otpPoll). The
+// worker can't use the clipboard itself; a textarea + copy works here.
+chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
+  if (!msg || msg.target !== "offscreen" || msg.type !== "COPY_TEXT") return;
+  let ok = false;
+  try {
+    const ta = document.createElement("textarea");
+    ta.value = String(msg.text || "");
+    document.body.appendChild(ta);
+    ta.select();
+    ok = document.execCommand("copy");
+    ta.remove();
+  } catch (e) {}
+  sendResponse({ ok });
+});
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   if (!msg || msg.target !== "offscreen" || msg.type !== "PLAY_SOUND") return;
   if (!msg.nonce || msg.nonce === lastNonce) {

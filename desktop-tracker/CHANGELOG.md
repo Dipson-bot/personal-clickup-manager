@@ -1,5 +1,10 @@
 # ClickUp Tracker changelog
 
+## 0.4.6
+- New ✓ Today button on the hover card (and the bigger view and ▾ menu): completes the task, stops the timer and sets its due date to today - the day it was really finished.
+- The hover card's top line shows the task and its client side by side ("Task name… | Client…", the whole of each on hover), so the line below has room for the due date.
+- The extension's "Sync everything with my other computers" can now copy your client folders both ways (it reads and writes them through this app, inside the client folders only, keeping each file's date).
+
 ## 0.4.5
 - Mac: no more "ClickUp Tracker tried to access your data from other apps" warning. To install new versions of the extension for you, the app used to look up the extension's folder in your browsers' settings files, which newer macOS blocks. Now you choose that folder once (it asks when an update arrives, or tray menu › Choose the extension folder for updates), and it is remembered. Windows works as before.
 

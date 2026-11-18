@@ -69,6 +69,8 @@
   async function remove(id) {
     const d = await db();
     await new Promise((res, rej) => { const tx = d.transaction("files", "readwrite"); tx.objectStore("files").delete(id); tx.oncomplete = res; tx.onerror = () => rej(tx.error); });
+    // Sync everything: a file deleted here isn't brought back from the other computer.
+    try { const g = await chrome.storage.local.get("taskFilesGone"); const gone = Array.isArray(g.taskFilesGone) ? g.taskFilesGone : []; if (!gone.includes(id)) await chrome.storage.local.set({ taskFilesGone: [...gone, id].slice(-2000) }); } catch (e) {}
     changed();
   }
   async function counts() {
