@@ -134,9 +134,9 @@ export async function moveStep({ fromApp, fromFile, to, job }) {
       files++; bytes += R.size;
       try {
         if (!top) top = await folderFor(to, caches, "root", ROOT_PARTS);
-        const parts = key.split("/"), name = parts.pop();
+        const parts = R.key.split("/"), name = parts.pop(); // R.key: the path as it is spelled (the map key is lower-case)
         const u8 = await download(fromFile, R.id);
-        const up = await uploadNew(to, await folderFor(to, caches, top, parts), key, name, new Blob([u8]), R.mt);
+        const up = await uploadNew(to, await folderFor(to, caches, top, parts), R.key, name, new Blob([u8]), R.mt);
         job.map[R.id] = { id: up.id, md5: up.md5Checksum || R.md5 };
         job.copied++; job.bytes += R.size;
       } catch (e) {

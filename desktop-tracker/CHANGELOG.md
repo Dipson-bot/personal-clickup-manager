@@ -1,5 +1,10 @@
 # ClickUp Tracker changelog
 
+## 0.4.7
+- Starting a task (▶ Start, Resume last) for a client with a live No site changes or Work paused notice in the extension asks first.
+- Sync everything works the same on Windows and Mac: a Mac file name with a character Windows refuses (such as :) is saved under a name Windows accepts and stays one file; the same file in another upper / lower case or with accents stored the Mac way is no longer copied twice; a file open in another program (Word, say) is simply tried again next time, with no temporary file left behind; Office's own temp files (~WRL….tmp) and the Mac's hidden Icon file are skipped.
+- Mac: the menu-bar menu has ⤢ Bigger view (note, comments, files) while a timer runs, even when the floating strip is hidden - the window hides again when you close it.
+
 ## 0.4.6
 - New ✓ Today button on the hover card (and the bigger view and ▾ menu): completes the task, stops the timer and sets its due date to today - the day it was really finished.
 - The hover card's top line shows the task and its client side by side ("Task name… | Client…", the whole of each on hover), so the line below has room for the due date.

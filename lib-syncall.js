@@ -44,6 +44,20 @@ async function driveJson(token, url, opts) {
   if (!res.ok) throw new Error("Google Drive said HTTP " + res.status + ".");
   return res.json();
 }
+// A file's path in a form both Windows and Mac accept, compared without case:
+// characters Windows refuses (: * ? " < > |) become spaces, no leading / trailing
+// dots or spaces, Windows' reserved names get a _ in front, accents in one
+// Unicode form (a Mac may store them differently). Same rule in clientdirs.js
+// and lib-syncall.js.
+function portSeg(s) {
+  let n = String(s || "").normalize("NFC").replace(/[\\/:*?"<>|\u0000-\u001f]+/g, " ").replace(/\s+/g, " ").trim().slice(0, 180);
+  n = n.replace(/^[.\s]+|[.\s]+$/g, "");
+  if (/^(con|prn|aux|nul|com\d|lpt\d)$/i.test(n)) n = "_" + n;
+  return n || "file";
+}
+const portKey = (k) => String(k || "").split("/").filter(Boolean).map(portSeg).join("/");
+export { portKey };
+const mk = (k) => portKey(k).toLowerCase(); // how paths are matched across computers
 const qs = (s) => String(s).replace(/\\/g, "\\\\").replace(/'/g, "\\'");
 
 // Every synced file in Drive, newest first per path.
@@ -56,9 +70,9 @@ export async function listRemote(token) {
     for (const f of j.files || []) {
       const key = String(f.description || "");
       if (!key) continue;
-      const rec = { id: f.id, size: Number(f.size) || 0, md5: f.md5Checksum || "", mt: Number(f.appProperties && f.appProperties.mt) || Date.parse(f.modifiedTime) || 0, at: Date.parse(f.modifiedTime) || 0, parent: (f.parents || [])[0] || "" };
-      const had = out.get(key);
-      if (!had || rec.at > had.at) out.set(key, rec);
+      const rec = { key, id: f.id, size: Number(f.size) || 0, md5: f.md5Checksum || "", mt: Number(f.appProperties && f.appProperties.mt) || Date.parse(f.modifiedTime) || 0, at: Date.parse(f.modifiedTime) || 0, parent: (f.parents || [])[0] || "" };
+      const had = out.get(mk(key));
+      if (!had || rec.at > had.at) out.set(mk(key), rec);
     }
     page = j.nextPageToken || "";
     if (!page) break;
@@ -143,10 +157,13 @@ export async function syncClientFolders({ token, desk, get, set, onProgress, acc
   // Another Google account than last time (moved to a new Drive): start fresh
   // there - its file ids are new; what was deleted here stays deleted here.
   if (account && st0.account && st0.account !== account) st0 = { gone: st0.gone };
-  const state = { files: { ...(st0.files || {}) }, gone: { ...(st0.gone || {}) } };
+  // Paths are matched in their portable lower-case form (older states are re-keyed).
+  const rekey = (o) => { const r = {}; for (const [k, v] of Object.entries(o || {})) r[mk(k)] = v; return r; };
+  const state = { files: rekey(st0.files), gone: rekey(st0.gone) };
   const ls = await desk({ op: "syncList" }, 30000);
   if (!ls || !ls.ok) return { ok: false, reason: ls ? "app-old" : "no-app", error: ls && ls.error };
-  const local = new Map((ls.files || []).map((f) => [f.key, f]));
+  const local = new Map();
+  for (const f of ls.files || []) if (!local.has(mk(f.key))) local.set(mk(f.key), f);
   const remote = await listRemote(token);
   const sp = spare && spare.token ? spare : null;
   if (sp) {
@@ -170,12 +187,13 @@ export async function syncClientFolders({ token, desk, get, set, onProgress, acc
   const out = { up: 0, down: 0, conflicts: 0, tooBig: 0, left: 0, errors: 0, firstError: "", toSpare: 0 };
   let files = 0, bytes = 0;
   const save = () => set("syncAllState", { account: account || st0.account || "", files: state.files, gone: state.gone, last: { at: Date.now(), ...out } });
-  for (const key of keys) {
-    const L = local.get(key), R = remote.get(key), S = state.files[key];
-    let act = decide(L, R, S, !!state.gone[key]);
-    if (act === "upload-new-again") { delete state.gone[key]; act = R ? "upload-over" : "upload"; } // made again here
-    if (act === "skip" || act === "same") { if (act === "same" && L && R) state.files[key] = { size: L.size, mtime: L.mtime, id: R.id, md5: R.md5, local: true }; continue; }
-    if (act === "deleted-here") { state.gone[key] = state.gone[key] || Date.now(); delete state.files[key]; continue; }
+  for (const k of keys) {
+    const L = local.get(k), R = remote.get(k), S = state.files[k];
+    const key = (L && L.key) || (R && R.key) || k; // the name as this computer / Drive spells it
+    let act = decide(L, R, S, !!state.gone[k]);
+    if (act === "upload-new-again") { delete state.gone[k]; act = R ? "upload-over" : "upload"; } // made again here
+    if (act === "skip" || act === "same") { if (act === "same" && L && R) state.files[k] = { size: L.size, mtime: L.mtime, id: R.id, md5: R.md5, local: true }; continue; }
+    if (act === "deleted-here") { state.gone[k] = state.gone[k] || Date.now(); delete state.files[k]; continue; }
     if (act === "too-big") { out.tooBig++; continue; }
     const size = Math.max(L ? L.size : 0, R ? R.size : 0);
     if (files >= RUN_FILES || (bytes + size > RUN_BYTES && files > 0)) { out.left++; continue; }
@@ -196,13 +214,13 @@ export async function syncClientFolders({ token, desk, get, set, onProgress, acc
             await deleteFile(token, R.id).catch(() => {});
           }
         } else r = await putNew(newAcct(), key, blob, L.mtime);
-        state.files[key] = { size: L.size, mtime: L.mtime, id: r.id, md5: r.md5Checksum || "", local: true };
+        state.files[k] = { size: L.size, mtime: L.mtime, id: r.id, md5: r.md5Checksum || "", local: true };
         out.up++;
       } else if (act === "download") {
         const u8 = await download(tokOf(R.acct), R.id);
         const w = await desk({ op: "syncWrite", key, b64: bytesToB64(u8), mtime: R.mt }, 60000);
         if (!w || !w.ok) throw new Error((w && w.error) || "the taskbar app didn't save it");
-        state.files[key] = { size: u8.length, mtime: Number(w.mtime) || R.mt, id: R.id, md5: R.md5, local: true };
+        state.files[k] = { size: u8.length, mtime: Number(w.mtime) || R.mt, id: R.id, md5: R.md5, local: true };
         out.down++;
       } else if (act === "conflict") {
         // Changed here AND on the other computer: this computer's version is kept
@@ -217,9 +235,9 @@ export async function syncClientFolders({ token, desk, get, set, onProgress, acc
         const u8 = await download(tokOf(R.acct), R.id);
         const w = await desk({ op: "syncWrite", key, b64: bytesToB64(u8), mtime: R.mt }, 60000);
         if (!w || !w.ok) throw new Error((w && w.error) || "the taskbar app didn't save it");
-        state.files[key] = { size: u8.length, mtime: Number(w.mtime) || R.mt, id: R.id, md5: R.md5, local: true };
+        state.files[k] = { size: u8.length, mtime: Number(w.mtime) || R.mt, id: R.id, md5: R.md5, local: true };
         const up = await putNew(newAcct(), ck, new Blob([b64ToBytes(rd.b64)]), L.mtime);
-        state.files[ck] = { size: L.size, mtime: Number(wc.mtime) || L.mtime, id: up.id, md5: up.md5Checksum || "", local: true };
+        state.files[mk(ck)] = { size: L.size, mtime: Number(wc.mtime) || L.mtime, id: up.id, md5: up.md5Checksum || "", local: true };
         out.conflicts++;
       }
     } catch (e) {

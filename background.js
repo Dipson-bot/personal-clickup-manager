@@ -3831,7 +3831,8 @@ async function deskLink(force) {
   const ag = await chrome.storage.local.get(["autoCompleteTasks", "autoCompleteLead"]).catch(() => ({}));
   // (Not from a helper profile: the tracker hands its changes only to the main extension.)
   const auto = (await isHelperOnly()) ? undefined : { ids: Object.keys(ag.autoCompleteTasks || {}).slice(0, 200), lead: ag.autoCompleteLead || null };
-  try { r = await deskPost({ show, style, anim, warnEmpty, auto, ext: chrome.runtime.id }); } catch (e) { r = null; }
+  const notices = (await isHelperOnly()) ? undefined : (await cnoteLive().catch(() => [])).slice(0, 30);
+  try { r = await deskPost({ show, style, anim, warnEmpty, auto, notices, ext: chrome.runtime.id }); } catch (e) { r = null; }
   if (!r || r.app !== "clickup-tracker") {
     const out = { ...da, running: false, checkedAt: Date.now() };
     await chrome.storage.local.set({ deskApp: out });
@@ -10215,6 +10216,23 @@ async function cnoteTasks(force) {
   await area.set({ cnoteTasksCache: { at: Date.now(), tasks } }).catch(() => {});
   return tasks;
 }
+// Notices in effect now that should give pause before starting a task:
+// "No site changes" and a real "Work paused" (its message says stop / hold - the
+// same check the card makes). Not when notices are switched off or marked Not
+// important. [{ client, kind, label, icon, summary }]
+const CNOTE_STOP_RE = /\b(pause[ds]?|pausing|on hold|hold off|put (?:\w+ ){0,3}on hold|stop(?:s|ped|ping)?\b|halt\w*|suspend\w*|terminat\w*|cancel\w*|until further notice|no (?:more|further) work|end(?:s|ed|ing)? (?:the |our )?(?:engagement|contract|services|work)|freez\w*)/i;
+async function cnoteLive() {
+  const s = await getSettings().catch(() => ({}));
+  if (s.cnoteOff) return [];
+  const g = await chrome.storage.local.get(["clientNotices", "cnoteDismissed"]).catch(() => ({}));
+  const dis = g.cnoteDismissed || {}, now = Date.now(), DAYMS = 86400000;
+  const end = new Date(); end.setHours(23, 59, 59, 999);
+  return ((g.clientNotices && g.clientNotices.list) || []).filter((n) => n && n.client && n.important !== false && dis[n.id] !== "noimp" &&
+    (n.kind === "freeze" || (n.kind === "pause" && CNOTE_STOP_RE.test(String(n.text || "")))) &&
+    (!n.fromMs || n.fromMs <= end.getTime()) &&
+    (n.untilMs ? n.untilMs + DAYMS : n.fromMs ? n.fromMs + 14 * DAYMS : Number(n.at) + 14 * DAYMS) > now)
+    .map((n) => ({ client: String(n.client), kind: n.kind, label: n.kind === "pause" ? "Work paused" : "No site changes", icon: n.kind === "pause" ? "⏸" : "⛔", summary: String(cnoteBrief(n) || "").slice(0, 200) }));
+}
 function cnoteIsMine(client, keys) {
   const k = cnoteKey(client);
   return !!keys && k.length >= 3 && keys.some((x) => x === k || (x.length >= 4 && k.length >= 4 && (x.startsWith(k) || k.startsWith(x))));
@@ -12883,6 +12901,17 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
           // The caller re-sends with force:true once the user confirms. The live
           // ClickUp timer (cur) is authoritative, so this also catches a timer the
           // user started directly in ClickUp - not just ones WE set.
+          // A live client notice for this task's client (No site changes / Work
+          // paused): ask first. The UI re-sends with noticeOk once the person says so.
+          if (!msg.force && !msg.noticeOk) {
+            const live = await cnoteLive().catch(() => []);
+            if (live.length) {
+              const tk = await getTaskById(cfg.token, taskId).catch(() => null);
+              const keys = [tk && tk.client, tk && tk.container && tk.container.listName].map(cnoteKey).filter((k) => k.length >= 3);
+              const hit = keys.length && live.find((n) => cnoteIsMine(n.client, keys));
+              if (hit) { sendResponse({ ok: false, reason: "needs-notice", notice: hit, taskName: (tk && tk.name) || "" }); break; }
+            }
+          }
           if (!msg.force && toRevert.size) {
             const activeId = (cur && cur.taskId && String(cur.taskId) !== taskId)
               ? String(cur.taskId) : Array.from(toRevert)[0];

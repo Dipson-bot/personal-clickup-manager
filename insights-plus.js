@@ -737,6 +737,10 @@
     let last = 0;
     for (const [d, m] of Object.entries(hist.byDay || {})) if (m && Number(m[id]) > 0 && Number(d) > last) last = Number(d);
     const doneAt = last ? Math.min(t.doneAt, last + DAY - 1) : t.doneAt;
+    // Only a small part of it was yours (under half of everyone's time - a review,
+    // say): left out of Estimates held, neither helping nor hurting; its deadline
+    // still counts by your last day on it.
+    if (mine < 0.5 * (Number(t.spentMs) || 0)) return { ...t, spentMs: 0, doneAt, shared: true, minor: true };
     return { ...t, spentMs: mine, doneAt, shared: true };
   }
   // One rating out of 100 from the parts there is data for: time tracked against
@@ -804,6 +808,8 @@
         const off = o.pAcc.map((t) => ({ t, r: t.spentMs / t.estimateMs })).filter((x) => x.r > 1.05).sort((a, b) => b.r - a.r);
         why = off.length ? off.slice(0, 3).map((x) => "“" + x.t.name + "” took " + fmt(x.t.spentMs) + (x.t.shared ? " (your part)" : "") + " for a " + fmt(x.t.estimateMs) + " estimate").join("; ") + (off.length > 3 ? " and " + (off.length - 3) + " more" : "") : "no finished task went over its estimate (finishing early is fine)";
         if (off.length) tip = "Give tasks a realistic estimate before starting, and raise it in ClickUp as soon as the work grows.";
+        const minorN = o.done.filter((t) => t.minor && t.doneAt >= o.pFrom).length;
+        if (minorN) why += " · " + plural(minorN, "shared task") + " where you only did a small part (a review, say) left out";
       }
       if (!now) why = "no finished task to rate in this period yet, " + prevName + " it was " + Math.round(was.s);
       return { k, label: (now || was).label, now, was, d, pts, why, tip };

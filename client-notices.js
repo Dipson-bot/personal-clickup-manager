@@ -34,6 +34,9 @@
   const KIND_ORDER = ["pause", "freeze", "deadline", "focus", "approval", "access", "other", ""];
   const catOf = (n) => (KINDS[kindKey(n)] ? kindKey(n) : n.ai ? "other" : "");
   let view = "all";
+  // The client name to pause: the one their tasks use (the List), else the notice's.
+  const pauseName = (n) => { const t = (openTasks || []).find((x) => sameClient(x, n.client)); return (t && (t.client || (t.container && t.container.listName))) || n.client; };
+  const pausedNow = (n) => { try { return !!window.PcmPaused.pausedFor({ client: pauseName(n) }); } catch (e) { return false; } };
 
   let notices = [], dismissed = {}, openTasks = null, tasksAsked = false;
   // General › Features › Show client notices (settings.cnoteOff): off = no card,
@@ -224,6 +227,8 @@
         '<details class="cn-msg"><summary>The whole Slack message</summary><div class="cn-text">' + esc(shown(n.text)) + "</div></details>" +
         taskRows +
         '<div class="cn-acts">' + (n.permalink ? '<a class="cn-btn" href="' + esc(n.permalink) + '" target="_blank" rel="noopener">Open in Slack</a>' : "") +
+        // A real pause: offer to pause this client's tasks (only when pressed, after asking).
+        (kindKey(n) === "pause" && window.PcmPaused && !pausedNow(n) ? '<button type="button" class="cn-btn cn-pausebtn" data-cn-pause="' + esc(n.id) + '" title="Show this client\'s tasks as paused for you (General › Paused clients) - struck through, left out of your totals, Start asks first. Undo any time.">⏸ Pause this client\'s tasks</button>' : "") +
         '<button type="button" class="cn-btn" data-cn-hide="' + esc(n.id) + '" title="Hide it on this computer">Got it - hide</button>' +
         '<button type="button" class="cn-btn" data-cn-noimp="' + esc(n.id) + '" title="Not a client instruction - hide it">Not important</button></div></div>';
     });
@@ -245,6 +250,16 @@
     if (b.dataset.cnFold) {
       folded = !folded;
       try { await chrome.storage.local.set({ cnoteFold: folded }); } catch (err) {}
+      paint();
+      return;
+    }
+    if (b.dataset.cnPause) {
+      const n = notices.find((x) => x.id === b.dataset.cnPause);
+      if (!n || !window.PcmPaused) return;
+      const name = pauseName(n);
+      if (!confirm("Pause " + name + "'s tasks for you?\n\nTheir tasks are struck through with a ⏸ Paused pill, left out of your estimate totals, and Start asks first. Nothing changes in ClickUp, and you can resume them any time (General › Paused clients).")) return;
+      b.disabled = true;
+      await window.PcmPaused.pauseForMe(name, "Client notice: " + String(say(n)).slice(0, 160));
       paint();
       return;
     }

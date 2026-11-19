@@ -201,6 +201,9 @@ function setExpanded(on) {
     win.setOpacity(1);
   } else {
     expanded = false;
+    // Opened from the menu bar while the strip is hidden (Mac): hide it again.
+    if (bigShownForIt && !stripWanted()) { bigShownForIt = false; if (beforeBig) placeStrip(docked() ? dockBounds() : beforeBig); win.setOpacity(Number(settings.opacity) || 1); win.hide(); return; }
+    bigShownForIt = false;
     if (beforeBig) placeStrip(docked() ? dockBounds() : beforeBig);
     win.setOpacity(docked() ? 1 : Number(settings.opacity) || 1);
   }
@@ -318,6 +321,14 @@ function actionItems() {
 // and "finish a little early" time); the change reaches it with its next
 // once-a-minute knock (extCmds), and it reports what is marked back (extAuto).
 let extAuto = { ids: [], lead: null };
+// Client notices in effect (No site changes / Work paused), from the extension.
+let extNotices = [];
+const ckey = (s) => String(s || "").toLowerCase().replace(/[^a-z0-9]+/g, "");
+function noticeFor(client) {
+  const k = ckey(client);
+  if (k.length < 3) return null;
+  return extNotices.find((n) => { const x = ckey(n.client); return x === k || (x.length >= 4 && k.length >= 4 && (x.startsWith(k) || k.startsWith(x))); }) || null;
+}
 const extCmds = [];
 const autoWant = new Map(); // taskId -> on, until the extension has it
 function autoMarked(taskId) { const id = String(taskId); return autoWant.has(id) ? autoWant.get(id) : extAuto.ids.includes(id); }
@@ -332,6 +343,20 @@ function automationItems(run, t) {
     { label: "Hide Automation here", click: () => { settings.cheatAuto = false; saveSettings(); } },
   ] }];
 }
+// The menu-bar / tray menu: the bigger view (note, comments, /commands) and the
+// Automation item - on a Mac the strip is usually hidden, so this is the way in.
+function trayRunItems() {
+  const run = state && state.running, t = (state && state.task) || {};
+  if (!run) return [];
+  return [{ label: "⤢ Bigger view (note, comments, files)", click: openBig }, ...automationItems(run, t)];
+}
+function openBig() {
+  if (!win) return;
+  if (!win.isVisible()) { bigShownForIt = true; win.show(); }
+  win.focus();
+  send("big", true);
+}
+let bigShownForIt = false; // the window was hidden and opened only for the bigger view
 function showStripMenu() {
   if (!win) return;
   const run = state && state.running, t = (state && state.task) || {};
@@ -361,7 +386,7 @@ function buildTray() {
   const op = (v) => ({ label: Math.round(v * 100) + "%", type: "radio", checked: Math.abs((settings.opacity || 1) - v) < 0.01, click: () => setOpacity(v) });
   const login = app.getLoginItemSettings();
   tray.setContextMenu(Menu.buildFromTemplate([
-    ...(cu ? [...actionItems(), { type: "separator" }] : []),
+    ...(cu ? [...actionItems(), ...trayRunItems(), { type: "separator" }] : []),
     isMac
       ? { label: "Also show the floating strip", type: "checkbox", checked: !!(win && win.isVisible()), toolTip: "The timer is in the menu bar; this adds the small floating window too", click: toggleWindow }
       : { label: win && win.isVisible() ? "Hide tracker" : "Show tracker", click: toggleWindow },
@@ -699,6 +724,7 @@ async function filesOp(m) {
 
 let linking = false;
 async function fromExtension(m) {
+  if (Array.isArray(m.notices)) extNotices = m.notices.slice(0, 30);
   if (m.auto && Array.isArray(m.auto.ids)) {
     extAuto = { ids: m.auto.ids.map(String).slice(0, 200), lead: m.auto.lead || null };
     for (const [id, on] of [...autoWant]) if (extAuto.ids.includes(id) === on) autoWant.delete(id); // the extension has it now
@@ -884,6 +910,18 @@ async function doAction(a) {
     } else if (a.type === "start" || a.type === "extra" || a.type === "resume") {
       const target = a.type === "extra" ? state.extra && state.extra.id : a.type === "resume" ? state.last && state.last.id : a.taskId;
       if (!target) throw new Error(a.type === "extra" ? "No Extra Task found for you." : "Nothing to start.");
+      // A live client notice for its client: ask first.
+      if (a.type !== "extra" && extNotices.length) {
+        const tk = await cu.task(target).catch(() => null);
+        const nn = tk && noticeFor(tk.client);
+        if (nn) {
+          const r = await dialog.showMessageBox(win && !win.isDestroyed() ? win : undefined, {
+            type: "warning", buttons: ["Start anyway", "Cancel"], defaultId: 1, cancelId: 1, noLink: true,
+            title: "ClickUp Tracker", message: nn.icon + " " + nn.label + " for " + nn.client, detail: (nn.summary ? nn.summary + "\n\n" : "") + "Start \u201c" + (tk.name || "this task") + "\u201d anyway?",
+          });
+          if (r.response !== 0) return { ok: true, cancelled: true };
+        }
+      }
       if (run) {
         await cu.stopTimer().catch(() => {});
         if (run.taskId !== target) await cu.setStatus(run.taskId, "to do").catch(() => {});

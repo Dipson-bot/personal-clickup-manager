@@ -1,5 +1,11 @@
 # Changelog
 
+## v4.4.6
+- Client notices: a real Work paused notice has a ⏸ Pause this client's tasks button - after asking, it pauses that client for you (General › Paused clients). Nothing is paused unless you press it.
+- Starting a task for a client with a live No site changes or Work paused notice now asks first ("⏸ Work paused for X … Start anyway?") - in the popup, side panel, Options and the ClickUp Tracker taskbar app.
+- Insights > Performance: a shared task where you only did a small part (under half of everyone's time - a review, say) is left out of Estimates held, so it neither raises nor lowers your rating; What changed says how many.
+- Sync everything: file names now match between Windows and a Mac - a name with a character Windows refuses (such as :), the same name in another upper / lower case, or accents stored the Mac way no longer make a second copy. Needs ClickUp Tracker 0.4.7 on both computers.
+
 ## v4.4.5
 - Client notices: a menu on the card shows one kind only (Work paused, Deadline, No site changes, Client instruction…) or all of them grouped by kind; it remembers your choice.
 - Client notices: "Work paused" is only shown when the client's message really says to stop, pause or hold work - a message about discussing or planning work ("Discuss completed work… on Friday") now shows as a client instruction. A notice only labels a client; it never pauses their tasks.

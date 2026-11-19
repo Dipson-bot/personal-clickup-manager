@@ -165,6 +165,18 @@ function readClientFile(root, links, client, rel) {
 // that folder's name). Skips task briefs (made from ClickUp anyway), code
 // folders, hidden and Office lock files. The extension copies them both ways
 // through the user's Google Drive (lib-syncall.js).
+// A file's path in a form both Windows and Mac accept, compared without case:
+// characters Windows refuses (: * ? " < > |) become spaces, no leading / trailing
+// dots or spaces, Windows' reserved names get a _ in front, accents in one
+// Unicode form (a Mac may store them differently). Same rule in clientdirs.js
+// and lib-syncall.js.
+function portSeg(s) {
+  let n = String(s || "").normalize("NFC").replace(/[\\/:*?"<>|\u0000-\u001f]+/g, " ").replace(/\s+/g, " ").trim().slice(0, 180);
+  n = n.replace(/^[.\s]+|[.\s]+$/g, "");
+  if (/^(con|prn|aux|nul|com\d|lpt\d)$/i.test(n)) n = "_" + n;
+  return n || "file";
+}
+const portKey = (k) => String(k || "").split("/").filter(Boolean).map(portSeg).join("/");
 function syncTops(root, links) {
   const tops = new Map();
   try { for (const d of fs.readdirSync(root, { withFileTypes: true })) if (d.isDirectory() && !d.name.startsWith(".")) tops.set(d.name, path.join(root, d.name)); } catch (e) {}
@@ -175,24 +187,37 @@ function syncTops(root, links) {
   }
   return tops;
 }
+// The last listing: portable lower-case key -> the real file, so a read or a write
+// for a key lands on the file as it is named HERE ("Report: Q3.docx" on a Mac,
+// "Report.docx" in its own case).
+let syncIdx = new Map();
 function syncList(root, links, max = 5000) {
   const files = [];
+  const idx = new Map();
+  let dupes = 0;
   for (const [top, dir] of syncTops(root, links)) {
     const walk = (d, rel, depth) => {
       let ents = [];
       try { ents = fs.readdirSync(d, { withFileTypes: true }); } catch (e) { return; }
       for (const e of ents) {
         if (files.length >= max) return;
-        if (e.name.startsWith(".") || e.name.startsWith("~$") || /^(desktop\.ini|thumbs\.db)$/i.test(e.name) || /\.pcm-sync-tmp$/.test(e.name)) continue;
+        if (e.name.startsWith(".") || e.name.startsWith("~$") || /^(desktop\.ini|thumbs\.db|icon\r)$/i.test(e.name) || /^~.*\.tmp$/i.test(e.name) || /\.pcm-sync-tmp$/.test(e.name)) continue;
         const r = rel ? rel + "/" + e.name : e.name;
         if (e.isDirectory()) { if (depth < 6 && !SKIP_DIRS.test(e.name)) walk(path.join(d, e.name), r, depth + 1); continue; }
         if (!e.isFile()) continue;
-        try { const st = fs.statSync(path.join(d, e.name)); files.push({ key: top + "/" + r, size: st.size, mtime: Math.round(st.mtimeMs) }); } catch (x) {}
+        try {
+          const full = path.join(d, e.name), pk = portKey(top + "/" + r), lk = pk.toLowerCase();
+          if (idx.has(lk)) { dupes++; continue; } // two names here that are one name on the other system: the first one syncs
+          const st = fs.statSync(full);
+          idx.set(lk, full);
+          files.push({ key: pk, size: st.size, mtime: Math.round(st.mtimeMs) });
+        } catch (x) {}
       }
     };
     walk(dir, "", 0);
   }
-  return { root, files };
+  syncIdx = idx;
+  return { root, files, dupes };
 }
 // A key back to a path - always inside its client folder (no "..", no drive letters).
 function syncPath(root, links, key, create) {
@@ -200,7 +225,9 @@ function syncPath(root, links, key, create) {
   if (parts.length < 2 || parts.some((p) => p === "." || p === "..")) throw new Error("Bad path.");
   const top = parts.shift();
   const tops = syncTops(root, links);
-  const base = tops.get(top) || path.join(root, safeName(top, 120));
+  let base = tops.get(top);
+  if (!base) for (const [n, d] of tops) if (portSeg(n).toLowerCase() === portSeg(top).toLowerCase()) { base = d; break; }
+  if (!base) base = path.join(root, safeName(top, 120));
   const segs = parts.map((p) => safeName(p, 180));
   const p = path.join(base, ...segs);
   const r = path.relative(base, p);
@@ -209,7 +236,7 @@ function syncPath(root, links, key, create) {
   return p;
 }
 function syncRead(root, links, key) {
-  const p = syncPath(root, links, key, false);
+  const p = syncIdx.get(portKey(key).toLowerCase()) || syncPath(root, links, key, false);
   const st = fs.statSync(p);
   if (st.size > MAX_FILE) throw new Error("File over 30 MB.");
   return { size: st.size, mtime: Math.round(st.mtimeMs), b64: fs.readFileSync(p).toString("base64") };
@@ -220,12 +247,16 @@ function syncRead(root, links, key) {
 function syncWrite(root, links, key, b64, mtime) {
   const buf = Buffer.from(String(b64 || ""), "base64");
   if (buf.length > MAX_FILE) throw new Error("File over 30 MB.");
-  const p = syncPath(root, links, key, true);
+  const lk = portKey(key).toLowerCase();
+  const p = syncIdx.get(lk) || syncPath(root, links, key, true);
   const tmp = p + ".pcm-sync-tmp";
   fs.writeFileSync(tmp, buf);
-  fs.renameSync(tmp, p);
+  // Windows can't replace a file that is open (in Word, say): the temp file goes,
+  // and the next sync tries again.
+  try { fs.renameSync(tmp, p); } catch (e) { try { fs.unlinkSync(tmp); } catch (x) {} throw new Error(e && e.code === "EPERM" || e && e.code === "EBUSY" ? "open in another program - tried again next time" : String((e && e.message) || e)); }
+  syncIdx.set(lk, p);
   const t = Number(mtime) > 0 ? new Date(Number(mtime)) : new Date();
   try { fs.utimesSync(p, t, t); } catch (e) {}
   return { size: buf.length, mtime: Math.round(fs.statSync(p).mtimeMs) };
 }
-module.exports = { key, safeName, matchFolder, clientDir, writeTask, writeClientFile, inside, listClientFiles, clientFilePath, readClientFile, syncList, syncPath, syncRead, syncWrite };
+module.exports = { key, safeName, matchFolder, clientDir, writeTask, writeClientFile, inside, listClientFiles, clientFilePath, readClientFile, syncList, syncPath, syncRead, syncWrite, portKey };
