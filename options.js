@@ -3163,6 +3163,7 @@ async function sendTaskActionOpt(taskId, action, force, held, evidence) {
         else repaintCuTaskRows();
         return;
       }
+      if (res && res.reason === "no-file-link") { alert(res.error); repaintCuTaskRows(); return; }
       if (res && res.reason === "no-evidence") {
         const name = res.taskName;
         if (confirm("\u201c" + (name || "This task") + "\u201d has nothing to show for it yet: no Description: \"\u2026\", no File: \"\u2026\" and no comment.\n\nOK = complete it anyway. Cancel = go back and add one.")) sendTaskActionOpt(tid, "complete", false, held, "skip");
@@ -3368,6 +3369,7 @@ function renderClickupSettings(cu) {
   $("cuTidyCatNoDue").checked = tc.noDue !== false;
   $("cuTidyCatBlocked").checked = tc.blocked !== false;
   if ($("cuTidyCatOffDay")) $("cuTidyCatOffDay").checked = tc.offDay !== false;
+  if ($("cuTidyCatComments")) $("cuTidyCatComments").checked = tc.comments !== false;
   if ($("cuTidyDaysRow")) $("cuTidyDaysRow").style.display = cu.tidyNotify === false ? "none" : "";
   if ($("cuTidyCatsRow")) $("cuTidyCatsRow").style.display = cu.tidyNotify === false ? "none" : "";
   if (configured) {
@@ -7780,6 +7782,7 @@ $("cuSave").onclick = async () => {
           overdue: $("cuTidyCatOverdue").checked, noEst: $("cuTidyCatNoEst").checked,
           noDue: $("cuTidyCatNoDue").checked, blocked: $("cuTidyCatBlocked").checked,
           offDay: $("cuTidyCatOffDay") ? $("cuTidyCatOffDay").checked : true,
+          comments: $("cuTidyCatComments") ? $("cuTidyCatComments").checked : true,
         },
         clickupDeadlineTaskUrls: deadlineUrls,
       },
@@ -9124,10 +9127,16 @@ function insDrillsHtml(m) {
   var slackAll = (m.slackList || []).filter(function (r) { return r.kind !== "you"; });
   var slackOut = (slackYou.length ? insDrill("slackwait", "Slack: tagged you, no reply yet", slackYou, slackRow) : "") +
     (insSlackChannelOn && slackAll.length ? insDrill("slackchan", "Slack: @channel / @here, no reply yet", slackAll, slackRow) : "");
-  var readOut = (m.readList || []).length ? insDrill("readwait", "Read, no reply yet", m.readList, function (r) {
+  var readRow = function (r) {
     return { badge: r.mention ? '<span class="badge red">@ you</span>' : '<span class="badge amber">💬 ' + r.n + "</span>",
       plain: (r.latest ? r.latest.who + ": " + r.latest.text : "") + (r.n > 1 ? " (+" + (r.n - 1) + " more)" : ""), action: "No reply needed", act: "cmtdone" };
-  }) : "";
+  };
+  // Mentions you've read but not answered on open tasks: their own list, always
+  // shown (0 = nothing waiting), kept until you reply, say No reply needed or the task is done.
+  var readMention = (m.readList || []).filter(function (r) { return r.mention; });
+  var readOther = (m.readList || []).filter(function (r) { return !r.mention; });
+  var readOut = insDrill("readmention", "@ Mentioned you - read, no reply yet", readMention, readRow) +
+    (readOther.length ? insDrill("readwait", "Read, no reply yet", readOther, readRow) : "");
   // Possible duplicates: the point is to stop you wondering whether you already
   // did it. "Not a duplicate" dismisses a group for good (work that genuinely
   // carries one name), so the list can't cry wolf twice about the same pair.
@@ -11961,7 +11970,7 @@ if ($("admCalCard")) {
 // Where the timer shows (Floating window / Taskbar / Both / Neither) is picked once
 // and kept; the Dashboard card invites people to try the taskbar until they pick.
 const DESK_REL = "https://github.com/Dipson-bot/personal-clickup-manager/releases";
-const DESK_TAG = "desktop-v0.4.7";
+const DESK_TAG = "desktop-v0.4.8";
 let deskOs = "";
 async function deskPlatform() {
   if (deskOs) return deskOs;

@@ -803,15 +803,25 @@
       const links = [];
       for (const c of ctx.comments || []) for (const u of c.links || []) if (!links.includes(u) && !/app\.clickup\.com\/t\//i.test(u)) links.push(u);
       ed.links = links;
-      if (!String(ed.vals.file || "").trim() && links.length) { ed.pick = links.slice(); ed.vals.file = F.fileValue(links); }
+      if (t.format && !String(ed.vals.file || "").trim() && links.length) { ed.pick = links.slice(); ed.vals.file = F.fileValue(links); }
       else ed.pick = links.filter((u) => F.linksIn(ed.vals.file || "").includes(u));
+    }
+    // A task with no fields yet: After fix is the empty fields, and only the parts
+    // ticked under "Fill with AI" are filled (File from its comments' links, Pre
+    // File from the links in its description and its attached files).
+    const want = (label) => !!t.format || !!(ed.aiPick && ed.aiPick[label]);
+    if (!t.format && want("File") && !String(ed.vals.file || "").trim() && ed.links.length) { ed.pick = ed.links.slice(); ed.vals.file = F.fileValue(ed.links); }
+    if (!t.format && want("Pre File") && !String(ed.vals.preFile || "").trim()) {
+      if (!ed.ctx) { const c = await ask({ type: "DESC_CHECK_CONTEXT", taskId: id }, 60000); if (c && c.ok) ed.ctx = c; }
+      const refs = [...F.linksIn(ed.before || ""), ...((ed.ctx && ed.ctx.attachments) || []).map((a) => a.url)].filter((u, i, a) => u && a.indexOf(u) === i && !/app\.clickup\.com\/t\//i.test(u));
+      if (refs.length) ed.vals.preFile = F.fileValue(refs);
     }
     // With a note ("make it shorter") the AI rewrites its own text even after an edit; a field
     // that was already filled in ClickUp (orig) is never touched, nor a note moved from File.
     const redo = again && (!ed.edited || !!(extra && extra.trim()));
-    const needPre = on("preDescription") && (redo || !String(ed.vals.preDescription || "").trim()) && !String(ed.orig.preDescription || "").trim();
-    const needClient = on("clientDescription") && fmtOf(t, ed) === 1 && (redo || !String(ed.vals.clientDescription || "").trim()) && !String(ed.orig.clientDescription || "").trim();
-    const needDesc = on("description") && (redo || !String(ed.vals.description || "").trim()) && !String(ed.orig.description || "").trim() && !(ed.movedNote && !(extra && extra.trim()));
+    const needPre = on("preDescription") && want("Pre Description") && (redo || !String(ed.vals.preDescription || "").trim()) && !String(ed.orig.preDescription || "").trim();
+    const needClient = on("clientDescription") && want("Client Description") && fmtOf(t, ed) === 1 && (redo || !String(ed.vals.clientDescription || "").trim()) && !String(ed.orig.clientDescription || "").trim();
+    const needDesc = on("description") && want("Description") && (redo || !String(ed.vals.description || "").trim()) && !String(ed.orig.description || "").trim() && !(ed.movedNote && !(extra && extra.trim()));
     let note = "";
     // In the background only Chrome's built-in AI is used (nothing is sent anywhere unasked).
     const useAi = (needClient || needDesc || needPre) && window.PcmAI && (!bg || await builtinReady());
@@ -1126,6 +1136,14 @@
       h += '<div class="dc-fmt"><span>' + (t.format ? "Some lines are missing. Complete it as:" : "This task has no fields yet. Add:") + "</span>" +
         '<label><input type="radio" name="dcf_' + esc(t.id) + '" value="1"' + (ed.addFormat === 1 ? " checked" : "") + "> Old format (with Client Description)</label>" +
         '<label><input type="radio" name="dcf_' + esc(t.id) + '" value="2"' + (ed.addFormat === 2 ? " checked" : "") + "> New format (without Client Description)</label></div>";
+      // No fields yet: the fix adds them empty; the ticked ones are filled for you.
+      if (!t.format) {
+        const pick = ed.aiPick || {};
+        const opts = (ed.addFormat === 1 ? F.FORMAT1 : F.FORMAT2).map((l) =>
+          '<label title="' + esc(l === "File" ? "Links from this task's comments" : l === "Pre File" ? "Links in this task's description and its attached files" : "Written by the AI from this task's own description and comments") + '"><input type="checkbox" data-aipick="' + esc(l) + '"' + (pick[l] ? " checked" : "") + "> " + esc(l) + "</label>").join("");
+        h += '<div class="dc-fmt"><span>Fill with AI (optional):</span>' + opts +
+          '<button type="button" class="dc-hbtn" data-aifill="' + esc(t.id) + '"' + (Object.values(pick).some(Boolean) && !ed.busy ? "" : " disabled") + ">Fill ticked</button></div>";
+      }
     }
     if (ed.busy) {
       // Still preparing: the After column says so instead of showing the
@@ -1357,6 +1375,8 @@
           clearTimeout(ed._t); ed._t = setTimeout(paint, 250);
         };
       });
+      el.querySelectorAll("input[data-aipick]").forEach((cb) => { cb.onchange = () => { ed.aiPick = { ...(ed.aiPick || {}), [cb.getAttribute("data-aipick")]: cb.checked }; paint(); }; });
+      el.querySelectorAll("[data-aifill]").forEach((b) => { b.onclick = () => { if (dropManual(ed)) prepare(id, false); }; });
       el.querySelectorAll('input[type="radio"]').forEach((r) => { r.onchange = () => { ed.addFormat = Number(r.value) === 1 ? 1 : 2; rememberFormat(ed.addFormat); if (ed.addFormat === 1 && !String(ed.vals.clientDescription || "").trim()) prepare(id, false); else paint(); }; });
       el.querySelectorAll("input[data-link]").forEach((cb) => {
         cb.onchange = () => {

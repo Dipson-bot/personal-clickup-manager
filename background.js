@@ -35,7 +35,7 @@ import { driveFree, newMoveJob, moveStep, remapSyncState, readMoved, writeMoved 
 import { runAllAccounts, runAccountLogin, readAgentRouterLogin, URLS, GITHUB_KEEP_COOKIES } from "./lib-automation.js";
 import { getCommentRepliesLite, getTaskShareInfo, getTaskHoldInfo, fetchArchivedMine, unarchiveTask, getLatestCommentBy, getTaskCommentsLite, getTaskTimeEntries, deleteTimeEntry, getUserGroups, getUser, verifyToken, getTeams, fetchTodayEstimate, fetchWeeklySummary, fetchDateRangeEstimate, createTaskCache, fetchTeamMembers, fetchWorkspaceTags, cuTagNames, fmtDuration, findExtraTaskByName, parseTaskIdFromUrl, getCurrentTimeEntry, getRunningTaskProgress, startTimer, stopTimer, getTaskById, setTaskStatus, setTaskDates, taskUrlFor, clientLabelFromContainer, resolveSpaceNamesFor, taskContainer, cuPriorityName, isTaskDone, getSubtasksOfParent, getTaskTree, getTaskDetail, updateTimeEntry, setTaskDueDate, clearTaskTreeCache, listWorkspaceClients, cuRowAssignees, fetchDoneBetween, fetchDoneLite, fetchTrackedHistory, getTaskPanel, addTaskComment, postTaskComment, setTaskDescription, getTaskCommentLinks, getTaskCommentsFull, getListStatuses, createTask, relateTasks, removeTaskAssignee, addTaskAssignee, postAssignedComment, addTimeEntry, weeklyWithToday, listClientFieldOptions, listReachableClients, bgToken, patientToken, cuRawFetch, getRelatedTasks, slimIndexTask, fetchTeamTasksPage, listAllLists, setPausedClients, setExtraEvenSplit } from "./lib-clickup.js";
 import { resolveRelayKey, pickProbeModel, probeRelay } from "./lib-availability.js";
-import { tidyCollect, tidyLines, tidyResolved, tidyDayOk, tidyUrgent, tidyDateShort } from "./lib-tidy.js";
+import { tidyCollect, tidyLines, tidyResolved, tidyDayOk, tidyUrgent, tidyDateShort, tidyComments } from "./lib-tidy.js";
 import "./lib-rules.js"; // globalThis.PcmRules - the Automation tab's rule blocks
 import "./lib-dailyupdate.js"; // globalThis.PcmDailyUpdate - the Daily Tasks Update text (wrap-up page + scheduled send)
 import "./lib-descfmt.js"; // globalThis.PcmDescFmt - Insights > Descriptions (closing fields check)
@@ -4272,6 +4272,7 @@ async function rulesDoAction(rule, a, ctx, cfg) {
     }
     case "complete_task": {
       if (!t) return { did: "no task to complete" };
+      if (await fileLinkMissing(cfg, t.id)) return { did: "not completed - " + t.name + " has no link in File" };
       await setTaskStatus(cfg.token, t.id, "complete");
       await patchStateTask(t.id, { status: "complete", done: true }).catch(() => {});
       const cur = await getCurrentTimeEntry(cfg.token, cfg.teamId).catch(() => null);
@@ -7068,7 +7069,10 @@ async function maybeAutoStop(cfg, entry, progress, key, today) {
     // Then: the status picked in Automation (any of the task's statuses), "don't
     // change it" (keep), complete, or the usual stopped -> to do.
     if (rule.status) await setTaskStatus(cfg.token, key, rule.status);
-    else if (rule.action === "complete") await setTaskStatus(cfg.token, key, "complete");
+    else if (rule.action === "complete") {
+      if (await fileLinkMissing(cfg, key)) { cuStoppedToDo(cfg, key, 0); await notify("filegate-" + key, "Stopped, not completed", FILE_GATE_MSG(name0), "danger", taskUrlFor(key)); }
+      else await setTaskStatus(cfg.token, key, "complete");
+    }
     else if (!rule.keep) cuStoppedToDo(cfg, key, 0);
     const doneLike = rule.action === "complete" || /^(closed|done)$/.test(String(rule.statusType || ""));
     const next = { ...rules };
@@ -7285,6 +7289,13 @@ async function maybeNotifyRunningTask(cfg) {
     if (!configured && !isExtra && task) {
       try {
         await stopTimer(cfg.token, cfg.teamId);
+        if (await fileLinkMissing(cfg, key)) {
+          // Timer already stopped; the task stays open (stopped = to do) until File has a link.
+          cuStoppedToDo(cfg, key, 0);
+          await chrome.storage.local.set({ runningProgress: null });
+          await notify("filegate-" + key, "Stopped at its estimate - not completed", FILE_GATE_MSG(name0), "danger", task.url);
+          return;
+        }
         // Comments kept for completion go out first (nobody to ask here).
         const held = await heldList(key).catch(() => []);
         if (held.length) {
@@ -7790,7 +7801,10 @@ async function tidyReminderPayload(opts = {}) {
   const t = tidySettings(s);
   const resolved = t.resolved && snap.day && snap.day !== todayString()
     ? tidyResolved(snap.ids || [], model, res.data.tasks) : [];
-  const say = tidyLines(model, { cats: t.cats, max: t.max, resolved });
+  // Unread comments and read-but-unanswered mentions (the comment check's own storage, no new request).
+  const cg = await chrome.storage.local.get(["cuComments", "cuCommentSeen", "cuCommentDone"]).catch(() => ({}));
+  const comments = s.commentWatch === false ? null : tidyComments(cg.cuComments, cg.cuCommentSeen, cg.cuCommentDone);
+  const say = tidyLines(model, { cats: t.cats, max: t.max, resolved, comments });
   return { ok: true, model, resolved, say, urgent: tidyUrgent(model, resolved), blockedIds: model.blockedIds };
 }
 // A due date on a day off: a company holiday (from the team calendar) or the
@@ -7814,7 +7828,7 @@ function offDayReason(weekMode) {
 // ("cu-tidy-overdue.noest-<time>"), because the in-memory click target is gone
 // once Chrome puts the worker to sleep - that's how a click ended up opening
 // plain ClickUp instead of Insights.
-const TIDY_DRILL = { overdue: "overdue", noEst: "noest", noDue: "nodue", blocked: "blocked" };
+const TIDY_DRILL = { overdue: "overdue", noEst: "noest", noDue: "nodue", blocked: "blocked", comments: "unread" };
 function tidyDrills(say) {
   return Object.keys((say && say.counts) || {}).map((k) => TIDY_DRILL[k]).filter(Boolean);
 }
@@ -9666,6 +9680,24 @@ const EVIDENCE_FIELD = (name) => new RegExp("(?:^|\\n)[ \\t*_>-]*" + name + "\\s
 function hasEvidenceText(desc) {
   return ["Description", "File"].some((n) => { const m = EVIDENCE_FIELD(n).exec(String(desc || "")); return !!(m && m[1].replace(/[*_\s]/g, "")); });
 }
+// Team rule: a task whose description has a File: line can't be completed until
+// that line holds a link (an attached file's link or any address). Text alone in
+// File: "" isn't enough. No File: line at all, or the Extra Task: not checked.
+// Returns { name } when it must not be completed; a failed read never blocks.
+function fileLinkMissingIn(desc) {
+  const F = globalThis.PcmDescFmt;
+  const v = F.check(String(desc || ""));
+  if (!v.present.includes("File")) return false;
+  return !F.linksIn(v.values.file || "").length;
+}
+async function fileLinkMissing(cfg, taskId, token) {
+  try {
+    const d = await getTaskDetail(token || cfg.token, taskId);
+    if (EXTRA_TASK_RE.test(d.name || "")) return null;
+    return fileLinkMissingIn(d.description) ? { name: d.name || "" } : null;
+  } catch (e) { return null; }
+}
+const FILE_GATE_MSG = (name) => "“" + (name || "This task") + "” can't be completed yet: its File: \"\" has no link. Attach the file (or paste its link) in File: \"\" in ClickUp, then complete it.";
 async function completionEvidenceMissing(cfg, taskId) {
   try {
     const d = await getTaskDetail(cfg.token, taskId);
@@ -11856,7 +11888,9 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
             .map((f) => f.name + ": " + String(f.value).slice(0, 300)).slice(0, 12);
           // The whole description: the page builds its preview from it, and Save
           // compares it with ClickUp's (a cut copy would always read as "changed").
-          sendResponse({ ok: true, comments, description: md.slice(0, 60000), fields, parentName: "" });
+          // Files attached to the task: what Pre File can be filled from (Insights › Descriptions).
+          const attachments = (Array.isArray(task && task.attachments) ? task.attachments : []).filter((a) => a && a.url).map((a) => ({ url: String(a.url), name: String(a.title || "") })).slice(0, 30);
+          sendResponse({ ok: true, comments, description: md.slice(0, 60000), fields, attachments, parentName: "" });
         } catch (e) { sendResponse({ ok: false, error: String(e && e.message ? e.message : e) }); }
         break;
       }
@@ -12996,6 +13030,8 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         if (!cfg.teamId) { sendResponse({ ok: false, reason: "incomplete-setup" }); break; }
         const taskId = msg.taskId ? String(msg.taskId) : null;
         if (!taskId) { sendResponse({ ok: false, reason: "no-task" }); break; }
+        const noFile = await fileLinkMissing(cfg, taskId);
+        if (noFile) { sendResponse({ ok: false, reason: "no-file-link", taskName: noFile.name, error: FILE_GATE_MSG(noFile.name) }); break; }
         // Comments kept "for when I complete it" (task ▸ details): "Ask me first"
         // ones stop here so the page can ask; "Send automatically" ones (and the
         // asked ones once you say Send) are posted before the task is completed.
@@ -14213,6 +14249,10 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         const scopeId = cuScopeKey(cfg.userId, msg.assignee);
         const otherScope = scopeId !== String(cfg.userId == null ? "" : cfg.userId);
         const token = cuScopeToken(cfg, cfg.userId, msg.assignee);
+        if (ch.kind === "status" && /^(closed|done|complete|completed|resolved|shipped|approved)$/i.test(String(ch.value || "").trim())) {
+          const noFile = await fileLinkMissing(cfg, taskId, token);
+          if (noFile) { sendResponse({ ok: false, reason: "no-file-link", error: FILE_GATE_MSG(noFile.name) }); break; }
+        }
         const PRIO = { urgent: 1, high: 2, normal: 3, low: 4, none: null };
         const put = async (body) => {
           for (let attempt = 0; attempt < 3; attempt++) {

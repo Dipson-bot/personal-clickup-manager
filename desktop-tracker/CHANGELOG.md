@@ -1,5 +1,12 @@
 # ClickUp Tracker changelog
 
+## 0.4.8
+- On the taskbar: drag the strip onto another monitor's taskbar and it stays there (it used to jump back to the main screen). If that monitor is unplugged, it goes back to the main screen.
+- Move off the taskbar no longer leaves the floating window somewhere off-screen (an old place on a monitor that isn't there): it opens in the corner instead. The tray menu also has Bring it back to the main screen's corner.
+- No more black box above the strip on computers that can't draw see-through windows (an older graphics driver, remote desktop): the hover card then opens by growing the strip. If a black box still shows, untick See-through hover card in the tray menu.
+- The hover card stays in front while you read it: a tooltip or another always-on-top window no longer covers it after a moment.
+- ✓ Done and ✓ Today don't complete a task whose File: "" has no link yet (attach the file or paste its link in ClickUp first).
+
 ## 0.4.7
 - Starting a task (▶ Start, Resume last) for a client with a live No site changes or Work paused notice in the extension asks first.
 - Sync everything works the same on Windows and Mac: a Mac file name with a character Windows refuses (such as :) is saved under a name Windows accepts and stays one file; the same file in another upper / lower case or with accents stored the Mac way is no longer copied twice; a file open in another program (Word, say) is simply tried again next time, with no temporary file left behind; Office's own temp files (~WRL….tmp) and the Mac's hidden Icon file are skipped.

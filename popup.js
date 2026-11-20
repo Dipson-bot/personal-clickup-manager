@@ -640,6 +640,7 @@ async function sendTaskAction(taskId, action, force, held, evidence) {
         else render();
         return;
       }
+      if (res && res.reason === "no-file-link") { alert(res.error); render(); return; }
       if (res && res.reason === "no-evidence") {
         const name = res.taskName;
         if (confirm("\u201c" + (name || "This task") + "\u201d has nothing to show for it yet: no Description: \"\u2026\", no File: \"\u2026\" and no comment.\n\nOK = complete it anyway. Cancel = go back and add one.")) sendTaskAction(tid, "complete", false, held, "skip");

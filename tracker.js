@@ -767,6 +767,7 @@
           ? await send({ type: "CLICKUP_TASK_COMPLETE", taskId: String(run.taskId), held: "send" })
           : null;
       }
+      if (r && r.reason === "no-file-link") { ((pip && pip.window) || window).alert(r.error); r = null; }
       if (r && r.reason === "no-evidence") {
         // Nothing to show for the task yet: ask before completing it.
         const name = r.taskName || run.taskName;

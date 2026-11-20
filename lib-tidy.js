@@ -206,6 +206,17 @@ export function tidyLines(model, opts = {}) {
   add("noDue", "No due date", model.noDue, false);
   add("blocked", "Blocked", model.blocked, true);
   add("offDay", "Due on a day off - ask to move the date", model.offDay || [], true);
+  // Comments on open tasks (tidyComments): not read yet, and @mentions read but not answered.
+  const cm = opts.comments;
+  if (cm && on("comments") && (cm.unread.length || cm.readMention.length)) {
+    if (cm.unread.length) {
+      const nm = cm.unread.filter((x) => x.mention).length;
+      lines.push("Unread comments" + (nm ? " (" + nm + " @mention you)" : "") + ": " + nameList(cm.unread, max, false));
+    }
+    if (cm.readMention.length) lines.push("@ Mentioned you, read but not answered: " + nameList(cm.readMention, max, false));
+    counts.comments = cm.unread.length + cm.readMention.length;
+    for (const it of cm.unread.concat(cm.readMention)) said.add(it.id);
+  }
   if (resolved.length) {
     // The one the user asked for by name: a dependency cleared, so the task can
     // be finished and closed.
@@ -232,6 +243,31 @@ export function tidyLines(model, opts = {}) {
     counts,
     context: "Insights › Needs tidying",
   };
+}
+
+// Comments the notification mentions, from the comment check's storage
+// (background scanComments): cache = cuComments, seen = cuCommentSeen, done =
+// cuCommentDone. The same rules as Insights (task-notes.js): unread = by someone
+// else, newer than your last look, under 60 days old; read but not answered = an
+// @mention you've seen, newer than your own last comment / No reply needed.
+// Only tasks still in the check (open ones) are in the cache.
+export function tidyComments(cache, seen, done, now = Date.now()) {
+  const unread = [], readMention = [];
+  for (const id of Object.keys(cache || {})) {
+    const c = cache[id];
+    if (!c || !Array.isArray(c.list)) continue;
+    const others = c.list.filter((x) => x && !/^click\s*bot$/i.test(String(x.who || "")));
+    const look = Number((seen || {})[id]) || 0;
+    const fresh = others.filter((x) => x.at > Math.max(look, now - 60 * 86400000));
+    const name = tidyClip(c.name || "(task " + id + ")");
+    if (fresh.length) unread.push({ id, name, mention: fresh.some((x) => x.mention) });
+    else if ("myAt" in c) {
+      const answered = Math.max(Number(c.myAt) || 0, Number((done || {})[id]) || 0);
+      if (others.some((x) => x.mention && x.at > answered && x.at <= look)) readMention.push({ id, name });
+    }
+  }
+  unread.sort((a, b) => b.mention - a.mention);
+  return { unread, readMention };
 }
 
 // Anything urgent enough to be worth a louder chime? (overdue or unblocked work)

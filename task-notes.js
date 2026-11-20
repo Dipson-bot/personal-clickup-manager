@@ -349,8 +349,10 @@
     for (const id of Object.keys(cmtCache)) {
       const c = cmtCache[id];
       if (!c || !Array.isArray(c.list) || !("myAt" in c)) continue;
-      const seen = Number(cmtSeen[id]) || 0, after = Math.max(Number(c.myAt) || 0, Number(cmtDone[id]) || 0, now - READ_KEEP_MS);
-      const wait = c.list.filter((x) => x && x.at > after && x.at <= seen && !/^click\s*bot$/i.test(String(x.who || "")));
+      const seen = Number(cmtSeen[id]) || 0, answered = Math.max(Number(c.myAt) || 0, Number(cmtDone[id]) || 0), after = Math.max(answered, now - READ_KEEP_MS);
+      // A comment that @mentions you stays until you reply, press No reply needed
+      // or the task is done (closed tasks leave the comment check) - no 14 days.
+      const wait = c.list.filter((x) => x && x.at > (x.mention ? answered : after) && x.at <= seen && !/^click\s*bot$/i.test(String(x.who || "")));
       if (wait.length) out.push({ id, n: wait.length, mention: wait.some((x) => x.mention), latest: wait[0], seenAt: seen, task: c });
     }
     return out.sort((a, b) => (b.mention - a.mention) || (b.latest.at - a.latest.at));

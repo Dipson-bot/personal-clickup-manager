@@ -1,5 +1,15 @@
 # Changelog
 
+## v4.4.7
+- Less text on every page: a long explanation now shows one line and a small … more button (less folds it back), and a setting's long description hides behind … more after its name. Status, saved and error messages always show in full. Switch it off in General › Appearance › Short help text to see everything as before.
+- ClickUp Tracker 0.4.8: the taskbar strip can live on an external monitor's taskbar, and Move off the taskbar never leaves the window off-screen (tray menu › Bring it back to the main screen's corner).
+- ClickUp Tracker 0.4.8: no black box above the taskbar strip on computers that can't draw see-through windows (tray menu › See-through hover card to switch it off by hand).
+- ClickUp Tracker 0.4.8: the hover card stays in front while you read it instead of slipping behind other windows.
+- A task with a File: line can't be completed until File holds a link (an attached file's link or any address) - typed text alone isn't enough. Applies to Complete everywhere, auto-complete at the estimate, Automation, Bulk edit and the ClickUp Tracker app; the timer still stops, the task stays open. The Extra Task and tasks without a File: line aren't checked.
+- Insights › Descriptions: a task with no fields yet gets the empty fields in After fix; tick which ones to fill under Fill with AI (Pre Description / Description by the AI, Pre File from its description's links and attached files, File from its comments' links) and press Fill ticked. Nothing is filled unasked.
+- Insights: new list @ Mentioned you - read, no reply yet (always shown). A mention you've read on an open task stays until you reply, press No reply needed or the task is done - no longer dropped after 14 days.
+- The daily Needs tidying notification also names unread comments and @mentions read but not answered (switch: unread comments, next to the other categories).
+
 ## v4.4.6
 - Client notices: a real Work paused notice has a ⏸ Pause this client's tasks button - after asking, it pauses that client for you (General › Paused clients). Nothing is paused unless you press it.
 - Starting a task for a client with a live No site changes or Work paused notice now asks first ("⏸ Work paused for X … Start anyway?") - in the popup, side panel, Options and the ClickUp Tracker taskbar app.

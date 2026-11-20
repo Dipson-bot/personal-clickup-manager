@@ -72,10 +72,16 @@ function taskbarOf(display) {
   if (wa.y > b.y) return { x: b.x, y: b.y, width: b.width, height: wa.y - b.y };
   return null;
 }
-const canDock = () => process.platform === "win32" && !!taskbarOf(screen.getPrimaryDisplay());
+// The screen whose taskbar holds the strip: the one it was last dragged onto
+// (an external monitor's taskbar too), else the main screen.
+function dockDisplay() {
+  const d = settings.dockDisplay != null && screen.getAllDisplays().find((x) => x.id === settings.dockDisplay && taskbarOf(x));
+  return d || screen.getPrimaryDisplay();
+}
+const canDock = () => process.platform === "win32" && !!taskbarOf(dockDisplay());
 const docked = () => !!cu && settings.dock !== false && canDock();
 function dockBounds() {
-  const tb = taskbarOf(screen.getPrimaryDisplay());
+  const tb = taskbarOf(dockDisplay());
   const h = Math.max(26, Math.min(48, tb.height - 6)), w = STRIP_W;
   const off = settings.dockX != null ? Number(settings.dockX) : 170; // clear of Windows' own Widgets corner
   const x = Math.round(Math.max(tb.x, Math.min(tb.x + tb.width - w, tb.x + off)));
@@ -93,7 +99,14 @@ function dockBounds() {
 const CARD_ROOM = 264; // the tallest hover card (peekH) + the gap
 let room = null; // { dir: "up" | "down", h } while the window holds the card's room
 let cardH = 0, solid = null;
-const stripTall = () => !!cu && !expanded && (docked() || settings.size === "slim");
+// The see-through room needs the graphics card to draw see-through windows. Without
+// it (old driver, remote desktop, a virtual machine) the room shows as a black box,
+// so the card then grows the window on hover instead. Also a switch in the tray.
+const seeThroughOk = () => {
+  if (settings.cardRoom === false) return false;
+  try { return /^enabled/.test(String(app.getGPUFeatureStatus().gpu_compositing || "")); } catch (e) { return true; }
+};
+const stripTall = () => !!cu && !expanded && (docked() || settings.size === "slim") && seeThroughOk();
 // The strip's own place, from the window's.
 function baseOf(full) {
   if (!room) return full;
@@ -127,8 +140,10 @@ function setSolid(on) {
   else win.setIgnoreMouseEvents(true, { forward: true });
 }
 function keepOnTop() {
-  if (!win || win.isDestroyed() || !win.isVisible() || !docked()) return;
-  win.setAlwaysOnTop(true, "screen-saver");
+  // On the taskbar always; floating while the pointer is on it, so a tooltip or
+  // another always-on-top window can't cover the hover card being read.
+  if (!win || win.isDestroyed() || !win.isVisible() || !(docked() || pointerIn)) return;
+  win.setAlwaysOnTop(true, docked() ? "screen-saver" : "floating");
   win.moveTop();
 }
 function setDock(on) {
@@ -143,11 +158,19 @@ function setDock(on) {
 // screen. So on a Mac the strip is off unless chosen in the menu-bar menu.
 const isMac = process.platform === "darwin";
 function stripWanted() { return !settings.hiddenByExt && (!isMac || settings.macStrip === true); }
+// A saved place is used only if most of the window is on a screen that is there now.
+function onSomeScreen(b) {
+  if (!b || !(b.width > 0) || !(b.height > 0)) return false;
+  return screen.getAllDisplays().some((d) => {
+    const a = d.workArea, ix = Math.min(b.x + b.width, a.x + a.width) - Math.max(b.x, a.x), iy = Math.min(b.y + b.height, a.y + a.height) - Math.max(b.y, a.y);
+    return ix > b.width / 2 && iy > b.height / 2;
+  });
+}
 function createWindow() {
   const [w, h] = cu ? smallSize() : SETUP;
   const wa = screen.getPrimaryDisplay().workArea;
   const dock = docked();
-  const b0 = dock ? dockBounds() : settings.bounds && cu ? settings.bounds : { x: wa.x + wa.width - w - 16, y: wa.y + wa.height - h - 16, width: w, height: h };
+  const b0 = dock ? dockBounds() : onSomeScreen(settings.bounds) && cu ? { ...settings.bounds, width: w, height: h } : { x: wa.x + wa.width - w - 16, y: wa.y + wa.height - h - 16, width: w, height: h };
   room = null; solid = null; cardH = 0;
   const b = stripTall() ? withRoom({ ...b0, width: dock ? b0.width : w, height: dock ? b0.height : h }) : b0;
   win = new BrowserWindow({
@@ -171,7 +194,11 @@ function createWindow() {
     if (!win || expanded || !cu || peekBase) return; // not while the hover card has it grown
     if (docked()) {
       // Slide along the taskbar only: keep the new left/right place, snap back into the band.
-      const tb = taskbarOf(screen.getPrimaryDisplay()), nb = baseOf(win.getBounds());
+      // Dropped on another screen's taskbar: it stays there.
+      const nb = baseOf(win.getBounds());
+      const on = screen.getDisplayNearestPoint({ x: Math.round(nb.x + nb.width / 2), y: Math.round(nb.y + nb.height / 2) });
+      if (taskbarOf(on)) settings.dockDisplay = on.id;
+      const tb = taskbarOf(dockDisplay());
       settings.dockX = nb.x - tb.x; saveSettings();
       placeStrip(dockBounds());
       return;
@@ -390,6 +417,8 @@ function buildTray() {
     isMac
       ? { label: "Also show the floating strip", type: "checkbox", checked: !!(win && win.isVisible()), toolTip: "The timer is in the menu bar; this adds the small floating window too", click: toggleWindow }
       : { label: win && win.isVisible() ? "Hide tracker" : "Show tracker", click: toggleWindow },
+    ...(cu && !docked() ? [{ label: "Bring it back to the main screen's corner", click: () => { settings.bounds = null; settings.hiddenByExt = false; if (isMac) settings.macStrip = true; saveSettings(); expanded = false; beforeBig = null; recreate(); if (win) win.once("ready-to-show", () => win.showInactive()); } }] : []),
+    ...(process.platform === "win32" ? [{ label: "See-through hover card (untick if a black box shows)", type: "checkbox", checked: settings.cardRoom !== false, click: (m) => { settings.cardRoom = m.checked; saveSettings(); expanded = false; beforeBig = null; recreate(); } }] : []),
     ...(process.platform === "win32" ? [{ label: "On the taskbar", type: "checkbox", checked: settings.dock !== false, enabled: canDock(), toolTip: canDock() ? "" : "Needs the taskbar at the top or bottom of the screen, not auto-hidden", click: (m) => setDock(m.checked) }] : []),
     ...(process.platform === "darwin" && Array.isArray(settings.trustedExt) && settings.trustedExt[0] ? [{ label: settings.extFolders && settings.extFolders[settings.trustedExt[0]] ? "Extension folder for updates ✓" : "Choose the extension folder for updates…", toolTip: "So ClickUp Tracker can install new versions of the extension for you", click: () => { chooseExtFolder(settings.trustedExt[0]).then(() => buildTray()); } }] : []),
     ...(process.platform === "darwin" ? [{ label: "Show the time in the menu bar", type: "checkbox", checked: settings.menubar !== false, click: (m) => { settings.menubar = m.checked; saveSettings(); syncSecsTimer(); paintTrayText(); } }] : []),
@@ -861,6 +890,7 @@ function watchPointer() {
   } else inside = hit(full);
   if (inside === pointerIn) return;
   pointerIn = inside;
+  if (inside) keepOnTop();
   if (!expanded) win.setOpacity(inside ? 1 : Number(settings.opacity) || 1);
   send("pointer", inside);
 }
@@ -880,6 +910,23 @@ async function nothingToShow(taskId) {
     return !(await cu.comments(taskId)).length;
   } catch (e) { return false; }
 }
+// Team rule (same as the extension, lib-descfmt.js): a description with a File:
+// line can't be completed until that line holds a link. Text alone isn't enough.
+// "Pre File:" / "Checklist File:" are other fields; the value runs to the next field.
+const FIELD_RE = /^[ \t>*_#-]*(?:\*\*|__)?\s*(client\s+description|pre\s+description|pre\s+file|checklist\s+file|description|file)\s*(?:\*\*|__)?\s*:/i;
+function fileLinkMissing(desc) {
+  const lines = String(desc || "").replace(/\r\n?/g, "\n").split("\n");
+  const i = lines.findIndex((l) => { const m = FIELD_RE.exec(l); return m && /^file$/i.test(m[1]); });
+  if (i < 0) return false;
+  let val = lines[i].replace(FIELD_RE, "");
+  for (let j = i + 1; j < lines.length && !FIELD_RE.test(lines[j]); j++) val += "\n" + lines[j];
+  // A quoted value ends at its closing quote (notes written below it don't count).
+  const q = /^\s*(?:\*\*|__)?\s*["“”„]/.exec(val);
+  if (q) { const rest = val.slice(q[0].length); const e = rest.search(/["“”](?=[ \t*_]*(\n|$))/); val = e >= 0 ? rest.slice(0, e) : rest; }
+  const links = val.match(/https?:\/\/[^\s"“”<>)\]]+|\b(?:[a-z0-9-]+\.)+[a-z]{2,}(?:\/[^\s"“”<>)\]]*)?/gi) || [];
+  // A bare file name (report.pdf) is not a link; an address is.
+  return !links.some((u) => /^https?:/i.test(u) || !/\.(png|jpe?g|gif|pdf|docx?|xlsx?|csv|txt)$/i.test(u));
+}
 async function doAction(a) {
   try {
     const run = state && state.running;
@@ -894,6 +941,15 @@ async function doAction(a) {
       return { ok: true, msg: settings.cheatAuto ? "Automation is in the ▾ menu ✓" : "Automation hidden" };
     } else if ((a.type === "complete" || a.type === "doneToday") && run) {
       if (state.task && state.task.isExtra) throw new Error("The recurring Extra Task can't be completed here.");
+      const tk = await cu.task(run.taskId, true).catch(() => null);
+      if (tk && fileLinkMissing(tk.description)) {
+        await dialog.showMessageBox(win && !win.isDestroyed() ? win : undefined, {
+          type: "warning", buttons: ["OK"], noLink: true, title: "ClickUp Tracker",
+          message: "“" + (run.taskName || "This task") + "” can't be completed yet",
+          detail: "Its File: \"\" has no link. Attach the file (or paste its link) in File: \"\" in ClickUp, then complete it.",
+        });
+        return { ok: true, cancelled: true };
+      }
       if (settings.warnEmpty !== false && (await nothingToShow(run.taskId))) {
         const r = await dialog.showMessageBox(win && !win.isDestroyed() ? win : undefined, {
           type: "warning", buttons: ["Complete anyway", "Cancel"], defaultId: 1, cancelId: 1, noLink: true,
@@ -966,10 +1022,12 @@ app.whenReady().then(async () => {
   buildTray();
   refresh();
   setInterval(watchPointer, 70); // quick enough that a click on the strip is never let through
-  setInterval(keepOnTop, 1500);                      // back above the taskbar if Windows covered it
+  setInterval(keepOnTop, 700);                      // back above the taskbar if Windows covered it
   setInterval(paintTrayText, 15000);                 // menu-bar time / tooltip
   setInterval(syncSecsTimer, 2000);                  // seconds on: a 1 s repaint only while a timer runs
   screen.on("display-metrics-changed", () => { if (win && docked() && !expanded && !peekBase) placeStrip(dockBounds()); });
+  // A monitor unplugged: the strip goes back to a taskbar / a screen that is there.
+  screen.on("display-removed", () => { if (win && !expanded) recreate(); });
   setInterval(() => refresh(), 60000);       // the timer, today's time, next tasks
   setInterval(() => checkComments(false), 30000); // each task at most every 3 minutes
   checkUpdate();
