@@ -166,3 +166,7 @@ updates*).
 
 More detail on every feature: [docs/DETAILED-GUIDE.md](docs/DETAILED-GUIDE.md) ·
 simple walkthrough: [GUIDE.md](GUIDE.md).
+
+## License
+
+MIT - see [LICENSE](LICENSE). The bundled pdf.js files in `vendor/` keep their own Apache 2.0 license.
