@@ -109,7 +109,7 @@
       if (ch.autoRunQueue) queue = ch.autoRunQueue.newValue || null;
       if (ch.arBoxes) arBoxes = !!ch.arBoxes.newValue;
       if (ch.autoRunPick) picks = asPick(ch.autoRunPick.newValue);
-      if (ch.autoStopTasks) { stops = ch.autoStopTasks.newValue || {}; paintBar(); }
+      if (ch.autoStopTasks) { stops = ch.autoStopTasks.newValue || {}; paintBar(); paintNow(); }
       if (ch.autoCompleteTasks || ch.acBoxes || ch.autoRunQueue || ch.arBoxes || ch.autoRunPick) paintRows();
       if (ch.settings) load();
     });
@@ -122,10 +122,13 @@
   // without an estimate gets a dimmed box that says so, instead of no box.
   const canBox = (t) => !!t && canMark({ ...t, totalEstimateMs: 1 });
   const noEst = (t) => !(Number(t && (t.totalEstimateMs || t.estimateMs)) > 0);
-  async function toggleMark(t, on) {
+  // dates { start, due }: "keep" / "today" / a day (ms), set when it completes itself.
+  // A new mark without them: due today, start as it is (the default).
+  async function toggleMark(t, on, dates) {
     const g = await chrome.storage.local.get("autoCompleteTasks").catch(() => ({}));
     const next = { ...((g && g.autoCompleteTasks) || {}) };
-    if (on) next[String(t.id)] = { name: t.name || "", at: Date.now() }; else delete next[String(t.id)];
+    const d = dates && typeof dates === "object" ? dates : { start: "keep", due: "today" };
+    if (on) next[String(t.id)] = { name: t.name || "", at: Date.now(), start: d.start || "keep", due: d.due || "keep" }; else delete next[String(t.id)];
     marked = next;
     await chrome.storage.local.set({ autoCompleteTasks: next });
     paintRows();
@@ -147,27 +150,168 @@
     const stop = box.querySelector(".cu-now-stop");
     let b = box.querySelector(".xa-now");
     const id = String(box.dataset.key || "").split(":")[0];
-    if (!autoTab || !stop || !id || box.hidden) { if (b) b.remove(); return; }
-    if (!b) {
-      b = document.createElement("button");
-      b.type = "button";
+    let o = box.querySelector(".xa-opts");
+    if (!autoTab || !stop || !id || box.hidden) { if (b) b.remove(); if (o) o.remove(); return; }
+    // One choice for the running task, then Apply: nothing / ⏱ Auto-complete (when:
+    // at its estimate, after tracked time or at a time of day; start and due dates:
+    // keep, today or a day from the calendar) / ⏹ Stop timer after a time. It writes
+    // the same autoCompleteTasks / autoStopTasks the background acts on. The options
+    // get their own line under the bar (.xa-opts), so nothing is squeezed.
+    if (!b || !o) {
+      if (b) b.remove();
+      if (o) o.remove();
+      b = document.createElement("span");
       b.className = "xa-now";
+      b.innerHTML = '<select class="xa-mode" title="What happens to this task by itself">' +
+        '<option value="">No automatic action</option><option value="auto">⏱ Auto-complete</option><option value="stop">⏹ Stop timer after…</option></select>' +
+        '<button type="button" class="xa-apply">Apply</button><span class="xa-msg"></span>';
       const at = box.querySelector(".pcm-float");
       (at && at.parentNode === stop.parentNode ? at : stop).before(b);
-      b.onclick = async (e) => {
-        e.stopPropagation();
-        const nm = (box.querySelector(".cu-now-name") || {}).textContent || "";
-        await toggleMark({ id: b.dataset.id, name: nm }, !marked[b.dataset.id]);
-        paintNow();
-      };
+      o = document.createElement("div");
+      o.className = "xa-opts";
+      o.hidden = true;
+      o.innerHTML =
+        '<label class="xa-g xa-a">When <select class="xa-when"><option value="est"></option><option value="custom">At a custom time…</option></select></label>' +
+        '<input class="xa-time" type="text" hidden>' +
+        '<label class="xa-g xa-a">Start date <select class="xa-start"><option value="keep">Keep as it is</option><option value="today">Today</option><option value="pick">Pick a date…</option><option value="repick" hidden>Pick another date…</option></select></label>' +
+        '<label class="xa-g xa-a">Due date <select class="xa-due"><option value="today">Today</option><option value="keep">Keep as it is</option><option value="pick">Pick a date…</option><option value="repick" hidden>Pick another date…</option></select></label>' +
+        '<label class="xa-daily" title="Do it again every day, not just once"><input type="checkbox"> Every day</label>';
+      stop.parentNode.after(o);
+      xaWire(b, o, box);
     }
-    b.dataset.id = id;
-    const on = !!marked[id];
-    const txt = on ? "⏱ Auto-complete on" : "⏱ Auto-complete";
-    if (b.textContent !== txt) b.textContent = txt; // (only on change: the observer below sees our own edits)
-    b.classList.toggle("on", on);
-    b.title = on ? "Completes itself " + acWhen() + " - click to turn off"
-      : "Click so that " + acWhen() + " the timer stops and the task is marked complete";
+    const sel = b.querySelector(".xa-mode"), wh = o.querySelector(".xa-when"), tm = o.querySelector(".xa-time");
+    const ss = o.querySelector(".xa-start"), ds = o.querySelector(".xa-due"), dl = o.querySelector(".xa-daily input");
+    const estLbl = acWhen().replace(/^./, (c) => c.toUpperCase());
+    if (wh.options[0].textContent !== estLbl) wh.options[0].textContent = estLbl;
+    // What is set now (unless the person is mid-choice).
+    if (b.dataset.id !== id || !b.dataset.touched) {
+      b.dataset.id = id;
+      delete b.dataset.touched;
+      const mk = marked[id], rule = stops[id];
+      let cur = "", when = "est", start = "keep", due = "today", t = "", daily = false;
+      if (mk) { cur = "auto"; start = mk.start || "keep"; due = mk.due || "keep"; }
+      else if (rule && rule.action === "complete") { cur = "auto"; when = "custom"; t = rule.scope === "clock" ? xaClock(rule.atMs) : fmtLimit(rule.ms); start = rule.start || "keep"; due = rule.due || "keep"; }
+      else if (rule) { cur = "stop"; t = rule.scope === "clock" ? xaClock(rule.atMs) : fmtLimit(rule.ms); daily = !!rule.daily; }
+      sel.value = cur; wh.value = when;
+      if (document.activeElement !== tm) tm.value = t;
+      xaSetDay(ss, start, o, "start"); xaSetDay(ds, due, o, "due");
+      dl.checked = daily;
+      xaShow(b, o);
+    }
+    const on = !!sel.value && !b.dataset.touched;
+    b.classList.toggle("on", !!marked[id] || !!stops[id]);
+    sel.title = on ? xaSummary(marked[id], stops[id]) : "Pick what this task does by itself, then Apply";
+  }
+  // A start / due select: "keep", "today", or a picked day (ms) shown on the third option.
+  function xaSetDay(s, v, o, k) {
+    const n = Number(v);
+    if (n > 0) { s.value = "pick"; o.dataset[k] = String(n); s.options[2].textContent = "📅 " + new Date(n).toLocaleDateString([], { weekday: "short", day: "numeric", month: "short" }); s.options[3].hidden = false; }
+    else { s.value = v === "today" || v === "keep" ? v : (k === "due" ? "today" : "keep"); delete o.dataset[k]; s.options[2].textContent = "Pick a date…"; s.options[3].hidden = true; }
+  }
+  // "1h", "2h 30m", "45m", "2" (hours up to 12, minutes above) -> { ms }; "4:30 PM", "16:30" -> { atMs } today.
+  function xaCustom(v) {
+    const t = String(v || "").trim().toLowerCase();
+    if (!t) return { err: "Type a time: 1h, 2h 30m or 4:30 PM" };
+    if (/\d\s*(?:am|pm|a\.m\.?|p\.m\.?)$|^\d{1,2}:\d{2}$/.test(t)) {
+      const at = xaParseClock(t.replace(/\./g, ""));
+      if (!at) return { err: "Type an exact time like 4:30 PM or 16:30" };
+      if (at <= Date.now() + 30000) return { err: "That time has already passed today" };
+      return { atMs: at };
+    }
+    const n = t.match(/^(\d+(?:\.\d+)?)$/);
+    const ms = n ? (Number(n[1]) <= 12 ? Math.round(Number(n[1]) * 3600000) : Number(n[1]) * 60000) : parseLimit(t);
+    if (!(ms >= 60000) || ms > 24 * 3600000) return { err: "Type a time like 1h, 2h 30m, 45m or 4:30 PM" };
+    return { ms };
+  }
+  const xaClock = (ms) => new Date(Number(ms) || 0).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+  // "4:30 PM", "4:30pm", "16:30", "4 pm" -> today at that time (ms), 0 when unreadable.
+  function xaParseClock(s) {
+    const m = String(s || "").trim().toLowerCase().match(/^(\d{1,2})(?::(\d{2}))?\s*(am|pm|a|p)?$/);
+    if (!m) return 0;
+    let h = Number(m[1]); const mi = Number(m[2] || 0);
+    if (m[3] && m[3][0] === "p" && h < 12) h += 12;
+    if (m[3] && m[3][0] === "a" && h === 12) h = 0;
+    if (h > 23 || mi > 59) return 0;
+    return new Date().setHours(h, mi, 0, 0);
+  }
+  const xaDayTxt = (v) => (v === "today" ? "today" : Number(v) > 0 ? new Date(Number(v)).toLocaleDateString([], { weekday: "short", day: "numeric", month: "short" }) : "");
+  function xaSummary(mk, rule) {
+    const dates = (r) => [r && xaDayTxt(r.start) ? "start " + xaDayTxt(r.start) : "", r && xaDayTxt(r.due) ? "due " + xaDayTxt(r.due) : ""].filter(Boolean).join(", ");
+    if (mk) return "Completes itself " + acWhen() + (dates(mk) ? " - " + dates(mk) : "");
+    if (rule) return (rule.action === "complete" ? "Completes itself " : "The timer stops ") + ruleWhen(rule) + (rule.action === "complete" && dates(rule) ? " - " + dates(rule) : rule.daily ? ", every day" : "");
+    return "";
+  }
+  // Which options show: Auto-complete's when / dates (and the time box unless "at
+  // its estimate"); Stop's time box and Every day.
+  function xaShow(b, o) {
+    const mode = b.querySelector(".xa-mode").value, wh = o.querySelector(".xa-when"), tm = o.querySelector(".xa-time");
+    o.hidden = !mode;
+    o.querySelectorAll(".xa-a").forEach((x) => { x.hidden = mode !== "auto"; });
+    o.querySelector(".xa-daily").hidden = mode !== "stop";
+    const timed = mode === "stop" || (mode === "auto" && wh.value === "custom");
+    tm.hidden = !timed;
+    tm.placeholder = "1h, 2h 30m or 4:30 PM";
+    tm.title = "When today's time on this task reaches 1h, 2h 30m, 45m… - or at an exact time today: 4:30 PM, 16:30";
+  }
+  function xaWire(b, o, box) {
+    const sel = b.querySelector(".xa-mode"), msg = b.querySelector(".xa-msg");
+    const wh = o.querySelector(".xa-when"), tm = o.querySelector(".xa-time"), ss = o.querySelector(".xa-start"), ds = o.querySelector(".xa-due"), dl = o.querySelector(".xa-daily input");
+    const touch = () => { b.dataset.touched = "1"; msg.textContent = ""; };
+    [b, o].forEach((x) => x.addEventListener("click", (e) => e.stopPropagation()));
+    sel.onchange = () => { touch(); xaShow(b, o); };
+    wh.onchange = () => { touch(); xaShow(b, o); if (!tm.hidden) tm.focus(); };
+    tm.oninput = touch; dl.onchange = touch;
+    tm.onkeydown = (e) => { if (e.key === "Enter") b.querySelector(".xa-apply").click(); };
+    // "Pick a date…": the extension's own calendar; closing it without a day puts the choice back.
+    const day = (s, k, what) => {
+      let before = s.value === "pick" ? "pick" : s.value;
+      s.onfocus = () => { before = s.value; };
+      s.onchange = () => {
+        touch();
+        // "Pick another date…" (shown once a day is picked): the calendar again.
+        if (s.value !== "pick" && s.value !== "repick") { delete o.dataset[k]; s.options[2].textContent = "Pick a date…"; s.options[3].hidden = true; return; }
+        if (!window.PcmCalendar || !window.PcmCalendar.pick) { s.value = before; return; }
+        let picked = false;
+        window.PcmCalendar.pick(s, { value: Number(o.dataset[k]) || Date.now(), what,
+          onPick: (ms) => { if (!ms) return; picked = true; xaSetDay(s, ms, o, k); before = "pick"; },
+          onClose: () => { if (picked) return; if (o.dataset[k]) s.value = "pick"; else s.value = before === "pick" || before === "repick" ? (k === "due" ? "today" : "keep") : before; } });
+      };
+    };
+    day(ss, "start", "start date"); day(ds, "due", "due date");
+    b.querySelector(".xa-apply").onclick = async () => {
+      const tid = b.dataset.id, nm = (box.querySelector(".cu-now-name") || {}).textContent || "the running task", mode = sel.value;
+      let when = mode === "auto" ? wh.value : "";
+      let ms = 0, atMs = 0;
+      // A custom time: a length of today's time (1h, 2h 30m, 45m, a bare 2 = 2h) or an exact time today (4:30 PM, 16:30).
+      if (when === "custom") {
+        const c = xaCustom(tm.value);
+        if (c.err) { msg.textContent = c.err; tm.focus(); return; }
+        when = c.atMs ? "clock" : "after"; ms = c.ms || 0; atMs = c.atMs || 0;
+      }
+      let stopAt = null;
+      if (mode === "stop") {
+        stopAt = xaCustom(tm.value); // a length of today's time, or an exact time today - like Auto-complete
+        if (stopAt.err) { msg.textContent = stopAt.err; tm.focus(); return; }
+      }
+      const dayOf = (s, k) => (s.value === "pick" || s.value === "repick" ? Number(o.dataset[k]) || "keep" : s.value);
+      const dates = { start: dayOf(ss, "start"), due: dayOf(ds, "due") };
+      const g = await chrome.storage.local.get("autoStopTasks").catch(() => ({}));
+      const rules = { ...((g && g.autoStopTasks) || {}) };
+      // What else the rule holds (set in the Automation tab: a status, a comment, keep) stays.
+      const prev = rules[tid] || {};
+      delete rules[tid];
+      const at = (c) => (c.atMs ? { scope: "clock", atMs: c.atMs, ms: undefined } : { scope: "today", ms: c.ms, atMs: undefined });
+      if (mode === "stop") rules[tid] = { ...prev, name: nm, ...at(stopAt), action: "stop", daily: !!dl.checked && !stopAt.atMs, firedDay: "" };
+      if (when === "after") rules[tid] = { ...prev, name: nm, ms, scope: "today", atMs: undefined, action: "complete", daily: false, firedDay: "", ...dates };
+      if (when === "clock") rules[tid] = { ...prev, name: nm, atMs, scope: "clock", ms: undefined, action: "complete", daily: false, firedDay: "", ...dates };
+      await chrome.storage.local.set({ autoStopTasks: rules });
+      await toggleMark({ id: tid, name: nm }, when === "est", dates);
+      send({ type: "TRACKER_PROGRESS" }).catch(() => {}); // work it out now (and set the alarm)
+      delete b.dataset.touched;
+      paintNow();
+      msg.textContent = mode ? "Applied ✓" : "Off ✓";
+      setTimeout(() => { if (msg.textContent.endsWith("✓")) msg.textContent = ""; }, 2500);
+    };
   }
   chrome.storage.local.get("automationTab").then((g) => { autoTab = !!(g && g.automationTab); paintNow(); paintDrop(); paintBar(); }).catch(() => {});
   try {
@@ -183,9 +327,22 @@
 
   const css = document.createElement("style");
   css.textContent = `
-  .xa-now { flex: none; font: inherit; font-size: 11.5px; padding: 3px 8px; border-radius: 7px; border: 1px solid var(--border); background: var(--card, transparent); color: var(--text); cursor: pointer; white-space: nowrap; }
-  .xa-now:hover { border-color: #8b5cf6; color: #7c3aed; }
-  .xa-now.on { border-color: #8b5cf6; background: rgba(139,92,246,.12); color: #7c3aed; font-weight: 700; }
+  /* Keeps its own width on one line (never squeezed so Apply drops under the menu); only a bar narrower than the whole group wraps it. */
+  .xa-now { flex: 0 0 auto; display: inline-flex; flex-wrap: nowrap; align-items: center; gap: 4px; max-width: 100%; font-size: 11.5px; white-space: nowrap; }
+  @media (max-width: 560px) { .xa-now { flex-wrap: wrap; } .xa-now select { max-width: 100%; } }
+  .xa-now select, .xa-now .xa-apply, .xa-opts select, .xa-opts .xa-time { font: inherit; font-size: 11.5px; padding: 3px 6px; border-radius: 7px; border: 1px solid var(--border); background: var(--card, transparent); color: var(--text); }
+  .xa-now select { max-width: 200px; cursor: pointer; }
+  .xa-now.on select { border-color: #8b5cf6; background: rgba(139,92,246,.12); color: #7c3aed; font-weight: 700; }
+  .xa-now .xa-apply { font-weight: 700; color: #7c3aed; border-color: rgba(139,92,246,.5); cursor: pointer; }
+  .xa-now .xa-apply:hover { background: #8b5cf6; color: #fff; }
+  .xa-now .xa-msg { color: #7c3aed; font-weight: 600; }
+  /* Auto-complete / Stop options: their own line under the Tracking now bar. */
+  .xa-opts { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 14px; margin: 6px 0 2px; padding: 6px 10px; border: 1px dashed rgba(139,92,246,.45); border-radius: 9px; background: rgba(139,92,246,.05); font-size: 11.5px; color: var(--muted); }
+  .xa-opts[hidden], .xa-opts [hidden] { display: none !important; }
+  .xa-opts .xa-g { display: inline-flex; align-items: center; gap: 5px; margin: 0; font-weight: 600; white-space: nowrap; }
+  .xa-opts select { cursor: pointer; color: var(--text); }
+  .xa-opts .xa-time { width: 80px; }
+  .xa-opts .xa-daily { display: inline-flex; align-items: center; gap: 4px; margin: 0; font-weight: 400; cursor: pointer; color: var(--text); }
   .cu-task.ac-on { box-shadow: inset 3px 0 0 #8b5cf6; background: rgba(139,92,246,.07); }
   .xa-bar { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; margin: 6px 0; padding: 6px 10px; border: 1px solid rgba(139,92,246,.35); border-radius: 9px; background: rgba(139,92,246,.07); font-size: 11.5px; }
   .xa-bar .xa-l { font-weight: 700; color: #7c3aed; }

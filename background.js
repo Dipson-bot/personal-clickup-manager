@@ -33,9 +33,9 @@ import {
 } from "./lib-drive.js";
 import { driveFree, newMoveJob, moveStep, remapSyncState, readMoved, writeMoved } from "./lib-drivemove.js"; // two Google accounts in Drive Sync
 import { runAllAccounts, runAccountLogin, readAgentRouterLogin, URLS, GITHUB_KEEP_COOKIES } from "./lib-automation.js";
-import { getCommentRepliesLite, getTaskShareInfo, getTaskHoldInfo, fetchArchivedMine, unarchiveTask, getLatestCommentBy, getTaskCommentsLite, getTaskTimeEntries, deleteTimeEntry, getUserGroups, getUser, verifyToken, getTeams, fetchTodayEstimate, fetchWeeklySummary, fetchDateRangeEstimate, createTaskCache, fetchTeamMembers, fetchWorkspaceTags, cuTagNames, fmtDuration, findExtraTaskByName, parseTaskIdFromUrl, getCurrentTimeEntry, getRunningTaskProgress, startTimer, stopTimer, getTaskById, setTaskStatus, setTaskDates, taskUrlFor, clientLabelFromContainer, resolveSpaceNamesFor, taskContainer, cuPriorityName, isTaskDone, getSubtasksOfParent, getTaskTree, getTaskDetail, updateTimeEntry, setTaskDueDate, clearTaskTreeCache, listWorkspaceClients, cuRowAssignees, fetchDoneBetween, fetchDoneLite, fetchTrackedHistory, getTaskPanel, addTaskComment, postTaskComment, setTaskDescription, getTaskCommentLinks, getTaskCommentsFull, getListStatuses, createTask, relateTasks, removeTaskAssignee, addTaskAssignee, postAssignedComment, addTimeEntry, weeklyWithToday, listClientFieldOptions, listReachableClients, bgToken, patientToken, cuRawFetch, getRelatedTasks, slimIndexTask, fetchTeamTasksPage, listAllLists, setPausedClients, setExtraEvenSplit } from "./lib-clickup.js";
+import { getCommentRepliesLite, getTaskShareInfo, getTaskHoldInfo, fetchArchivedMine, unarchiveTask, getLatestCommentBy, getTaskCommentsLite, getTaskTimeEntries, deleteTimeEntry, getUserGroups, getUser, verifyToken, getTeams, fetchTodayEstimate, fetchWeeklySummary, fetchDateRangeEstimate, createTaskCache, fetchTeamMembers, fetchWorkspaceTags, cuTagNames, fmtDuration, findExtraTaskByName, parseTaskIdFromUrl, getCurrentTimeEntry, getRunningTaskProgress, startTimer, stopTimer, getTaskById, setTaskStatus, setTaskDates, taskUrlFor, clientLabelFromContainer, resolveSpaceNamesFor, taskContainer, cuPriorityName, isTaskDone, getSubtasksOfParent, getTaskTree, getTaskDetail, updateTimeEntry, setTaskDueDate, setTaskStartDate, clearTaskTreeCache, listWorkspaceClients, cuRowAssignees, fetchDoneBetween, fetchDoneLite, fetchTrackedHistory, getTaskPanel, addTaskComment, postTaskComment, setTaskDescription, getTaskCommentLinks, getTaskCommentsFull, getListStatuses, createTask, relateTasks, removeTaskAssignee, addTaskAssignee, postAssignedComment, addTimeEntry, weeklyWithToday, listClientFieldOptions, listReachableClients, bgToken, patientToken, cuRawFetch, getRelatedTasks, slimIndexTask, fetchTeamTasksPage, listAllLists, setPausedClients, setExtraEvenSplit } from "./lib-clickup.js";
 import { resolveRelayKey, pickProbeModel, probeRelay } from "./lib-availability.js";
-import { tidyCollect, tidyLines, tidyResolved, tidyDayOk, tidyUrgent, tidyDateShort, tidyComments } from "./lib-tidy.js";
+import { tidyCollect, tidyLines, tidyResolved, tidyDayOk, tidyUrgent, tidyDateShort, tidyComments, tidyClip } from "./lib-tidy.js";
 import "./lib-rules.js"; // globalThis.PcmRules - the Automation tab's rule blocks
 import "./lib-dailyupdate.js"; // globalThis.PcmDailyUpdate - the Daily Tasks Update text (wrap-up page + scheduled send)
 import "./lib-descfmt.js"; // globalThis.PcmDescFmt - Insights > Descriptions (closing fields check)
@@ -1191,7 +1191,19 @@ function phpFromHeaders(res, html) {
   const xp = String((res && res.headers && res.headers.get("x-powered-by")) || "");
   const sv = String((res && res.headers && res.headers.get("server")) || "");
   const m = (xp + " " + sv).match(/PHP\/(\d+\.\d+(?:\.\d+)?)/i);
-  return { php: m ? m[1] : "", powered: xp.slice(0, 80), server: sv.slice(0, 80), platform: sitePlatform(res, html) };
+  return { php: m ? m[1] : "", powered: xp.slice(0, 80), server: sv.slice(0, 80), platform: sitePlatform(res, html), wp: wpVersionFromPage(html) };
+}
+// The WordPress version a page gives away, from the page the check already read
+// (no extra request): the generator tag, else the ?ver= of WordPress's own core
+// files (the block styles, the emoji script). A plugin like Gutenberg can put its
+// own number there (19.x), so only a 4-9 major counts. "" when hidden.
+function wpVersionFromPage(html) {
+  const p = String(html || "").slice(0, 400000);
+  const m = p.match(/<meta[^>]+name=["']generator["'][^>]+content=["']WordPress\s+(\d+\.\d+(?:\.\d+)?)/i)
+    || p.match(/<meta[^>]+content=["']WordPress\s+(\d+\.\d+(?:\.\d+)?)["'][^>]*name=["']generator/i)
+    || p.match(/wp-includes\/css\/dist\/block-library\/style(?:\.min)?\.css\?ver=(\d+\.\d+(?:\.\d+)?)/i)
+    || p.match(/wp-emoji-release\.min\.js\?ver=(\d+\.\d+(?:\.\d+)?)/i);
+  return m && /^[4-9]\./.test(m[1]) ? m[1] : "";
 }
 // What the site is built on, from the page the check already read: a hosted
 // builder (Wix, Shopify, Squarespace, Webflow) runs no PHP of the site's own, so
@@ -1495,14 +1507,21 @@ async function checkSitesImpl(opts = {}) {
       if (!h) continue;
       sitePhpSeen.delete(s.url);
       const prev = sp[s.url];
+      // The WordPress version seen in the page; one read from WordPress itself (🔑) wins until a newer page shows another.
+      const { wp: pageWp, ...hh } = h;
+      // A version read from Site Health (the key) is only replaced by a NEWER one from the page - a cached page can show an old number.
+      const verNum = (v) => String(v || "").split(".").reduce((a, x, i) => a + (Number(x) || 0) * Math.pow(1000, 2 - i), 0);
+      const pageWins = pageWp && (!prev || prev.wp !== pageWp) && !(prev && prev.wpSrc === "wp" && verNum(pageWp) <= verNum(prev.wp));
+      const wpPart = pageWins ? { wp: pageWp, wpSrc: "page", wpVerAt: Date.now() } : {};
       if (prev && prev.src) { // from the team sheet / WordPress itself: more reliable than a header (a CDN can say another PHP)
-        if (h.platform && prev.platform !== h.platform) { sp[s.url] = { ...prev, platform: h.platform }; n++; }
+        if ((hh.platform && prev.platform !== hh.platform) || wpPart.wp) { sp[s.url] = { ...prev, ...(hh.platform ? { platform: hh.platform } : {}), ...wpPart }; n++; }
         continue;
       }
-      sp[s.url] = { ...(prev || {}), ...h, at: Date.now() }; n++; // keeps a failed WordPress read's reason
+      sp[s.url] = { ...(prev || {}), ...hh, ...wpPart, at: Date.now() }; n++; // keeps a failed WordPress read's reason
     }
     if (n) await chrome.storage.local.set({ sitePhp: sp });
   } catch (e) {}
+  wpLatestRefresh().catch(() => {}); // the newest WordPress release, for Site monitor's WordPress column (twice a day at most)
   // Hosting (Site monitor › 🖥): up to 4 sites with none yet, each run - DNS only.
   try {
     const hz = (await chrome.storage.local.get("siteHosting")).siteHosting || {};
@@ -3828,9 +3847,20 @@ async function deskLink(force) {
   let r = null;
   const style = ["B", "L", "F", "H", "J"].includes(s.stripStyle) ? s.stripStyle : "B", anim = s.stripAnim !== false, warnEmpty = s.clickupWarnEmptyComplete !== false;
   // What completes itself at its estimate (the tracker's hidden Automation item shows it).
-  const ag = await chrome.storage.local.get(["autoCompleteTasks", "autoCompleteLead"]).catch(() => ({}));
+  const ag = await chrome.storage.local.get(["autoCompleteTasks", "autoCompleteLead", "autoStopTasks"]).catch(() => ({}));
   // (Not from a helper profile: the tracker hands its changes only to the main extension.)
-  const auto = (await isHelperOnly()) ? undefined : { ids: Object.keys(ag.autoCompleteTasks || {}).slice(0, 200), lead: ag.autoCompleteLead || null };
+  const acAll = ag.autoCompleteTasks || {};
+  // Each task's auto-complete setup, for the tracker's menu: when (estimate / a
+  // clock time from a "complete" stop-at rule) and its start / due choice.
+  const stAll = ag.autoStopTasks || {};
+  const setup = {};
+  for (const [k, v] of Object.entries(acAll).slice(0, 200)) setup[k] = { when: "est", start: (v && v.start) || "keep", due: (v && v.due) || "keep" };
+  for (const [k, v] of Object.entries(stAll)) {
+    if (!v || v.action !== "complete") continue;
+    setup[k] = v.scope === "clock" ? { when: "clock", atMs: Number(v.atMs) || 0, start: v.start || "keep", due: v.due || "keep" }
+      : { when: "after", ms: Number(v.ms) || 0, start: v.start || "keep", due: v.due || "keep" };
+  }
+  const auto = (await isHelperOnly()) ? undefined : { ids: Object.keys(setup).slice(0, 200), lead: ag.autoCompleteLead || null, setup };
   const notices = (await isHelperOnly()) ? undefined : (await cnoteLive().catch(() => [])).slice(0, 30);
   try { r = await deskPost({ show, style, anim, warnEmpty, auto, notices, ext: chrome.runtime.id }); } catch (e) { r = null; }
   if (!r || r.app !== "clickup-tracker") {
@@ -3844,15 +3874,24 @@ async function deskLink(force) {
   }
   // Changes made in the tracker's Automation item.
   if (Array.isArray(r.cmds) && r.cmds.length) {
-    const { autoCompleteTasks: ac } = await chrome.storage.local.get("autoCompleteTasks").catch(() => ({}));
-    const marks = { ...(ac || {}) };
+    const { autoCompleteTasks: ac, autoStopTasks: as } = await chrome.storage.local.get(["autoCompleteTasks", "autoStopTasks"]).catch(() => ({}));
+    const marks = { ...(ac || {}) }, stops = { ...(as || {}) };
+    const day = (v) => (v === "keep" || v === "today" ? v : Number(v) > 0 ? Number(v) : "keep");
     for (const c of r.cmds.slice(0, 20)) {
       if (!c || c.type !== "autoComplete" || !c.taskId) continue;
-      const id = String(c.taskId);
-      if (c.on) marks[id] = marks[id] || { name: String(c.name || "").slice(0, 200), at: Date.now() };
-      else delete marks[id];
+      const id = String(c.taskId), name = String(c.name || (marks[id] && marks[id].name) || "").slice(0, 200);
+      const prevMark = marks[id], prevStop = stops[id];
+      // One auto-complete per task: at its estimate (autoCompleteTasks) or at a clock time (a "complete" stop-at rule).
+      delete marks[id];
+      if (stops[id] && stops[id].action === "complete") delete stops[id];
+      if (!c.on) continue;
+      const start = day(c.start), due = day(c.due);
+      if (c.when === "clock" && !(Number(c.atMs) > Date.now())) { if (prevMark) marks[id] = prevMark; if (prevStop) stops[id] = prevStop; continue; } // that time has passed: nothing changes
+      if (c.when === "clock") stops[id] = { name, atMs: Number(c.atMs), scope: "clock", action: "complete", daily: false, firedDay: "", start, due };
+      else if (c.when === "after" && Number(c.ms) >= 60000) stops[id] = { name, ms: Math.min(Number(c.ms), 24 * 3600000), scope: "today", action: "complete", daily: false, firedDay: "", start, due };
+      else marks[id] = { name, at: Date.now(), start, due };
     }
-    await chrome.storage.local.set({ autoCompleteTasks: marks }).catch(() => {});
+    await chrome.storage.local.set({ autoCompleteTasks: marks, autoStopTasks: stops }).catch(() => {});
   }
   const out = { ...da, running: true, seenAt: Date.now(), checkedAt: Date.now(), version: String(r.version || ""), signedIn: !!r.signedIn, user: String(r.user || ""), shown: r.shown !== false, folders: !!r.folders };
   if (r.timer && r.timer.taskId) {
@@ -4731,6 +4770,52 @@ async function commentsHandled(taskId) {
   done[id] = now;
   await chrome.storage.local.set({ cuCommentDone: done });
 }
+// My tasks completed in the last 14 days, with their descriptions: one request at
+// most every 30 minutes. Feeds the comment check (a comment on a finished task -
+// "the File is empty, please add it" - is still for me) and the list of tasks
+// completed without a link in File (completed in ClickUp itself, where the
+// extension's File check can't stop it). cuRecentDone { at, tasks: [{ id, name,
+// url, client, updatedMs, doneAt, noFile }] }; cuNoFileSeen { id: when told }.
+const RECENT_DONE_MS = 14 * 86400000, RECENT_DONE_EVERY = 30 * 60000;
+// On the refresh alarm too, so "Completed without a File link" stays current even
+// with the comment check switched off (still at most every 30 minutes).
+async function recentDoneTick() {
+  const st = (await getClickupState().catch(() => null)) || {};
+  if (st.rateLimitedUntil > Date.now()) return;
+  const cfg = await getClickupConfig().catch(() => null);
+  if (cfg && cfg.token) await refreshRecentDone(cfg).catch(() => {});
+}
+async function refreshRecentDone(cfg) {
+  const { cuRecentDone: prev, cuNoFileSeen } = await chrome.storage.local.get(["cuRecentDone", "cuNoFileSeen"]);
+  if (prev && Date.now() - (prev.at || 0) < RECENT_DONE_EVERY) return prev;
+  if (!cfg || !cfg.teamId || cfg.userId == null) return prev || null;
+  const now = Date.now();
+  const url = "https://api.clickup.com/api/v2/team/" + encodeURIComponent(cfg.teamId) + "/task?page=0&subtasks=true&include_closed=true&assignees[]=" +
+    encodeURIComponent(String(cfg.userId)) + "&date_done_gt=" + (now - RECENT_DONE_MS) + "&include_markdown_description=true";
+  const res = await cuRawFetch(cfg.token, url, { headers: { Authorization: cfg.token } });
+  if (!res.ok) return prev || null; // a 429 or an error: the last list stays
+  const j = await res.json().catch(() => null);
+  const tasks = (j && Array.isArray(j.tasks) ? j.tasks : []).filter((t) => t && t.id != null && isTaskDone(t) && !EXTRA_TASK_RE.test(t.name || "")).map((t) => ({
+    id: String(t.id), name: String(t.name || "(untitled task)").slice(0, 200), url: t.url || taskUrlFor(t.id),
+    client: String((t.list && t.list.name) || ""), updatedMs: Number(t.date_updated) || 0,
+    doneAt: Number(t.date_done) || Number(t.date_closed) || 0,
+    noFile: fileLinkMissingIn(t.markdown_description || t.description || ""),
+  }));
+  const out = { at: now, tasks };
+  // Told once per task, and only when it was completed in the last 3 days (the
+  // first run lists older ones without a burst of notifications).
+  const seen = cuNoFileSeen && typeof cuNoFileSeen === "object" ? { ...cuNoFileSeen } : {};
+  const fresh = tasks.filter((t) => t.noFile && !seen[t.id]);
+  // Older ones are only listed; at most 3 recent ones told per run - the rest next time (marked only once told).
+  const tell = fresh.filter((x) => now - x.doneAt < 3 * 86400000).slice(0, 3);
+  for (const t of fresh) if (now - t.doneAt >= 3 * 86400000 || tell.includes(t)) seen[t.id] = now;
+  for (const k of Object.keys(seen)) if (now - seen[k] > 2 * RECENT_DONE_MS) delete seen[k];
+  await chrome.storage.local.set({ cuRecentDone: out, cuNoFileSeen: seen });
+  for (const t of tell) {
+    await notify("nofile-" + t.id, "📎 Completed without a File link", "“" + t.name + "” is complete but its File: \"\" has no link. Add the deliverable link or screenshot in File.", "danger", t.url).catch(() => {});
+  }
+  return out;
+}
 async function scanComments(more) {
   if (cmtScanning) return;
   const st = (await getClickupState().catch(() => null)) || {};
@@ -4746,6 +4831,9 @@ async function scanComments(more) {
     const add = (t) => { if (t && t.id && !t.done && !/\bextra(?:\(s\)|s)?\s+task(?:\(s\)|s)?\b/i.test(t.name || "")) { const k = String(t.id); if (!rows.has(k)) rows.set(k, t); } };
     for (const t of (g.insOpenCache && g.insOpenCache.tasks) || []) add(t);
     for (const b of [st, st.todayFilter, st.thisWeek, st.nextWeek]) if (b) for (const k of ["tasks", "deadlineTasks", "trackedTasks"]) for (const t of b[k] || []) add(t);
+    // Tasks completed in the last 14 days too: a comment there is still for me.
+    const recent = await refreshRecentDone(cfg).catch(() => null);
+    for (const t of (recent && recent.tasks) || []) { const k = String(t.id); if (!rows.has(k)) rows.set(k, t); }
     const cache = g.cuComments && typeof g.cuComments === "object" ? { ...g.cuComments } : {};
     const now = Date.now();
     const due = [...rows.values()].filter((t) => {
@@ -7043,6 +7131,25 @@ const EST_ALARM_OVER = "cu-est-over";
 // restart), so pauses and restarts can't throw it off; between those, an alarm
 // set for the moment the limit is reached checks again with fresh numbers.
 const STOPAT_ALARM = "cu-stopat";
+// Auto-complete's dates, set just before the task completes itself: start /
+// due = "keep" (left as they are), "today", or a picked day (ms) - start at 8:00,
+// due at 17:00 (the team's day). Older marks without them keep their dates. A
+// failed date change never stops the completion.
+function autoDayMs(v, hour) {
+  if (v === "today") return new Date().setHours(hour, 0, 0, 0);
+  const n = Number(v);
+  return n > 0 ? new Date(n).setHours(hour, 0, 0, 0) : 0;
+}
+async function autoDates(cfg, key, rec) {
+  if (!rec) return;
+  const start = autoDayMs(rec.start, 8), due = autoDayMs(rec.due, 17);
+  if (!start && !due) return;
+  try {
+    if (start && due) await setTaskDates(cfg.token, key, start, Math.max(due, new Date(start).setHours(17, 0, 0, 0))); // due never before the start day's end
+    else if (due) await setTaskDueDate(cfg.token, key, due, true);
+    else await setTaskStartDate(cfg.token, key, start);
+  } catch (e) { diagLog("auto-complete", "dates: " + String(e && e.message ? e.message : e)); }
+}
 async function maybeAutoStop(cfg, entry, progress, key, today) {
   const { autoStopTasks: rules } = await chrome.storage.local.get("autoStopTasks").catch(() => ({}));
   const rule = rules && rules[key];
@@ -7071,7 +7178,7 @@ async function maybeAutoStop(cfg, entry, progress, key, today) {
     if (rule.status) await setTaskStatus(cfg.token, key, rule.status);
     else if (rule.action === "complete") {
       if (await fileLinkMissing(cfg, key)) { cuStoppedToDo(cfg, key, 0); await notify("filegate-" + key, "Stopped, not completed", FILE_GATE_MSG(name0), "danger", taskUrlFor(key)); }
-      else await setTaskStatus(cfg.token, key, "complete");
+      else { await autoDates(cfg, key, rule); await setTaskStatus(cfg.token, key, "complete"); }
     }
     else if (!rule.keep) cuStoppedToDo(cfg, key, 0);
     const doneLike = rule.action === "complete" || /^(closed|done)$/.test(String(rule.statusType || ""));
@@ -7302,6 +7409,7 @@ async function maybeNotifyRunningTask(cfg) {
           try { await sendHeldComments(cfg, key, held); }
           catch (e) { await notify("held-fail-" + key, "💬 Waiting comment not posted", "“" + name0 + "” was completed at its estimate, but its waiting comment couldn't be posted (" + String(e && e.message ? e.message : e) + "). It's still in the task's ▸ details - press Send now there.", "danger", task.url); }
         }
+        await autoDates(cfg, key, acMarked && acMarked[key]);
         await setTaskStatus(cfg.token, key, "complete");
         const st = (await getClickupState().catch(() => null)) || {};
         if (String(st.activeTaskId || "") === key) await setClickupState({ ...st, activeTaskId: null });
@@ -7804,7 +7912,9 @@ async function tidyReminderPayload(opts = {}) {
   // Unread comments and read-but-unanswered mentions (the comment check's own storage, no new request).
   const cg = await chrome.storage.local.get(["cuComments", "cuCommentSeen", "cuCommentDone"]).catch(() => ({}));
   const comments = s.commentWatch === false ? null : tidyComments(cg.cuComments, cg.cuCommentSeen, cg.cuCommentDone);
-  const say = tidyLines(model, { cats: t.cats, max: t.max, resolved, comments });
+  const { cuRecentDone } = await chrome.storage.local.get("cuRecentDone").catch(() => ({}));
+  const noFile = ((cuRecentDone && cuRecentDone.tasks) || []).filter((x) => x && x.noFile).map((x) => ({ id: x.id, name: tidyClip(x.name) }));
+  const say = tidyLines(model, { cats: t.cats, max: t.max, resolved, comments, noFile });
   return { ok: true, model, resolved, say, urgent: tidyUrgent(model, resolved), blockedIds: model.blockedIds };
 }
 // A due date on a day off: a company holiday (from the team calendar) or the
@@ -7828,7 +7938,7 @@ function offDayReason(weekMode) {
 // ("cu-tidy-overdue.noest-<time>"), because the in-memory click target is gone
 // once Chrome puts the worker to sleep - that's how a click ended up opening
 // plain ClickUp instead of Insights.
-const TIDY_DRILL = { overdue: "overdue", noEst: "noest", noDue: "nodue", blocked: "blocked", comments: "unread" };
+const TIDY_DRILL = { overdue: "overdue", noEst: "noest", noDue: "nodue", blocked: "blocked", comments: "unread", noFile: "nofile" };
 function tidyDrills(say) {
   return Object.keys((say && say.counts) || {}).map((k) => TIDY_DRILL[k]).filter(Boolean);
 }
@@ -10206,7 +10316,56 @@ function cnoteScore(raw, postedMs) {
   const words = low.match(/\b(hold off|on hold|hold|pause\w*|stop\w*|don'?t|do not|no (?:more )?changes|freeze|until further notice|focus\w* on|priorit\w*|instead|deadline|launch\w*|go(?:ing)? live|migrat\w*|redesign\w*|rebuild\w*|new (?:website|site|developer|agency|host\w*|domain)|cancel\w*|postpone\w*|urgent\w*|asap|must|approv\w*|access|budget)\b/g) || [];
   s += Math.min(3, new Set(words).size);
   if (low.length < 60) s -= 3;
+  // "Stop the work." is short, and the most important message there is.
+  if (cnoteClearStop(t)) s = Math.max(s, CNOTE_MIN_SCORE + 2);
   return s;
+}
+// A message that plainly tells the team to stop ALL work for the client: "Stop
+// the work.", "please pause all work", "put the work on hold", "they have
+// discontinued", "terminate the contract", "no more work". Not a question, not
+// "don't stop", not one page or task ("stop the work on the blog template").
+// An instruction, so it opens its sentence (after "please", "team," or @tags):
+// "Stop the work.", "Please pause all work", "Put the work on hold", "Stop working
+// on this client" - not "the form will stop working after the update".
+const CNOTE_STOP_CMD_RE = /^(?:(?:please|pls|plz|kindly|team|all|everyone|guys|hi|hello|hey|ok|okay|so|now|we\s+(?:need|have)\s+to|let'?s|we\s+(?:will|must|should))[\s,:!-]+)*(?:(?:stop|pause|halt|suspend|freeze|hold)\s+(?:all\s+|the\s+|any\s+|our\s+|every\s+)*(?:work|works|tasks?|everything|activit(?:y|ies)|services?|seo)\b|(?:stop|pause)\s+working\s+on\s+(?:this|the|their)\s+(?:client|account|site|website|project)\b|(?:put|keep)\s+(?:all\s+|the\s+|our\s+)*(?:work|tasks?|everything)\s+on\s+hold\b)/i;
+// Plain enough anywhere in the message.
+const CNOTE_STOP_ANY_RE = /\b(?:discontinu\w*|terminat\w*|cancel\w*)\s+(?:the\s+|our\s+|their\s+|this\s+)*(?:contract|engagement|services?|work|retainer)\b|\bcancel\w*\s+our\s+subscription\b|\b(?:has|have|had)\s+discontinued\b|\bno\s+(?:more|further)\s+work\b/i;
+function cnoteClearStop(text) {
+  const plain = cnotePlain(String(text || ""));
+  const t = plain.replace(/\s+/g, " ").trim();
+  if (!t || t.length > 400 || /\?\s*$/.test(t)) return false;
+  if (/\b(?:don'?t|do not|never|not|no need to|shouldn'?t|should we|can we|if|whether)\b[^.!]{0,25}\b(?:stop|pause|halt|hold|cancel|terminat|discontinu)/i.test(t)) return false;
+  // One part of the work only (a page, a post, a task): not the whole client.
+  const onePart = (after) => /^\s+(?:on|for|in)\s+(?:the\s+|this\s+|that\s+)?(?:blog|page|pages|post|posts|homepage|template|task|ticket|article|section|landing|menu|footer|header|schema|it)\b/i.test(after);
+  for (const s0 of plain.split(/[.!\n]+/)) {
+    const s = s0.replace(/(?:^|\s)@[\w.-]+/g, " ").replace(/\s+/g, " ").trim();
+    const m = CNOTE_STOP_CMD_RE.exec(s);
+    if (m && !onePart(s.slice(m[0].length))) return true;
+  }
+  const a = CNOTE_STOP_ANY_RE.exec(t);
+  return !!a && !onePart(t.slice(a.index + a[0].length));
+}
+// A clear stop for a client I have tasks for: paused for me straight away (my
+// Paused clients list - nothing changes in ClickUp; General › Paused clients
+// resumes it). A team-paused client I had resumed is paused again.
+async function cnoteAutoPause(n) {
+  if (!n || !cnoteClearStop(n.raw || n.text)) return false;
+  const k = (x) => String(x || "").toLowerCase().replace(/[^a-z0-9]+/g, "");
+  const key = k(n.client);
+  if (key.length < 3) return false;
+  const g = await chrome.storage.local.get(["pausedClients", "myPausedClients", "myResumedClients"]).catch(() => ({}));
+  const resumed = Array.isArray(g.myResumedClients) ? g.myResumedClients : [];
+  const teamHas = (Array.isArray(g.pausedClients) ? g.pausedClients : []).some((p) => p && k(p.name) === key);
+  const mine = Array.isArray(g.myPausedClients) ? g.myPausedClients : [];
+  if (mine.some((p) => p && k(p.name) === key) || (teamHas && !resumed.includes(key))) return false; // already paused
+  const d = new Date(), ymd = d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0") + "-" + String(d.getDate()).padStart(2, "0");
+  const said = cnotePlain(n.text || n.raw).replace(/\s+/g, " ").trim().slice(0, 160);
+  await chrome.storage.local.set({
+    myPausedClients: mine.concat({ name: String(n.client).trim(), since: ymd, note: "Slack: " + said, auto: true }),
+    myResumedClients: resumed.filter((x) => x !== key),
+  });
+  await notify("cpause-" + n.id, "⏸ " + n.client + " paused", "Slack: “" + said + "” - its tasks are struck through and Start asks first. Not right? Resume it in General › Paused clients.", "danger", chrome.runtime.getURL("options.html#general")).catch(() => {});
+  return true;
 }
 const cnoteId = (cid, ts) => String(cid) + "-" + String(ts).replace(/[^0-9]/g, "");
 // Text saved by an earlier build (or shared through the hub by one) had a tag
@@ -10295,7 +10454,7 @@ function cnoteFromMessage(m, cid, client, s) {
   return {
     id: cnoteId(cid, m.ts), client: String(client).slice(0, 120), channel: cid, ts: String(m.ts), at: posted,
     raw, text: cnotePlain(raw).slice(0, 1500), permalink: "https://" + (s.domain || "slack.com") + "/archives/" + cid + "/p" + String(m.ts).replace(".", ""),
-    fromMs: d.fromMs, untilMs: d.untilMs, score, kind: "", summary: "", important: null, onsite: [], ai: false, src: "slack",
+    fromMs: d.fromMs, untilMs: d.untilMs, score, kind: cnoteClearStop(raw) ? "pause" : "", summary: "", important: null, onsite: [], ai: false, src: "slack",
   };
 }
 // Merge notices into storage (newest first, kept CNOTE_KEEP_MS). A copy with the
@@ -10329,6 +10488,7 @@ async function cnoteAnnounce(fresh) {
     seen[n.id] = Date.now();
     if (off || !cnoteIsMine(n.client, mine)) continue;
     if (Date.now() - Number(n.at) > 2 * 86400000) continue; // an old message found on the first look: on the card, no pop-up
+    if (await cnoteAutoPause(n).catch(() => false)) continue; // "Stop the work": paused, with its own notification
     const when = n.fromMs ? " (from " + new Date(n.fromMs).toLocaleDateString([], { weekday: "short", month: "short", day: "numeric" }) + ")" : "";
     await notify("cnote-" + n.id, "⚠️ " + n.client + ": client notice" + when, cnoteBrief(n).slice(0, 240), undefined, chrome.runtime.getURL("options.html#dashboard")).catch(() => {});
   }
@@ -10483,14 +10643,44 @@ function wpPhpFromHtml(html) {
   const m = h.match(/PHP version\s*<\/t[dh]>\s*<td[^>]*>\s*(\d+\.\d+(?:\.\d+)?)/i) || h.match(/php_version:\s*(\d+\.\d+(?:\.\d+)?)/i) || h.match(/<td[^>]*>\s*PHP[^<]{0,40}<\/td>\s*<td[^>]*>\s*(\d+\.\d+\.\d+)/i);
   return m ? m[1] : "";
 }
+// The WordPress version on Site Health › Info: the first section (WordPress) opens
+// with its "Version" row; the copy-to-clipboard text has "version: 6.8.3" under wp-core.
+function wpCoreFromHtml(html) {
+  const h = String(html || "");
+  const m = h.match(/wp-core[\s\S]{0,400}?version:\s*(\d+\.\d+(?:\.\d+)?)/i)
+    || h.match(/health-check-accordion-block-wp-core[\s\S]{0,6000}?>\s*Version\s*<\/t[dh]>\s*<td[^>]*>\s*(\d+\.\d+(?:\.\d+)?)/i)
+    || h.match(/<t[dh][^>]*>\s*Version\s*<\/t[dh]>\s*<td[^>]*>\s*(\d+\.\d+(?:\.\d+)?)/i);
+  return m && /^[4-9]\./.test(m[1]) ? m[1] : "";
+}
+// A Site Health read put into a site's record: PHP and WordPress versions it found
+// (each one only when found), or why it failed.
+function wpReadMerge(prev, x) {
+  const p = prev || { php: "" };
+  if (!x || !x.ok) return { ...p, wpErr: x && x.error, wpReason: (x && x.reason) || "", wpAt: Date.now() };
+  const now = Date.now();
+  return { ...p, ...(x.php ? { php: x.php, src: "wp", at: now } : {}), ...(x.wp ? { wp: x.wp, wpSrc: "wp", wpVerAt: now } : {}), wpErr: "", wpReason: "" };
+}
+// The newest WordPress release (WordPress.org's public version API - not a client
+// site), at most twice a day. storage wpLatest { v, at }.
+async function wpLatestRefresh() {
+  const { wpLatest } = await chrome.storage.local.get("wpLatest");
+  if (wpLatest && wpLatest.v && Date.now() - (wpLatest.at || 0) < 12 * 3600000) return wpLatest;
+  try {
+    const r = await fetch("https://api.wordpress.org/core/version-check/1.7/", { cache: "no-store" });
+    const j = r.ok ? await r.json() : null;
+    const v = j && Array.isArray(j.offers) && j.offers[0] && String(j.offers[0].current || "");
+    if (/^\d+\.\d+(\.\d+)?$/.test(v || "")) { const out = { v, at: Date.now() }; await chrome.storage.local.set({ wpLatest: out }); return out; }
+  } catch (e) {}
+  return wpLatest || null;
+}
 // What a Site Health answer says: the version, or why there isn't one.
 function wpPhpJudge(final, status, html) {
   if (/wp-login\.php|\/login\b|reauth=1/i.test(final)) return { ok: false, reason: "signin", error: "Not signed in to this site's WordPress in Chrome" };
   if (status === 404) return { ok: false, reason: "notwp", error: "No WordPress admin found (not a WordPress site?)" };
   if (status === 403 || status === 401) return { ok: false, reason: "blocked", error: "The site's security turned the request away (HTTP " + status + ")" };
   if (status >= 400) return { ok: false, error: "The site answered " + status };
-  const php = wpPhpFromHtml(html);
-  if (php) return { ok: true, php };
+  const php = wpPhpFromHtml(html), wp = wpCoreFromHtml(html);
+  if (php || wp) return { ok: true, php, wp };
   if (/site-health/.test(final)) return { ok: false, reason: "noread", error: "Site Health opened but didn't show the PHP version (your role may not see it)" };
   return { ok: false, reason: "notwp", error: "No WordPress Site Health page" };
 }
@@ -10537,7 +10727,7 @@ async function wpPhpRead(urls, onEach) {
       const r = await wpPhpReadOne(list[i]);
       out[list[i]] = r;
       const sp = (await chrome.storage.local.get("sitePhp")).sitePhp || {};
-      sp[list[i]] = r.ok ? { php: r.php, src: "wp", at: Date.now() } : { ...(sp[list[i]] || { php: "" }), wpErr: r.error, wpReason: r.reason || "", wpAt: Date.now() };
+      sp[list[i]] = wpReadMerge(sp[list[i]], r);
       await chrome.storage.local.set({ sitePhp: sp, wpPhpProgress: { done: i + 1, total: list.length, at: Date.now() } });
       if (onEach) await Promise.resolve(onEach(list[i], r)).catch(() => {});
       if (r.error === "Couldn't reach it" || /within 30s/.test(r.error || "")) await new Promise((x) => setTimeout(x, WP_PHP_PAUSE_MS)); // a slow site: an extra breather
@@ -10581,7 +10771,7 @@ async function wpRelayCollect() {
     const res = r.results || {};
     if (Object.keys(res).length) {
       const sp = (await chrome.storage.local.get("sitePhp")).sitePhp || {};
-      for (const [u, x] of Object.entries(res)) sp[u] = x.ok ? { php: x.php, src: "wp", at: Date.now() } : { ...(sp[u] || { php: "" }), wpErr: x.error, wpReason: x.reason || "", wpAt: Date.now() };
+      for (const [u, x] of Object.entries(res)) sp[u] = wpReadMerge(sp[u], x);
       await chrome.storage.local.set({ sitePhp: sp });
     }
     next.got = Object.keys(res).length; next.total = Number(r.total) || rl.total; next.takenAt = Number(r.takenAt) || 0;
@@ -11380,7 +11570,7 @@ chrome.alarms.onAlarm.addListener(async (alarm) => {
     // reads only unless it has to act.
     await siteMonitorBackstop().catch((e) => diagLog("sites", "backstop: " + ((e && e.message) || e)));
   } else if (alarm.name === CLICKUP_ALARM) {
-    refreshClickup({ viaAlarm: true }).then(() => scanComments()).catch(() => {});
+    refreshClickup({ viaAlarm: true }).then(() => recentDoneTick()).then(() => scanComments()).catch(() => {});
   } else if (alarm.name === EST_ALARM_NEAR || alarm.name === EST_ALARM_MET || alarm.name === EST_ALARM_OVER || alarm.name === STOPAT_ALARM) {
     // The running task's estimate is (almost) up: one check with ClickUp (is the
     // timer still on, exact time) and the alert. Skipped while ClickUp is

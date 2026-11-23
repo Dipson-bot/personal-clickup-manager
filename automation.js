@@ -1227,7 +1227,7 @@
         cols: ["9:00", "9:30", "10:00", "after 10:00"],
         rows: [["Without it", "tracking", "tracking", "alert: estimate reached", "keeps tracking until you stop it"],
           ["With auto-complete", "tracking", "tracking", "\u2713 stops + completes", "-", true]],
-        notes: ["Turn it on: <b>\u23F1 Auto-complete</b> in the Tracking now bar (the task running now), or <b>Tick boxes</b> and tick the tasks, or start dragging a task - two drop boxes appear above the list - and drop it on <b>Complete at estimate</b>.",
+        notes: ["Turn it on: in the Tracking now bar (the task running now) pick <b>\u23F1 Auto-complete</b> in the drop-down and press <b>Apply</b> (the same drop-down also has Stop timer after\u2026 and Complete after\u2026 a time you type, once or every day), or <b>Tick boxes</b> and tick the tasks, or start dragging a task - two drop boxes appear above the list - and drop it on <b>Complete at estimate</b>.",
           "To finish a little earlier than the estimate (so not every task stops right on it), set <b>When auto-complete finishes a task</b> above.",
           "It works mid-tracking: turn it on any time before the estimate is reached.",
           "The task needs an estimate. A task without one gets a dimmed box."],
@@ -1355,7 +1355,7 @@
     };
     const SKIP = new Set(["/automation", "/exit", "/clear", "/cheats", "/doneat", "/autocomplete boxes", "/autorun boxes"]);
     const ABOUT = {
-      "/autocomplete": "tasks that complete themselves when their tracked time reaches the estimate - tick them in the task list, or pick them by number (the running task: ⏱ Auto-complete in Tracking now)",
+      "/autocomplete": "tasks that complete themselves when their tracked time reaches the estimate - tick them in the task list, or pick them by number (the running task: the drop-down in Tracking now › ⏱ Auto-complete › Apply)",
       "/autorun": "run tasks one after another: each starts, completes at its estimate, then the next starts - click numbered boxes in the task list (or pick by number); while one runs, new picks go at its end",
     };
     const TIMED = { "/stopat": "stop the timer", "/doneat": "stop and complete", "/completeat": "stop and complete" };

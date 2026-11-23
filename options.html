@@ -1783,6 +1783,7 @@
             <label><input type="checkbox" id="cuTidyCatBlocked" /> blocked</label>
             <label title="Due on a weekend or a company holiday (today or in the next 30 days) - so the date can be moved before the work is missed"><input type="checkbox" id="cuTidyCatOffDay" /> due on a day off</label>
             <label title="Comments on your open tasks you haven't read, and @mentions you read but haven't answered"><input type="checkbox" id="cuTidyCatComments" /> unread comments</label>
+            <label title="Tasks completed in the last 14 days whose File: has no link"><input type="checkbox" id="cuTidyCatNoFile" /> completed without a File link</label>
             <label><input type="checkbox" id="cuTidyResolved" /> a dependency that got resolved</label></div>
           <div class="set-line indent"><p class="hint" style="margin:0">One short summary of what the <a href="#" id="cuTidyGoInsights">Insights tab</a> flags, and nothing at all when there's nothing to tidy.
             <button type="button" class="lnk" id="cuTidyPreview">Preview now</button></p></div>
@@ -2287,11 +2288,41 @@
     .sm-php.bad { color: var(--red, #dc2626); }
     .sm-php.ok { color: var(--green, #16a34a); }
     .sm-php.check { color: var(--amber, #b45309); }
-    .sm-php.hidden { color: var(--muted); font-weight: 500; }
+    /* Hidden / not read: a version we don't know - marked in yellow so it stands out to be checked. */
+    .sm-php.hidden { display: inline-block; padding: 1px 7px; border-radius: 6px; background: rgba(250, 204, 21, .28); color: #92400e; font-weight: 600; }
+    html[data-theme="dark"] .sm-php.hidden { background: rgba(250, 204, 21, .18); color: #fcd34d; }
     .sm-php.na { color: var(--muted); font-weight: 600; }
     #siteMonitorStatus .sm-wp1 { padding: 3px 7px; }
     .sm-phppaste textarea { width: 100%; box-sizing: border-box; margin: 6px 0 4px; font: inherit; font-size: 12px; padding: 6px 8px; border-radius: 7px; border: 1px solid var(--border); background: var(--card); color: var(--text); }
     .sm-phppaste[hidden] { display: none !important; }
+    /* The sites as a table: Site | Status | WordPress | Hosting | Last check | Check ⋯ */
+    #siteMonitorStatus .sm-table { margin-top: 6px; border: 1px solid var(--border); border-radius: 10px; overflow: visible; }
+    #siteMonitorStatus .imp-row.sm-tr { display: grid; grid-template-columns: minmax(0, 1.5fr) minmax(0, 1.1fr) minmax(0, .8fr) minmax(0, .8fr) minmax(0, 1fr) minmax(0, .7fr) 92px; /* the same tracks on every row (header too): content never moves a column */ gap: 10px; align-items: center; padding: 8px 12px; border-bottom: 1px solid var(--border); font-size: 12.5px; line-height: 1.45; }
+    #siteMonitorStatus .sm-tr:last-child { border-bottom: 0; }
+    #siteMonitorStatus .sm-tr:nth-child(even):not(.sm-thead) { background: var(--bg2, rgba(0,0,0,.02)); }
+    #siteMonitorStatus .sm-thead { font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: .04em; color: var(--muted); padding-top: 6px; padding-bottom: 6px; }
+    #siteMonitorStatus .sm-tr > .imp-entry { flex: none; min-width: 0; }
+    #siteMonitorStatus .sm-tr > :only-child { grid-column: 1 / -1; } /* Edit: the form across the whole row */
+    #siteMonitorStatus .sm-c { min-width: 0; overflow-wrap: anywhere; }
+    #siteMonitorStatus .sm-site b { font-weight: 600; }
+    #siteMonitorStatus .sm-site .hint { display: block; font-weight: 400; font-size: 11.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    #siteMonitorStatus .sm-tr .sm-acts { display: flex; align-items: center; gap: 4px; justify-content: flex-end; }
+    .sm-more { position: relative; }
+    .sm-more > summary { list-style: none; cursor: pointer; padding: 2px 9px; border: 1px solid var(--border); border-radius: 7px; font-weight: 700; line-height: 1.4; user-select: none; }
+    .sm-more > summary::-webkit-details-marker { display: none; }
+    .sm-more[open] > summary { background: var(--bg2, rgba(0,0,0,.05)); }
+    .sm-more .sm-menu { position: absolute; right: 0; top: calc(100% + 4px); z-index: 30; min-width: 230px; display: flex; flex-direction: column; align-items: stretch; gap: 6px; padding: 10px; border: 1px solid var(--border); border-radius: 10px; background: var(--card); box-shadow: 0 10px 28px rgba(0,0,0,.18); }
+    .sm-more .sm-menu > * { margin: 0; text-align: left; }
+    .sm-more .sm-on { display: flex; align-items: center; gap: 6px; font-size: 12.5px; cursor: pointer; }
+    .sm-phpfold > summary { cursor: pointer; }
+    .sm-phpfold[open] > summary { margin-bottom: 6px; }
+    @media (max-width: 1000px) {
+      #siteMonitorStatus .imp-row.sm-tr.sm-thead { display: none; }
+      #siteMonitorStatus .imp-row.sm-tr { grid-template-columns: 1fr 1fr; gap: 4px 12px; }
+      #siteMonitorStatus .sm-tr > .sm-site { grid-column: 1 / -1; }
+      #siteMonitorStatus .sm-tr > .sm-c[data-lbl]::before { content: attr(data-lbl) ": "; color: var(--muted); font-size: 11px; }
+      #siteMonitorStatus .sm-tr .sm-acts { grid-column: 1 / -1; justify-content: flex-start; }
+    }
     .sm-phpsum { margin: 6px 0 10px; padding: 8px 12px; border: 1px solid var(--border); border-radius: 9px; background: var(--bg2, transparent); font-size: 12.5px; line-height: 1.7; }
   </style>
   <section class="panel" data-panel="sites">

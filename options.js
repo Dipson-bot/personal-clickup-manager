@@ -3370,6 +3370,7 @@ function renderClickupSettings(cu) {
   $("cuTidyCatBlocked").checked = tc.blocked !== false;
   if ($("cuTidyCatOffDay")) $("cuTidyCatOffDay").checked = tc.offDay !== false;
   if ($("cuTidyCatComments")) $("cuTidyCatComments").checked = tc.comments !== false;
+  if ($("cuTidyCatNoFile")) $("cuTidyCatNoFile").checked = tc.noFile !== false;
   if ($("cuTidyDaysRow")) $("cuTidyDaysRow").style.display = cu.tidyNotify === false ? "none" : "";
   if ($("cuTidyCatsRow")) $("cuTidyCatsRow").style.display = cu.tidyNotify === false ? "none" : "";
   if (configured) {
@@ -7783,6 +7784,7 @@ $("cuSave").onclick = async () => {
           noDue: $("cuTidyCatNoDue").checked, blocked: $("cuTidyCatBlocked").checked,
           offDay: $("cuTidyCatOffDay") ? $("cuTidyCatOffDay").checked : true,
           comments: $("cuTidyCatComments") ? $("cuTidyCatComments").checked : true,
+          noFile: $("cuTidyCatNoFile") ? $("cuTidyCatNoFile").checked : true,
         },
         clickupDeadlineTaskUrls: deadlineUrls,
       },
@@ -8437,6 +8439,12 @@ var INS_STORE = "insOpenCache";
 // Archived in ClickUp (background cuArchived) for Insights › Health; asked for
 // (one small read at most every 30 minutes) whenever Insights is drawn.
 var insArchived = [], insArchivedAt = 0;
+// My tasks completed in the last 14 days whose File: "" has no link (background refreshRecentDone).
+var insNoFile = [];
+try {
+  chrome.storage.local.get("cuRecentDone").then(function (g) { insNoFile = ((g && g.cuRecentDone && g.cuRecentDone.tasks) || []).filter(function (t) { return t && t.noFile; }); }).catch(function () {});
+  chrome.storage.onChanged.addListener(function (ch, area) { if (area === "local" && ch.cuRecentDone) insNoFile = ((ch.cuRecentDone.newValue && ch.cuRecentDone.newValue.tasks) || []).filter(function (t) { return t && t.noFile; }); });
+} catch (e) {}
 // Slack: tagged, no reply yet (background slackMentionsUpdate, the 20-minute Slack check).
 var insSlackTags = [], insSlackChannelOn = true; // settings.slackTagChannel: list @channel / @here too (default on)
 try {
@@ -9140,6 +9148,12 @@ function insDrillsHtml(m) {
   // Possible duplicates: the point is to stop you wondering whether you already
   // did it. "Not a duplicate" dismisses a group for good (work that genuinely
   // carries one name), so the list can't cry wolf twice about the same pair.
+  // Completed (often in ClickUp itself) with File: "" still empty - the deliverable link is missing.
+  var noFileOut = insNoFile.length ? insDrill("nofile", "Completed without a File link", insNoFile.map(function (t) {
+    return { id: t.id, name: t.name, url: t.url, client: t.client || "", due: 0, doneAt: t.doneAt };
+  }), function (r) {
+    return { badge: '<span class="badge red">📎 no link</span>', plain: "completed " + (r.doneAt ? insDateShort(r.doneAt) : "recently") + " · add the deliverable link or screenshot in File", action: "Open" };
+  }) : "";
   var dupOut = insDrill("dupe", "Possible duplicates", m.dupeList || [], function (r) {
     return { badge: r.sameDay
         ? '<span class="badge red" title="Both copies are due the same day">same day</span>'
@@ -9168,6 +9182,7 @@ function insDrillsHtml(m) {
   out += slackOut;
   out += cmtOut;
   out += readOut;
+  out += noFileOut;
   out += lateOut;
   out += dupOut;
   // Archived in ClickUp: listed so it can't vanish without a trace. Who did it
@@ -10145,14 +10160,14 @@ let smKickNote = ""; // why an automatic catch-up check didn't start, shown in t
 // comes in, and the page redraws (not while you're typing in or editing a row).
 let smLiveT = 0;
 chrome.storage.onChanged.addListener((ch, area) => {
-  if (area !== "local" || !(ch.siteMonitorState || ch.siteMonitorChecking || ch.sitePhp || ch.wpPhpRelay || ch.wpPhpProgress || ch.smMineOnly || ch.siteHosting)) return;
+  if (area !== "local" || !(ch.siteMonitorState || ch.siteMonitorChecking || ch.sitePhp || ch.wpPhpRelay || ch.wpPhpProgress || ch.smMineOnly || ch.siteHosting || ch.wpLatest)) return;
   clearTimeout(smLiveT);
   smLiveT = setTimeout(async () => {
     const box = $("siteMonitorStatus");
     if (!box || !box.offsetParent) return;
     const a = document.activeElement;
     if (a && box.contains(a) && /^(INPUT|SELECT|TEXTAREA)$/.test(a.tagName)) return;
-    if (box.querySelector("#smAddSlot > *, .sm-editing, [data-sm-form]")) return;
+    if (box.querySelector("#smAddSlot > *, .sm-editing, [data-sm-form], .sm-more[open]")) return;
     renderSiteMonitorStatus(await getSiteMonitorConfigOpt());
   }, 400);
 });
@@ -10186,6 +10201,22 @@ function phpWhyNot(r) {
   if (r.wpReason === "noread") return "Site Health didn't show it";
   if (r.wpErr) return String(r.wpErr).replace(/^The site /, "");
   return "press \uD83D\uDD11 to read it from WordPress";
+}
+// A site's WordPress version against the newest release (storage wpLatest):
+// same or newer = up to date; same major.minor = a small (often security) update
+// waiting; older = out of date. Wix / Shopify… = not WordPress.
+function wpJudge(rec, latest) {
+  const r = rec || {};
+  if (r.platform && !/wordpress/i.test(r.platform)) return { k: "na", text: "not WordPress", tip: "Built on " + r.platform + "." };
+  const v = String(r.wp || "");
+  if (!v) return { k: "hidden", text: "hidden", tip: "The page doesn't show its WordPress version. Press ⋯ › 🔑 to read it from WordPress (Site Health), with a WordPress sign-in in Chrome." };
+  const src = r.wpSrc === "wp" ? " (from WordPress Site Health)" : " (seen in the site's page)";
+  if (!latest) return { k: "check", text: v, tip: "WordPress " + v + src + ". The newest release isn't known yet." };
+  const n = (s) => String(s).split(".").map((x) => Number(x) || 0);
+  const [a, b, c] = n(v), [la, lb, lc] = n(latest);
+  if (a > la || (a === la && (b > lb || (b === lb && c >= lc)))) return { k: "ok", text: v + " ✓", tip: "WordPress " + v + src + " - up to date (newest " + latest + ")." };
+  if (a === la && b === lb) return { k: "check", text: v + " → " + latest, tip: "WordPress " + v + src + " - a small update is waiting: " + latest + " (usually security fixes)." };
+  return { k: "bad", text: v + " → " + latest, tip: "WordPress " + v + src + " - out of date: " + latest + " is out." };
 }
 const PHP2SHELL_TIP = "PHP2Shell (CVE-2026-109618 / CVE-2026-109619): fixed in PHP 8.5.12, 8.4.27, 8.3.36 and 8.2.35.";
 // The team's sheet pasted in (site URL and PHP version, the way Site Health shows
@@ -10237,6 +10268,10 @@ function wpRelayPoll() {
     if (!r || r.state !== "waiting") { clearInterval(wpPollT); wpPollT = 0; }
   }, 5000);
 }
+// A site's ⋯ menu closes when you click anywhere else (one open at a time).
+document.addEventListener("click", (e) => {
+  document.querySelectorAll("#siteMonitorStatus details.sm-more[open]").forEach((d) => { if (!d.contains(e.target)) d.open = false; });
+});
 // Site monitor › "This profile is signed in to the clients' WordPress" (the helper).
 (() => {
   const box = document.getElementById("wpHelperOn"), msg = document.getElementById("wpHelperMsg");
@@ -10260,7 +10295,7 @@ function renderSiteMonitorStatus(cfg) {
     return;
   }
   // Background replies { ok, state } - read the state object, not the wrapper.
-  Promise.all([send({ type: "GET_SITE_MONITOR_STATE" }), chrome.storage.local.get(["siteSnooze", "siteOff", "siteMonitorChecking", "sitePhp", "wpPhpRelay", "wpPhpProgress", "phpSheetUrl", "smMineOnly", "siteHosting"]).catch(() => ({})),
+  Promise.all([send({ type: "GET_SITE_MONITOR_STATE" }), chrome.storage.local.get(["siteSnooze", "siteOff", "siteMonitorChecking", "sitePhp", "wpPhpRelay", "wpPhpProgress", "phpSheetUrl", "smMineOnly", "siteHosting", "wpLatest"]).catch(() => ({})),
     window.PcmMyClients ? window.PcmMyClients().catch(() => []) : Promise.resolve([])]).then(([resp, sg, mineNames]) => {
     // Only my clients (the Clients tab's list): just their sites are shown, counted
     // and checked (the background skips the rest too); the others stay saved.
@@ -10271,6 +10306,7 @@ function renderSiteMonitorStatus(cfg) {
     const vSites = mineOnly ? cfg.sites.filter(isMineSite) : cfg.sites;
     const phpMap = (sg && sg.sitePhp) || {};
     const phpOf = (url) => php2shell((phpMap[url] || {}).php, (phpMap[url] || {}).platform);
+    const wpLatestV = (sg && sg.wpLatest && sg.wpLatest.v) || "";
     const state = resp && resp.state && typeof resp.state === "object" ? resp.state : {};
     // A check running right now (background siteMonitorChecking): the sites it
     // hasn't reached yet say "Checking now…" instead of their old "Not checked
@@ -10325,15 +10361,31 @@ function renderSiteMonitorStatus(cfg) {
         : hz.provider ? '<span title="' + escapeHtml(hzTip) + '">' + escapeHtml(hzName) + "</span>"
         : '<span class="hint" title="' + escapeHtml(hz.cf ? "Cloudflare sits in front of this site and hides the real server. Set the hosting link yourself with the pencil." : "Nothing in the domain's DNS names a known host" + (hz.server ? " (server " + hz.server + ")" : "") + ". Set the hosting link yourself with the pencil.") + '">' + (hz.cf ? "hosting hidden (Cloudflare)" : "hosting unknown" + (hz.server ? " \u00b7 " + escapeHtml(hz.server) : "")) + "</span>")
         + ' <button type="button" class="sm-hostedit" data-sm-host="' + u + '" data-sm-panel="' + escapeHtml((hz && hz.panel) || "") + '" title="Set the hosting link yourself (e.g. the cPanel or WP Engine address)">\u270E</button></span>';
-      return '<div class="imp-row" data-sm-row="' + u + '"><div class="imp-entry"><b>' + label + '</b><br><span class="hint">' + statusText + speed + phpTxt + hostTxt + " · last check: " + lastCheckText + (st.fails && st.up !== false ? " · " + st.fails + " failed check(s)" : "") + why + snoozeTxt + "</span></div>"
-        + '<div class="sm-acts"><label class="sm-on" title="Untick to stop checking this site (and its alerts) - whether or not the client is with us. Tick it again to start."><input type="checkbox" data-sm-on="' + u + '"' + (isOff ? "" : " checked") + " /> Monitor</label>"
-        + '<button type="button" class="sm-check" data-sm-url="' + u + '" title="Check this site right now"' + (isOff ? " disabled" : "") + ">Check</button>"
-        + '<button type="button" class="sm-check sm-wp1" data-sm-wp="' + u + '" title="Read this site\'s PHP version from its WordPress Site Health page (a WordPress sign-in already in Chrome - this profile or your WordPress profile)"' + (isOff ? " disabled" : "") + ">\uD83D\uDD11</button>"
+      // One row of the table: Site | Status | WordPress | Hosting | Last check | Check + ⋯ (the rest).
+      const wz = wpJudge(pRec, wpLatestV);
+      const wpTip = wz.tip;
+      // PHP (PHP2Shell): the version the server / Site Health / the team sheet gave, patched or not.
+      const phpTip = (pz.tip ? pz.tip + " " : "") + wpNo + " " + PHP2SHELL_TIP + (pRec && pRec.at ? (pRec.src === "sheet" ? " From the team sheet, " : pRec.src === "wp" ? " From WordPress Site Health, " : " Seen in the server's reply, ") + new Date(pRec.at).toLocaleString() + "." : " Not read yet - it's noted at the next check.");
+      const phpShort = !pRec ? "not read yet" : pz.k === "na" ? "no PHP" : pz.k === "hidden" ? "hidden" : pz.text.replace(/^PHP /, "").replace(/ - NOT patched \(needs (.+)\)$/, " ✗ needs $1").replace(/ - patched$/, " ✓").replace(/ - at risk \(end of life\)$/, " ✗ end of life").replace(/ - patch level not shown$/, " ?");
+      const phpCell = isOff ? '<span class="hint">-</span>' : '<span class="sm-php ' + (pRec ? pz.k : "hidden") + '" title="' + escapeHtml(phpTip) + '">' + escapeHtml(phpShort) + "</span>";
+      const wpCell = isOff ? '<span class="hint">-</span>' : '<span class="sm-php ' + wz.k + '" title="' + escapeHtml(wpTip) + '">' + escapeHtml(wz.text) + "</span>" + (wz.k === "hidden" && pRec && pRec.wpErr ? '<div class="hint">' + escapeHtml(phpWhyNot(pRec)) + "</div>" : "");
+      const stCell = statusText + speed + (st.fails && st.up !== false ? " · " + st.fails + " failed" : "") + why + snoozeTxt;
+      return '<div class="imp-row sm-tr" data-sm-row="' + u + '">'
+        + '<div class="imp-entry sm-c sm-site"><b>' + label + "</b></div>"
+        + '<div class="sm-c sm-st" data-lbl="Status">' + stCell + "</div>"
+        + '<div class="sm-c" data-lbl="WordPress">' + wpCell + "</div>"
+        + '<div class="sm-c" data-lbl="PHP">' + phpCell + "</div>"
+        + '<div class="sm-c" data-lbl="Hosting">' + hostTxt.replace(/^ · /, "") + "</div>"
+        + '<div class="sm-c hint" data-lbl="Last check">' + lastCheckText + "</div>"
+        + '<div class="sm-acts"><button type="button" class="sm-check" data-sm-url="' + u + '" title="Check this site right now"' + (isOff ? " disabled" : "") + ">Check</button>"
+        + '<details class="sm-more"><summary title="More: monitor, read from WordPress, snooze, edit, delete">⋯</summary><div class="sm-menu">'
+        + '<label class="sm-on" title="Untick to stop checking this site (and its alerts). Tick it again to start."><input type="checkbox" data-sm-on="' + u + '"' + (isOff ? "" : " checked") + " /> Monitor this site</label>"
+        + '<button type="button" class="sm-check sm-wp1" data-sm-wp="' + u + '" title="Read this site\'s WordPress and PHP versions from its WordPress Site Health page (a WordPress sign-in already in Chrome - this profile or your WordPress profile)"' + (isOff ? " disabled" : "") + ">🔑 Read versions from WordPress</button>"
         + (snoozed
           ? '<button type="button" class="sm-act" data-sm-unsnooze="' + u + '" title="Alert me about this site again">Unsnooze</button>'
-          : '<select class="sm-snooze" data-sm-snooze="' + u + '" title="Stop the alerts for this site for a while - it is still checked"><option value="">Snooze…</option><option value="1">1 hour</option><option value="4">4 hours</option><option value="tom">Until tomorrow 9 AM</option><option value="72">3 days</option><option value="168">1 week</option></select>')
+          : '<select class="sm-snooze" data-sm-snooze="' + u + '" title="Stop the alerts for this site for a while - it is still checked"><option value="">Snooze alerts…</option><option value="1">1 hour</option><option value="4">4 hours</option><option value="tom">Until tomorrow 9 AM</option><option value="72">3 days</option><option value="168">1 week</option></select>')
         + '<button type="button" class="sm-act" data-sm-edit="' + u + '" title="Change the client name or website">Edit</button>'
-        + '<button type="button" class="sm-act sm-del" data-sm-del="' + u + '" title="Stop monitoring this site">Delete</button></div></div>';
+        + '<button type="button" class="sm-act sm-del" data-sm-del="' + u + '" title="Stop monitoring this site">Delete</button></div></details></div></div>';
     }).join("");
     // Said once at the top too, so it cannot be missed in a long list.
     const nChk = chk ? [...chkSet].filter((u) => !offMap[u]).length : 0;
@@ -10349,17 +10401,28 @@ function renderSiteMonitorStatus(cfg) {
     const watched = vSites.filter((s) => s && s.url && !offMap[s.url]);
     const cnt = { bad: 0, ok: 0, hidden: 0, check: 0, na: 0 };
     for (const s of watched) cnt[phpMap[s.url] ? phpOf(s.url).k : "hidden"]++;
-    const phpBox = watched.length ? '<div class="sm-phpsum"><b>\uD83D\uDEE1 PHP2Shell check</b> <span class="hint">(from the PHP version each server states)</span><br>' +
-      (cnt.bad ? '<span class="sm-php bad">' + cnt.bad + " not patched / at risk</span> \u00b7 " : "") + (cnt.check ? '<span class="sm-php check">' + cnt.check + " to check</span> \u00b7 " : "") +
-      '<span class="sm-php ok">' + cnt.ok + " patched</span> \u00b7 " + (cnt.na ? '<span class="sm-php na">' + cnt.na + " not PHP (Wix, Shopify\u2026)</span> \u00b7 " : "") + (cnt.hidden ? '<span class="sm-php hidden">' + cnt.hidden + " unknown (reason on each site)</span> " : "") +
+    // WordPress, for all the sites at once (the column below): out of date / a small
+    // update waiting / up to date against the newest release.
+    const wc = { bad: 0, check: 0, ok: 0, hidden: 0, na: 0 };
+    for (const s of watched) wc[wpJudge(phpMap[s.url], wpLatestV).k]++;
+    const wpBox = watched.length ? '<div class="sm-phpsum"><b>WordPress</b> <span class="hint">' + (wpLatestV ? "newest release " + escapeHtml(wpLatestV) : "newest release not known yet") + "</span> \u00b7 " +
+      (wc.bad ? '<span class="sm-php bad">' + wc.bad + " out of date</span> \u00b7 " : "") + (wc.check ? '<span class="sm-php check">' + wc.check + (wpLatestV ? " small update waiting" : " read") + "</span> \u00b7 " : "") +
+      '<span class="sm-php ok">' + wc.ok + " up to date</span>" + (wc.hidden ? ' \u00b7 <span class="sm-php hidden">' + wc.hidden + " hidden</span>" : "") + (wc.na ? ' \u00b7 <span class="sm-php na">' + wc.na + " not WordPress</span>" : "") +
+      ' <button type="button" class="sm-act" data-sm-wpread="1" title="Read the WordPress and PHP versions of your clients\' sites (the clients on your Clients tab) from their WordPress Site Health page, with a WordPress sign-in that is already in Chrome (this profile, or your other profile through the taskbar app)">\uD83D\uDD11 Read from WordPress</button> ' +
+      // The team sheet, both ways: Copy the versions out, or bring them in (its link, or the two columns pasted).
       '<button type="button" class="sm-act" data-sm-copy="1" title="Copy the sites shown below with their PHP version as two columns (site URL, PHP version), like the team sheet - paste into column A">\uD83D\uDCCB Copy</button> ' +
-      '<button type="button" class="sm-act" data-sm-wpread="1" title="Read the PHP version of your clients\' sites (the clients on your Clients tab) from their WordPress Site Health page, with a WordPress sign-in that is already in Chrome (this profile, or your other profile through the taskbar app)">\uD83D\uDD11 Read from WordPress</button> ' +
-      '<button type="button" class="sm-act" data-sm-phppaste="1" title="Paste the site URL and PHP version columns from the team sheet (as Site Health shows them)">\uD83D\uDCE5 Paste from the sheet</button>' +
+      '<button type="button" class="sm-act" data-sm-phppaste="1" title="Bring in the PHP versions from the team sheet: its link, or the site URL and PHP version columns pasted (as Site Health shows them)">\uD83D\uDCE5 Paste from the sheet</button>' +
       '<div class="sm-phppaste" hidden><div class="sm-sheetrow"><input type="url" data-sm-sheeturl placeholder="The sheet\'s link (docs.google.com/spreadsheets/...)" value="' + escapeHtml((sg && sg.phpSheetUrl) || "") + '" /> <button type="button" class="sm-act" data-sm-sheetget="1" title="Read the sheet straight from Google, with your Google sign-in in this Chrome profile">Update from the sheet</button></div><div class="hint">or paste the two columns:</div><textarea rows="4" placeholder="Copy the two columns (site URL, PHP version) in the sheet and paste them here, e.g.\nhttps://example.com/\t8.2.35 (Supports 64bit values)"></textarea>' +
       '<div><button type="button" class="sm-act" data-sm-phpsave="1">Use these versions</button> <span class="hint" data-sm-phpmsg></span></div></div>' +
       '<div class="hint sm-wpmsg" data-sm-wpmsg>' + wpStatusText(sg && sg.wpPhpRelay, sg && sg.wpPhpProgress) + "</div></div>" : "";
+    // PHP2Shell: folded away (its counts on the closed line), Copy and the sheet inside.
+    const phpBox = watched.length ? '<details class="sm-phpsum sm-phpfold"><summary><b>\uD83D\uDEE1 PHP2Shell check</b> <span class="hint">(PHP versions)</span> \u00b7 ' +
+      (cnt.bad ? '<span class="sm-php bad">' + cnt.bad + " not patched / at risk</span> \u00b7 " : "") + (cnt.check ? '<span class="sm-php check">' + cnt.check + " to check</span> \u00b7 " : "") +
+      '<span class="sm-php ok">' + cnt.ok + " patched</span>" + (cnt.na ? ' \u00b7 <span class="sm-php na">' + cnt.na + " not PHP</span>" : "") + (cnt.hidden ? ' \u00b7 <span class="sm-php hidden">' + cnt.hidden + " unknown</span>" : "") + "</summary>" +
+      '<div class="hint">Each site\'s PHP version is in the PHP column (point at it for where it came from). Copy and Paste from the sheet are on the line above.</div></details>' : "";
+    const thead = '<div class="imp-row sm-tr sm-thead"><div>Site</div><div>Status</div><div>WordPress</div><div title="PHP2Shell: fixed in 8.5.12, 8.4.27, 8.3.36, 8.2.35">PHP</div><div>Hosting</div><div>Last check</div><div></div></div>';
     const mineBox = mineCount ? '<label class="sm-mine" title="Show, count and check only the sites of the clients on your Clients tab (from your tasks). The other sites stay saved; untick to see and check them again."><input type="checkbox" data-sm-mine="1"' + (mineOnly ? " checked" : "") + " /> Only my clients (" + mineCount + ")</label>" + (mineOnly ? ' <span class="hint">' + (cfg.sites.length - mineCount) + " other site" + (cfg.sites.length - mineCount === 1 ? "" : "s") + " not shown or checked</span>" : "") : "";
-    el.innerHTML = '<div class="sm-headrow"><div class="cu-subhead">Current status</div>' + mineBox + '<button type="button" class="sm-act" data-sm-hostfind="1" title="Look up who hosts each site and the link to its control panel, from each domain\'s DNS (nothing is asked of the sites themselves). Links you set by hand are kept.">\uD83D\uDDA5 Find hosting</button><button type="button" class="sm-act" data-sm-add="1">+ Add site</button></div>' + banner + phpBox + '<div id="smBlankLine" class="hint"></div><div id="smAddSlot"></div>' + rows;
+    el.innerHTML = '<div class="sm-headrow"><div class="cu-subhead">Current status</div>' + mineBox + '<button type="button" class="sm-act" data-sm-hostfind="1" title="Look up who hosts each site and the link to its control panel, from each domain\'s DNS (nothing is asked of the sites themselves). Links you set by hand are kept.">\uD83D\uDDA5 Find hosting</button><button type="button" class="sm-act" data-sm-add="1">+ Add site</button></div>' + banner + wpBox + phpBox + '<div id="smBlankLine" class="hint"></div><div id="smAddSlot"></div><div class="sm-table">' + thead + rows + "</div>";
     const mb = el.querySelector("[data-sm-mine]");
     if (mb) mb.onchange = async () => { await chrome.storage.local.set({ smMineOnly: mb.checked }); renderSiteMonitorStatus(cfg); };
     const pp = el.querySelector("[data-sm-phppaste]"), pbox = el.querySelector(".sm-phppaste");
@@ -11970,7 +12033,7 @@ if ($("admCalCard")) {
 // Where the timer shows (Floating window / Taskbar / Both / Neither) is picked once
 // and kept; the Dashboard card invites people to try the taskbar until they pick.
 const DESK_REL = "https://github.com/Dipson-bot/personal-clickup-manager/releases";
-const DESK_TAG = "desktop-v0.4.8";
+const DESK_TAG = "desktop-v0.4.9";
 let deskOs = "";
 async function deskPlatform() {
   if (deskOs) return deskOs;

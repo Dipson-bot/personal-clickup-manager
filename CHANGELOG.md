@@ -1,5 +1,14 @@
 # Changelog
 
+## v4.4.8
+- Comments on tasks completed in the last 14 days are now checked too: a comment or @mention on a finished task ("the File is empty, please add it") shows in Unread comments, the mention lists and the daily notification, with the usual mention notification.
+- A task of yours completed (in ClickUp itself too) with File: "" still without a link is flagged: a notification once per task, a new Insights list Completed without a File link, and a line in the daily Needs tidying notification (switch: completed without a File link).
+- Site monitor shows each site's WordPress version, against the newest release: up to date, a small update waiting, or out of date. It is read from the page each check already loads (no extra requests to the sites); when a site hides it, Read from WordPress (Site Health) fills it in, together with the PHP version.
+- Site monitor's list is now a clean table - Site, Status, WordPress, PHP, Hosting, Last check - with Check and a ⋯ menu (Monitor, Read from WordPress, Snooze, Edit, Delete) on each row. The PHP2Shell counts are folded into one line, and Copy / Paste from the sheet sit next to Read from WordPress; each site's PHP version and whether it's patched is in the PHP column. In a narrow window each site becomes a small card.
+- Client notices: a Slack message that plainly says to stop all work for a client ("Stop the work.", "pause all work", "they have discontinued") is now always caught - even a short one - and pauses that client for you straight away, with a notification. Nothing changes in ClickUp; resume it in General › Paused clients if it shouldn't be. Questions, "don't stop" and a stop for one page or task don't pause anything.
+- Site monitor: a WordPress or PHP version that is hidden (or not read yet) is marked in yellow, so it stands out to be checked.
+- Ctrl+K: searching for pausing / resuming a client now opens General › Paused clients (it used to point at the client notices).
+
 ## v4.4.7
 - Less text on every page: a long explanation now shows one line and a small … more button (less folds it back), and a setting's long description hides behind … more after its name. Status, saved and error messages always show in full. Switch it off in General › Appearance › Short help text to see everything as before.
 - ClickUp Tracker 0.4.8: the taskbar strip can live on an external monitor's taskbar, and Move off the taskbar never leaves the window off-screen (tray menu › Bring it back to the main screen's corner).

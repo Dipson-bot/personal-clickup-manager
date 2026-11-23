@@ -1,5 +1,9 @@
 # ClickUp Tracker changelog
 
+## 0.4.9
+- Read from WordPress through this app (for your other Chrome profile) now brings back each site's WordPress version too, not only the PHP version.
+- Menu fixes: choices show straight away in the menu-bar / tray menu, and times listed in the menu are on the hour and half hour in every time zone.
+
 ## 0.4.8
 - On the taskbar: drag the strip onto another monitor's taskbar and it stays there (it used to jump back to the main screen). If that monitor is unplugged, it goes back to the main screen.
 - Move off the taskbar no longer leaves the floating window somewhere off-screen (an old place on a monitor that isn't there): it opens in the corner instead. The tray menu also has Bring it back to the main screen's corner.

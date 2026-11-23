@@ -357,18 +357,76 @@ function noticeFor(client) {
   return extNotices.find((n) => { const x = ckey(n.client); return x === k || (x.length >= 4 && k.length >= 4 && (x.startsWith(k) || k.startsWith(x))); }) || null;
 }
 const extCmds = [];
-const autoWant = new Map(); // taskId -> on, until the extension has it
-function autoMarked(taskId) { const id = String(taskId); return autoWant.has(id) ? autoWant.get(id) : extAuto.ids.includes(id); }
+// A task's auto-complete setup, as the extension keeps it (extAuto.setup[id]):
+// { when: "est" | "after" (ms of today's time) | "clock" (atMs), start, due }, with
+// start / due = "keep", "today" or a day (ms). null = off. The extension sets the
+// dates and completes the task; this is only the choice.
+const autoWant = new Map(); // taskId -> setup (or null = off), until the extension has it
+const autoWantAt = new Map(); // taskId -> when it was asked (a choice the extension didn't take is dropped after 3 minutes)
+const AUTO_DEF = { when: "est", start: "keep", due: "today" }; // the default: at its estimate, due today, start as it is
+const extSetup = (id) => (extAuto.setup && extAuto.setup[id]) || (extAuto.ids.includes(id) ? { when: "est", start: "keep", due: "keep" } : null);
+function autoSetup(taskId) { const id = String(taskId); return autoWant.has(id) ? autoWant.get(id) : extSetup(id); }
+const setupKey = (s) => (s ? [s.when, s.when === "clock" ? Number(s.atMs) || 0 : s.when === "after" ? Number(s.ms) || 0 : 0, String(s.start), String(s.due)].join("|") : "");
+const dayLbl = (ms) => new Date(ms).toLocaleDateString([], { weekday: "short", day: "numeric", month: "short" });
+const dayTxt = (v) => (v === "today" ? "today" : Number(v) > 0 ? dayLbl(Number(v)) : "keep as it is");
+const clockTxt = (ms) => new Date(ms).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+const durTxt = (ms) => { const m = Math.round(ms / 60000), h = Math.floor(m / 60); return h ? h + "h" + (m % 60 ? " " + (m % 60) + "m" : "") : m + "m"; };
+function whenTxt(s, lead) { return s.when === "clock" ? "at " + clockTxt(s.atMs) : s.when === "after" ? "after " + durTxt(s.ms) + " today" : "at its estimate" + lead; }
+// For the ⏱ tag in the hover card.
+function autoSummary(s) {
+  if (!s) return "";
+  return "Auto-complete " + whenTxt(s, "") + (s.start !== "keep" ? " · start " + dayTxt(s.start) : "") + (s.due !== "keep" ? " · due " + dayTxt(s.due) : "");
+}
+// Straight in the ▾ menu (not a submenu), for whoever turned Automation on: Off /
+// Auto-complete, then its When, Start date and Due date (the next 14 days to pick
+// from - a menu can't hold the calendar).
 function automationItems(run, t) {
   if (!settings.cheatAuto || !run || t.isExtra) return [];
   const lead = extAuto.lead && Number(extAuto.lead.min) ? " (" + extAuto.lead.min + "m early" + (extAuto.lead.vary ? ", varied" : "") + ")" : "";
-  const id = String(run.taskId);
-  return [{ label: "Automation", submenu: [
-    { label: "Complete this task by itself at its estimate" + lead, type: "checkbox", checked: autoMarked(id), click: (m) => { autoWant.set(id, m.checked); extCmds.push({ type: "autoComplete", taskId: id, name: String(run.taskName || "").slice(0, 200), on: m.checked }); } },
-    { label: autoWant.has(id) ? "Saving… (applies within a minute)" : "Done by the extension in the browser", enabled: false },
+  const id = String(run.taskId), cur = autoSetup(id), base = cur || AUTO_DEF;
+  const set = (next) => {
+    autoWant.set(id, next); autoWantAt.set(id, Date.now());
+    extCmds.push({ type: "autoComplete", taskId: id, name: String(run.taskName || "").slice(0, 200), on: !!next, ...(next || {}) });
+    if (state) { state.autoMode = autoSummary(next); send("state", state); }
+    buildTray(); // the menu-bar / tray menu shows the new choice now (on a Mac it's the main way in)
+  };
+  const day0 = new Date(); day0.setHours(0, 0, 0, 0);
+  const days = Array.from({ length: 14 }, (_, i) => new Date(day0.getFullYear(), day0.getMonth(), day0.getDate() + 1 + i).getTime());
+  const sameDay = (a, b) => Number(a) > 0 && new Date(Number(a)).toDateString() === new Date(b).toDateString();
+  const dayItems = (k) => [
+    ...(k === "start" ? [["keep", "Keep as it is"], ["today", "Today"]] : [["today", "Today"], ["keep", "Keep as it is"]])
+      .map(([v, l]) => ({ label: l, type: "radio", checked: !!cur && cur[k] === v, click: () => set({ ...base, [k]: v }) })),
     { type: "separator" },
+    ...days.map((ms) => ({ label: dayLbl(ms), type: "radio", checked: !!cur && sameDay(cur[k], ms), click: () => set({ ...base, [k]: ms }) })),
+  ];
+  // Today's half-hours still ahead (30 min from now to 21:00), and tracked-time steps.
+  const times = [];
+  // Rounded on this computer's clock (:00 / :30 - Nepal's +5:45 would give :15 / :45 in UTC).
+  const t0 = new Date(Date.now() + 30 * 60000);
+  t0.setMinutes(t0.getMinutes() <= 30 ? 30 : 60, 0, 0);
+  for (let m = t0.getTime(); new Date(m).getDate() === new Date().getDate() && new Date(m).getHours() < 21; m += 1800000) times.push(m);
+  const durs = [15, 30, 45, 60, 90, 120, 150, 180, 240, 300, 360].map((x) => x * 60000);
+  return [
+    { label: "⏱ Automation" + (autoWant.has(id) ? " - saving (within a minute)" : ""), enabled: false },
+    { label: "Off", type: "radio", checked: !cur, click: () => { if (cur) set(null); } },
+    { label: "Auto-complete", type: "radio", checked: !!cur, click: () => { if (!cur) set({ ...AUTO_DEF }); } },
+    ...(cur ? [
+      { label: "    When: " + whenTxt(cur, lead), submenu: [
+        { label: "At its estimate" + lead, type: "radio", checked: cur.when === "est", click: () => set({ ...cur, when: "est", atMs: undefined, ms: undefined }) },
+        // A custom time, the same as the extension's box: a length of today's time, or an exact time today.
+        { label: "At a custom time", submenu: [
+          { label: "When today's time on it reaches", enabled: false },
+          ...durs.map((ms) => ({ label: "    " + durTxt(ms), type: "radio", checked: cur.when === "after" && Number(cur.ms) === ms, click: () => set({ ...cur, when: "after", ms, atMs: undefined }) })),
+          { type: "separator" },
+          { label: times.length ? "At an exact time today" : "At an exact time today - none left", enabled: false },
+          ...times.map((ms) => ({ label: "    " + clockTxt(ms), type: "radio", checked: cur.when === "clock" && Number(cur.atMs) === ms, click: () => set({ ...cur, when: "clock", atMs: ms, ms: undefined }) })),
+        ] },
+      ] },
+      { label: "    Start date: " + dayTxt(cur.start), submenu: dayItems("start") },
+      { label: "    Due date: " + dayTxt(cur.due), submenu: dayItems("due") },
+    ] : []),
     { label: "Hide Automation here", click: () => { settings.cheatAuto = false; saveSettings(); } },
-  ] }];
+  ];
 }
 // The menu-bar / tray menu: the bigger view (note, comments, /commands) and the
 // Automation item - on a Mac the strip is usually hidden, so this is the way in.
@@ -518,6 +576,8 @@ async function refresh() {
     } catch (e) {
       state = { ...(state || {}), error: String(e && e.message ? e.message : e), at: Date.now() };
     }
+    // The running task's auto-complete choice, for the ⏱ tag in the hover card (Automation on only).
+    state.autoMode = settings.cheatAuto && state.running && !(state.task && state.task.isExtra) ? autoSummary(autoSetup(state.running.taskId)) : "";
     send("state", state);
     paintTrayText();
     buildTray();
@@ -677,7 +737,7 @@ function phpRelayOp(m, op) {
     if (!phpRelay || phpRelay.id !== String(m.id || "")) return { ok: false };
     for (const [u, r] of Object.entries(m.results || {})) {
       if (!phpRelay.urls.includes(u) || !r || typeof r !== "object") continue;
-      phpRelay.results[u] = { ok: !!r.ok, php: String(r.php || "").replace(/[^0-9.]/g, "").slice(0, 12), error: String(r.error || "").slice(0, 120), reason: String(r.reason || "").slice(0, 20) };
+      phpRelay.results[u] = { ok: !!r.ok, php: String(r.php || "").replace(/[^0-9.]/g, "").slice(0, 12), wp: String(r.wp || "").replace(/[^0-9.]/g, "").slice(0, 12), error: String(r.error || "").slice(0, 120), reason: String(r.reason || "").slice(0, 20) };
     }
     phpRelay.takenAt = now;
     return { ok: true };
@@ -755,8 +815,8 @@ let linking = false;
 async function fromExtension(m) {
   if (Array.isArray(m.notices)) extNotices = m.notices.slice(0, 30);
   if (m.auto && Array.isArray(m.auto.ids)) {
-    extAuto = { ids: m.auto.ids.map(String).slice(0, 200), lead: m.auto.lead || null };
-    for (const [id, on] of [...autoWant]) if (extAuto.ids.includes(id) === on) autoWant.delete(id); // the extension has it now
+    extAuto = { ids: m.auto.ids.map(String).slice(0, 200), lead: m.auto.lead || null, setup: m.auto.setup && typeof m.auto.setup === "object" ? m.auto.setup : {} };
+    for (const [id, want] of [...autoWant]) if (setupKey(extSetup(id)) === setupKey(want) || Date.now() - (autoWantAt.get(id) || 0) > 180000) { autoWant.delete(id); autoWantAt.delete(id); } // the extension has it now (or didn't take it)
   }
   // The strip style picked in the extension (General › Floating tracker › Strip style).
   if (STYLES.includes(m.style) && m.style !== settings.stripStyle) { settings.stripStyle = m.style; saveSettings(); send("settings", publicSettings()); }

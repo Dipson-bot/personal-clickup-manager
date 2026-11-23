@@ -2153,6 +2153,9 @@ export async function removeTaskAssignee(token, taskId, userId) {
 export async function setTaskDates(token, taskId, startMs, dueMs) {
   return cuPut(token, "/task/" + encodeURIComponent(taskId), { start_date: Number(startMs), start_date_time: true, due_date: Number(dueMs), due_date_time: true });
 }
+export async function setTaskStartDate(token, taskId, startMs) {
+  return cuPut(token, "/task/" + encodeURIComponent(taskId), { start_date: Number(startMs), start_date_time: true });
+}
 export async function setTaskDueDate(token, taskId, dueMs, hasTime) {
   // dueMs null/0 clears the due date.
   const body = { due_date: dueMs ? Number(dueMs) : null };

@@ -237,7 +237,8 @@
     // "Task name… | Client…": each cut short to fit, the whole of it on hover.
     return '<div class="row"><span class="ttl"><a class="nm" data-url="' + esc(t.url || "") + '" title="' + esc(run.taskName) + '">' + esc(run.taskName || "(task)") + '</a>' +
       (t.client ? '<span class="sep">|</span><span class="cl" title="' + esc(t.client) + '">' + esc(t.client) + "</span>" : "") + '</span><button class="x" data-act="big" title="Bigger view: note, comments, files">&#10529;</button></div>' +
-      '<div class="sub"><span id="pkAll"></span>' + (meta ? " \u00b7 " + esc(meta) : "") + "</div>" +
+      '<div class="sub"><span id="pkAll"></span>' + (meta ? " \u00b7 " + esc(meta) : "") +
+      (st.autoMode ? ' \u00b7 <span class="am" title="' + esc(st.autoMode) + ' - change it in the \u25be menu">\u23f1 ' + esc(st.autoMode.replace(/^Auto-complete /, "auto ")) + "</span>" : "") + "</div>" +
       '<div class="btns">' + (t.isExtra ? (st.last ? '<button class="pri" data-act="resume" title="Stop the Extra Task and go back to: ' + esc(st.last.name) + '">&#8617; Back to task</button>' : "")
         : '<button data-act="doneToday" title="Done today: complete it and set its due date to today (stops the timer)">&#10003; Today</button>' + (st.extra ? '<button data-act="extra" title="Stop this timer and start the Extra Task now">&#8644; Extra</button>' : "")) +
       '<span class="sp"></span><button data-act="stop">&#9632; Stop</button>' + (t.isExtra ? "" : '<button data-act="complete">&#10003; Done</button>') + '<button data-act="menu" title="More">&#9662;</button></div>';

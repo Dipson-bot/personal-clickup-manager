@@ -206,6 +206,8 @@ export function tidyLines(model, opts = {}) {
   add("noDue", "No due date", model.noDue, false);
   add("blocked", "Blocked", model.blocked, true);
   add("offDay", "Due on a day off - ask to move the date", model.offDay || [], true);
+  // Completed (often in ClickUp itself) with File: "" still without a link.
+  add("noFile", "Completed without a File link - add the deliverable", opts.noFile || [], false);
   // Comments on open tasks (tidyComments): not read yet, and @mentions read but not answered.
   const cm = opts.comments;
   if (cm && on("comments") && (cm.unread.length || cm.readMention.length)) {
@@ -250,7 +252,7 @@ export function tidyLines(model, opts = {}) {
 // cuCommentDone. The same rules as Insights (task-notes.js): unread = by someone
 // else, newer than your last look, under 60 days old; read but not answered = an
 // @mention you've seen, newer than your own last comment / No reply needed.
-// Only tasks still in the check (open ones) are in the cache.
+// Only tasks still in the check are in the cache: open ones, and ones completed in the last 14 days.
 export function tidyComments(cache, seen, done, now = Date.now()) {
   const unread = [], readMention = [];
   for (const id of Object.keys(cache || {})) {
