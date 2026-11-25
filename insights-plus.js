@@ -26,6 +26,10 @@
   // My leave (Settings › My leave): a day off like a holiday - no target, not counted.
   const isLeave = (ts) => { try { return !!(window.PcmCalendar && window.PcmCalendar.isLeave && window.PcmCalendar.isLeave(ts)); } catch (e) { return false; } };
   const isWorkday = (ts) => { const g = new Date(ts).getDay(); return g !== 0 && g !== 6 && !isHoliday(ts) && !isLeave(ts); };
+  // A half-day leave (My leave, first or second half): still a working day, with half the target.
+  const leaveHalf = (ts) => { try { return !!(window.PcmCalendar && window.PcmCalendar.leaveHalf && window.PcmCalendar.leaveHalf(ts)); } catch (e) { return false; } };
+  const dayTarget = (ts) => targetMs() * (leaveHalf(ts) ? 0.5 : 1);
+  const sumTarget = (days) => days.reduce((a, d) => a + dayTarget(d), 0);
   const round15 = (ms) => Math.max(15 * MIN, Math.round(ms / (15 * MIN)) * 15 * MIN);
   const plural = (n, w) => n + " " + w + (n === 1 ? "" : "s");
   const ago = (at) => {
@@ -526,7 +530,7 @@
     ordered.forEach((t, i) => { t.no = i + 1; });
     // Fill the days: each working day holds the daily target minus the configured share.
     const cal = days.map((d) => {
-      let cap = Math.max(0, tMs - cfgPerDay);
+      let cap = Math.max(0, dayTarget(d) - cfgPerDay);
       if (d === today) cap = Math.max(0, cap - (Number(st.spentMs) || 0));
       return { ts: d, cap, left: cap, items: [] };
     });
@@ -544,7 +548,7 @@
         rem -= take;
       }
     }
-    const capacityMs = days.length * tMs - (days.includes(today) ? Math.min(tMs, Number(st.spentMs) || 0) : 0);
+    const capacityMs = sumTarget(days) - (days.includes(today) ? Math.min(dayTarget(today), Number(st.spentMs) || 0) : 0);
     const cfgMs = cfgPerDay * days.length;
     const estMs = withEst.reduce((a, t) => a + t.planMs, 0);
     const sugMs = missing.reduce((a, t) => a + t.planMs, 0);
@@ -776,7 +780,7 @@
     for (let d = from; d < to; d = addDays(d, 1)) if (isWorkday(d)) work.push(d);
     const tracked = work.reduce((a, d) => a + (Number(perf.days[d]) || 0), 0);
     const pd = o.done.filter((t) => t.doneAt >= from && t.doneAt < to);
-    const P = ratingParts({ tracked, target: work.length * o.tMs, dated: pd.filter((t) => t.dueDateMs > 0), acc: pd.filter((t) => t.estimateMs > 0 && t.spentMs > 0), late: o.late });
+    const P = ratingParts({ tracked, target: sumTarget(work), dated: pd.filter((t) => t.dueDateMs > 0), acc: pd.filter((t) => t.estimateMs > 0 && t.spentMs > 0), late: o.late });
     if (P.overall == null) return null;
     const prevName = PREV_NAME[o.ringP];
     const diff = Math.round(o.R.overall) - Math.round(P.overall);
@@ -795,8 +799,8 @@
       const pts = now && was ? (d * now.w) / wsum : 0;
       let why = "", tip = "";
       if (k === "hours" && now) {
-        const short = o.pWork.length * o.tMs - o.pTracked;
-        why = fmtH(o.pTracked) + " tracked of " + fmtH(o.pWork.length * o.tMs) + (short > 60000 ? " - " + fmtH(short) + " short" : " - on target");
+        const short = sumTarget(o.pWork) - o.pTracked;
+        why = fmtH(o.pTracked) + " tracked of " + fmtH(sumTarget(o.pWork)) + (short > 60000 ? " - " + fmtH(short) + " short" : " - on target");
         if (short > 60000) tip = "Track your full " + fmt(o.tMs) + " each working day - meetings and small jobs go on the Extra Task.";
       }
       if (k === "deadlines" && now) {
@@ -887,12 +891,12 @@
       const work = days.filter(isWorkday);
       let tracked = 0;
       for (let i = 0; i < 7; i++) tracked += Number(perf.days[addDays(mon, i)]) || 0;
-      weeks.push({ mon, days, work, tracked, target: work.length * tMs });
+      weeks.push({ mon, days, work, tracked, target: sumTarget(work) });
     }
     const pastWork = [];
     for (const w of weeks) for (const d of w.work) if (d < today) pastWork.push({ d, ms: Number(perf.days[d]) || 0 });
     const recent = pastWork.filter((x) => x.d >= addDays(today, -28));
-    const onT = (xs) => xs.filter((x) => x.ms >= tMs * 0.98).length;
+    const onT = (xs) => xs.filter((x) => x.ms >= dayTarget(x.d) * 0.98).length;
     const avg = (xs) => xs.length ? xs.reduce((a, x) => a + x.ms, 0) / xs.length : 0;
     // The weekly Extra Task is your own time bucket (often closed a day late): not a deadline or a deliverable.
     const done = (perf.done || []).filter((t) => t.doneAt && !/\bextra(?:\(s\)|s)?\s+task(?:\(s\)|s)?\b/i.test(t.name || "")).map((t) => myPart(t, perf)).filter(Boolean);
@@ -913,7 +917,7 @@
       const work = [0, 1, 2, 3, 4].map((i) => addDays(mon, i)).filter(isWorkday);
       const due = rows.filter((r) => !hasKids.has(String(r.id)) && Number(r.dueDateMs) > 0 && Number(r.dueDateMs) >= (k === 0 ? 0 : mon) && Number(r.dueDateMs) <= end);
       const est = due.reduce((a, r) => a + Math.max(0, (Number(r.estimateMs) || 0) - (Number(r.spentMs) || 0)), 0);
-      return { mon, due, n: due.length, est, cap: work.length * tMs, noEst: due.filter((r) => !Number(r.estimateMs)).length };
+      return { mon, due, n: due.length, est, cap: sumTarget(work), noEst: due.filter((r) => !Number(r.estimateMs)).length };
     });
     const clientOf = new Map();
     for (const t of perf.done || []) if (t.client) clientOf.set(String(t.id), t.client);
@@ -942,7 +946,7 @@
     const pDone = done.filter((t) => t.doneAt >= pFrom);
     const pDated = pDone.filter((t) => t.dueDateMs > 0);
     const pAcc = pDone.filter((t) => t.estimateMs > 0 && t.spentMs > 0);
-    const R = ratingParts({ tracked: pTracked, target: pWork.length * tMs, dated: pDated, acc: pAcc, late });
+    const R = ratingParts({ tracked: pTracked, target: sumTarget(pWork), dated: pDated, acc: pAcc, late });
     // The period before (last week / last month / the 12 weeks before), rated the
     // same way - so the rating says if it went up or down, and which part moved it.
     const W = perfWhy({ ringP, pFrom, thisMon, today, tMs, R, pTracked, pWork, pDated, pAcc, done, late, daysLate });
@@ -993,7 +997,7 @@
       let title = "", body = "";
       if (drill.key === "days" || drill.key === "avg") {
         title = "Your working days, last 4 weeks";
-        body = recent.slice().reverse().map((x) => '<div class="ip-row' + (x.ms >= tMs * 0.98 ? "" : x.ms >= tMs * 0.7 ? " ip-short" : " ip-short bad") + '"><span class="no">' + (x.ms >= tMs * 0.98 ? "✓" : "") + '</span><div class="nm"><button type="button" class="ip-btn" data-card="heat" data-kind="day" data-key="' + x.d + '" style="border:0;padding:0;background:none;color:var(--indigo)">' + esc(dDay(x.d)) + '</button></div><span class="tm">' + fmt(x.ms) + "<small>" + (x.ms >= tMs * 0.98 ? "target reached" : fmt(tMs - x.ms) + " short") + "</small></span></div>").join("") || '<p class="ip-meta">No working days yet.</p>';
+        body = recent.slice().reverse().map((x) => '<div class="ip-row' + (x.ms >= dayTarget(x.d) * 0.98 ? "" : x.ms >= dayTarget(x.d) * 0.7 ? " ip-short" : " ip-short bad") + '"><span class="no">' + (x.ms >= dayTarget(x.d) * 0.98 ? "✓" : "") + '</span><div class="nm"><button type="button" class="ip-btn" data-card="heat" data-kind="day" data-key="' + x.d + '" style="border:0;padding:0;background:none;color:var(--indigo)">' + esc(dDay(x.d)) + '</button></div><span class="tm">' + fmt(x.ms) + "<small>" + (x.ms >= dayTarget(x.d) * 0.98 ? "target reached" : fmt(dayTarget(x.d) - x.ms) + " short") + "</small></span></div>").join("") || '<p class="ip-meta">No working days yet.</p>';
       } else if (drill.key === "deadlines") {
         title = "Finished tasks with a due date, last 4 weeks";
         body = simpleRows(dRecent.slice().sort((a, b) => (late(b) - late(a)) || b.doneAt - a.doneAt), (t) => late(t) ? '<span class="flag bad">' + daysLate(t) + "d late</span>" : '<span class="flag mut">on time</span>', (t) => (t.client ? esc(t.client) + " · " : "") + "due " + esc(dShort(t.dueDateMs)) + " · done " + esc(dShort(t.doneAt)), (t) => late(t) ? " ip-short bad" : "");
@@ -1027,7 +1031,7 @@
         if (d > today) hm += '<span class="c fut"></span>';
         else if (isHoliday(d)) hm += '<span class="c h" title="' + esc(dDay(d)) + ': company holiday"></span>';
         else if (isLeave(d) && !(Number(perf.days[d]) > 0)) hm += '<span class="c h" title="' + esc(dDay(d)) + ': your leave"></span>';
-        else hm += '<button type="button" class="c' + (on ? " on" : "") + '" data-card="heat" data-kind="day" data-key="' + d + '" style="background:' + heatColor(d === today ? Math.max(ms / tMs, 0.01) : ms / tMs) + '" title="' + esc(dDay(d)) + ": " + fmt(ms) + (d === today ? " so far" : "") + ' - click for the tasks"></button>';
+        else hm += '<button type="button" class="c' + (on ? " on" : "") + '" data-card="heat" data-kind="day" data-key="' + d + '" style="background:' + heatColor(d === today ? Math.max(ms / dayTarget(d), 0.01) : ms / dayTarget(d)) + '" title="' + esc(dDay(d)) + ": " + fmt(ms) + (d === today ? " so far" : "") + (leaveHalf(d) ? " (half-day leave)" : "") + ' - click for the tasks"></button>';
       }
     }
     hm += "</div>";

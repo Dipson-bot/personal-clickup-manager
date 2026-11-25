@@ -1756,6 +1756,7 @@
               <select id="myLeaveKind" aria-label="Kind of leave"><option value="sick">Sick leave</option><option value="annual">Annual leave</option><option value="other">Other leave</option></select>
               <span>from</span><input type="date" id="myLeaveFrom" aria-label="Leave from" />
               <span>to</span><input type="date" id="myLeaveTo" aria-label="Leave to (empty = one day)" title="Leave empty for one day" />
+              <select id="myLeaveHalf" aria-label="Full or half day" title="A half day (one date): that day's target is half, and it never counts against your rating"><option value="">Full day</option><option value="am">First half off (morning)</option><option value="pm">Second half off (afternoon)</option></select>
               <button type="button" class="primary" id="myLeaveAdd">Add leave</button>
               <span class="hint" id="myLeaveMsg" role="status"></span>
             </div>
@@ -2295,9 +2296,14 @@
     #siteMonitorStatus .sm-wp1 { padding: 3px 7px; }
     .sm-phppaste textarea { width: 100%; box-sizing: border-box; margin: 6px 0 4px; font: inherit; font-size: 12px; padding: 6px 8px; border-radius: 7px; border: 1px solid var(--border); background: var(--card); color: var(--text); }
     .sm-phppaste[hidden] { display: none !important; }
+    /* Show / Sort over the table */
+    #siteMonitorStatus .sm-filter { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 16px; margin: 10px 0 0; font-size: 12.5px; font-weight: 600; }
+    #siteMonitorStatus .sm-filter label { display: inline-flex; align-items: center; gap: 6px; margin: 0; }
+    #siteMonitorStatus .sm-filter select { font: inherit; font-weight: 500; font-size: 12.5px; padding: 3px 8px; border-radius: 7px; border: 1px solid var(--border); background: var(--card); color: var(--text); }
+    #siteMonitorStatus .sm-filter .hint { font-weight: 500; }
     /* The sites as a table: Site | Status | WordPress | Hosting | Last check | Check ⋯ */
     #siteMonitorStatus .sm-table { margin-top: 6px; border: 1px solid var(--border); border-radius: 10px; overflow: visible; }
-    #siteMonitorStatus .imp-row.sm-tr { display: grid; grid-template-columns: minmax(0, 1.5fr) minmax(0, 1.1fr) minmax(0, .8fr) minmax(0, .8fr) minmax(0, 1fr) minmax(0, .7fr) 92px; /* the same tracks on every row (header too): content never moves a column */ gap: 10px; align-items: center; padding: 8px 12px; border-bottom: 1px solid var(--border); font-size: 12.5px; line-height: 1.45; }
+    #siteMonitorStatus .imp-row.sm-tr { display: grid; grid-template-columns: minmax(0, 1.35fr) minmax(0, 1fr) minmax(0, .95fr) minmax(0, .75fr) minmax(0, .95fr) minmax(0, .9fr) minmax(0, .6fr) 92px; /* the same tracks on every row (header too): content never moves a column */ gap: 10px; align-items: center; padding: 8px 12px; border-bottom: 1px solid var(--border); font-size: 12.5px; line-height: 1.45; }
     #siteMonitorStatus .sm-tr:last-child { border-bottom: 0; }
     #siteMonitorStatus .sm-tr:nth-child(even):not(.sm-thead) { background: var(--bg2, rgba(0,0,0,.02)); }
     #siteMonitorStatus .sm-thead { font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: .04em; color: var(--muted); padding-top: 6px; padding-bottom: 6px; }

@@ -1,5 +1,9 @@
 # ClickUp Tracker changelog
 
+## 0.5.0
+- Your timer runs on your own time on a task: a task handed to you (a review after the developer) starts at 0 for you, not at the time someone else already tracked on it.
+- Menu fixes.
+
 ## 0.4.9
 - Read from WordPress through this app (for your other Chrome profile) now brings back each site's WordPress version too, not only the PHP version.
 - Menu fixes: choices show straight away in the menu-bar / tray menu, and times listed in the menu are on the hour and half hour in every time zone.

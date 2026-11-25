@@ -3590,7 +3590,7 @@ function cuWeekLiveNumbers() {
   const v = Number(agg.spentMs) || 0;
   const el = $("optWeekTrk");
   if (el) el.textContent = fmtDurOpt(v);
-  const wTarget = (Number(cu.state && cu.state.targetMs) || 0) * (Number(agg.count) || 0);
+  const wTarget = (Number(cu.state && (cu.state.fullTargetMs || cu.state.targetMs)) || 0) * (Number(agg.count) || 0);
   const f = $("optWeekTrkFill");
   if (f && wTarget > 0) { f.style.width = Math.min(100, Math.round((v / wTarget) * 100)) + "%"; f.classList.toggle("met", v >= wTarget); }
 }
@@ -4035,7 +4035,7 @@ function renderOptionsWeeklyBody(cu) {
     $("optWeekTrk").textContent = fmtDurOpt(agg.spentMs);
   }
   {
-    const wTarget = (Number(cu.state && cu.state.targetMs) || 0) * (Number(agg.count) || 0);
+    const wTarget = (Number(cu.state && (cu.state.fullTargetMs || cu.state.targetMs)) || 0) * (Number(agg.count) || 0);
     const setBar = (fillId, ofId, v) => {
       const f = $(fillId), o = $(ofId);
       if (o) o.textContent = wTarget > 0 ? "/ " + fmtDurOpt(wTarget) : "";
@@ -4055,7 +4055,7 @@ function renderOptionsWeeklyBody(cu) {
     PcmBreakdown.attach($("optWeekEst"), "est", bd);
     PcmBreakdown.attach($("optWeekTrk"), "trk", bd);
   }
-  renderWeekChartOpt(w, Number(cu.state && cu.state.targetMs) || 0);
+  renderWeekChartOpt(w, Number(cu.state && (cu.state.fullTargetMs || cu.state.targetMs)) || 0);
   // When the week was last rebuilt. The card paints from persisted state, which
   // the background only recomputes every ~30 min (and skips while rate-limited),
   // so without this a snapshot that's merely old looked like a chart that had
@@ -4275,7 +4275,7 @@ function renderOptionsWeeklyBody(cu) {
         wkEst += dEst; wkTrk += dTrk; rows.forEach((t) => wkIds.add(String(t.id || t.name)));
         // Against the daily target (a working day): ClickUp's estimates plus the
         // ones you kept here - "2h 30m to fill" / "1h over" / "✓ 7h".
-        const dayTarget = Number(cu.state && cu.state.targetMs) || 0;
+        const dayTarget = Number(cu.state && (cu.state.fullTargetMs || cu.state.targetMs)) || 0;
         const keptPart = rows.reduce((a, t) => a + (cuEstStaged[cuId(t)] ? cuGuessMs(t, dayCtx) : 0), 0);
         const planned = dEst + keptPart + draftMs;
         const gap = dayTarget - planned;
@@ -5924,15 +5924,19 @@ function cuViewRange(st, f) {
 function cuScopeTargetMs(dailyMs, st, f) {
   if (cuIsMonth(f)) return 0; // a month: the total for the tasks listed, no target
   const r = cuViewRange(st, f);
-  if (!dailyMs || !r) return dailyMs;
+  const halfToday = window.PcmCalendar && window.PcmCalendar.leaveHalf && window.PcmCalendar.leaveHalf(Date.now()) ? 0.5 : 1;
+  if (!dailyMs || !r) return dailyMs * halfToday; // no range (today): today's target
   let days = 0;
   const d = new Date(r.fromTs); d.setHours(12, 0, 0, 0);
   const end = new Date(r.toTs); end.setHours(12, 0, 0, 0);
   // Company holidays and my leave (Settings › My leave) are days off.
   const holiday = (x) => !!(window.PcmCalendar && (window.PcmCalendar.isDayOff || window.PcmCalendar.isHoliday)(x.getTime()));
   let weekdays = 0;
-  for (let i = 0; d <= end && i < 400; i++, d.setDate(d.getDate() + 1)) if (d.getDay() !== 0 && d.getDay() !== 6) { weekdays++; if (!holiday(d)) days++; }
-  if (weekdays <= 1) return dailyMs; // today / tomorrow: the daily target
+  // A half-day leave counts half a day.
+  const half = (x) => (window.PcmCalendar && window.PcmCalendar.leaveHalf && window.PcmCalendar.leaveHalf(x.getTime()) ? 0.5 : 1);
+  let one = 1;
+  for (let i = 0; d <= end && i < 400; i++, d.setDate(d.getDate() + 1)) if (d.getDay() !== 0 && d.getDay() !== 6) { weekdays++; if (!holiday(d)) { days += half(d); one = half(d); } }
+  if (weekdays <= 1) return dailyMs * one; // today / tomorrow: the daily target (half on a half day)
   return dailyMs * days; // company holidays and my leave don't count (a whole week off = no target)
 }
 // Today's own tracked time, for the Tracked bar when the active scope is NOT
@@ -6964,7 +6968,7 @@ function renderClickupPreviewBody(st) {
   // The custom-order layer is keyed by the active date scope, so a drag in
   // "due today" is remembered separately from "due next week".
   cuActiveScopeOpt = view.scope || "extended";
-  const targetMs = view.scope === "plan" ? Number(st.targetMs) || 0 : cuScopeTargetMs(Number(st.targetMs) || 0, st, cuFilter);
+  const targetMs = view.scope === "plan" ? Number(st.targetMs) || 0 : cuScopeTargetMs(Number(st.fullTargetMs || st.targetMs) || 0, st, cuFilter);
   let estMs = Number(view.estimateMs) || 0;
   let met = targetMs > 0 && estMs >= targetMs;
   let spentTot = Number(view.spentMs) || 0;
@@ -10160,7 +10164,7 @@ let smKickNote = ""; // why an automatic catch-up check didn't start, shown in t
 // comes in, and the page redraws (not while you're typing in or editing a row).
 let smLiveT = 0;
 chrome.storage.onChanged.addListener((ch, area) => {
-  if (area !== "local" || !(ch.siteMonitorState || ch.siteMonitorChecking || ch.sitePhp || ch.wpPhpRelay || ch.wpPhpProgress || ch.smMineOnly || ch.siteHosting || ch.wpLatest)) return;
+  if (area !== "local" || !(ch.siteMonitorState || ch.siteMonitorChecking || ch.sitePhp || ch.wpPhpRelay || ch.wpPhpProgress || ch.smMineOnly || ch.siteHosting || ch.wpLatest || ch.gtmScan || ch.smFilter || ch.sitePsi)) return;
   clearTimeout(smLiveT);
   smLiveT = setTimeout(async () => {
     const box = $("siteMonitorStatus");
@@ -10295,7 +10299,7 @@ function renderSiteMonitorStatus(cfg) {
     return;
   }
   // Background replies { ok, state } - read the state object, not the wrapper.
-  Promise.all([send({ type: "GET_SITE_MONITOR_STATE" }), chrome.storage.local.get(["siteSnooze", "siteOff", "siteMonitorChecking", "sitePhp", "wpPhpRelay", "wpPhpProgress", "phpSheetUrl", "smMineOnly", "siteHosting", "wpLatest"]).catch(() => ({})),
+  Promise.all([send({ type: "GET_SITE_MONITOR_STATE" }), chrome.storage.local.get(["siteSnooze", "siteOff", "siteMonitorChecking", "sitePhp", "wpPhpRelay", "wpPhpProgress", "phpSheetUrl", "smMineOnly", "siteHosting", "wpLatest", "gtmScan", "smFilter", "sitePsi"]).catch(() => ({})),
     window.PcmMyClients ? window.PcmMyClients().catch(() => []) : Promise.resolve([])]).then(([resp, sg, mineNames]) => {
     // Only my clients (the Clients tab's list): just their sites are shown, counted
     // and checked (the background skips the rest too); the others stay saved.
@@ -10325,7 +10329,57 @@ function renderSiteMonitorStatus(cfg) {
       newest = Math.max(newest, Number((state[s.url] || {}).lastCheck) || 0);
     }
     const allStale = newest > 0 && nowTs - newest > SM_STALE_MS;
-    const rows = vSites.map((s) => {
+    // GTM / Clarity: from each site's page (and Clarity inside its GTM container).
+    const gtmScan = (sg && sg.gtmScan) || {};
+    const tagsOf = (rec) => {
+      const t = rec && rec.tags;
+      if (!t) return null;
+      const viaGtm = (t.gtm || []).map((g) => gtmScan[g]).find((x) => x && x.clarity);
+      return { gtm: t.gtm || [], clarity: t.clarity || (viaGtm ? viaGtm.clarity : ""), via: !t.clarity && viaGtm ? "gtm" : "", gtmRead: (t.gtm || []).every((g) => gtmScan[g]), notWp: rec.platform && !/wordpress/i.test(rec.platform) };
+    };
+    const tagsCell = (x) => {
+      if (!x) return '<span class="sm-php hidden" title="The page could not be read yet (not checked, or its security turned the check away)">not read yet</span>';
+      const g = x.gtm.length ? '<span class="sm-php ' + (x.gtm.length > 1 ? "check" : "ok") + '" title="Google Tag Manager: ' + escapeHtml(x.gtm.join(", ")) + (x.gtm.length > 1 ? ". More than one container loads on this page: check whether both are meant to be there (double counting)." : "") + '">GTM ' + (x.gtm.length > 1 ? "×" + x.gtm.length : "✓") + "</span> " + x.gtm.map((id) => '<span class="hint sm-gtmid">' + escapeHtml(id) + "</span>").join(" ") : '<span class="sm-php bad" title="No Google Tag Manager snippet in the page">no GTM</span>';
+      const c = x.clarity ? '<span class="sm-php ok" title="Microsoft Clarity' + (x.clarity !== "yes" ? " project " + escapeHtml(x.clarity) : "") + (x.via ? " - set up inside the GTM container" : " - in the page") + '">Clarity ✓' + (x.via ? " via GTM" : "") + "</span>"
+        : x.gtm.length && !x.gtmRead ? '<span class="sm-php hidden" title="Not in the page; its GTM container is checked for Clarity within the next checks">Clarity: checking GTM</span>'
+        : '<span class="sm-php bad" title="No Clarity snippet in the page' + (x.gtm.length ? " or in its GTM container" : "") + '">no Clarity</span>';
+      return '<div>' + g + "</div><div>" + c + "</div>";
+    };
+    // Show / Sort (storage smFilter, remembered): which sites the table lists, in what order.
+    const smF = (sg && sg.smFilter) || {};
+    const fShow = String(smF.show || ""), fSort = String(smF.sort || "");
+    const SM_SHOW = [["", "All sites"], ["nogtm", "No GTM"], ["multigtm", "More than one GTM"], ["noclarity", "No Clarity"], ["claritygtm", "Clarity via GTM"], ["wpold", "WordPress out of date"], ["wphidden", "WordPress version hidden"], ["phpbad", "PHP not patched / at risk"], ["slow", "Slow (over 2s)"], ["problem", "Down or a problem"], ["lowscore", "Page score under 50"], ["bigdom", "DOM over 1,500 elements"], ["unread", "Tags not read yet"]];
+    const psiMap = (sg && sg.sitePsi) || {};
+    const psiOk = (url) => (psiMap[url] && psiMap[url].score != null ? psiMap[url] : null);
+    const showOk = (s) => {
+      const st = state[s.url] || {}, rec = phpMap[s.url], x = tagsOf(rec);
+      if (fShow && offMap[s.url]) return false; // monitoring off: nothing current to filter on
+      switch (fShow) {
+        case "nogtm": return !!x && !x.gtm.length;
+        case "multigtm": return !!x && x.gtm.length > 1;
+        case "noclarity": return !!x && !x.clarity && (!x.gtm.length || x.gtmRead);
+        case "claritygtm": return !!x && x.via === "gtm";
+        case "wpold": { const k = wpJudge(rec, wpLatestV).k; return !!wpLatestV && (k === "bad" || k === "check"); }
+        case "wphidden": return wpJudge(rec, wpLatestV).k === "hidden";
+        case "phpbad": return !!rec && phpOf(s.url).k === "bad";
+        case "slow": return Number(st.lastMs) > 2000;
+        case "problem": return st.up === false || !!st.lastError || !!st.blocked;
+        case "lowscore": return !!psiOk(s.url) && psiOk(s.url).score < 50;
+        case "bigdom": return !!psiOk(s.url) && psiOk(s.url).dom > 1500;
+        case "unread": return !x;
+        default: return true;
+      }
+    };
+    const num = (v) => Number(v) || 0;
+    const smCmp = fSort === "slow" ? (a, b) => num((state[b.url] || {}).lastMs) - num((state[a.url] || {}).lastMs)
+      : fSort === "size" ? (a, b) => num((phpMap[b.url] || {}).pageKb) - num((phpMap[a.url] || {}).pageKb)
+      : fSort === "score" ? (a, b) => (psiOk(a.url) ? psiOk(a.url).score : 101) - (psiOk(b.url) ? psiOk(b.url).score : 101)
+      : fSort === "dom" ? (a, b) => num((psiOk(b.url) || {}).dom) - num((psiOk(a.url) || {}).dom)
+      : fSort === "name" ? (a, b) => String(a.name || a.url).localeCompare(String(b.name || b.url)) : null;
+    const shownSites = vSites.filter(showOk);
+    if (smCmp) shownSites.sort(smCmp);
+    const kbTxt = (kb) => (kb >= 1024 ? (kb / 1024).toFixed(1) + " MB" : kb + " KB");
+    const rows = shownSites.map((s) => {
       const st = state[s.url] || { up: null, fails: 0, lastCheck: 0 };
       const isOff = !!offMap[s.url];
       // Watched, checked before, but not lately: say so, in amber, instead of
@@ -10346,7 +10400,7 @@ function renderSiteMonitorStatus(cfg) {
       const snoozeTxt = snoozed ? ' · <span class="sm-snoozed">🔕 alerts snoozed until ' + escapeHtml(new Date(until).toLocaleString([], { weekday: "short", month: "short", day: "numeric", hour: "numeric", minute: "2-digit" })) + "</span>" : "";
       const why = st.lastError ? ' · <span class="sm-err">' + escapeHtml(st.lastError) + "</span>"
         : st.blocked ? ' · <span class="sm-err" title="The site is up, but its security is blocking or challenging this computer (it fetches the page every few minutes, which can look like a bot). No alarm is raised for this. If it keeps happening, ask whoever manages the site to allow this office\'s IP.">' + escapeHtml(st.blocked) + " (site is up - not an outage)</span>" : "";
-      const speed = !stale && !waitingOn(s.url) && st.up === true && st.lastMs ? " · " + (st.lastMs < 1000 ? st.lastMs + "ms" : (st.lastMs / 1000).toFixed(1) + "s") : "";
+      const speed = (!stale && !waitingOn(s.url) && st.up === true && st.lastMs ? " · " + (st.lastMs < 1000 ? st.lastMs + "ms" : (st.lastMs / 1000).toFixed(1) + "s") : "");
       // PHP2Shell: what this site's server says its PHP version is.
       const pz = phpOf(s.url), pRec = phpMap[s.url];
       const wpNo = pRec && !pRec.php && pRec.wpErr ? " (WordPress: " + pRec.wpErr + ")" : "";
@@ -10369,12 +10423,21 @@ function renderSiteMonitorStatus(cfg) {
       const phpShort = !pRec ? "not read yet" : pz.k === "na" ? "no PHP" : pz.k === "hidden" ? "hidden" : pz.text.replace(/^PHP /, "").replace(/ - NOT patched \(needs (.+)\)$/, " ✗ needs $1").replace(/ - patched$/, " ✓").replace(/ - at risk \(end of life\)$/, " ✗ end of life").replace(/ - patch level not shown$/, " ?");
       const phpCell = isOff ? '<span class="hint">-</span>' : '<span class="sm-php ' + (pRec ? pz.k : "hidden") + '" title="' + escapeHtml(phpTip) + '">' + escapeHtml(phpShort) + "</span>";
       const wpCell = isOff ? '<span class="hint">-</span>' : '<span class="sm-php ' + wz.k + '" title="' + escapeHtml(wpTip) + '">' + escapeHtml(wz.text) + "</span>" + (wz.k === "hidden" && pRec && pRec.wpErr ? '<div class="hint">' + escapeHtml(phpWhyNot(pRec)) + "</div>" : "");
+      // Page: Google PageSpeed (mobile) score, then DOM size and page size on one grey line.
+      const ps = psiMap[s.url], pk = pRec && pRec.pageKb;
+      const psK = ps && ps.score != null ? (ps.score >= 90 ? "ok" : ps.score >= 50 ? "check" : "bad") : "hidden";
+      const psTip = ps && ps.score != null ? "Google PageSpeed score (mobile)" + (ps.lcp ? ", largest paint " + ps.lcp : "") + ", tested " + new Date(ps.at).toLocaleString() + (ps.ok === false ? ". The last test failed (" + ps.err + "); this score is from the one before." : ".") + " Each site is tested once a day."
+        : ps && ps.err ? "The PageSpeed test failed (" + ps.err + "). It tries again tomorrow." : "Not tested yet: one site is tested about every 5 minutes, each once a day.";
+      const pageLine = [ps && ps.dom ? "DOM " + Number(ps.dom).toLocaleString() : "", pk ? kbTxt(pk) : ""].filter(Boolean).join(" \u00b7 ");
+      const pageCell = isOff ? '<span class="hint">-</span>' : '<div><span class="sm-php ' + psK + '" title="' + escapeHtml(psTip) + '">' + (ps && ps.score != null ? "Score " + ps.score : ps && ps.err ? "test failed" : "not tested yet") + "</span></div>"
+        + (pageLine ? '<div class="hint" title="DOM: elements on the page (Google suggests under 1,500). Size: the HTML page alone, not its images or scripts.">' + escapeHtml(pageLine) + "</div>" : "");
       const stCell = statusText + speed + (st.fails && st.up !== false ? " · " + st.fails + " failed" : "") + why + snoozeTxt;
       return '<div class="imp-row sm-tr" data-sm-row="' + u + '">'
         + '<div class="imp-entry sm-c sm-site"><b>' + label + "</b></div>"
         + '<div class="sm-c sm-st" data-lbl="Status">' + stCell + "</div>"
-        + '<div class="sm-c" data-lbl="WordPress">' + wpCell + "</div>"
-        + '<div class="sm-c" data-lbl="PHP">' + phpCell + "</div>"
+        + '<div class="sm-c" data-lbl="WP / PHP"><div><span class="hint">WP</span> ' + wpCell + '</div><div><span class="hint">PHP</span> ' + phpCell + "</div></div>"
+        + '<div class="sm-c" data-lbl="Page">' + pageCell + "</div>"
+        + '<div class="sm-c sm-tags" data-lbl="Tags">' + (isOff ? '<span class="hint">-</span>' : tagsCell(tagsOf(pRec))) + "</div>"
         + '<div class="sm-c" data-lbl="Hosting">' + hostTxt.replace(/^ · /, "") + "</div>"
         + '<div class="sm-c hint" data-lbl="Last check">' + lastCheckText + "</div>"
         + '<div class="sm-acts"><button type="button" class="sm-check" data-sm-url="' + u + '" title="Check this site right now"' + (isOff ? " disabled" : "") + ">Check</button>"
@@ -10405,6 +10468,11 @@ function renderSiteMonitorStatus(cfg) {
     // update waiting / up to date against the newest release.
     const wc = { bad: 0, check: 0, ok: 0, hidden: 0, na: 0 };
     for (const s of watched) wc[wpJudge(phpMap[s.url], wpLatestV).k]++;
+    const tc = { clarity: 0, noClarity: 0, gtm: 0, unread: 0 };
+    for (const s of watched) { const x = tagsOf(phpMap[s.url]); if (!x) { tc.unread++; continue; } if (x.clarity) tc.clarity++; else if (!x.gtm.length || x.gtmRead) tc.noClarity++; if (x.gtm.length) tc.gtm++; }
+    const tagBox = watched.length ? '<div class="sm-phpsum"><b>Tags</b> <span class="hint">(from each site\'s page; Clarity also inside its GTM container)</span> · ' +
+      '<span class="sm-php ok">Clarity set up on ' + tc.clarity + "</span> · " + (tc.noClarity ? '<span class="sm-php bad">missing on ' + tc.noClarity + "</span> · " : "") +
+      '<span class="sm-php ok">GTM on ' + tc.gtm + "</span>" + (tc.unread ? ' · <span class="sm-php hidden">' + tc.unread + " not read yet</span>" : "") + "</div>" : "";
     const wpBox = watched.length ? '<div class="sm-phpsum"><b>WordPress</b> <span class="hint">' + (wpLatestV ? "newest release " + escapeHtml(wpLatestV) : "newest release not known yet") + "</span> \u00b7 " +
       (wc.bad ? '<span class="sm-php bad">' + wc.bad + " out of date</span> \u00b7 " : "") + (wc.check ? '<span class="sm-php check">' + wc.check + (wpLatestV ? " small update waiting" : " read") + "</span> \u00b7 " : "") +
       '<span class="sm-php ok">' + wc.ok + " up to date</span>" + (wc.hidden ? ' \u00b7 <span class="sm-php hidden">' + wc.hidden + " hidden</span>" : "") + (wc.na ? ' \u00b7 <span class="sm-php na">' + wc.na + " not WordPress</span>" : "") +
@@ -10420,9 +10488,18 @@ function renderSiteMonitorStatus(cfg) {
       (cnt.bad ? '<span class="sm-php bad">' + cnt.bad + " not patched / at risk</span> \u00b7 " : "") + (cnt.check ? '<span class="sm-php check">' + cnt.check + " to check</span> \u00b7 " : "") +
       '<span class="sm-php ok">' + cnt.ok + " patched</span>" + (cnt.na ? ' \u00b7 <span class="sm-php na">' + cnt.na + " not PHP</span>" : "") + (cnt.hidden ? ' \u00b7 <span class="sm-php hidden">' + cnt.hidden + " unknown</span>" : "") + "</summary>" +
       '<div class="hint">Each site\'s PHP version is in the PHP column (point at it for where it came from). Copy and Paste from the sheet are on the line above.</div></details>' : "";
-    const thead = '<div class="imp-row sm-tr sm-thead"><div>Site</div><div>Status</div><div>WordPress</div><div title="PHP2Shell: fixed in 8.5.12, 8.4.27, 8.3.36, 8.2.35">PHP</div><div>Hosting</div><div>Last check</div><div></div></div>';
+    const thead = '<div class="imp-row sm-tr sm-thead"><div>Site</div><div>Status</div><div title="WordPress version, and PHP (PHP2Shell: fixed in 8.5.12, 8.4.27, 8.3.36, 8.2.35)">WP / PHP</div><div title="Google PageSpeed score (mobile), DOM size and page size">Page</div><div title="Google Tag Manager and Microsoft Clarity on the site">Tags</div><div>Hosting</div><div>Last check</div><div></div></div>';
     const mineBox = mineCount ? '<label class="sm-mine" title="Show, count and check only the sites of the clients on your Clients tab (from your tasks). The other sites stay saved; untick to see and check them again."><input type="checkbox" data-sm-mine="1"' + (mineOnly ? " checked" : "") + " /> Only my clients (" + mineCount + ")</label>" + (mineOnly ? ' <span class="hint">' + (cfg.sites.length - mineCount) + " other site" + (cfg.sites.length - mineCount === 1 ? "" : "s") + " not shown or checked</span>" : "") : "";
-    el.innerHTML = '<div class="sm-headrow"><div class="cu-subhead">Current status</div>' + mineBox + '<button type="button" class="sm-act" data-sm-hostfind="1" title="Look up who hosts each site and the link to its control panel, from each domain\'s DNS (nothing is asked of the sites themselves). Links you set by hand are kept.">\uD83D\uDDA5 Find hosting</button><button type="button" class="sm-act" data-sm-add="1">+ Add site</button></div>' + banner + wpBox + phpBox + '<div id="smBlankLine" class="hint"></div><div id="smAddSlot"></div><div class="sm-table">' + thead + rows + "</div>";
+    el.innerHTML = '<div class="sm-headrow"><div class="cu-subhead">Current status</div>' + mineBox + '<button type="button" class="sm-act" data-sm-hostfind="1" title="Look up who hosts each site and the link to its control panel, from each domain\'s DNS (nothing is asked of the sites themselves). Links you set by hand are kept.">\uD83D\uDDA5 Find hosting</button><button type="button" class="sm-act" data-sm-add="1">+ Add site</button></div>' + banner + wpBox + tagBox + phpBox + '<div id="smBlankLine" class="hint"></div><div id="smAddSlot"></div>' +
+      '<div class="sm-filter"><label>Show <select data-sm-show>' + SM_SHOW.map(([v, l]) => '<option value="' + v + '"' + (v === fShow ? " selected" : "") + ">" + escapeHtml(l) + "</option>").join("") + "</select></label>" +
+      '<label>Sort <select data-sm-sort>' + [["", "As listed"], ["name", "Name"], ["slow", "Slowest first"], ["size", "Largest page first"], ["score", "Lowest page score"], ["dom", "Largest DOM"]].map(([v, l]) => '<option value="' + v + '"' + (v === fSort ? " selected" : "") + ">" + l + "</option>").join("") + "</select></label>" +
+      '<span class="hint">' + shownSites.length + " of " + vSites.length + " sites" + (fShow ? ' <button type="button" class="sm-act" data-sm-fclear="1">Show all</button>' : "") + "</span></div>" +
+      '<div class="sm-table">' + thead + (rows || '<div class="hint" style="padding:12px">No site matches this filter.</div>') + "</div>";
+    const fSave = async (patch) => { await chrome.storage.local.set({ smFilter: { show: fShow, sort: fSort, ...patch } }).catch(() => {}); renderSiteMonitorStatus(cfg); };
+    const fsh = el.querySelector("[data-sm-show]"), fso = el.querySelector("[data-sm-sort]"), fcl = el.querySelector("[data-sm-fclear]");
+    if (fsh) fsh.onchange = () => fSave({ show: fsh.value });
+    if (fso) fso.onchange = () => fSave({ sort: fso.value });
+    if (fcl) fcl.onclick = () => fSave({ show: "" });
     const mb = el.querySelector("[data-sm-mine]");
     if (mb) mb.onchange = async () => { await chrome.storage.local.set({ smMineOnly: mb.checked }); renderSiteMonitorStatus(cfg); };
     const pp = el.querySelector("[data-sm-phppaste]"), pbox = el.querySelector(".sm-phppaste");
@@ -12033,7 +12110,7 @@ if ($("admCalCard")) {
 // Where the timer shows (Floating window / Taskbar / Both / Neither) is picked once
 // and kept; the Dashboard card invites people to try the taskbar until they pick.
 const DESK_REL = "https://github.com/Dipson-bot/personal-clickup-manager/releases";
-const DESK_TAG = "desktop-v0.4.9";
+const DESK_TAG = "desktop-v0.5.0";
 let deskOs = "";
 async function deskPlatform() {
   if (deskOs) return deskOs;
@@ -12472,7 +12549,7 @@ chrome.storage.onChanged.addListener((ch, area) => { if (area !== "local" || !(c
       row.style.cssText = "display:flex;gap:8px;align-items:center";
       const now = e.from <= t && (e.to || e.from) >= t, past = (e.to || e.from) < t;
       const txt = document.createElement("span");
-      txt.textContent = (KIND[e.kind] || "Leave") + " · " + fmt(e.from) + (e.to && e.to !== e.from ? " to " + fmt(e.to) : "") + (now ? " (now)" : past ? " (past)" : "");
+      txt.textContent = (KIND[e.kind] || "Leave") + " · " + fmt(e.from) + (e.to && e.to !== e.from ? " to " + fmt(e.to) : "") + (e.half === "am" ? " · first half (morning)" : e.half === "pm" ? " · second half (afternoon)" : "") + (now ? " (now)" : past ? " (past)" : "");
       if (past) txt.style.opacity = ".6";
       const rm = document.createElement("button");
       rm.type = "button"; rm.className = "ap-lnk"; rm.textContent = "Remove";
@@ -12495,11 +12572,15 @@ chrome.storage.onChanged.addListener((ch, area) => { if (area !== "local" || !(c
     const from = $("myLeaveFrom").value, to = $("myLeaveTo").value || from;
     if (!/^\d{4}-\d{2}-\d{2}$/.test(from)) { msg("Pick the first day of the leave."); return; }
     if (to < from) { msg("The last day is before the first."); return; }
-    const e = { id: "lv" + Date.now().toString(36), from, to, kind: $("myLeaveKind").value || "other" };
+    // A half day: one date only; that day keeps half its target (the rating and the day's gauge follow).
+    const half = $("myLeaveHalf") ? $("myLeaveHalf").value : "";
+    if (half && to !== from) { msg("A half day is one date - leave the second date empty."); return; }
+    const e = { id: "lv" + Date.now().toString(36), from, to, kind: $("myLeaveKind").value || "other", ...(half ? { half } : {}) };
     // Overlapping leave is replaced by the new one.
     const next = leave.filter((x) => x && ((x.to || x.from) < from || x.from > to)).concat(e);
     $("myLeaveFrom").value = ""; $("myLeaveTo").value = "";
-    save(next, "Added: " + KIND[e.kind] + " " + fmt(from) + (to !== from ? " to " + fmt(to) : "") + ".");
+    if ($("myLeaveHalf")) $("myLeaveHalf").value = "";
+    save(next, "Added: " + KIND[e.kind] + " " + fmt(from) + (to !== from ? " to " + fmt(to) : "") + (half ? (half === "am" ? ", first half" : ", second half") : "") + ".");
   };
   try { chrome.storage.onChanged.addListener((ch, area) => { if (area === "local" && ch.settings && JSON.stringify((ch.settings.newValue || {}).myLeave || []) !== JSON.stringify(leave)) load(); }); } catch (e) {}
   load();

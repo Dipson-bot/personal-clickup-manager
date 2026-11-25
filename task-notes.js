@@ -278,6 +278,7 @@
   .tn-sw button.on { border-color: var(--text); box-shadow: 0 0 0 2px var(--card, #fff) inset; }
   .tn-cprow { display: flex; gap: 6px; }
   .tn-cpoff { align-self: flex-start; }
+  .tn-cpoff:disabled { opacity: .45; cursor: default; }
   .tn-pin { filter: grayscale(1); }
   .tn-pin.on { filter: none; }
   .tn-note.on { color: var(--indigo, #6366f1); font-weight: 700; }
@@ -403,7 +404,9 @@
   // A colour with skip: true is left out of planning: its tasks' guessed time isn't
   // added to "with guesses", the 7h day gauge or Fill to 7h (they can't be done yet).
   const TN_PRESETS = [["#e5383b", "Can't do yet", true], ["#eab308", "Waiting on the client", true], ["#3474f4", "Ask the team", false]];
-  const TN_EARLY = { id: "early", color: "#1e8a44", name: "Done early", builtin: true, skip: false };
+  // Cyan, not green: a completed task's row is green, and Done early (finished, still
+  // open until its week) must not look the same. Not one of the swatches, so no clash.
+  const TN_EARLY = { id: "early", color: "#06b6d4", name: "Done early", builtin: true, skip: false };
   const allLabels = () => [TN_EARLY].concat(colorLabels.filter((l) => l && l.id !== "early"));
   const labelOf = (lid) => allLabels().find((l) => l.id === lid) || null;
   let colorPop = null;
@@ -414,7 +417,10 @@
   // task's entry links it (nid) and the note carries the colour (c). text: the
   // reason typed in the 🎨 box (undefined = leave the note as it is); opts.nid: link
   // this existing note (its 🎨 in My notes). Removing the colour keeps the note.
-  async function setColor(id, labelId, text, name, opts) {
+  // One colour change at a time: each starts from the one before (several rows cleared at once used to put each other back).
+  let colorQ = Promise.resolve();
+  function setColor(...a) { const p = colorQ.then(() => setColorNow(...a)); colorQ = p.catch(() => {}); return p; }
+  async function setColorNow(id, labelId, text, name, opts) {
     id = String(id);
     const next = { ...colors };
     const prev = next[id];
@@ -473,7 +479,8 @@
             '<label class="tn-cpskip"><input type="checkbox" class="tn-cpsk" /> Leave its tasks out of planning (can\u2019t be done yet)</label>' +
             (free.length < TN_SWATCH.length ? '<div class="tn-cphint">Colours that already have a meaning aren\u2019t offered again.</div>' : "") + "</div>"
           : '<div class="tn-cpnew"><div class="tn-cphint">Every colour has a meaning now. To add another, \u270E change one of yours or \u2715 delete one you don\u2019t use.</div></div>') +
-        (cur ? '<button type="button" class="tn-btn tn-cpoff" data-off>Remove the colour</button>' : "");
+        // Always there, so it's easy to find; greyed out when the task has no colour.
+        '<button type="button" class="tn-btn tn-cpoff" data-off' + (cur ? ' title="Take the colour off this task"' : ' disabled title="This task has no colour of yours"') + ">Remove the colour</button>";
       if (typed != null && pop.querySelector(".tn-cpnote")) pop.querySelector(".tn-cpnote").value = typed;
       if (editing) { const ei = pop.querySelector(".tn-cename"); if (ei) { ei.focus(); ei.select(); } }
     };
@@ -539,12 +546,16 @@
 
   // ---------- task rows: 📌 + 📝 ----------
   let focusNotesFor = "";
+  const earlyCleared = new Set(); // completed tasks whose Done early mark was taken off (once each)
   function decorate(row) {
     const t = row && row._cuTask;
     const wrap = row && row.querySelector(".nmwrap");
     if (!t || t.id == null || !wrap || /^rev-/.test(String(t.id))) return;
     const id = String(t.id);
     autoColor(t);
+    // "Done early" marks a task finished ahead of its week; once it's completed in
+    // ClickUp the mark has done its job - it comes off, and the row shows as completed.
+    if (t.done && colors[id] && colors[id].l === "early" && !earlyCleared.has(id)) { earlyCleared.add(id); setColor(id, null).catch(() => {}); }
     let box = wrap.querySelector(".tn-marks");
     if (!box) {
       box = document.createElement("span");
@@ -552,8 +563,11 @@
       box.innerHTML = '<button type="button" class="tn-b tn-cmt" hidden></button><button type="button" class="tn-b tn-color"></button><button type="button" class="tn-b tn-pin"></button><button type="button" class="tn-b tn-note"></button>';
       const nm = wrap.querySelector(".nm");
       if (nm && nm.nextSibling) wrap.insertBefore(box, nm.nextSibling); else wrap.appendChild(box);
-      box.querySelector(".tn-pin").addEventListener("click", (e) => { e.preventDefault(); e.stopPropagation(); setPin(id, !isPinned(id)); });
-      box.querySelector(".tn-color").addEventListener("click", (e) => { e.preventDefault(); e.stopPropagation(); if (colorPop) { closeColorPop(); return; } openColorPop(e.currentTarget, id, row._cuTask); });
+      // The row's task NOW, not when these buttons were made: a redrawn list reuses a
+      // row for another task, and 🎨 then opened the old task's colours (no ✓, no Remove).
+      const curId = () => String(row._cuTask && row._cuTask.id != null ? row._cuTask.id : id);
+      box.querySelector(".tn-pin").addEventListener("click", (e) => { e.preventDefault(); e.stopPropagation(); const k = curId(); setPin(k, !isPinned(k)); });
+      box.querySelector(".tn-color").addEventListener("click", (e) => { e.preventDefault(); e.stopPropagation(); if (colorPop) { closeColorPop(); return; } openColorPop(e.currentTarget, curId(), row._cuTask); });
       box.querySelector(".tn-color").addEventListener("mousedown", (e) => e.stopPropagation());
       // 💬: open the task's details - its comments are there (and that marks them read).
       box.querySelector(".tn-cmt").addEventListener("click", (e) => {
@@ -561,11 +575,11 @@
         const chev = row.querySelector(".pcm-chev");
         const TP = window.PcmTaskPanel;
         if (chev && chev.getAttribute("aria-expanded") !== "true") { if (TP && TP.wantTab) TP.wantTab("cmt"); chev.click(); }
-        else { if (TP && TP.showTab) TP.showTab("cmt"); window.PcmComments.markRead(id); }
+        else { if (TP && TP.showTab) TP.showTab("cmt"); window.PcmComments.markRead(curId()); }
       });
       box.querySelector(".tn-note").addEventListener("click", (e) => {
         e.preventDefault(); e.stopPropagation();
-        focusNotesFor = id;
+        focusNotesFor = curId();
         const chev = row.querySelector(".pcm-chev");
         const open = chev && chev.getAttribute("aria-expanded") === "true";
         const TP = window.PcmTaskPanel;

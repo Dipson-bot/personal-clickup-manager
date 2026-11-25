@@ -605,6 +605,8 @@
     const lv = u && u.perf && Array.isArray(u.perf.lv) ? u.perf.lv : [];
     const k = ymdOf(Date.now());
     const now = lv.find((e) => e && e.f <= k && e.t >= k);
+    // A half day is a working day: said, but not "On leave".
+    if (now && now.h) return { now: false, label: "Half-day leave today (" + (now.h === "am" ? "morning" : "afternoon") + ")" };
     if (now) return { now: true, label: "On " + (LEAVE_WORD[now.k] || "leave") + (now.t > k ? " until " + fmtYmd(now.t) : " today") };
     const next = lv.filter((e) => e && e.f > k).sort((a, b) => String(a.f).localeCompare(String(b.f)))[0];
     if (!next) return null;

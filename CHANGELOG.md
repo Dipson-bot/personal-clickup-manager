@@ -1,5 +1,18 @@
 # Changelog
 
+## v4.4.9
+- Task colours: the 🎨 button (and 📌, 💬, 📝) on a task could act on a different task after the list redrew - so a colour could look impossible to remove. It now always opens that task's own colours, with Remove the colour at the bottom.
+- Done early comes off by itself once the task is completed in ClickUp, so the row shows as a normal completed task again. Remove the colour is always in the colour picker now (greyed out when the task has no colour).
+- Done early is cyan now instead of green, so a task you finished early no longer looks like a completed one. The green colour is free for your own colours.
+- My leave: a half day - pick one date and First half off (morning) or Second half off (afternoon). That day's target is half (3h 30m of 7h) everywhere: the rating, Insights, the day's gauge and the reminders, so an approved half day never lowers your rating. Full days of leave were already left out.
+- Each person's timer runs on their own time on a task: when a task is handed to you (a review after the developer), it starts at 0 for you instead of the developer's time, and the estimate alerts look at your time only. Same in the ClickUp Tracker app.
+- Site monitor: a Tags column shows whether Google Tag Manager (with its GTM-ID) and Microsoft Clarity are set up on each site - including Clarity added inside the GTM container - with the counts above the table. Read from the page each check already loads; a GTM container is read from Google at most once a day.
+- Site monitor: Show and Sort above the table - only the sites with no GTM, more than one GTM, no Clarity, Clarity via GTM, WordPress out of date or hidden, PHP not patched, slow (over 2s), down or a problem, or not read yet; sorted by name, slowest first or largest page first. Each site also shows its page size next to its speed.
+- Site monitor: a Page column shows each site's Google PageSpeed score (mobile) and, under it, its DOM size and page size. Google tests one site about every 5 minutes and each site once a day. WordPress and PHP now share one WP / PHP column, so the table stays roomy. Show can list sites with a page score under 50 or a DOM over 1,500 elements; Sort can put the lowest score or the largest DOM first.
+- Site monitor: a site loading more than one Google Tag Manager container now shows every container ID (GTM ×2 in amber), not just the first. No Clarity no longer counts a site whose GTM container is still being checked.
+- My leave: a half day now halves only that day's target; the week's targets keep the normal day, and the leave-tomorrow heads-up and Admin › Users no longer treat a half day as a day off.
+- Task colours: clearing Done early on several completed tasks at once could put some of them back. Colour changes now save one after another.
+
 ## v4.4.8
 - Comments on tasks completed in the last 14 days are now checked too: a comment or @mention on a finished task ("the File is empty, please add it") shows in Unread comments, the mention lists and the daily notification, with the usual mention notification.
 - A task of yours completed (in ClickUp itself too) with File: "" still without a link is flagged: a notification once per task, a new Insights list Completed without a File link, and a line in the daily Needs tidying notification (switch: completed without a File link).

@@ -179,7 +179,9 @@
   // My leave (Settings › My leave, settings.myLeave): a day off for me only.
   let leave = [];
   const leaveOn = (ts) => { const k = ymd(ts); return leave.find((e) => e && e.from && k >= e.from && k <= (e.to || e.from)) || null; };
-  const isLeave = (ts) => !!leaveOn(ts);
+  // A half day (half: "am" first half off / "pm" second half off) is still a working day, with half the target.
+  const isLeave = (ts) => { const lv = leaveOn(ts); return !!lv && !lv.half; };
+  const leaveHalf = (ts) => { const lv = leaveOn(ts); return lv && (lv.half === "am" || lv.half === "pm") ? lv.half : ""; };
   const isDayOff = (ts) => isHoliday(ts) || isLeave(ts);
   const fmtShort = (ts) => new Date(ts).toLocaleDateString(undefined, { month: "short", day: "numeric" });
   // ---- times, for the date+time fields (reminders, a notice's "until") ----
@@ -350,6 +352,8 @@
     .pcal-day.hol .ad { color: #ef4444; }
     .pcal-day.lv { background: rgba(139,92,246,.30); } .pcal-day.lv .ad { color: #7c3aed; }
     html[data-theme="dark"] .pcal-day.lv { background: rgba(167,139,250,.42); } html[data-theme="dark"] .pcal-day.lv .ad { color: #fff; }
+    .pcal-day.lv.lvhalf { background: linear-gradient(135deg, rgba(139,92,246,.30) 50%, transparent 50%); } /* a half-day leave: half filled */
+    html[data-theme="dark"] .pcal-day.lv.lvhalf { background: linear-gradient(135deg, rgba(167,139,250,.42) 50%, transparent 50%); }
     .pcal-day.flash { animation: pcal-flash 1.6s ease 2; }
     @keyframes pcal-flash { 0%, 100% { box-shadow: 0 0 0 0 rgba(99,102,241,0); } 40% { box-shadow: 0 0 0 3px var(--indigo, #6366f1); } }
     .pcal-day.wfh { background: rgba(59,130,246,.16); }
@@ -603,6 +607,7 @@
       const evs = eventsOn(ts);
       if (evs.some((e) => e.kind === "holiday")) b.classList.add("hol");
       else if (!weekend && isLeave(ts)) { b.classList.add("lv"); b.title = (b.title ? b.title + " · " : "") + "Your leave"; }
+      else if (!weekend && leaveHalf(ts)) { b.classList.add("lv", "lvhalf"); b.title = (b.title ? b.title + " · " : "") + "Your leave - " + (leaveHalf(ts) === "am" ? "first half (morning)" : "second half (afternoon)"); }
       else if (weekend) b.classList.add("we");
       else if (evs.some((e) => e.kind === "wfh")) b.classList.add("wfh");
       const bs = toBS(d);
@@ -1052,5 +1057,5 @@
       return native ? native.call(this) : undefined;
     };
   } catch (e) {}
-  window.PcmCalendar = { toBS, fromBS, festivalOn, bsLabel, isHoliday, isWfh, isLeave, leaveOn, isDayOff, eventsOn, remindersOn, open, pick: pickDate, pickFor, refresh: load };
+  window.PcmCalendar = { toBS, fromBS, festivalOn, bsLabel, isHoliday, isWfh, isLeave, leaveHalf, leaveOn, isDayOff, eventsOn, remindersOn, open, pick: pickDate, pickFor, refresh: load };
 })();

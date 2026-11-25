@@ -2651,15 +2651,19 @@ function cuViewRange(st, f) {
 function cuScopeTargetMs(dailyMs, st, f) {
   if (cuIsMonth(f)) return 0; // a month: the total for the tasks listed, no target
   const r = cuViewRange(st, f);
-  if (!dailyMs || !r) return dailyMs;
+  const halfToday = window.PcmCalendar && window.PcmCalendar.leaveHalf && window.PcmCalendar.leaveHalf(Date.now()) ? 0.5 : 1;
+  if (!dailyMs || !r) return dailyMs * halfToday; // no range (today): today's target
   let days = 0;
   const d = new Date(r.fromTs); d.setHours(12, 0, 0, 0);
   const end = new Date(r.toTs); end.setHours(12, 0, 0, 0);
   // Company holidays and my leave (Settings › My leave) are days off.
   const holiday = (x) => !!(window.PcmCalendar && (window.PcmCalendar.isDayOff || window.PcmCalendar.isHoliday)(x.getTime()));
   let weekdays = 0;
-  for (let i = 0; d <= end && i < 400; i++, d.setDate(d.getDate() + 1)) if (d.getDay() !== 0 && d.getDay() !== 6) { weekdays++; if (!holiday(d)) days++; }
-  if (weekdays <= 1) return dailyMs; // today / tomorrow: the daily target
+  // A half-day leave counts half a day.
+  const half = (x) => (window.PcmCalendar && window.PcmCalendar.leaveHalf && window.PcmCalendar.leaveHalf(x.getTime()) ? 0.5 : 1);
+  let one = 1;
+  for (let i = 0; d <= end && i < 400; i++, d.setDate(d.getDate() + 1)) if (d.getDay() !== 0 && d.getDay() !== 6) { weekdays++; if (!holiday(d)) { days += half(d); one = half(d); } }
+  if (weekdays <= 1) return dailyMs * one; // today / tomorrow: the daily target (half on a half day)
   return dailyMs * days; // company holidays and my leave don't count (a whole week off = no target)
 }
 // Today's own tracked time, for the Tracked bar when the active scope is NOT
@@ -3343,7 +3347,7 @@ function renderClickup() {
   // "due today" is remembered separately from "due next week".
   cuActiveScope = view.scope || "extended";
   const dailyTargetMs = st && Number(st.targetMs) > 0 ? Number(st.targetMs) : (Number(cu.targetHours) || 0) * 3600000;
-  const targetMs = view.scope === "plan" ? dailyTargetMs : cuScopeTargetMs(dailyTargetMs, st, cuFilter);
+  const targetMs = view.scope === "plan" ? dailyTargetMs : cuScopeTargetMs(st && Number(st.fullTargetMs) > 0 ? Number(st.fullTargetMs) : dailyTargetMs, st, cuFilter);
   if (window.PcmPlanDay) { const sc = $("statsCard"); window.PcmPlanDay.paintBanner(sc && sc.querySelector(".card-title"), "cuPlanDayBar"); }
   const estMs = Number(view.estimateMs) || 0;
   const spentTot = Number(view.spentMs) || 0;

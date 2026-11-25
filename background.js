@@ -1191,7 +1191,72 @@ function phpFromHeaders(res, html) {
   const xp = String((res && res.headers && res.headers.get("x-powered-by")) || "");
   const sv = String((res && res.headers && res.headers.get("server")) || "");
   const m = (xp + " " + sv).match(/PHP\/(\d+\.\d+(?:\.\d+)?)/i);
-  return { php: m ? m[1] : "", powered: xp.slice(0, 80), server: sv.slice(0, 80), platform: sitePlatform(res, html), wp: wpVersionFromPage(html) };
+  return { php: m ? m[1] : "", powered: xp.slice(0, 80), server: sv.slice(0, 80), platform: sitePlatform(res, html), wp: wpVersionFromPage(html), tags: siteTagsFromPage(html),
+    pageKb: String(html || "").length > 200 ? Math.round(new Blob([String(html)]).size / 1024) : 0 }; // the HTML page's own size (not its images / scripts)
+}
+// Google Tag Manager and Microsoft Clarity in the page the check already read (no
+// extra request): GTM's container IDs, Clarity's project ID (its pasted snippet or
+// the WordPress plugin's). null when there was no page to read. Clarity added
+// INSIDE a GTM container isn't in the page - see gtmClarityScan.
+function siteTagsFromPage(html) {
+  const p = String(html || "").slice(0, 600000);
+  if (p.length < 200) return null;
+  const gtm = [...new Set((p.match(/\bGTM-[A-Z0-9]{5,9}\b/g) || []))].filter((g) => !/^GTM-X+$/.test(g)).slice(0, 4); // not a GTM-XXXXXX placeholder
+  const cm = p.match(/clarity\.ms\/tag\/["'+\s]*([a-z0-9]{6,14})/i) || p.match(/["']clarity["']\s*,\s*["']script["']\s*,\s*["']([a-z0-9]{6,14})["']/i);
+  const clarity = cm ? cm[1] : /clarity\.ms\/tag\//i.test(p) ? "yes" : "";
+  return { gtm, clarity, at: Date.now() };
+}
+// Page speed score and DOM size (Site monitor › Page): Google's PageSpeed Insights
+// (a mobile Lighthouse test run by Google). One site per run - about one every 5
+// minutes - and each site once a day, so Google's tester loads a client's homepage
+// once a day at most. A "too many requests" answer pauses it for 6 hours.
+// storage sitePsi { [url]: { at, score 0-100, dom, lcp, ok, err } }, psiPauseUntil.
+const PSI_EVERY = 86400000;
+async function pageSpeedScan(urls) {
+  const g = await chrome.storage.local.get(["sitePsi", "psiPauseUntil"]).catch(() => ({}));
+  if (Number(g.psiPauseUntil) > Date.now()) return;
+  const psi = { ...(g.sitePsi || {}) };
+  const url = (urls || []).filter((u) => /^https?:\/\//.test(u)).sort((a, b) => ((psi[a] && psi[a].at) || 0) - ((psi[b] && psi[b].at) || 0))
+    .find((u) => !(psi[u] && Date.now() - (psi[u].at || 0) < PSI_EVERY));
+  if (!url) return;
+  const ctl = new AbortController();
+  const timer = setTimeout(() => ctl.abort(), 90000);
+  try {
+    const r = await fetch("https://www.googleapis.com/pagespeedonline/v5/runPagespeed?strategy=mobile&category=performance&url=" + encodeURIComponent(url), { cache: "no-store", credentials: "omit", signal: ctl.signal });
+    if (r.status === 429) { await chrome.storage.local.set({ psiPauseUntil: Date.now() + 6 * 3600000 }); return; }
+    const j = r.ok ? await r.json() : null;
+    const lh = j && j.lighthouseResult;
+    const cat = lh && lh.categories && lh.categories.performance;
+    const au = (lh && lh.audits) || {};
+    psi[url] = lh && cat && cat.score != null
+      ? { at: Date.now(), ok: true, score: Math.round(Number(cat.score) * 100), dom: Math.round(Number(au["dom-size"] && au["dom-size"].numericValue) || 0), lcp: String((au["largest-contentful-paint"] && au["largest-contentful-paint"].displayValue) || "").slice(0, 12) }
+      : { ...(psi[url] || {}), at: Date.now(), ok: false, err: r.ok ? "no result" : "HTTP " + r.status };
+  } catch (e) {
+    psi[url] = { ...(psi[url] || {}), at: Date.now(), ok: false, err: e && e.name === "AbortError" ? "timed out" : "couldn't reach it" };
+  } finally { clearTimeout(timer); }
+  for (const k of Object.keys(psi)) if (Date.now() - (psi[k].at || 0) > 30 * PSI_EVERY) delete psi[k];
+  await chrome.storage.local.set({ sitePsi: psi });
+}
+// Clarity set up inside a GTM container: the container's script, from Google's own
+// server (googletagmanager.com - not the client's site), read at most once a day per
+// container, a few per run. storage gtmScan { [GTM-ID]: { at, clarity: id | "yes" | "", ok } }.
+async function gtmClarityScan(ids) {
+  const { gtmScan } = await chrome.storage.local.get("gtmScan").catch(() => ({}));
+  const scan = { ...(gtmScan || {}) };
+  const todo = [...new Set(ids)].filter((id) => /^GTM-[A-Z0-9]{4,10}$/.test(id) && !(scan[id] && Date.now() - (scan[id].at || 0) < 86400000)).slice(0, 4);
+  if (!todo.length) return;
+  for (const id of todo) {
+    try {
+      const r = await fetch("https://www.googletagmanager.com/gtm.js?id=" + encodeURIComponent(id), { cache: "no-store", credentials: "omit" });
+      const js = r.ok ? await r.text() : "";
+      // (Addresses in the container are written with escaped slashes: clarity.ms\/tag\/.)
+      const m = js.match(/clarity\.ms\\?\/tag\\?\/["'+\\\s]*([a-z0-9]{6,14})/i) || js.match(/"vtp_[a-z_]*project[a-z_]*id"\s*,\s*"([a-z0-9]{6,14})"/i);
+      scan[id] = { at: Date.now(), ok: r.ok, clarity: m ? m[1] : /clarity\.ms/i.test(js) ? "yes" : "" };
+    } catch (e) { scan[id] = { at: Date.now(), ok: false, clarity: "" }; }
+    await new Promise((x) => setTimeout(x, 400));
+  }
+  for (const k of Object.keys(scan)) if (Date.now() - (scan[k].at || 0) > 30 * 86400000) delete scan[k];
+  await chrome.storage.local.set({ gtmScan: scan });
 }
 // The WordPress version a page gives away, from the page the check already read
 // (no extra request): the generator tag, else the ?ver= of WordPress's own core
@@ -1508,19 +1573,24 @@ async function checkSitesImpl(opts = {}) {
       sitePhpSeen.delete(s.url);
       const prev = sp[s.url];
       // The WordPress version seen in the page; one read from WordPress itself (🔑) wins until a newer page shows another.
-      const { wp: pageWp, ...hh } = h;
+      const { wp: pageWp, tags: pageTags, ...hh } = h;
+      // GTM / Clarity: only from a page that was read (an unread one keeps what was known).
+      const tagPart = pageTags ? { tags: pageTags, ...(hh.pageKb ? { pageKb: hh.pageKb } : {}) } : {};
       // A version read from Site Health (the key) is only replaced by a NEWER one from the page - a cached page can show an old number.
       const verNum = (v) => String(v || "").split(".").reduce((a, x, i) => a + (Number(x) || 0) * Math.pow(1000, 2 - i), 0);
       const pageWins = pageWp && (!prev || prev.wp !== pageWp) && !(prev && prev.wpSrc === "wp" && verNum(pageWp) <= verNum(prev.wp));
       const wpPart = pageWins ? { wp: pageWp, wpSrc: "page", wpVerAt: Date.now() } : {};
       if (prev && prev.src) { // from the team sheet / WordPress itself: more reliable than a header (a CDN can say another PHP)
-        if ((hh.platform && prev.platform !== hh.platform) || wpPart.wp) { sp[s.url] = { ...prev, ...(hh.platform ? { platform: hh.platform } : {}), ...wpPart }; n++; }
+        if ((hh.platform && prev.platform !== hh.platform) || wpPart.wp || pageTags) { sp[s.url] = { ...prev, ...(hh.platform ? { platform: hh.platform } : {}), ...wpPart, ...tagPart }; n++; }
         continue;
       }
-      sp[s.url] = { ...(prev || {}), ...hh, ...wpPart, at: Date.now() }; n++; // keeps a failed WordPress read's reason
+      sp[s.url] = { ...(prev || {}), ...hh, ...wpPart, ...tagPart, at: Date.now() }; n++; // keeps a failed WordPress read's reason
     }
     if (n) await chrome.storage.local.set({ sitePhp: sp });
+    // Clarity added inside a GTM container: read those containers from Google (once a day each).
+    gtmClarityScan(Object.values(sp).flatMap((r) => (r && r.tags && Array.isArray(r.tags.gtm) ? r.tags.gtm : []))).catch(() => {});
   } catch (e) {}
+  pageSpeedScan(sites.map((s) => s.url)).catch(() => {}); // one site per run, each once a day
   wpLatestRefresh().catch(() => {}); // the newest WordPress release, for Site monitor's WordPress column (twice a day at most)
   // Hosting (Site monitor › 🖥): up to 4 sites with none yet, each run - DNS only.
   try {
@@ -3855,12 +3925,17 @@ async function deskLink(force) {
   const stAll = ag.autoStopTasks || {};
   const setup = {};
   for (const [k, v] of Object.entries(acAll).slice(0, 200)) setup[k] = { when: "est", start: (v && v.start) || "keep", due: (v && v.due) || "keep" };
+  // A tracker before 0.5.0 knows only "complete": it never gets a stop rule (it would
+  // show it as Auto-complete, and an edit there would turn it into one).
+  const deskVer = String(da.version || "").split(".").map(Number);
+  const trackerStops = (deskVer[0] || 0) > 0 || (deskVer[1] || 0) >= 5;
   for (const [k, v] of Object.entries(stAll)) {
-    if (!v || v.action !== "complete") continue;
-    setup[k] = v.scope === "clock" ? { when: "clock", atMs: Number(v.atMs) || 0, start: v.start || "keep", due: v.due || "keep" }
-      : { when: "after", ms: Number(v.ms) || 0, start: v.start || "keep", due: v.due || "keep" };
+    if (!v || (v.action !== "complete" && v.action !== "stop") || (v.action === "stop" && !trackerStops)) continue;
+    const mode = v.action === "stop" ? "stop" : "complete";
+    setup[k] = v.scope === "clock" ? { mode, when: "clock", atMs: Number(v.atMs) || 0, start: v.start || "keep", due: v.due || "keep" }
+      : { mode, when: "after", ms: Number(v.ms) || 0, scope: v.scope || "today", start: v.start || "keep", due: v.due || "keep" };
   }
-  const auto = (await isHelperOnly()) ? undefined : { ids: Object.keys(setup).slice(0, 200), lead: ag.autoCompleteLead || null, setup };
+  const auto = (await isHelperOnly()) ? undefined : { ids: Object.keys(setup).slice(0, 200), lead: ag.autoCompleteLead || null, setup, v: 2 }; // v 2: "stop" rules are understood
   const notices = (await isHelperOnly()) ? undefined : (await cnoteLive().catch(() => [])).slice(0, 30);
   try { r = await deskPost({ show, style, anim, warnEmpty, auto, notices, ext: chrome.runtime.id }); } catch (e) { r = null; }
   if (!r || r.app !== "clickup-tracker") {
@@ -3881,15 +3956,21 @@ async function deskLink(force) {
       if (!c || c.type !== "autoComplete" || !c.taskId) continue;
       const id = String(c.taskId), name = String(c.name || (marks[id] && marks[id].name) || "").slice(0, 200);
       const prevMark = marks[id], prevStop = stops[id];
-      // One auto-complete per task: at its estimate (autoCompleteTasks) or at a clock time (a "complete" stop-at rule).
+      // One automatic action per task: complete at its estimate (autoCompleteTasks), or
+      // complete / stop the timer after a time or at a clock time (an autoStopTasks rule).
       delete marks[id];
-      if (stops[id] && stops[id].action === "complete") delete stops[id];
+      delete stops[id];
       if (!c.on) continue;
+      const action = c.mode === "stop" ? "stop" : "complete";
       const start = day(c.start), due = day(c.due);
+      // A rule's other settings (a status, a comment, set in the Automation tab) stay when the action stays the same.
+      const keep = prevStop && prevStop.action === action ? prevStop : {};
+      const dates = action === "complete" ? { start, due } : {};
       if (c.when === "clock" && !(Number(c.atMs) > Date.now())) { if (prevMark) marks[id] = prevMark; if (prevStop) stops[id] = prevStop; continue; } // that time has passed: nothing changes
-      if (c.when === "clock") stops[id] = { name, atMs: Number(c.atMs), scope: "clock", action: "complete", daily: false, firedDay: "", start, due };
-      else if (c.when === "after" && Number(c.ms) >= 60000) stops[id] = { name, ms: Math.min(Number(c.ms), 24 * 3600000), scope: "today", action: "complete", daily: false, firedDay: "", start, due };
-      else marks[id] = { name, at: Date.now(), start, due };
+      if (c.when === "clock") stops[id] = { ...keep, name, atMs: Number(c.atMs), ms: undefined, scope: "clock", action, daily: false, firedDay: "", ...dates };
+      else if (c.when === "after" && Number(c.ms) >= 60000) stops[id] = { ...keep, name, ms: Math.min(Number(c.ms), 24 * 3600000), atMs: undefined, scope: keep.scope === "mine" || keep.scope === "total" ? keep.scope : "today", action, daily: keep.scope === "mine" || keep.scope === "total" ? !!keep.daily : false, firedDay: "", ...dates }; // an Automation-tab rule keeps its kind of time and its daily repeat
+      else if (action === "complete") marks[id] = { name, at: Date.now(), start, due };
+      else { if (prevMark) marks[id] = prevMark; if (prevStop) stops[id] = prevStop; } // a stop needs a time: nothing changes
     }
     await chrome.storage.local.set({ autoCompleteTasks: marks, autoStopTasks: stops }).catch(() => {});
   }
@@ -6376,7 +6457,10 @@ async function refreshClickupImpl({ includeTasks = false, viaAlarm = false, forc
   if (!cfg.teamId || cfg.userId == null) return { ok: false, reason: "incomplete-setup" };
   const settings = await getSettings();
   setExtraEvenSplit(settings.clickupExtraEven === true);
-  const targetHours = Number(settings.clickupTargetHours) || 0;
+  // A half-day leave today: half of today's target (the gauge, the badge and the nudges
+  // follow it). fullTargetMs keeps the normal day, for weeks and other days.
+  const fullTargetMs = (Number(settings.clickupTargetHours) || 0) * 3600000;
+  const targetHours = (Number(settings.clickupTargetHours) || 0) * (myLeaveHalf(Date.now()) ? 0.5 : 1);
   // Auto-detect the "Extra(s) Task(s)" task by name (no manual URL needed) and
   // fold it into the configured-task set, so today / weekly / filter all see it.
   let extraTask = await discoverExtraTask(cfg);
@@ -6408,7 +6492,7 @@ async function refreshClickupImpl({ includeTasks = false, viaAlarm = false, forc
     if (typeof onToday === "function") {
       try {
         const prevQ = (await getClickupState().catch(() => null)) || {};
-        const quick = { ...prevQ, estimateMs: data.estimateMs, spentMs: data.spentMs, targetMs: data.targetMs, targetHours: data.targetHours,
+        const quick = { ...prevQ, estimateMs: data.estimateMs, spentMs: data.spentMs, targetMs: data.targetMs, targetHours: data.targetHours, fullTargetMs,
           taskCount: data.taskCount, noEstimateCount: data.noEstimateCount, targetMet: data.targetMet, deadlineTasks: data.deadlineTasks,
           deadlineEstimateMs: data.deadlineEstimateMs, deadlineSpentMs: data.deadlineSpentMs, tasks: data.tasks, error: null };
         // The filter list for the Tasks card; if ClickUp is slow it follows with
@@ -6622,6 +6706,7 @@ async function refreshClickupImpl({ includeTasks = false, viaAlarm = false, forc
       spentMs: data.spentMs,
       targetMs: data.targetMs,
       targetHours: data.targetHours,
+      fullTargetMs,
       taskCount: data.taskCount,
       noEstimateCount: data.noEstimateCount,
       targetMet: data.targetMet,
@@ -6773,18 +6858,22 @@ function normalizeMyLeave(list) {
   return (Array.isArray(list) ? list : []).filter((e) => e && ok.test(String(e.from || ""))).map((e) => ({
     from: String(e.from), to: ok.test(String(e.to || "")) && String(e.to) >= String(e.from) ? String(e.to) : String(e.from),
     kind: LEAVE_KINDS[e.kind] ? e.kind : "other",
+    // A half day (one date only): "am" = first half off, "pm" = second half off.
+    ...((e.half === "am" || e.half === "pm") && (!e.to || String(e.to) === String(e.from)) ? { half: e.half } : {}),
     ...(e.id ? { id: String(e.id).slice(0, 40) } : {}),
   })).sort((a, b) => a.from.localeCompare(b.from)).slice(-100);
 }
 let myLeave = [];
 const myLeaveOn = (ts) => { const k = calYmd(ts); return myLeave.find((e) => k >= e.from && k <= e.to) || null; };
-const isMyLeave = (ts) => !!myLeaveOn(ts);
+// A half day is still a working day (half the target): only a full day is a day off.
+const isMyLeave = (ts) => { const lv = myLeaveOn(ts); return !!lv && !lv.half; };
+const myLeaveHalf = (ts) => { const lv = myLeaveOn(ts); return lv && lv.half ? lv.half : ""; };
 // Not a working day for me: a company holiday or my leave (weekends are checked apart).
 const isDayOff = (ts) => isCompanyHoliday(ts) || isMyLeave(ts);
 // Leave now or starting within 30 days, for Admin › Users ("On leave until Fri").
 function myLeaveSoon(now = Date.now()) {
   const a = calYmd(now), b = calYmd(now + 30 * 86400000);
-  return myLeave.filter((e) => e.to >= a && e.from <= b).slice(0, 4).map((e) => ({ f: e.from, t: e.to, k: e.kind }));
+  return myLeave.filter((e) => e.to >= a && e.from <= b).slice(0, 4).map((e) => ({ f: e.from, t: e.to, k: e.kind, ...(e.half ? { h: e.half } : {}) }));
 }
 chrome.storage.local.get("settings").then((g) => { myLeave = normalizeMyLeave(g.settings && g.settings.myLeave); }).catch(() => {});
 chrome.storage.onChanged.addListener((ch, area) => {
@@ -7165,7 +7254,7 @@ async function maybeAutoStop(cfg, entry, progress, key, today) {
     return false;
   }
   const dayStart = new Date(now).setHours(0, 0, 0, 0);
-  const tracked = rule.scope === "total" ? Number(progress.trackedMs) || 0
+  const tracked = rule.scope === "total" ? (Number(progress.trackedMs) || 0) + (Number(progress.othersTotalMs) || 0) // "in all": everyone's
     : rule.scope === "mine" ? Number(progress.myTrackedMs) || 0
     : (Number(progress.closedTodayMs) || 0) + Math.max(0, now - Math.max(Number(entry.startMs) || now, dayStart));
   const left = clock ? Number(rule.atMs) - now : Number(rule.ms) - tracked;
@@ -7349,6 +7438,12 @@ async function maybeNotifyRunningTask(cfg) {
   } catch (e) {
     return;
   }
+  // Each person's timer runs on their OWN time on the task: a reviewer starting a
+  // task the developer already took 1h 4m on starts at 0, and the estimate alerts and
+  // auto-complete judge the reviewer's time only - the developer's time stays the
+  // developer's (the rating counts each person's own part too). othersTotalMs keeps
+  // it for a stop-at limit "in all".
+  if (progress && Number(progress.othersMs) > 0) progress = { ...progress, trackedMs: Math.max(0, progress.trackedMs - progress.othersMs), othersTotalMs: progress.othersMs, othersMs: 0 };
   await notifyParallelTracking(entry, progress).catch(() => {});
   // The floating tracker's bar and face: estimate + time tracked today before this
   // timer started (the live part is added on the page, second by second).
@@ -7819,7 +7914,7 @@ async function maybeHolidayHeadsUp(now = Date.now()) {
   for (let i = 0; i < 4 && (n.getDay() === 0 || n.getDay() === 6); i++) n.setDate(n.getDate() + 1);
   const k = calYmd(n.getTime());
   // An office holiday, else my own leave (sick, annual...) starting then.
-  const lv = myLeaveOn(n.getTime());
+  const lv = isMyLeave(n.getTime()) ? myLeaveOn(n.getTime()) : null; // a half day is not a day off
   const hol = companyCal.find((e) => e.kind === "holiday" && k >= e.from && k <= (e.to || e.from)) ||
     (lv ? { from: lv.from, to: lv.to, title: LEAVE_KINDS[lv.kind], leave: true } : null);
   if (!hol) return;
@@ -7927,7 +8022,7 @@ function offDayReason(weekMode) {
   return (ms) => {
     const hol = companyOn(ms).find((e) => e.kind === "holiday");
     if (hol) return (hol.title || "Company holiday") + " \u00b7 " + tidyDateShort(ms);
-    const lv = myLeaveOn(ms);
+    const lv = isMyLeave(ms) ? myLeaveOn(ms) : null; // a half day is not a day off
     if (lv) return "Your " + LEAVE_KINDS[lv.kind].toLowerCase() + " \u00b7 " + tidyDateShort(ms);
     const d = new Date(ms).getDay();
     return off.includes(d) ? DAY[d] + " " + tidyDateShort(ms) : "";
@@ -8997,7 +9092,8 @@ function perfScores(perf, targetMs, now = Date.now()) {
     for (let d = dayStartOf(from); d < today; d += DAY) {
       const g = new Date(d).getDay();
       if (g === 0 || g === 6 || isDayOff(d)) continue; // weekends, company holidays, my leave
-      work++; tracked += Number(perf.days && (perf.days[d] || perf.days[String(d)])) || 0;
+      work += myLeaveHalf(d) ? 0.5 : 1; // a half-day leave: half the day's target
+      tracked += Number(perf.days && (perf.days[d] || perf.days[String(d)])) || 0;
     }
     const parts = [];
     if (work && targetMs) parts.push({ k: "h", w: 40, s: Math.min(100, (tracked / (work * targetMs)) * 100) });
@@ -13450,7 +13546,8 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         // (no network needed) and refresh the badge.
         const st = await getClickupState();
         if (st && !st.error && Number.isFinite(Number(st.estimateMs))) {
-          const targetMs = (Number(next.clickupTargetHours) || 0) * 3600000;
+          st.fullTargetMs = (Number(next.clickupTargetHours) || 0) * 3600000;
+          const targetMs = st.fullTargetMs * (myLeaveHalf(Date.now()) ? 0.5 : 1); // a half day today stays half
           st.targetMs = targetMs;
           st.targetHours = Number(next.clickupTargetHours) || 0;
           st.targetMet = targetMs > 0 && st.estimateMs >= targetMs;

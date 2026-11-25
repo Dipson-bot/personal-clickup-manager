@@ -357,33 +357,37 @@ function noticeFor(client) {
   return extNotices.find((n) => { const x = ckey(n.client); return x === k || (x.length >= 4 && k.length >= 4 && (x.startsWith(k) || k.startsWith(x))); }) || null;
 }
 const extCmds = [];
-// A task's auto-complete setup, as the extension keeps it (extAuto.setup[id]):
-// { when: "est" | "after" (ms of today's time) | "clock" (atMs), start, due }, with
-// start / due = "keep", "today" or a day (ms). null = off. The extension sets the
-// dates and completes the task; this is only the choice.
+// A task's automatic action, as the extension keeps it (extAuto.setup[id]):
+// { mode: "complete" | "stop", when: "est" (complete only) | "after" (ms of today's
+// time) | "clock" (atMs), start, due } - start / due = "keep", "today" or a day (ms),
+// only for complete. null = off. The extension does the work; this is the choice.
 const autoWant = new Map(); // taskId -> setup (or null = off), until the extension has it
 const autoWantAt = new Map(); // taskId -> when it was asked (a choice the extension didn't take is dropped after 3 minutes)
-const AUTO_DEF = { when: "est", start: "keep", due: "today" }; // the default: at its estimate, due today, start as it is
-const extSetup = (id) => (extAuto.setup && extAuto.setup[id]) || (extAuto.ids.includes(id) ? { when: "est", start: "keep", due: "keep" } : null);
+const AUTO_DEF = { mode: "complete", when: "est", start: "keep", due: "today" }; // the default: at its estimate, due today, start as it is
+const extSetup = (id) => { const s = extAuto.setup && extAuto.setup[id]; return s ? { mode: "complete", ...s } : extAuto.ids.includes(id) ? { mode: "complete", when: "est", start: "keep", due: "keep" } : null; };
 function autoSetup(taskId) { const id = String(taskId); return autoWant.has(id) ? autoWant.get(id) : extSetup(id); }
-const setupKey = (s) => (s ? [s.when, s.when === "clock" ? Number(s.atMs) || 0 : s.when === "after" ? Number(s.ms) || 0 : 0, String(s.start), String(s.due)].join("|") : "");
+const setupKey = (s) => (s ? [s.mode || "complete", s.when, s.when === "clock" ? Number(s.atMs) || 0 : s.when === "after" ? Number(s.ms) || 0 : 0, s.mode === "stop" ? "" : String(s.start), s.mode === "stop" ? "" : String(s.due)].join("|") : "");
 const dayLbl = (ms) => new Date(ms).toLocaleDateString([], { weekday: "short", day: "numeric", month: "short" });
 const dayTxt = (v) => (v === "today" ? "today" : Number(v) > 0 ? dayLbl(Number(v)) : "keep as it is");
 const clockTxt = (ms) => new Date(ms).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
 const durTxt = (ms) => { const m = Math.round(ms / 60000), h = Math.floor(m / 60); return h ? h + "h" + (m % 60 ? " " + (m % 60) + "m" : "") : m + "m"; };
-function whenTxt(s, lead) { return s.when === "clock" ? "at " + clockTxt(s.atMs) : s.when === "after" ? "after " + durTxt(s.ms) + " today" : "at its estimate" + lead; }
+function whenTxt(s, lead) { return s.when === "clock" ? "at " + clockTxt(s.atMs) : s.when === "after" ? "after " + durTxt(s.ms) + (s.scope === "total" ? " in all" : s.scope === "mine" ? " of your time" : " today") : "at its estimate" + lead; }
 // For the ⏱ tag in the hover card.
 function autoSummary(s) {
   if (!s) return "";
+  if (s.mode === "stop") return "Stop timer " + whenTxt(s, "");
   return "Auto-complete " + whenTxt(s, "") + (s.start !== "keep" ? " · start " + dayTxt(s.start) : "") + (s.due !== "keep" ? " · due " + dayTxt(s.due) : "");
 }
 // Straight in the ▾ menu (not a submenu), for whoever turned Automation on: Off /
-// Auto-complete, then its When, Start date and Due date (the next 14 days to pick
-// from - a menu can't hold the calendar).
+// Auto-complete at its estimate / Complete at… / Stop timer at…, then (for the two
+// that complete) Start date and Due date - the next 14 days to pick from, as a menu
+// can't hold the calendar.
 function automationItems(run, t) {
   if (!settings.cheatAuto || !run || t.isExtra) return [];
   const lead = extAuto.lead && Number(extAuto.lead.min) ? " (" + extAuto.lead.min + "m early" + (extAuto.lead.vary ? ", varied" : "") + ")" : "";
-  const id = String(run.taskId), cur = autoSetup(id), base = cur || AUTO_DEF;
+  const id = String(run.taskId), cur = autoSetup(id);
+  const completing = !!cur && cur.mode !== "stop";
+  const dates = completing ? { start: cur.start, due: cur.due } : { start: AUTO_DEF.start, due: AUTO_DEF.due };
   const set = (next) => {
     autoWant.set(id, next); autoWantAt.set(id, Date.now());
     extCmds.push({ type: "autoComplete", taskId: id, name: String(run.taskName || "").slice(0, 200), on: !!next, ...(next || {}) });
@@ -395,9 +399,9 @@ function automationItems(run, t) {
   const sameDay = (a, b) => Number(a) > 0 && new Date(Number(a)).toDateString() === new Date(b).toDateString();
   const dayItems = (k) => [
     ...(k === "start" ? [["keep", "Keep as it is"], ["today", "Today"]] : [["today", "Today"], ["keep", "Keep as it is"]])
-      .map(([v, l]) => ({ label: l, type: "radio", checked: !!cur && cur[k] === v, click: () => set({ ...base, [k]: v }) })),
+      .map(([v, l]) => ({ label: l, type: "radio", checked: completing && cur[k] === v, click: () => set({ ...cur, [k]: v }) })),
     { type: "separator" },
-    ...days.map((ms) => ({ label: dayLbl(ms), type: "radio", checked: !!cur && sameDay(cur[k], ms), click: () => set({ ...base, [k]: ms }) })),
+    ...days.map((ms) => ({ label: dayLbl(ms), type: "radio", checked: completing && sameDay(cur[k], ms), click: () => set({ ...cur, [k]: ms }) })),
   ];
   // Today's half-hours still ahead (30 min from now to 21:00), and tracked-time steps.
   const times = [];
@@ -406,22 +410,27 @@ function automationItems(run, t) {
   t0.setMinutes(t0.getMinutes() <= 30 ? 30 : 60, 0, 0);
   for (let m = t0.getTime(); new Date(m).getDate() === new Date().getDate() && new Date(m).getHours() < 21; m += 1800000) times.push(m);
   const durs = [15, 30, 45, 60, 90, 120, 150, 180, 240, 300, 360].map((x) => x * 60000);
+  // Complete at… / Stop timer at…: a length of today's time, or an exact time today
+  // (the same as the extension's custom time box).
+  const timeItems = (mode) => {
+    const on = !!cur && (cur.mode || "complete") === mode && cur.when !== "est";
+    const pick = (w) => set({ mode, ...(mode === "complete" ? dates : {}), ...w });
+    return [
+      { label: "When today's time on it reaches", enabled: false },
+      ...durs.map((ms) => ({ label: "    " + durTxt(ms), type: "radio", checked: on && cur.when === "after" && Number(cur.ms) === ms, click: () => pick({ when: "after", ms }) })),
+      { type: "separator" },
+      { label: times.length ? "At an exact time today" : "At an exact time today - none left", enabled: false },
+      ...times.map((ms) => ({ label: "    " + clockTxt(ms), type: "radio", checked: on && cur.when === "clock" && Number(cur.atMs) === ms, click: () => pick({ when: "clock", atMs: ms }) })),
+    ];
+  };
+  const isCompleteAt = completing && cur.when !== "est", isStop = !!cur && cur.mode === "stop";
   return [
     { label: "⏱ Automation" + (autoWant.has(id) ? " - saving (within a minute)" : ""), enabled: false },
     { label: "Off", type: "radio", checked: !cur, click: () => { if (cur) set(null); } },
-    { label: "Auto-complete", type: "radio", checked: !!cur, click: () => { if (!cur) set({ ...AUTO_DEF }); } },
-    ...(cur ? [
-      { label: "    When: " + whenTxt(cur, lead), submenu: [
-        { label: "At its estimate" + lead, type: "radio", checked: cur.when === "est", click: () => set({ ...cur, when: "est", atMs: undefined, ms: undefined }) },
-        // A custom time, the same as the extension's box: a length of today's time, or an exact time today.
-        { label: "At a custom time", submenu: [
-          { label: "When today's time on it reaches", enabled: false },
-          ...durs.map((ms) => ({ label: "    " + durTxt(ms), type: "radio", checked: cur.when === "after" && Number(cur.ms) === ms, click: () => set({ ...cur, when: "after", ms, atMs: undefined }) })),
-          { type: "separator" },
-          { label: times.length ? "At an exact time today" : "At an exact time today - none left", enabled: false },
-          ...times.map((ms) => ({ label: "    " + clockTxt(ms), type: "radio", checked: cur.when === "clock" && Number(cur.atMs) === ms, click: () => set({ ...cur, when: "clock", atMs: ms, ms: undefined }) })),
-        ] },
-      ] },
+    { label: "Auto-complete at its estimate" + lead, type: "radio", checked: completing && cur.when === "est", click: () => set({ mode: "complete", when: "est", ...dates }) },
+    { label: (isCompleteAt ? "◉ " : "") + "Complete at…" + (isCompleteAt ? "  (" + whenTxt(cur, "") + ")" : ""), submenu: timeItems("complete") },
+    ...(isStop || extAuto.v >= 2 ? [{ label: (isStop ? "◉ " : "") + "Stop timer at…" + (isStop ? "  (" + whenTxt(cur, "") + ")" : ""), submenu: timeItems("stop") }] : []), // an older extension would complete the task instead
+    ...(completing ? [
       { label: "    Start date: " + dayTxt(cur.start), submenu: dayItems("start") },
       { label: "    Due date: " + dayTxt(cur.due), submenu: dayItems("due") },
     ] : []),
@@ -551,17 +560,11 @@ async function refresh() {
           id: run.taskId, estimateMs: (task && task.estimateMs) || 0, client: (task && task.client) || "", url: task && task.url,
           // closedMs = today's time on it before this timer; totalClosedMs = every day's.
           closedMs: today.byTask.get(run.taskId) || 0, totalClosedMs: totalMs,
-          // Time someone else tracked on it (e.g. before it was handed to you): the
-          // task's total for everyone minus your own entries. It counts against the
-          // estimate; your Today total stays your own time.
-          // (Should ClickUp ever put the subtasks' time in the parent's total, it is
-          // taken out here so it isn't counted twice.)
-          othersMs: (() => {
-            if (!task || totalMs == null) return 0;
-            const subs = Number(task.subtasksMs) || 0;
-            const own = task.spentAllMs - (subs && task.spentAllMs >= totalMs + subs - 60000 ? subs : 0);
-            return own - totalMs >= 60000 ? own - totalMs : 0;
-          })(),
+          // Time someone else tracked on it (e.g. a developer before a reviewer) is
+          // NOT counted against your timer any more: each person's timer, bar and
+          // estimate run on their own time, so a handed-over task starts at 0 for you
+          // (same rule as the extension). Kept at 0 so every place that adds it in agrees.
+          othersMs: 0,
           // Its subtasks' time, when its estimate covers them (clickup.js task()).
           subtasksMs: (task && task.subtasksMs) || 0,
           dueDateMs: task && task.dueDateMs, startDateMs: task && task.startDateMs, status: task && task.status,
@@ -815,7 +818,7 @@ let linking = false;
 async function fromExtension(m) {
   if (Array.isArray(m.notices)) extNotices = m.notices.slice(0, 30);
   if (m.auto && Array.isArray(m.auto.ids)) {
-    extAuto = { ids: m.auto.ids.map(String).slice(0, 200), lead: m.auto.lead || null, setup: m.auto.setup && typeof m.auto.setup === "object" ? m.auto.setup : {} };
+    extAuto = { ids: m.auto.ids.map(String).slice(0, 200), lead: m.auto.lead || null, setup: m.auto.setup && typeof m.auto.setup === "object" ? m.auto.setup : {}, v: Number(m.auto.v) || 0 }; // v 2+: the extension understands "Stop timer at"
     for (const [id, want] of [...autoWant]) if (setupKey(extSetup(id)) === setupKey(want) || Date.now() - (autoWantAt.get(id) || 0) > 180000) { autoWant.delete(id); autoWantAt.delete(id); } // the extension has it now (or didn't take it)
   }
   // The strip style picked in the extension (General › Floating tracker › Strip style).
