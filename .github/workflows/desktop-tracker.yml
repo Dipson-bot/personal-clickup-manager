@@ -37,7 +37,8 @@ jobs:
           node-version: 20
       - name: Linux packaging tools (rpm for Fedora)
         if: runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install -y rpm
+        # the fpm bundled with electron-builder fails with the newer rpmbuild on ubuntu-latest: use the current one
+        run: sudo apt-get update && sudo apt-get install -y rpm ruby ruby-dev build-essential && sudo gem install --no-document fpm && echo "USE_SYSTEM_FPM=true" >> "$GITHUB_ENV"
       - run: npm install
       - run: npm run ${{ matrix.script }} -- --publish never
       - uses: actions/upload-artifact@v4
