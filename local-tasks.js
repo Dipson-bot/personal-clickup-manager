@@ -315,9 +315,9 @@
   const dateLabel = (ms) => ms ? new Date(ms).toLocaleDateString([], { weekday: "short", month: "short", day: "numeric", year: "numeric" }) : "";
   let modal = null;
   function closeEditor() { if (modal) { modal.remove(); modal = null; } }
-  function openEditor(d0, focus) {
+  function openEditor(d0, focus, pre) {
     closeEditor();
-    const d = d0 ? { ...d0 } : { id: uid(), name: "", md: "", listId: "", listName: "", client: "", dueDateMs: 0, startDateMs: 0, estimateMs: 0, priority: "", assignees: null, parentId: "", parentName: "", applyAt: 0 };
+    const d = d0 ? { ...d0 } : { id: uid(), name: "", md: "", listId: "", listName: "", client: "", dueDateMs: 0, startDateMs: 0, estimateMs: 0, priority: "", assignees: null, parentId: "", parentName: "", applyAt: 0, ...(pre && !d0 ? { name: pre.name || "", md: pre.md || "", estimateMs: Number(pre.estimateMs) || 0, priority: pre.priority || "" } : {}) };
     modal = el("div", "lt-modal");
     const dlg = el("div", "lt-dlg");
     dlg.setAttribute("role", "dialog");
@@ -498,6 +498,7 @@
     const key = (s) => String(s || "").toLowerCase().replace(/[^a-z0-9]+/g, "");
     sel.dataset.id = d.listId ? String(d.listId) : "";
     if (d.listId) sel.value = d.listName || d.client || "";
+    else if (pre && pre.clientQ) sel.value = String(pre.clientQ); // a hint to pick from (e.g. Site monitor › Add to task)
     const pickedClient = { id: sel.dataset.id, name: d.listName || "", client: d.client || "" };
     const paintClients = () => {
       const q = key(sel.value === pickedClient.name && pickedClient.id ? "" : sel.value);
@@ -592,7 +593,7 @@
       if (e.key === "Escape") { e.preventDefault(); e.stopPropagation(); closeEditor(); }
       else if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) { e.preventDefault(); dlg.querySelector("[data-save]").click(); }
     });
-    setTimeout(() => { const f = focus === "due" ? $("due") : focus === "est" ? $("est") : $("name"); if (f) { f.focus(); if (f.select) try { f.select(); } catch (e) {} if (focus === "due") f.click(); } }, 30);
+    setTimeout(() => { const f = focus === "due" ? $("due") : focus === "est" ? $("est") : focus === "people" ? $("pq") : $("name"); if (f) { f.focus(); if (f.select) try { f.select(); } catch (e) {} if (focus === "due") f.click(); } }, 30);
   }
 
   async function del(id) {
@@ -684,6 +685,6 @@
   }
   try { chrome.storage.onChanged.addListener((ch, area) => { if (area === "local" && ch[KEY]) repanel(); }); } catch (e) {}
 
-  window.PcmLocalTasks = { fill, repaint: () => paint(), open: () => openEditor(null), list: () => drafts.slice(), onDay, row: (d) => row(d), _parseDur: parseDur, _listIdFrom: listIdFrom };
+  window.PcmLocalTasks = { fill, repaint: () => paint(), open: () => openEditor(null), create: (pre) => openEditor(null, (pre && pre.focus) || null, pre), list: () => drafts.slice(), onDay, row: (d) => row(d), _parseDur: parseDur, _listIdFrom: listIdFrom };
   if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", load); else load();
 })();

@@ -78,6 +78,7 @@
   // dark keeps both. Only the surfaces, text and the accent change - red, amber
   // and green keep their meaning (overdue, warnings, done). Accents were chosen
   // so white button text and accent-coloured links both stay readable.
+  const DEFAULT_PAL_LIGHT = "rankmetop"; // for everyone who has not picked a light palette
   const PALETTES = {
     light: {
       classic: { name: "Classic", sw: ["#f1ece4", "#4f46e5"] },
@@ -89,6 +90,8 @@
       sand: { name: "Sand", v: { bg: "#f6f1e7", card: "#fffdf8", bg2: "#ece4d4", border: "#e0d5c0", field: "#ffffff", text: "#2b261d", muted: "#6f6656", indigo: "#b45309", "indigo-dark": "#92400e" } },
       mint: { name: "Mint", v: { bg: "#ecf6f3", card: "#f8fdfb", bg2: "#dcefe9", border: "#c7e2da", field: "#ffffff", text: "#1b2b27", muted: "#58706a", indigo: "#0f766e", "indigo-dark": "#115e59" } },
       coral: { name: "Coral", v: { bg: "#fbf0ec", card: "#fffaf8", bg2: "#f4e1da", border: "#ead0c6", field: "#ffffff", text: "#2e2420", muted: "#77625a", indigo: "#c2410c", "indigo-dark": "#9a3412" } },
+      // RankMeTop (rankmetop.net): its golden yellow on warm cream; dark text on gold buttons, like the site's own.
+      rankmetop: { name: "RankMeTop", sw: ["#faf6ee", "#fac724"], v: { bg: "#f8f2e4", card: "#fffdf8", bg2: "#f1e7cf", border: "#e7d9b6", field: "#ffffff", text: "#1f2124", muted: "#5c574b", indigo: "#a97c05", "indigo-dark": "#8a6504", "on-accent": "#1f2124" } },
       mono: { name: "Mono", v: { bg: "#f2f2f2", card: "#fbfbfb", bg2: "#e7e7e7", border: "#d6d6d6", field: "#ffffff", text: "#1f1f1f", muted: "#636363", indigo: "#374151", "indigo-dark": "#1f2937" } },
     },
     dark: {
@@ -100,6 +103,7 @@
       graphite: { name: "Graphite", v: { bg: "#121212", card: "#1b1b1b", bg2: "#242424", border: "#333333", field: "#1b1b1b", text: "#ececec", muted: "#a3a3a3", indigo: "#64748b", "indigo-dark": "#475569" } },
       deepsea: { name: "Deep sea", v: { bg: "#0a1618", card: "#102226", bg2: "#162e33", border: "#24434b", field: "#102226", text: "#e2f0f1", muted: "#8fb0b4", indigo: "#0891b2", "indigo-dark": "#0e7490" } },
       wine: { name: "Wine", v: { bg: "#170d10", card: "#221418", bg2: "#2d1a20", border: "#40252d", field: "#221418", text: "#f3e6ea", muted: "#b7959f", indigo: "#e11d48", "indigo-dark": "#be123c" } },
+      rankmetop: { name: "RankMeTop", sw: ["#15151b", "#fac724"], v: { bg: "#131318", card: "#1c1d23", bg2: "#25262d", border: "#34363e", field: "#1c1d23", text: "#f4f0e6", muted: "#aaa492", indigo: "#fac724", "indigo-dark": "#e0ae12", "on-accent": "#15151b" } },
       nord: { name: "Nord", v: { bg: "#1f242d", card: "#272d38", bg2: "#2e3542", border: "#3b4252", field: "#272d38", text: "#e5e9f0", muted: "#a3adbf", indigo: "#5e81ac", "indigo-dark": "#4c6a94" } },
     },
   };
@@ -142,7 +146,13 @@
   const pcss = document.createElement("style");
   pcss.textContent = Object.entries(PALETTES.light).filter(([, p]) => p.v).map(([k, p]) => `html[data-pal-light="${k}"]:not([data-theme="dark"]) { ${vars(p.v)} }`).join("\n") + "\n" +
     Object.entries(PALETTES.dark).filter(([, p]) => p.v).map(([k, p]) => `html[data-theme="dark"][data-pal-dark="${k}"] { ${vars(p.v)} }`).join("\n") + `
+  /* RankMeTop's gold is too light for white text: dark text on its accent buttons. */
+  html[data-pal-light="rankmetop"]:not([data-theme="dark"]) button.primary, html[data-theme="dark"][data-pal-dark="rankmetop"] button.primary,
+  html[data-pal-light="rankmetop"]:not([data-theme="dark"]):not([data-ui="studio"]) .opt-toggle button.on, html[data-theme="dark"][data-pal-dark="rankmetop"]:not([data-ui="studio"]) .opt-toggle button.on,
+  html[data-pal-light="rankmetop"]:not([data-theme="dark"]):not([data-ui="studio"]) .week-toggle button.on, html[data-theme="dark"][data-pal-dark="rankmetop"]:not([data-ui="studio"]) .week-toggle button.on { color: var(--on-accent) !important; }
   .pcm-thm { position: fixed; z-index: 2147483000; width: 248px; background: var(--card); color: var(--text); border: 1px solid var(--border); border-radius: 12px; box-shadow: 0 12px 32px rgba(0,0,0,.18); padding: 12px; font: 13px system-ui, -apple-system, "Segoe UI", sans-serif; }
+  .pcm-thm .thm-chk { display: flex; align-items: center; gap: 6px; margin: -4px 0 12px; font-size: 12.5px; cursor: pointer; }
+  .pcm-thm .thm-chk input { margin: 0; }
   .pcm-thm .seg { display: grid; grid-template-columns: 1fr 1fr; border: 1px solid var(--border); border-radius: 8px; overflow: hidden; margin-bottom: 12px; }
   .pcm-thm .seg button { font: inherit; font-size: 12.5px; padding: 6px; border: 0; background: none; color: var(--muted); cursor: pointer; }
   .pcm-thm .seg button.on { background: var(--indigo); color: #fff; }
@@ -200,13 +210,24 @@
       paintCustomCss();
       apRefills.forEach((f) => { try { f(); } catch (e) {} });
     }
-    const l = g && g.themePaletteLight, d = g && g.themePaletteDark;
+    // RankMeTop light is the default for everyone who hasn't picked a palette (2026-11-27);
+    // a palette someone picked (Classic included) is stored and always wins.
+    const l = g && (g.themePaletteLight || DEFAULT_PAL_LIGHT), d = g && g.themePaletteDark;
     if (okPal("light", l)) root.dataset.palLight = l; else delete root.dataset.palLight;
     if (okPal("dark", d)) root.dataset.palDark = d; else delete root.dataset.palDark;
   }
   const PAL_KEYS = ["themePaletteLight", "themePaletteDark", "themeCustomLight", "themeCustomDark", "themeLooks"];
   try {
-    chrome.storage.local.get(PAL_KEYS).then(setPal).catch(() => {});
+    // Once per person (2026-11-27): a light palette left at Classic (or never set) moves to
+    // RankMeTop, the new default. Whatever they pick after that is kept.
+    chrome.storage.local.get(PAL_KEYS.concat("palDefaultRmt")).then(async (g) => {
+      if (!g.palDefaultRmt) {
+        const patch = { palDefaultRmt: 1 };
+        if (!g.themePaletteLight || g.themePaletteLight === "classic") { patch.themePaletteLight = DEFAULT_PAL_LIGHT; g.themePaletteLight = DEFAULT_PAL_LIGHT; }
+        await chrome.storage.local.set(patch).catch(() => {});
+      }
+      setPal(g);
+    }).catch(() => {});
     chrome.storage.onChanged.addListener((ch, area) => {
       if (area !== "local") return;
       if (PAL_KEYS.some((k) => ch[k])) chrome.storage.local.get(PAL_KEYS).then(setPal).catch(() => {});
@@ -239,7 +260,10 @@
         const v = deriveCustom(c, m);
         return '<button type="button" class="sw' + (cur[m] === "custom" && mode === m ? " on" : "") + '" data-m="' + m + '" data-p="custom" title="Your own palette"><i style="--a:' + v.bg + ";--b:" + v.indigo + '"></i>Custom</button>';
       })();
-      menu.innerHTML ='<div class="seg"><button type="button" data-mode="light" class="' + (mode === "light" ? "on" : "") + '">☀ Light</button><button type="button" data-mode="dark" class="' + (mode === "dark" ? "on" : "") + '">☾ Dark</button></div>' +
+      // Theme: the whole look (Classic = as it has always been, Studio = the redesign).
+      const uiNow = window.PcmUi ? window.PcmUi.get() : "classic";
+      menu.innerHTML = (uiNow === "studio" && document.body.classList.contains("tabbed") ? '<label class="thm-chk" title="When the sidebar is collapsed to icons, it opens while the mouse rests on it"><input type="checkbox" data-st-hover' + ((() => { try { return localStorage.getItem("pcmStHover") === "1"; } catch (e) { return false; } })() ? " checked" : "") + ' /> Open the collapsed sidebar on hover</label>' : "") +
+        '<h4>Mode</h4><div class="seg"><button type="button" data-mode="light" class="' + (mode === "light" ? "on" : "") + '">☀ Light</button><button type="button" data-mode="dark" class="' + (mode === "dark" ? "on" : "") + '">☾ Dark</button></div>' +
         "<h4>Background</h4><div class=\"seg seg3\">" + [["weather", "\uD83C\uDF26 Task weather", "Follows the running task: snow at the start, sun on the estimate, storms past it (animated - uses a little more of the computer)"], ["plain", "Plain", "No background"], ["wall", "\uD83D\uDDBC Wallpaper", "Your own picture or video"]].map(([k, t, tip]) => '<button type="button" data-scene="' + k + '" title="' + tip + '" class="' + (scene === k ? "on" : "") + '">' + t + "</button>").join("") + "</div>" +
         (scene !== "plain" ? '<label class="wxs" title="How see-through the cards are - make them solid if text is hard to read">Cards: glassy<input type="range" min="0" max="100" step="10" data-card-solid value="' + cardSolid + '" aria-label="Cards: glassy to solid" />solid</label>' : "") +
         (scene === "weather" && window.PcmWeather ? '<label class="wxs" title="How strong the weather behind is - softer is calmer">Weather: softer<input type="range" min="0" max="100" step="5" data-wx-strength value="' + window.PcmWeather.strength + '" aria-label="Weather strength" />stronger</label>' : "") +
@@ -247,6 +271,9 @@
         "<h4>Light palettes</h4><div class=\"sws\">" + sws("light") + "</div><h4>Dark palettes</h4><div class=\"sws\">" + sws("dark") + "</div>" +
         '<button type="button" class="thm-more" data-edit="1">🎨 Custom colours &amp; wallpaper…</button>';
       menu.querySelectorAll("[data-edit]").forEach((b) => { b.onclick = () => { closeMenu(); openAppearance(); }; });
+      const sth = menu.querySelector("[data-st-hover]");
+      if (sth) sth.onchange = () => { try { localStorage.setItem("pcmStHover", sth.checked ? "1" : ""); } catch (e) {} };
+      menu.querySelectorAll("[data-ui-pick]").forEach((b) => { b.onclick = async () => { if (window.PcmUi) await window.PcmUi.set(b.dataset.uiPick); paint(); }; });
       menu.querySelectorAll("[data-mode]").forEach((b) => { b.onclick = async () => { await setMode(b.dataset.mode); paint(); }; });
       const cs = menu.querySelector("[data-card-solid]");
       if (cs) cs.oninput = () => { setCards(Number(cs.value)); const a = document.getElementById("apCardSolid"); if (a) a.value = cs.value; };
@@ -442,7 +469,7 @@
     const look = {
       id: same ? same.id : "lk" + Date.now().toString(36), name: name.slice(0, 24),
       theme: g.theme === "dark" ? "dark" : "light",
-      palLight: g.themePaletteLight || "classic", palDark: g.themePaletteDark || "classic",
+      palLight: g.themePaletteLight || DEFAULT_PAL_LIGHT, palDark: g.themePaletteDark || "classic",
       customLight: g.themeCustomLight || null, customDark: g.themeCustomDark || null,
       wall: img ? { ...WALL_DEF, ...(g.themeWall || {}) } : null, imgKey, thumb: await lookThumb(img), scene,
     };
@@ -474,12 +501,12 @@
     if (typeof window.applyTheme === "function") window.applyTheme(look.theme); else root.dataset.theme = look.theme;
     loadWall();
   }
-  // The plain look: no background, Classic in both modes (light / dark stays as it is).
+  // The plain look: no background, the default palettes (RankMeTop light, Classic dark).
   async function useDefaultLook() {
     scene = "plain";
-    await chrome.storage.local.set({ themeWallImg: "", themePaletteLight: "classic", themePaletteDark: "classic", themeScene: "plain" }).catch(() => {});
+    await chrome.storage.local.set({ themeWallImg: "", themePaletteLight: DEFAULT_PAL_LIGHT, themePaletteDark: "classic", themeScene: "plain" }).catch(() => {});
     await chrome.storage.local.remove("themeWallImg").catch(() => {});
-    setPal({ themePaletteLight: "classic", themePaletteDark: "classic" });
+    setPal({ themePaletteLight: DEFAULT_PAL_LIGHT, themePaletteDark: "classic" });
     paintWall(lastWall, ""); lastImg = "";
     loadWall();
   }

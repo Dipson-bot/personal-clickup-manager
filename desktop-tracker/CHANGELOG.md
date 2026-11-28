@@ -1,5 +1,9 @@
 # ClickUp Tracker changelog
 
+## 0.5.1
+- Several helper Chrome profiles at once, each with its own Google account: report screenshots go to the right one, and WordPress reads only to the profile signed in to WordPress.
+- Now for Linux too (Fedora, Mint, Ubuntu and others): an AppImage that runs anywhere, plus a .deb and an .rpm. On Linux the timer is a small floating strip, and Start with the computer works there as well.
+
 ## 0.5.0
 - Your timer runs on your own time on a task: a task handed to you (a review after the developer) starts at 0 for you, not at the time someone else already tracked on it.
 - Menu fixes.

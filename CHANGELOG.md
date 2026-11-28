@@ -1,5 +1,82 @@
 # Changelog
 
+## v4.5.0
+- Export report now has no choices: each client follows its own report recipe (kept in the team hub, edited by admins in Admin › Team hub › Report recipes), always for last month, and downloads two files: the client report and an internal copy with every number, the reasoning and the unedited screenshot. Screenshots are real captures only (no drawn panel), showing just the rows in the report; the Google Analytics screenshot is taken by a helper profile (another Chrome profile on this computer signed in as the report's Google account), so nothing has to be added to your own profile. Last month's figure always matches what the client was sent. Title 20 pt and body 11 pt, all Lexend black.
+- Helper profile (Site monitor): one or more other Chrome profiles can work for your main profile through the ClickUp Tracker app, each with its own Google account: report screenshots go to the helper of that account, WordPress reads only to a helper signed in to WordPress. The card shows every helper the app can see.
+- Read from WordPress is sturdier: when a site turns the quick read away or seems signed out, the helper opens that site's Site Health page once in a background tab and closes it again.
+- Export report: the screenshot can come straight from Google Analytics (Events › generate_lead by session source / medium for the month), captured sharp in the background and tidied (no side menu or charts). If GA can't be opened it uses the drawn panel and says which Google account to sign in with. Every capture is also kept, unedited, in the client's files.
+- Site monitor › a client's page › Client Wins: the best honest positive comparison for the monthly report - organic leads first, then supporting numbers, over complete months (last month, the last 2 months, the last quarter, each against the period before and the same period last year). Wins are written as counts with exact dates (e.g. "Organic leads rose from 0 in Aug–Sep to 2 in Oct–Nov (+2)"), Copy for report copies them, and an internal All numbers view shows everything.
+- Site monitor › a client's page › 📄 Export report: the monthly client report as a Word file (US Letter, Lexend): title, a sharp panel image, caption, intro, your Note (saved per client), the win, the organic sources table, optional supporting wins and the total. It checks the client copy for words that mustn't be sent, percentages and two "$" in one paragraph before downloading; an Internal version adds every number and the reasoning.
+- A client's page is a little wider, for room.
+- Site monitor › a site's page › 🔗 Share is now a menu: open the report as a clean page, save it as PDF, download it as an HTML file, copy it formatted (for Gmail, Docs, ClickUp, Slack) or copy it as text. The report has the speed scores, Core Web Vitals, Search & traffic with charts, top searches and pages, and what to fix next.
+- Admin › Team hub › Google data hubs: when the team hub's own Google account can't see your clients, add a small data hub run by the account that can (your SEO account); the team hub asks it with a secret key, and everyone still sees Search Console and Analytics with no Google sign-in.
+- Site monitor › Google data comes from the team hub: whoever runs the hub sets it up once, and everyone sees each client's Search Console and Analytics with no Google sign-in. Connecting your own Google account is still there if the hub can't.
+- Site monitor › Google data: connect more than one Google account; each client's data is read with the account that can see its Search Console or Analytics property.
+- Site monitor › Search & traffic: the charts look like Search Console and Analytics - clicks and impressions on their own axes, organic and all visits, smooth lines over gridlines with dates, the 28 days before as a dashed line, chips to hide a line, and the day's numbers when you point at it.
+- Site monitor › Tools › 📈 Google data: connect Google Search Console and Google Analytics 4 once (read-only). Each client's page then shows Search & traffic: Google clicks, impressions, average position, CTR, organic and all visits, users and key events for the last 28 days against the 28 before, whether it's growing or dropping, daily lines, top searches and top pages.
+- Site monitor: Clarity can be ticked as set up outside the page, like GA and GTM.
+- Site monitor: the status summary is a short row of small dropdowns (WordPress, PHP, GA, GTM, Clarity) saying only what needs a look; open one for every count.
+- Go to bottom: next to Back to top, a ↓ button shows on any long page or tab while a lot is still below.
+- Site monitor › a site's page: Core Web Vitals now has a Mobile row and a Desktop row, each saying Passed, Needs work (and which metric) or No data, in a plain sentence.
+- Site monitor › a site's page: each fix has 👤 Assign to dev (and 👤 Assign all to dev), which opens the same New task box as the dashboard, filled in, with the cursor in Assignees.
+- Slack tab: direct messages now show up. A new message in a DM you've had open for a while (e.g. a teammate saying hello) was skipped, because the check looked at when the DM was opened instead of its latest message.
+- RankMeTop light is now the default palette for everyone. Pick any other one in ◐ and it's kept.
+- Site monitor: the table is less crowded - mobile and desktop rings side by side with DOM and page size on one line under them, lighter row shading, hosting on one line and wider columns where they were cramped.
+- Site monitor › Tools › PageSpeed settings: test every site again every N days (3 by default) and average N runs into one score; a client can have its own number of runs on its page.
+- Site monitor › a site's page: 🎛 Try tuning, a score calculator. Drag LCP, TBT, CLS, FCP or Speed Index to see the score it would give, the points each one gives, and the biggest win.
+- Site monitor › a site's page could not be closed while a test was running; it closes straight away now.
+- Site monitor › Page: the mobile and desktop rings no longer have small icons above them; hover a ring to see which it is.
+- Slack tab: easier to read with many messages - grouped by day, each with the sender's initial, a coloured edge for tagged you / DM / @channel, the channel and client as small labels, and quieter @names.
+- Insights: cards with nothing in them no longer show taller than the others.
+- A back-to-top button appears on long pages (dashboard, popup, side panel, wrap up).
+- Site monitor › PageSpeed: mobile and desktop are tested side by side, and Core Web Vitals from real visitors (LCP, INP, CLS, Passed / Failed, last 28 days) are shown when Google has them.
+- Site monitor › PageSpeed loads by itself: with your key, a few sites are tested every 5 minutes, each once a day, well inside Google's limits. The last result stays shown (with how long ago) until the next test, and a site being tested shows Testing speed….
+- Site monitor › a site's page: + Task on each fix opens a New task with the fix, the site and its PageSpeed numbers filled in, ready to assign to a developer; + All as one task does them together; 🔗 Share copies a short report of the site.
+- Site monitor › a site's page: the daily charts no longer draw the first day as one big block.
+- Site monitor: PageSpeed is shown properly. The Page column has a score ring, and a site's page opens with a Performance card: the score ring plus LCP, CLS, TBT, FCP and Speed Index on green / orange / red bars, with Test now to re-test that site.
+- Slack tab: messages show properly - clickable links, @names, emoji and formatting - and a long message folds with View more.
+- Slack tab: the reply box can tag people (@), add emoji, make text bold or italic, add a link, and keeps the formatting of text pasted from an AI chat; emoji you send arrive as emoji.
+- Slack tab: direct and group messages waiting on your reply are listed too, with their own DMs filter. Slack is checked every 10 minutes.
+- Slack: an optional reply-by reminder (off by default, switch it on in Slack › Slack settings). Once on, a message that tags you, or a DM, still unanswered after 15 minutes (or your own time) gives one notification with Already addressed and Remind me later. It never keeps repeating, and never fires for messages from before you switched it on.
+- Insights: the lists under the charts (overdue, missed deadlines, unread comments, no estimate...) are cards with a big number; open one and it spreads full width. Hovering a Workload bar lists its biggest tasks.
+- Admin: Show their tasks has This week (Mon to Sun), Today, Overdue, Next week and All open, with each task's status and tracked / estimated time.
+- Clients › Monthly reports: keep your own report links (one document for every client, or a doc, sheet or any link per client) and attach report files.
+- Site monitor › Page: next to the page size, how much is actually sent over the network compressed (what DevTools calls transferred), e.g. 1.6 MB · 203 KB sent.
+- Site monitor: click a site's name for its own page - status, uptime, reply time, PageSpeed, page size, DOM, 30-day graphs, whether it is improving or getting worse, and what to fix next.
+- Wrap up the day has the new look too.
+- The Task weather time chip (e.g. 37m / 2h) now shows in every theme while a task is running.
+- Sidebar: Collapse / Expand is a small round arrow on the sidebar's edge.
+- Admin › Team hub: Check the hub version says whether the team hub needs updating, with the steps to update it.
+- The new look (Studio) is now the look for everyone: a grouped sidebar, a top bar with search, the calendar and a health pill, smoother motion and cleaner cards, on the dashboard, popup and side panel. Your palettes, light / dark and wallpaper still apply.
+- Sidebar: one Collapse / Expand button; opening the collapsed sidebar on hover is a named option in the ◐ menu, and it floats over the page instead of looking broken.
+- Guide: the connect walkthrough now matches today's ClickUp (profile picture › Preferences › ClickUp API › copy your token) and this extension's own screens.
+- Slack tab: search, filters (tagged you, @channel, pinned, done) and a client picker; each message can be opened in Slack, replied to in its thread, pinned or marked done (and undone).
+- Clients › Monthly reports: the reports posted in each client's Slack channel are saved to that client's files automatically, with a per-client history.
+- Insights: a health score at the top, tiles and rows you can click straight into, and a livelier look.
+- Admin: a teammate's card opens large in the middle of the page and can list their tasks due this week.
+- RankMeTop palette: brighter in light mode, with the brand gold on buttons, the logo and highlights.
+- New Guide tab for anyone starting out: how to connect ClickUp (with a short animation of getting the API token and pasting it in), the one-time setup steps and a tour of every tab.
+- New Slack tab: messages waiting on your reply (moved from Insights), your clients' Slack channels (moved from Clients) and the Slack settings (moved from General), all in one place.
+- Insights › Descriptions is now called Description check.
+- Studio: the folded sidebar no longer breaks when the page is zoomed in or the window is narrow, and text in the dashboard is a little larger, with wider content, so tasks are easier to read at 100%.
+- A new whole-UI theme to try: ◐ › Theme › Studio. The dashboard gets a new layout: a full-height sidebar grouped into Work / Monitor / Settings that folds to icons, a top bar with the page title, a big search and one health pill for the status chips, smooth page and card animations, and quieter long explanations. The search (Ctrl K) opens as a centred palette. It works with every palette in light and dark, and the popup and side panel get the same look. Classic stays exactly as it is; switch back any time.
+- Studio: the calendar has its own place in the top bar; the pin next to Collapse opens the folded sidebar while the mouse is over it; the Task weather line no longer breaks the folded sidebar; text is easier to read on every palette; the popup and side panel get the Studio layout too (a frosted header, accent card titles, softer cards that rise in).
+- New palette: RankMeTop (light and dark), the rankmetop.net gold on warm cream, with dark text on its gold buttons.
+- Share one task: open a task (▶) and press 🔗 Share next to Open in ClickUp for a link or a page with just that task.
+- The ClickUp Tracker app now runs on Linux too (Fedora, Mint, Ubuntu...). On Linux, Get the taskbar timer downloads it and says how to start it; it shows as a small floating strip.
+- Site monitor: a site with a very large page (a big block of styles at the top, as some speed plugins add) could show "no GTM" and "no Clarity" even when both were set up, because only the first part of the page was read. The whole page is read now, for the WordPress version too.
+- Site monitor is tidier: the three boxes above the table are one short summary line (WordPress, PHP, GA, GTM, Clarity counts); click a count to see just those sites. Read from WordPress, Copy, Paste from the sheet and Find hosting are in a Tools menu next to Show and Sort.
+- Site monitor › Tags now shows Google Analytics (GA4) too, from the page or inside its GTM container, as short GA / GTM / Clarity marks with the container IDs underneath. Show has a No GA filter. While a site's GTM container hasn't been read for GA yet, or on a site builder like Wix that adds GA from its own settings, it shows GA ? instead of a cross.
+- Site monitor › Page: the DOM size now shows for every site, counted from the page each check reads (amber over 1,500). The PageSpeed score needs a free Google key, because Google turns keyless tests away: add it in Tools › PageSpeed key. Without one, the score is simply left out.
+- Today's tracked time: a task you tracked today that isn't due today now always shows by name (tracked, not due today), in the list and in the Tracked breakdown. Its minutes were counted in the total but the task wasn't listed, so the breakdown showed time it couldn't name. The same goes for a task whose due date moves off today after you tracked on it.
+- Tracked breakdown: if part of today's tracked time still isn't in a task listed, the panel asks ClickUp for today's time entries and names those tasks under the table.
+- Site monitor: a site that doesn't open from your network (blocked by its firewall, 403, or no answer) but opens from outside is no longer reported as down. The team hub loads it from Google's servers to check, and the row says it doesn't open on this network. Needs the team hub updated.
+- Site monitor: a site whose Google Analytics is added outside the page (Wix, Squarespace or Shopify settings) can be ticked GA is set up and GTM is set up in its ⋯ menu, so it shows GA ✓ and GTM ✓.
+- Site monitor: click a GA, GTM or Clarity mark to see why it says what it says (the hover hint could vanish while checks redraw the table).
+- Site monitor: Check works on a paused client's site too, when you want to look anyway. It shows Up or Down but never sends an alert for a paused client.
+- Site monitor: a site whose hosting showed as unknown is looked up again the next day instead of after 30 days, so better detection reaches it (e.g. InMotion Hosting found from its address block).
+- Site monitor: Only my clients no longer disappears when your task lists are briefly empty (a ClickUp hiccup or early morning); the last list of your clients is kept.
+
 ## v4.4.9
 - Task colours: the 🎨 button (and 📌, 💬, 📝) on a task could act on a different task after the list redrew - so a colour could look impossible to remove. It now always opens that task's own colours, with Remove the colour at the bottom.
 - Done early comes off by itself once the task is completed in ClickUp, so the row shows as a normal completed task again. Remove the colour is always in the colour picker now (greyed out when the task has no colour).

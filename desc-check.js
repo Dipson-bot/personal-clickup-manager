@@ -959,7 +959,7 @@
   function paint() {
     if (!host) return;
     if (!rows) {
-      host.innerHTML = '<div class="ip-head"><h2>Descriptions</h2></div>' +
+      host.innerHTML = '<div class="ip-head"><h2>Description check</h2></div>' +
         (error ? '<p class="dc-msg err">' + esc(error) + '</p><button type="button" class="ip-btn" id="dcRetry">Try again</button>'
           : '<div class="ip-card"><div class="dc-msg">Loading your open tasks and their descriptions from ClickUp…</div></div>');
       const rt = host.querySelector("#dcRetry");
@@ -973,7 +973,7 @@
     const clients = [...new Set(rows.map((t) => t.client).filter(Boolean))].sort((a, b) => a.localeCompare(b));
     const list = visible();
     const checked = CHECKS.filter((c) => c[0] !== "warm" && c[0] !== "nameSite" && c[0] !== "learn" && c[0] !== "clientFromDesc" && on(c[0]) && (c[0] !== "fileStrict" || on("file"))).map((c) => c[1].replace(/, separated by commas$/, "")).join(", ");
-    const head = '<div class="ip-head"><h2>Descriptions</h2><span class="sp"></span><span class="ip-meta">' +
+    const head = '<div class="ip-head"><h2>Description check</h2><span class="sp"></span><span class="ip-meta">' +
       (loading ? "Refreshing…" : "Updated " + ago(at)) + " · " + rows.filter((t) => !t.done).length + " open tasks checked" + (rows.some((t) => t.done) ? " (+ " + rows.filter((t) => t.done).length + " finished in 30 days)" : "") +
       (() => { const need = filtered().filter((t) => probs(t).length); const ready = need.filter((t) => isReady(t, eds.get(t.id))).length; return need.length ? " · " + ready + " of " + need.length + " fixes ready" + (warming ? ", preparing more…" : "") : ""; })() + "</span>" +
       '<button type="button" class="ip-btn" id="dcChecks" aria-expanded="' + checksOpen + '">Checks ' + (checksOpen ? "▴" : "▾") + "</button></div>" +
@@ -1221,7 +1221,7 @@
       if (!window.PcmCalendar || !window.PcmCalendar.open) return;
       const use = (a, z) => { if (!fDue.includes("custom")) fDue = fDue.concat("custom"); fFrom = day0(a); fTo = day0(z || a); saveFilter(); shown = 30; paint(); };
       window.PcmCalendar.open(host.querySelector('[data-menu="filter"]'), {
-        title: "Due dates for Descriptions",
+        title: "Due dates for Description check",
         onRange: (a, z) => use(a, z),
         onDays: (list) => { const s = list.slice().sort((x, y) => x - y); use(s[0], s[s.length - 1]); },
       });

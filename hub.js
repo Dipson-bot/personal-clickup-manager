@@ -59,6 +59,27 @@
     .hb-avw { position: relative; display: inline-block; line-height: 0; }
     .hb-avw.hb-click, .hb-uname.hb-click { cursor: pointer; }
     .hb-uname.hb-click:hover { color: var(--indigo, #6366f1); text-decoration: underline; }
+    .hb-dayback { position: fixed; inset: 0; z-index: 2147482999; background: rgba(10, 12, 16, .35); backdrop-filter: blur(2px); }
+    .hb-daypop .dweek { margin-top: 14px; padding-top: 12px; border-top: 1px solid var(--border); }
+    .hb-daypop .dbtn { margin-top: 6px; padding: 7px 14px; border-radius: 9px; border: 1px solid var(--border); background: var(--card); color: var(--text); font-weight: 600; cursor: pointer; }
+    .hb-daypop .dwh { margin: 12px 0 4px; font-size: 12px; font-weight: 700; text-transform: uppercase; letter-spacing: .04em; color: var(--muted); }
+    .hb-daypop .dwh.od { color: var(--red); }
+    .hb-daypop .dwt { display: grid; grid-template-columns: auto 1fr auto; align-items: center; gap: 2px 10px; padding: 7px 10px; border-radius: 9px; }
+    .hb-daypop .dwt > .dsub { grid-column: 2 / 4; }
+    .hb-daypop .dwf { display: flex; flex-wrap: wrap; gap: 6px; margin: 8px 0; }
+    .hb-daypop .dwfb { border: 1px solid var(--border); background: var(--card); color: var(--text); border-radius: 999px; padding: 4px 11px; font-size: 12px; cursor: pointer; }
+    .hb-daypop .dwfb.on { background: var(--indigo); border-color: var(--indigo); color: #fff; }
+    .hb-daypop .dws { font-size: 10.5px; font-weight: 700; text-transform: uppercase; padding: 2px 7px; border-radius: 6px; background: color-mix(in srgb, var(--muted) 16%, transparent); color: var(--muted); white-space: nowrap; }
+    .hb-daypop .dws.prog { background: color-mix(in srgb, var(--indigo) 16%, transparent); color: var(--indigo); }
+    .hb-daypop .dws.rev { background: color-mix(in srgb, var(--amber) 18%, transparent); color: var(--amber); }
+    .hb-daypop .dws.blk { background: color-mix(in srgb, var(--red) 16%, transparent); color: var(--red); }
+    .hb-daypop .dws.done { background: color-mix(in srgb, var(--green) 16%, transparent); color: var(--green); }
+    .hb-daypop .dwtm { font-size: 12px; font-variant-numeric: tabular-nums; color: var(--muted); white-space: nowrap; }
+    .hb-daypop .dwtm.over { color: var(--red); font-weight: 600; }
+    .hb-daypop .dwt:hover { background: color-mix(in srgb, var(--text) 5%, transparent); }
+    .hb-daypop .dwt a { color: var(--text); font-weight: 600; text-decoration: none; }
+    .hb-daypop .dwt a:hover { text-decoration: underline; }
+    .hb-daypop { left: 50% !important; top: 50% !important; transform: translate(-50%, -50%); width: min(720px, calc(100vw - 32px)) !important; max-height: min(86vh, 900px); overflow: auto; padding: 20px 24px !important; font-size: 13.5px; }
     .hb-daypop { position: fixed; z-index: 2147483000; width: 320px; max-width: calc(100vw - 24px); box-sizing: border-box; padding: 14px 16px; border-radius: 14px; border: 1px solid var(--border); background: var(--card, #fff); color: var(--text); box-shadow: 0 16px 40px rgba(0,0,0,.24); font-size: 12.5px; }
     .hb-daypop .dh { display: flex; align-items: center; gap: 10px; margin-bottom: 10px; }
     .hb-daypop .dh b { font-size: 14px; }
@@ -571,6 +592,107 @@
         try { if (v) await chrome.storage.local.set({ hubScriptUrl: v }); else await chrome.storage.local.remove("hubScriptUrl"); sSay(v ? "Saved ✓" : "Removed"); } catch (e) { sSay("Couldn't save it: " + e.message, true); }
       });
       $("hubAdmOpen").onclick = () => { const v = link(); if (v) window.open(v, "_blank", "noopener"); };
+      // Google data hubs (team-hub.gs gdataHubs): a copy of the hub's Google-data code that
+      // runs as another Google account, asked by the team hub with its own secret key.
+      const gdMsg = (t, bad) => { const m = $("hubGdMsg"); if (m) { m.textContent = t || ""; m.style.color = bad ? "var(--red, #dc2626)" : ""; } };
+      const gdPaint = (r) => {
+        const box = $("hubGdList"); if (!box) return;
+        box.innerHTML = "";
+        if (!r || !r.ok) { if (r && r.error && !/unknown action/i.test(r.error)) gdMsg(r.error, true); else if (r && /unknown action/i.test(r.error || "")) gdMsg("Update the team hub first (How to update the hub, above).", true); return; }
+        if (!r.hubs.length) { box.appendChild(el("div", "hint", "No data hub yet.")); return; }
+        for (const x of r.hubs) {
+          const row = el("div", "hub-gd-item");
+          row.append(el("b", "", x.account || "data hub " + (x.i + 1)), el("span", "hint", x.url));
+          const rm = el("button", "", "Remove"); rm.type = "button";
+          rm.onclick = async () => { rm.disabled = true; gdPaint(await hub("gdataHubs", { remove: x.i }, true)); send({ type: "GDATA_PROPS", force: true, urls: [] }).catch(() => {}); };
+          row.appendChild(rm); box.appendChild(row);
+        }
+      };
+      if ($("hubGdList")) hub("gdataHubs", {}, true).then(gdPaint).catch(() => {});
+      const DATA_HUB_MANIFEST = JSON.stringify({ timeZone: "Asia/Kathmandu", runtimeVersion: "V8", exceptionLogging: "STACKDRIVER", webapp: { executeAs: "USER_DEPLOYING", access: "ANYONE_ANONYMOUS" },
+        oauthScopes: ["https://www.googleapis.com/auth/script.external_request", "https://www.googleapis.com/auth/userinfo.email", "https://www.googleapis.com/auth/webmasters.readonly", "https://www.googleapis.com/auth/analytics.readonly"] }, null, 2);
+      if ($("hubGdCopy")) $("hubGdCopy").onclick = async () => {
+        try {
+          const src = await (await fetch(chrome.runtime.getURL("team-hub.gs"))).text();
+          const i = src.indexOf("// ---------- Google data for Site monitor"), k = src.indexOf("// Admin › Team hub › Google data hubs");
+          if (i < 0 || k < i) throw new Error("the Google data part wasn't found in team-hub.gs");
+          const key = Array.from(crypto.getRandomValues(new Uint8Array(30)), (b) => "ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnpqrstuvwxyz23456789"[b % 56]).join("");
+          await chrome.storage.local.set({ hubGdKey: key });
+          const code = [
+            "// PCM data hub: reads THIS Google account's Search Console + Analytics for the PCM team hub.",
+            "// Only the team hub may ask (it holds KEY). Deploy as a web app: Execute as Me, access Anyone.",
+            'const KEY = "' + key + '";',
+            "const now = () => Date.now();",
+            "function props() { return PropertiesService.getScriptProperties(); }",
+            "const js = (s, d) => { try { const v = JSON.parse(s); return v == null ? d : v; } catch (e) { return d; } };",
+            "const setting = (k, d) => { const v = props().getProperty(k); return v == null ? d : v; };",
+            "function out(o) { return ContentService.createTextOutput(JSON.stringify(o)).setMimeType(ContentService.MimeType.JSON); }",
+            'function doGet() { return out({ ok: true, service: "pcm-data-hub" }); }',
+            "function doPost(e) {",
+            '  let q; try { q = JSON.parse(e.postData.contents); } catch (x) { return out({ ok: false, error: "bad request" }); }',
+            '  if (!q || q.key !== KEY) return out({ ok: false, error: "wrong key" });',
+            "  try {",
+            '    if (q.action === "gdataProps") return out(gdataPropsHub(q, null, true));',
+            '    if (q.action === "gdataReport") return out(gdataReportHub(q, null, true));',
+            '    if (q.action === "gdataMonthly") return out(gdataMonthlyHub(q, null, true));',
+            '    return out({ ok: false, error: "unknown action" });',
+            "  } catch (err) { return out({ ok: false, error: String((err && err.message) || err) }); }",
+            "}",
+            src.slice(i, k).replace(/\r\n/g, "\n"),
+            "// A data hub answers only for its own account: it never asks other hubs.",
+            "function gdataRemotes() { return []; }",
+            "function gdataAllowed() { return true; }",
+            "",
+          ].join("\n");
+          await navigator.clipboard.writeText(code);
+          gdMsg("Data hub script copied (with its own secret key) ✓ - paste it into the new project's Code.gs.");
+        } catch (e) { gdMsg("Couldn't copy it: " + e.message, true); }
+        window.open("https://script.new", "_blank", "noopener");
+      };
+      if ($("hubGdMan")) $("hubGdMan").onclick = async () => { try { await navigator.clipboard.writeText(DATA_HUB_MANIFEST); gdMsg("Manifest copied ✓ - paste it over everything in appsscript.json."); } catch (e) { gdMsg("Couldn't copy: " + e.message, true); } };
+      if ($("hubGdAdd")) $("hubGdAdd").onclick = async () => {
+        // The link may carry its key (…/exec#key=…) when the data hub was set up elsewhere.
+        const raw = $("hubGdUrl").value.trim(), m = raw.match(/^(.*?)#key=([A-Za-z0-9]{24,64})$/), url = m ? m[1] : raw, b = $("hubGdAdd");
+        const hubGdKey = m ? m[2] : (await chrome.storage.local.get("hubGdKey")).hubGdKey;
+        if (!hubGdKey) { gdMsg("Press 📋 Copy the data hub script first (it makes the key the hub needs).", true); return; }
+        b.disabled = true; gdMsg("Checking the data hub…");
+        const r = await hub("gdataHubs", { add: { url, key: hubGdKey } }, true).catch(() => null);
+        b.disabled = false;
+        if (r && r.ok) { $("hubGdUrl").value = ""; gdMsg("Added ✓ - Site monitor's Google data now includes it."); send({ type: "GDATA_PROPS", force: true, urls: [] }).catch(() => {}); }
+        gdPaint(r);
+      };
+      // Report recipes (team-hub.gs recipesGet/recipesSave): the JSON list each client's export follows.
+      const rrMsg = (t, bad) => { const m = $("hubRrMsg"); if (m) { m.textContent = t || ""; m.style.color = bad ? "var(--red, #dc2626)" : ""; } };
+      const rrLoad = async () => {
+        if (!$("hubRrJson")) return;
+        rrMsg("Loading…");
+        const r = await send({ type: "RECIPES_GET", force: true }).catch(() => null);
+        if (!r || !r.ok) { rrMsg((r && /unknown action/i.test(r.error || "")) ? "Update the team hub first (How to update the hub, above)." : (r && r.error) || "Couldn't read the recipes.", true); return; }
+        $("hubRrJson").value = JSON.stringify(r.recipes || [], null, 2);
+        rrMsg((r.recipes || []).length + " recipe" + ((r.recipes || []).length === 1 ? "" : "s") + ".");
+      };
+      if ($("hubRrJson")) { rrLoad(); $("hubRrLoad").onclick = rrLoad; }
+      if ($("hubRrSave")) $("hubRrSave").onclick = async () => {
+        const txt = $("hubRrJson").value.trim() || "[]";
+        let list; try { list = JSON.parse(txt); } catch (e) { rrMsg("That isn't valid JSON: " + e.message, true); return; }
+        if (!Array.isArray(list)) { rrMsg("Recipes must be a list [ … ].", true); return; }
+        const bad = list.findIndex((x) => !x || !x.key || !x.name || !x.format || (x.format !== "skip" && !x.domain));
+        if (bad >= 0) { rrMsg("Recipe " + (bad + 1) + " needs key, name, format and domain.", true); return; }
+        const b = $("hubRrSave"); b.disabled = true; rrMsg("Saving…");
+        const r = await send({ type: "RECIPES_SAVE", json: JSON.stringify(list) }).catch(() => null);
+        b.disabled = false;
+        if (r && r.ok) rrMsg("Saved ✓ " + r.count + " recipe" + (r.count === 1 ? "" : "s") + " - everyone's Export report uses them now.");
+        else rrMsg((r && r.error) || "Couldn't save.", true);
+      };
+      const vb = $("hubVerCheck"), vm = $("hubVerMsg");
+      if (vb) vb.onclick = async () => {
+        vb.disabled = true; vm.textContent = "Checking…"; vm.style.color = "";
+        const r = await send({ type: "HUB_VERSION_CHECK" });
+        vb.disabled = false;
+        if (!r || !r.ok) { vm.textContent = (r && r.error) || "Couldn't check."; return; }
+        vm.textContent = r.upToDate ? "✓ Up to date (" + r.running + ")." : "Needs updating: the hub runs " + (r.running || "an older script") + ", the latest is " + r.latest + ". Follow the steps below.";
+        vm.style.color = r.upToDate ? "var(--green)" : "var(--amber)";
+      };
       $("hubAdmUpd").onclick = async () => {
         const v = link();
         if (!v) return;
@@ -634,7 +756,62 @@
   // dashboard cards. An older copy or hub sends none: the card says so.
   const durS = (ms) => { const m = Math.round((Number(ms) || 0) / 60000); const h = Math.floor(m / 60); return h ? h + "h" + (m % 60 ? " " + (m % 60) + "m" : "") : m + "m"; };
   let dayPop = null;
-  function closeDayPop() { if (dayPop) { dayPop.remove(); dayPop = null; } }
+  function closeDayPop() { if (dayPop) { if (dayPop._back) dayPop._back.remove(); dayPop.remove(); dayPop = null; } }
+  document.addEventListener("keydown", (e) => { if (e.key === "Escape" && dayPop) closeDayPop(); });
+  // Their open tasks due this week (and overdue), from ClickUp: the workspace Admin
+  // token reads other people's (the same lookup as Bulk edit › Whose tasks).
+  async function loadWeekTasks(u, host, btn) {
+    btn.disabled = true; btn.textContent = "Loading their tasks…";
+    const r = await send({ type: "CLICKUP_OPEN_TASKS", assignee: String(u.cuUserId || ""), force: true });
+    btn.remove();
+    if (!r || !r.ok || !r.data) { host.appendChild(el("div", "dsub", (r && (r.error || r.reason)) ? "Couldn't load them: " + (r.error || r.reason) + ". Reading someone else's tasks needs the workspace Admin token (ClickUp setup)." : "Couldn't load their tasks.")); return; }
+    const now = new Date(), mon = new Date(now); mon.setHours(0, 0, 0, 0); mon.setDate(mon.getDate() - ((mon.getDay() + 6) % 7));
+    const sun = mon.getTime() + 7 * 86400000 - 1, today = new Date().setHours(0, 0, 0, 0), tomorrow = today + 86400000;
+    const all = (r.data.tasks || []).filter(Boolean);
+    const fmt = (ms) => { const m = Math.round((Number(ms) || 0) / 60000); return m >= 60 ? Math.floor(m / 60) + "h" + (m % 60 ? " " + (m % 60) + "m" : "") : m + "m"; };
+    // The filters: the whole week (Mon-Sun, plus anything overdue or started this week), today, overdue, next week, every open task.
+    const FILTERS = [
+      ["week", "This week", (t) => (t.dueDateMs && t.dueDateMs <= sun) || (t.startDateMs && t.startDateMs >= mon.getTime() && t.startDateMs <= sun)],
+      ["today", "Today", (t) => (t.dueDateMs && t.dueDateMs >= today && t.dueDateMs < tomorrow) || (t.startDateMs && t.startDateMs < tomorrow && t.dueDateMs >= today)],
+      ["overdue", "Overdue", (t) => t.dueDateMs && t.dueDateMs < today],
+      ["next", "Next week", (t) => t.dueDateMs && t.dueDateMs > sun && t.dueDateMs <= sun + 7 * 86400000],
+      ["all", "All open", () => true],
+    ];
+    const bar = el("div", "dwf"), body = el("div");
+    host.append(bar, body);
+    const stCls = (s) => { s = String(s || "").toLowerCase(); return /progress|doing|working/.test(s) ? "prog" : /review|qa|check/.test(s) ? "rev" : /block|road|hold|wait/.test(s) ? "blk" : /complete|done|closed/.test(s) ? "done" : ""; };
+    const paint = (key) => {
+      bar.innerHTML = ""; body.innerHTML = "";
+      for (const [k, lab, fn] of FILTERS) {
+        const n = all.filter(fn).length;
+        const b = el("button", "dwfb" + (k === key ? " on" : ""), lab + " " + n); b.type = "button";
+        b.onclick = () => paint(k);
+        bar.appendChild(b);
+      }
+      const fn = FILTERS.find((f) => f[0] === key)[2];
+      const list = all.filter(fn).sort((a, b) => (a.dueDateMs || 8.64e15) - (b.dueDateMs || 8.64e15));
+      if (!list.length) { body.appendChild(el("div", "dsub", "Nothing here.")); return; }
+      const est = list.reduce((a, t) => a + (t.estimateMs || 0), 0), trk = list.reduce((a, t) => a + (t.spentMs || 0), 0);
+      body.appendChild(el("div", "dsub", list.length + " open task" + (list.length === 1 ? "" : "s") + " · est " + fmt(est) + " · tracked " + fmt(trk)));
+      const groups = new Map();
+      for (const t of list) { const day = t.dueDateMs ? new Date(t.dueDateMs).setHours(0, 0, 0, 0) : 0; const k = !day ? "No due date" : day < today ? "Overdue" : new Date(day).toLocaleDateString([], { weekday: "long", month: "short", day: "numeric" }); if (!groups.has(k)) groups.set(k, []); groups.get(k).push(t); }
+      for (const [k, rows] of groups) {
+        body.appendChild(el("div", "dwh" + (k === "Overdue" ? " od" : ""), k + " · " + rows.length + " · est " + fmt(rows.reduce((a, t) => a + (t.estimateMs || 0), 0))));
+        for (const t of rows) {
+          const row = el("div", "dwt");
+          const a = el("a", "", t.name); a.href = t.url; a.target = "_blank"; a.rel = "noopener"; a.title = "Open in ClickUp";
+          const st = el("span", "dws " + stCls(t.status), t.status || "open");
+          const over = t.estimateMs && t.spentMs > t.estimateMs;
+          const tm = el("span", "dwtm" + (over ? " over" : ""), (t.spentMs ? fmt(t.spentMs) : "0m") + " / " + (t.estimateMs ? fmt(t.estimateMs) : "no est"));
+          tm.title = "Tracked / estimated" + (over ? " (over the estimate)" : "");
+          const meta = el("span", "dsub", (t.container && t.container.listName) || "");
+          row.append(st, a, tm, meta);
+          body.appendChild(row);
+        }
+      }
+    };
+    paint("week");
+  }
   document.addEventListener("mousedown", (e) => { if (dayPop && !dayPop.contains(e.target) && !(e.target.closest && e.target.closest(".hb-click"))) closeDayPop(); }, true);
   document.addEventListener("keydown", (e) => { if (e.key === "Escape") closeDayPop(); });
   // The page scrolls: it follows its row, and closes once the row is off screen.
@@ -696,17 +873,22 @@
       }
       box.appendChild(el("div", "dsub", "As reported by their extension " + ago(d.at) + (d.run ? " (tracked time includes the minutes since)" : "") + ".")).style.marginTop = "10px";
     }
-    document.body.appendChild(box);
+    if (String(u.cuUserId || "").trim()) {
+      const wk = el("div", "dsec dweek");
+      wk.appendChild(el("div", "dt")).appendChild(el("b", "", "This week's tasks"));
+      const btn = el("button", "dbtn", "Show their tasks due this week");
+      btn.type = "button";
+      btn.onclick = () => loadWeekTasks(u, wk, btn);
+      wk.appendChild(btn);
+      box.appendChild(wk);
+    }
+    // Centred over a dimmed page (it used to hang off the avatar, small and off to the side).
+    const back = el("div", "hb-dayback");
+    back.onclick = closeDayPop;
+    document.body.append(back, box);
+    box._back = back;
     dayPop = box;
-    box._place = () => {
-      const r = anchor.getBoundingClientRect();
-      if (!anchor.isConnected || r.bottom < 0 || r.top > window.innerHeight) { closeDayPop(); return; }
-      const left = Math.max(12, Math.min(window.innerWidth - box.offsetWidth - 12, r.left));
-      let top = r.bottom + 6;
-      if (top + box.offsetHeight > window.innerHeight - 12) top = Math.max(12, r.top - box.offsetHeight - 6);
-      box.style.left = left + "px"; box.style.top = top + "px";
-    };
-    box._place();
+    box._place = null;
   }
   function presenceAvatar(u) {
     const p = presence(u);

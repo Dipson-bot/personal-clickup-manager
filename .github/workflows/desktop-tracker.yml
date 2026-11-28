@@ -22,6 +22,8 @@ jobs:
             script: dist
           - os: macos-latest
             script: dist:mac
+          - os: ubuntu-latest
+            script: dist:linux
     runs-on: ${{ matrix.os }}
     defaults:
       run:
@@ -33,6 +35,9 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 20
+      - name: Linux packaging tools (rpm for Fedora)
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y rpm
       - run: npm install
       - run: npm run ${{ matrix.script }} -- --publish never
       - uses: actions/upload-artifact@v4
@@ -41,6 +46,9 @@ jobs:
           path: |
             desktop-tracker/release/*.exe
             desktop-tracker/release/*.dmg
+            desktop-tracker/release/*.AppImage
+            desktop-tracker/release/*.deb
+            desktop-tracker/release/*.rpm
           if-no-files-found: error
       - name: Attach to the release
         if: startsWith(github.ref, 'refs/tags/desktop-v')
@@ -49,6 +57,6 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1 || gh release create "$GITHUB_REF_NAME" --title "ClickUp Tracker ${GITHUB_REF_NAME#desktop-v}" --notes "Taskbar timer for Personal ClickUp Manager." --latest=false || true
-          for f in release/ClickUp-Tracker-*.exe release/ClickUp-Tracker-*.dmg; do
+          for f in release/ClickUp-Tracker-*.exe release/ClickUp-Tracker-*.dmg release/ClickUp-Tracker-*.AppImage release/ClickUp-Tracker-*.deb release/ClickUp-Tracker-*.rpm; do
             if [ -f "$f" ]; then gh release upload "$GITHUB_REF_NAME" "$f" --clobber; fi
           done

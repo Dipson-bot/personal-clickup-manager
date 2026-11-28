@@ -12,6 +12,24 @@ const { ClickUp } = require("./clickup");
 const clientdirs = require("./clientdirs");
 const extupdate = require("./extupdate");
 
+// Start with the computer. Windows / macOS: Electron's login item. Linux has none,
+// so the freedesktop way: a .desktop file in ~/.config/autostart (GNOME, Cinnamon,
+// KDE, Xfce all read it). An AppImage starts from its own file ($APPIMAGE), a
+// .deb / .rpm install from the installed program.
+const linuxAutostart = () => path.join(process.env.XDG_CONFIG_HOME || path.join(require("os").homedir(), ".config"), "autostart", "clickup-tracker.desktop");
+function loginGet() {
+  if (process.platform !== "linux") return !!app.getLoginItemSettings().openAtLogin;
+  try { return fs.existsSync(linuxAutostart()); } catch (e) { return false; }
+}
+function loginSet(on) {
+  if (process.platform !== "linux") { app.setLoginItemSettings({ openAtLogin: !!on }); return; }
+  const f = linuxAutostart();
+  if (!on) { try { fs.unlinkSync(f); } catch (e) {} return; }
+  const exe = process.env.APPIMAGE || process.execPath;
+  fs.mkdirSync(path.dirname(f), { recursive: true });
+  fs.writeFileSync(f, "[Desktop Entry]\nType=Application\nName=ClickUp Tracker\nExec=\"" + exe.replace(/"/g, '\\"') + "\"\nX-GNOME-Autostart-enabled=true\nNoDisplay=false\nTerminal=false\n");
+}
+
 if (!app.requestSingleInstanceLock()) { app.quit(); }
 
 // "slim" = the one-line strip (same as on the taskbar), used off the taskbar and on Mac.
@@ -478,7 +496,7 @@ function buildTray() {
     tray.on("click", toggleWindow);
   }
   const op = (v) => ({ label: Math.round(v * 100) + "%", type: "radio", checked: Math.abs((settings.opacity || 1) - v) < 0.01, click: () => setOpacity(v) });
-  const login = app.getLoginItemSettings();
+  const login = { openAtLogin: loginGet() };
   tray.setContextMenu(Menu.buildFromTemplate([
     ...(cu ? [...actionItems(), ...trayRunItems(), { type: "separator" }] : []),
     isMac
@@ -504,7 +522,7 @@ function buildTray() {
     ] },
     { label: "See-through (when not pointed at)", submenu: [1, 0.9, 0.8, 0.7, 0.6, 0.5].map(op) },
     { label: "Daily target: " + (settings.targetHours || 7) + "h", submenu: [4, 5, 6, 7, 8, 9].map((hrs) => ({ label: hrs + " hours", type: "radio", checked: Number(settings.targetHours) === hrs, click: () => { settings.targetHours = hrs; saveSettings(); refresh(); buildTray(); } })) },
-    { label: "Start with " + (process.platform === "darwin" ? "macOS" : process.platform === "win32" ? "Windows" : "the computer"), type: "checkbox", checked: !!login.openAtLogin, click: (m) => { app.setLoginItemSettings({ openAtLogin: m.checked }); } },
+    { label: "Start with " + (process.platform === "darwin" ? "macOS" : process.platform === "win32" ? "Windows" : "the computer"), type: "checkbox", checked: !!login.openAtLogin, click: (m) => { try { loginSet(m.checked); } catch (e) {} } },
     ...(updateInfo ? [{ type: "separator" }, { label: "Update available: v" + updateInfo.version + " (download)", click: () => shell.openExternal(updateInfo.url) }] : []),
     { type: "separator" },
     { label: "Change ClickUp token…", click: () => { setToken(null); cu = null; state = null; recreate(); } },
@@ -719,10 +737,24 @@ async function pickFolder(title, at) {
 // picks it up when it knocks (phpTake, once a minute), reads each site's Site
 // Health with its own sign-in and hands back only the PHP versions (phpDone); the
 // first copy collects them (phpResults). In memory only; nothing is saved.
-let phpRelay = null, phpHelperAt = 0, phpHelperFrom = "";
+// Several helpers (one per Chrome profile), each saying which Google account it is
+// signed in with and whether it reads WordPress: a WordPress list only goes to a
+// WordPress helper, a screenshot job only to the helper of the job's account.
+let phpRelay = null;
+const helpers = new Map(); // install -> { at, account, wp }
+const HELPER_FRESH = 5 * 60000;
+const cleanAcct = (a) => String(a || "").trim().toLowerCase().replace(/[^a-z0-9@._+-]/g, "").slice(0, 120);
+function helperList(from) {
+  const now = Date.now();
+  return [...helpers.entries()].filter(([, h]) => now - h.at < 24 * 3600000).map(([id, h]) => ({ account: h.account, wp: h.wp, at: h.at, fresh: now - h.at < HELPER_FRESH, isYou: id === from }));
+}
 function phpRelayOp(m, op) {
   const now = Date.now(), from = String(m.install || "").replace(/[^a-z0-9]/gi, "").slice(0, 40);
-  if (op === "phpStatus") return { ok: true, helperAt: phpHelperAt, helperIsYou: !!from && phpHelperFrom === from };
+  if (op === "phpStatus") {
+    const wpAt = Math.max(0, ...[...helpers.values()].filter((h) => h.wp).map((h) => h.at));
+    const me = helpers.get(from);
+    return { ok: true, helperAt: wpAt, helperIsYou: !!(me && me.wp), helpers: helperList(from) };
+  }
   if (op === "phpJob") {
     const urls = (Array.isArray(m.urls) ? m.urls : []).map(String).filter((u) => /^https?:\/\/[^\s]+$/.test(u)).slice(0, 100);
     if (!urls.length) return { ok: false, error: "no sites" };
@@ -730,7 +762,10 @@ function phpRelayOp(m, op) {
     return { ok: true, id: phpRelay.id };
   }
   if (op === "phpTake") {
-    phpHelperAt = now; phpHelperFrom = from;
+    if (!from) return { ok: true, job: null };
+    const wp = m.wp !== false; // older helpers don't say: they were WordPress helpers
+    helpers.set(from, { at: now, account: cleanAcct(m.account), wp });
+    if (!wp) return { ok: true, job: null };
     if (!phpRelay || phpRelay.from === from || now - phpRelay.at > 3600000) return { ok: true, job: null };
     if (phpRelay.takenAt && now - phpRelay.takenAt < 15 * 60000) return { ok: true, job: null }; // being read (a helper that stopped: taken again later)
     phpRelay.takenAt = now;
@@ -751,9 +786,51 @@ function phpRelayOp(m, op) {
   }
   return { ok: false, error: "Unknown request - update the ClickUp Tracker app." };
 }
+// Screenshot jobs (Export report): the main profile leaves { kind, account, params };
+// the helper signed in as that account takes it on its next knock, captures the page
+// with its own sign-in and hands back the images. In memory only, gone after 15 min.
+const jobs = new Map(); // id -> { from, kind, account, params, at, takenAt, done, result }
+function jobOp(m, op) {
+  const now = Date.now(), from = String(m.install || "").replace(/[^a-z0-9]/gi, "").slice(0, 40);
+  for (const [id, j] of jobs) if (now - j.at > 15 * 60000) jobs.delete(id);
+  if (op === "jobPut") {
+    const kind = String(m.kind || ""), account = cleanAcct(m.account);
+    if (!/^[a-z-]{2,20}$/.test(kind) || !account) return { ok: false, error: "bad job" };
+    const h = [...helpers.entries()].find(([id, x]) => id !== from && x.account === account && now - x.at < HELPER_FRESH);
+    if (!h) return { ok: false, why: "nohelper", helpers: helperList(from) };
+    const id = now.toString(36) + Math.random().toString(36).slice(2, 6);
+    jobs.set(id, { from, kind, account, params: m.params && typeof m.params === "object" ? m.params : {}, at: now, takenAt: 0, done: false, result: null });
+    return { ok: true, id };
+  }
+  if (op === "jobTake") {
+    const h = helpers.get(from);
+    if (!h || !h.account) return { ok: true, job: null };
+    for (const [id, j] of jobs) {
+      if (j.done || j.from === from || j.account !== h.account) continue;
+      if (j.takenAt && now - j.takenAt < 3 * 60000) continue; // being done (a helper that stopped: taken again later)
+      j.takenAt = now;
+      return { ok: true, job: { id, kind: j.kind, params: j.params } };
+    }
+    return { ok: true, job: null };
+  }
+  if (op === "jobDone") {
+    const j = jobs.get(String(m.id || ""));
+    if (!j || j.account !== (helpers.get(from) || {}).account) return { ok: false };
+    j.done = true; j.result = m.result && typeof m.result === "object" ? m.result : { ok: false };
+    return { ok: true };
+  }
+  if (op === "jobGet") {
+    const j = jobs.get(String(m.id || ""));
+    if (!j || j.from !== from) return { ok: true, gone: true };
+    if (j.done) jobs.delete(String(m.id));
+    return { ok: true, done: j.done, takenAt: j.takenAt, result: j.done ? j.result : null };
+  }
+  return { ok: false, error: "Unknown request - update the ClickUp Tracker app." };
+}
 async function filesOp(m) {
   const op = String(m.op || "");
   if (op.startsWith("php")) return phpRelayOp(m, op);
+  if (op.startsWith("job")) return jobOp(m, op);
   const links = clientLinks();
   if (op === "status") {
     const k = clientdirs.key(m.client);
@@ -1071,7 +1148,7 @@ app.whenReady().then(async () => {
   // Installed: start with the computer from the first run on (the tray menu's
   // "Start with Windows / macOS" turns it off).
   if (app.isPackaged && !settings.autostartSet) {
-    try { app.setLoginItemSettings({ openAtLogin: true }); } catch (e) {}
+    try { loginSet(true); } catch (e) {}
     settings.autostartSet = true; saveSettings();
   }
   startLink();

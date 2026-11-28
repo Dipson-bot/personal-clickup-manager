@@ -1550,13 +1550,14 @@ async function cuShareFile(data) {
   document.body.appendChild(a); a.click(); a.remove();
   setTimeout(() => URL.revokeObjectURL(a.href), 60000);
 }
-function cuShareBtn(title, getTasks) {
+function cuShareBtn(title, getTasks, opts) {
+  const one = !!(opts && opts.one); // one task's own Share (its open panel): never the Ctrl+clicked set
   const b = document.createElement("button");
   b.type = "button";
   b.className = "cu-tgbtn cu-sharebtn";
   const LABEL = "\uD83D\uDD17 Share";
   b.textContent = LABEL;
-  b.title = "Share these tasks: a link that opens them straight away in a tab group, or a page to download with their details. Ctrl+click tasks first to share only those.";
+  b.title = one ? "Share this task: a link that opens it straight away, or a page to download with its details." : "Share these tasks: a link that opens them straight away in a tab group, or a page to download with their details. Ctrl+click tasks first to share only those.";
   b.addEventListener("mousedown", (e) => e.stopPropagation());
   let menu = null;
   const shut = () => { if (menu) { menu.remove(); menu = null; } };
@@ -1565,7 +1566,7 @@ function cuShareBtn(title, getTasks) {
     e.preventDefault(); e.stopPropagation();
     if (menu) { shut(); return; }
     const all = (getTasks() || []).filter((t) => t && !t.local && cuTaskUrl(t));
-    const picked = all.filter((t) => (cuListSel && cuListSel.has(cuWeekId(t))) || (typeof optWeekSel !== "undefined" && optWeekSel.has(cuWeekId(t)))); // Ctrl+clicked in the Tasks list or a day
+    const picked = one ? [] : all.filter((t) => (cuListSel && cuListSel.has(cuWeekId(t))) || (typeof optWeekSel !== "undefined" && optWeekSel.has(cuWeekId(t)))); // Ctrl+clicked in the Tasks list or a day
     const tasks = picked.length ? picked : all;
     if (!tasks.length) { b.textContent = "No ClickUp tasks"; reset(1600); return; }
     const n = [...new Set(tasks.map(cuWeekId))].length;
@@ -1611,6 +1612,14 @@ function cuShareBtn(title, getTasks) {
   };
   return b;
 }
+
+// One task's Share, for its open panel (task-panel.js): the same link / page as a client's Share.
+if (typeof window !== "undefined") window.PcmShareOne = (d) => {
+  const t = { id: d.id, name: d.name, url: d.url, status: d.status, done: !!d.done, startDateMs: d.startDateMs || null, dueDateMs: d.dueDateMs || null, estimateMs: d.estimateMs || 0, assignees: Array.isArray(d.assigneePeople) ? d.assigneePeople : [] };
+  const b = cuShareBtn(d.name || "Task", () => [t], { one: true });
+  b.className = "pcm-link cu-sharebtn";
+  return b;
+};
 
 // ---------- Tasks list: split by week ----------
 // When the list covers more than one week (this month, a range…), it's cut into
@@ -5955,7 +5964,7 @@ const CU_TODAY_EST_TIP = "Today's estimate: what is due today (the Due today tot
 // The "… today" chips' breakdown: the state's own today bundle (due today,
 // the Extra Task share, and other tasks tracked today) - no ClickUp request.
 function cuTodayBd(st) {
-  return () => ({ label: "today", estMs: Number(st && st.estimateMs) || 0, spentMs: Number(st && st.spentMs) || 0,
+  return () => ({ label: "today", today: true, estMs: Number(st && st.estimateMs) || 0, spentMs: Number(st && st.spentMs) || 0,
     tasks: (st && st.tasks) || [], cfg: (st && st.deadlineTasks) || [], other: (st && st.trackedTasks) || [], fmt: fmtDurOpt });
 }
 // Do the dates on screen include today? (Only then is part of the bar today.)
@@ -7129,7 +7138,7 @@ function renderClickupPreviewBody(st) {
   trkLabel.appendChild(trkVal);
   // Click either number: the tasks behind it and why the two differ.
   if (window.PcmBreakdown) {
-    const bd = () => ({ label: scopeLabel || "today", estMs, spentMs: spentTot, tasks: viewTasks, cfg: viewDeadline, other: viewTracked, fmt: fmtDurOpt });
+    const bd = () => ({ label: scopeLabel || "today", today: view.scope === "today" || view.scope === "extended", estMs, spentMs: spentTot, tasks: viewTasks, cfg: viewDeadline, other: viewTracked, fmt: fmtDurOpt });
     PcmBreakdown.attach(estVal, "est", bd);
     PcmBreakdown.attach(trkVal, "trk", bd);
   }
@@ -8456,7 +8465,8 @@ try {
   chrome.storage.onChanged.addListener(function (ch, area) { if (area === "local" && ch.settings) insSlackChannelOn = !(ch.settings.newValue && ch.settings.newValue.slackTagChannel === false); });
 } catch (e) {}
 try {
-  chrome.storage.local.get("slackMentions").then(function (g) { insSlackTags = (g && g.slackMentions && g.slackMentions.items) || []; }).catch(function () {});
+  chrome.storage.local.get("slackMentions").then(function (g) { insSlackTags = (g && g.slackMentions && g.slackMentions.items) || []; try { renderSlackTab(); } catch (e) {} }).catch(function () {});
+  chrome.storage.onChanged.addListener(function (ch, area) { if (area === "local" && ch.slackMentions) setTimeout(function () { try { renderSlackTab(); } catch (e) {} }, 0); });
   chrome.storage.onChanged.addListener(function (ch, area) { if (area === "local" && ch.slackMentions) insSlackTags = (ch.slackMentions.newValue && ch.slackMentions.newValue.items) || []; });
 } catch (e) {}
 function insArchivedLoad() {
@@ -8783,7 +8793,7 @@ function insShell(inner) {
 function insPaintSubNav() {
   var nav = document.getElementById("insSubNav");
   if (!nav) return;
-  var labels = { health: "Health", plan: "Plan", performance: "Performance", descriptions: "Descriptions" };
+  var labels = { health: "Health", plan: "Plan", performance: "Performance", descriptions: "Description check" };
   // Rebuilt only when the tab changed (every redraw rebuilt it - part of the page's jumping).
   var navHtml = INS_SUBS.map(function (s) {
     return '<button type="button" role="tab" data-sub="' + s + '" class="' + (s === insSub ? "on" : "") + '" aria-selected="' + (s === insSub) + '">' + labels[s] + "</button>";
@@ -8973,17 +8983,28 @@ function insPaint(m, st, meta) {
   });
   html += '<div class="page-h" style="display:flex;align-items:center;gap:10px;margin:0 0 4px;"><h2 style="margin:0;font-size:18px;">Insights</h2></div>';
   html += '<p class="ins-sub">A weekly health check of everything assigned to you — the things that are easy to miss until it’s too late. Every number is a shortcut into the details, including the ones in the By client table.</p>';
+  // Health score: one number for the whole list (100 = nothing overdue, blocked, unestimated
+  // or undated, no missed deadline still open). Shares of the open tasks, so a long list
+  // isn't punished for being long. A ring in the banner, its colour by band.
+  var hsOpen = Math.max(1, k.open || 0);
+  var hsPen = 120 * (k.overdue || 0) / hsOpen + 35 * (k.blocked || 0) / hsOpen + 40 * (k.noEst || 0) / hsOpen + 30 * (k.noDue || 0) / hsOpen + 3 * (m.lateOpenN || 0);
+  var hs = Math.round(Math.max(0, Math.min(100, 100 - hsPen)));
+  var hsCls = hs >= 85 ? "good" : hs >= 65 ? "ok" : hs >= 40 ? "warn" : "bad";
+  var hsWord = hs >= 85 ? "Healthy" : hs >= 65 ? "A few things to tidy" : hs >= 40 ? "Needs attention" : "At risk";
+  var hsTip = "Health score " + hs + "/100 - " + hsWord + ". 100 means nothing overdue, blocked, missing an estimate or a due date, and no missed deadline still open. Each counts by its share of your " + (k.open || 0) + " open tasks (overdue weighs most).";
+  var hsRing = '<span class="ins-score ' + hsCls + '" title="' + insEsc(hsTip) + '"><svg viewBox="0 0 36 36" aria-hidden="true"><circle cx="18" cy="18" r="15.5" class="trk"/><circle cx="18" cy="18" r="15.5" class="val" stroke-dasharray="' + (hs * 0.974).toFixed(1) + ' 97.4"/></svg><b>' + hs + "</b></span>";
+  var hsLine = '<span class="ins-score-w ' + hsCls + '">Health ' + hs + " · " + hsWord + "</span>";
   if (problems) {
     var bchips = [];
     if (k.overdue) bchips.push('<span class="mini red">' + k.overdue + " overdue</span>");
     if (k.blocked) bchips.push('<span class="mini red">' + k.blocked + " blocked</span>");
     if (k.noEst) bchips.push('<span class="mini amber">' + k.noEst + " missing an estimate</span>");
     if (k.noDue) bchips.push('<span class="mini amber">' + k.noDue + " missing a due date</span>");
-    html += '<div class="banner warn"><span class="big">⚠️</span><div><b>' + problems +
+    html += '<div class="banner warn">' + hsRing + '<div>' + hsLine + '<b>' + problems +
       " thing" + (problems === 1 ? "" : "s") + ' could use your attention</b><br><span class="b-sub">' +
       insEsc(meta) + '</span></div><div class="chips">' + bchips.join("") + "</div></div>";
   } else {
-    html += '<div class="banner good"><span class="big">✓</span><div><b>All caught up</b><br><span class="b-sub">' +
+    html += '<div class="banner good">' + hsRing + '<div>' + hsLine + '<b>All caught up</b><br><span class="b-sub">' +
       "Nothing overdue, everything estimated and dated. " + insEsc(meta) + "</span></div></div>";
   }
   function barCol(cls) { return cls === "red" ? "var(--red)" : cls === "amber" ? "var(--amber)" : cls === "blue" ? "var(--blue)" : "var(--green)"; }
@@ -9009,7 +9030,7 @@ function insPaint(m, st, meta) {
   html += '<div class="cols">' + insWorkloadCard(m) + insHygieneCard(m) + "</div>";
   html += insClientCard(m);
   html += insFilterBar(m);
-  html += insDrillsHtml(m);
+  html += '<div class="ins-cards">' + insDrillsHtml(m) + "</div>";
   return html;
 }
 var insWkModel = null, insWkShown = "";
@@ -9030,7 +9051,9 @@ function insWorkloadCard(m) {
     var o = order[i], bk = m.buckets[o.key];
     var pct = max > 0 ? Math.max(bk.est > 0 ? 6 : 0, Math.round((bk.est / max) * 100)) : 0;
     var val = o.key === "noDate" ? "—" : (bk.est > 0 ? insHrs(bk.est) : "—");
-    bars += '<div class="wk-day wk-click ' + o.cls + (insWkShown === o.key ? " on" : "") + '" data-wk="' + o.key + '" role="button" tabindex="0" title="Click to list these ' + bk.n + ' task' + (bk.n === 1 ? "" : "s") + '"><div class="wk-cnt">' + bk.n + (bk.n === 1 ? " task" : " tasks") + "</div>" +
+    var top = ((m.bucketRows || {})[o.key] || []).slice().sort(function (a, z) { return (Number(z.est) || 0) - (Number(a.est) || 0); }).slice(0, 5);
+    var tip = top.map(function (r) { return "• " + String(r.name || "").slice(0, 60) + (r.est ? " (" + insHrs(r.est) + ")" : ""); }).join("\n");
+    bars += '<div class="wk-day wk-click ' + o.cls + (insWkShown === o.key ? " on" : "") + '" data-wk="' + o.key + '" role="button" tabindex="0" title="' + insEsc((tip ? tip + "\n" : "") + "Click to list " + (bk.n === 1 ? "this task" : "all " + bk.n + " tasks")) + '"><div class="wk-cnt">' + bk.n + (bk.n === 1 ? " task" : " tasks") + "</div>" +
       '<div class="wk-bars"><div class="wk-bar est" style="height:' + pct + '%"></div></div>' +
       '<div class="wk-lab">' + o.lab + '</div><div class="wk-val">' + val + "</div></div>";
   }
@@ -9129,16 +9152,6 @@ function insDrillsHtml(m) {
     return { badge: r.mention ? '<span class="badge red">@ you</span>' : '<span class="badge amber">💬 ' + r.n + "</span>",
       plain: (r.latest ? r.latest.who + ": " + r.latest.text : "") + (r.n > 1 ? " (+" + (r.n - 1) + " more)" : ""), action: "Mark read", act: "seen" };
   });
-  // Two lists, like Slack's own (your name / Mentions): the messages that tag YOU
-  // first, then @channel / @here (settings.slackTagChannel, General › Features).
-  var slackRow = function (r) {
-    return { badge: r.kind === "you" ? '<span class="badge red">@ you</span>' : '<span class="badge amber">@channel</span>',
-      plain: insDateShort(r.at) + " " + new Date(r.at).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" }) + " · " + r.text, action: "Done", act: "slackdone" };
-  };
-  var slackYou = (m.slackList || []).filter(function (r) { return r.kind === "you"; });
-  var slackAll = (m.slackList || []).filter(function (r) { return r.kind !== "you"; });
-  var slackOut = (slackYou.length ? insDrill("slackwait", "Slack: tagged you, no reply yet", slackYou, slackRow) : "") +
-    (insSlackChannelOn && slackAll.length ? insDrill("slackchan", "Slack: @channel / @here, no reply yet", slackAll, slackRow) : "");
   var readRow = function (r) {
     return { badge: r.mention ? '<span class="badge red">@ you</span>' : '<span class="badge amber">💬 ' + r.n + "</span>",
       plain: (r.latest ? r.latest.who + ": " + r.latest.text : "") + (r.n > 1 ? " (+" + (r.n - 1) + " more)" : ""), action: "No reply needed", act: "cmtdone" };
@@ -9183,7 +9196,6 @@ function insDrillsHtml(m) {
     return { badge: '<span class="badge red">' + (d > 0 ? d + "d" : "due") + "</span>",
       plain: "due " + insDateShort(r.due) + (r.est ? " · " + insHrs(r.est) : " · no est"), action: "Change due date", act: "due" };
   });
-  out += slackOut;
   out += cmtOut;
   out += readOut;
   out += noFileOut;
@@ -9258,6 +9270,212 @@ if (typeof document !== "undefined") document.addEventListener("click", function
   e.preventDefault();
   window.PcmTaskPanel.openIn(row, id);
 }, true);
+// Clients › Monthly reports: the reports found in each client's Slack channel and
+// saved to their files (background slackReportsCollect; storage clientReports).
+function renderReports() {
+  var box = document.getElementById("repList");
+  if (!box) return;
+  chrome.storage.local.get(["clientReports", "reportLinks"]).then(function (g) {
+    var all = Object.keys((g && g.clientReports) || {}).map(function (id) { var r = g.clientReports[id]; r.id = id; return r; });
+    // The user's own reports (a doc / sheet / any link, or an attached file) per client.
+    var own = ((g && g.reportLinks) || {}).clients || {};
+    Object.keys(own).forEach(function (c) { (own[c] || []).forEach(function (o) { all.push({ id: o.id, client: c, name: o.label || o.url || o.name, created: o.at, own: o }); }); });
+    repPaintMain(((g && g.reportLinks) || {}).main);
+    var dl = document.getElementById("repClients");
+    if (dl) dl.innerHTML = Array.from(new Set(all.map(function (r) { return r.client; }).concat(Object.keys(insSlackClientsSeen || {})))).filter(Boolean).sort().map(function (c) { return '<option value="' + escapeHtml(c) + '"></option>'; }).join("");
+    var q = ((document.getElementById("repSearch") || {}).value || "").trim().toLowerCase();
+    var by = {};
+    all.forEach(function (r) { if (q && ((r.client || "") + " " + (r.name || "")).toLowerCase().indexOf(q) < 0) return; (by[r.client] = by[r.client] || []).push(r); });
+    var names = Object.keys(by).sort();
+    if (!names.length) { box.innerHTML = '<div class="hint" style="padding:8px 2px;">' + (all.length ? "No report matches." : "No reports saved yet. Connect Slack (Slack › Client channels), match each client to its channel, then press Collect from Slack now.") + "</div>"; return; }
+    box.innerHTML = names.map(function (c, i) {
+      var rows = by[c].sort(function (a, b) { return (b.created || 0) - (a.created || 0); });
+      var ok = rows.filter(function (r) { return !r.err; }).length;
+      return '<details class="rp-client"' + (i < 3 ? " open" : "") + '><summary>' + escapeHtml(c) + ' <span class="hint">' + ok + " report" + (ok === 1 ? "" : "s") + (rows.length > ok ? " · " + (rows.length - ok) + " couldn't be saved" : "") + "</span></summary>" +
+        rows.map(function (r) {
+          var mo = r.created ? new Date(r.created).toLocaleDateString([], { month: "short", year: "numeric" }) : "-";
+          if (r.own) return '<div class="rp-row"><span class="rp-mo">' + escapeHtml(mo) + '</span><span class="rp-nm" title="' + escapeHtml(r.name || "") + '">' + escapeHtml(r.name || "") + '</span><span class="rp-where own">' + (r.own.kind === "file" ? "your file" : "your link") + "</span>" +
+            '<span class="rp-acts">' + (r.own.kind === "file" ? '<button type="button" class="lnk" data-rp-open="' + escapeHtml(r.own.fileId) + '">Open</button>' : '<a href="' + escapeHtml(r.own.url) + '" target="_blank" rel="noopener">Open ↗</a>') +
+            ' <button type="button" class="lnk" data-rp-del="' + escapeHtml(r.id) + '" data-rp-client="' + escapeHtml(r.client) + '" title="Remove from this list">✕</button></span></div>';
+          var where = r.err ? '<span class="rp-where err" title="' + escapeHtml(r.err) + '">not saved: ' + escapeHtml(r.err) + "</span>" : '<span class="rp-where">' + (r.where === "folder" ? "in their folder" : /^dup:/.test(r.where || "") ? "already in their files" : "in Clients › From Slack") + "</span>";
+          return '<div class="rp-row"><span class="rp-mo">' + escapeHtml(mo) + '</span><span class="rp-nm" title="' + escapeHtml(r.name || "") + '">' + escapeHtml(r.name || "") + (r.channel ? ' <span class="hint">#' + escapeHtml(r.channel) + "</span>" : "") + "</span>" + where +
+            (r.permalink ? '<a href="' + escapeHtml(r.permalink) + '" target="_blank" rel="noopener">Open in Slack ↗</a>' : "<span></span>") + "</div>";
+        }).join("") + "</details>";
+    }).join("");
+    box.querySelectorAll("[data-rp-open]").forEach(function (b) { b.onclick = function () { repOpenFile(b.getAttribute("data-rp-open")); }; });
+    box.querySelectorAll("[data-rp-del]").forEach(function (b) { b.onclick = function () { repDelOwn(b.getAttribute("data-rp-client"), b.getAttribute("data-rp-del")); }; });
+  }).catch(function () {});
+}
+// Clients matched to Slack channels (suggestions for the client box).
+var insSlackClientsSeen = {};
+function repPaintMain(main) {
+  var v = document.getElementById("repMainView"), inp = document.getElementById("repMainUrl");
+  if (!v) return;
+  v.innerHTML = main && main.url ? '<a href="' + escapeHtml(main.url) + '" target="_blank" rel="noopener">Open my report document ↗</a>' : "";
+  if (inp && document.activeElement !== inp && main) inp.value = main.url || "";
+}
+function repSafeUrl(u) { u = String(u || "").trim(); if (u && !/^https?:\/\//i.test(u)) u = "https://" + u; try { var x = new URL(u); return /^https?:$/.test(x.protocol) && x.hostname.indexOf(".") > 0 ? x.href : ""; } catch (e) { return ""; } }
+function repSaveLinks(fn) {
+  return chrome.storage.local.get("reportLinks").then(function (g) { var rl = (g && g.reportLinks) || {}; rl.clients = rl.clients || {}; fn(rl); return chrome.storage.local.set({ reportLinks: rl }); }).then(renderReports);
+}
+function repDelOwn(client, id) {
+  repSaveLinks(function (rl) { rl.clients[client] = (rl.clients[client] || []).filter(function (o) { return o.id !== id; }); if (!rl.clients[client].length) delete rl.clients[client]; });
+}
+function repOpenFile(fileId) {
+  if (!window.PcmFiles) return;
+  window.PcmFiles.all().then(function (list) { var f = list.find(function (x) { return x.id === fileId; }); var m = document.getElementById("repOwnMsg"); if (f) window.PcmFiles.openFile(f); else if (m) m.textContent = "That file is no longer in this client's files."; }).catch(function () {});
+}
+(function wireReportLinks() {
+  if (typeof document === "undefined") return;
+  var save = document.getElementById("repMainSave"), msg = document.getElementById("repOwnMsg");
+  if (!save) return;
+  save.onclick = function () {
+    var raw = document.getElementById("repMainUrl").value, u = repSafeUrl(raw);
+    if (raw.trim() && !u) { msg.textContent = "That doesn't look like a link."; return; }
+    repSaveLinks(function (rl) { rl.main = u ? { url: u } : null; }).then(function () { msg.textContent = u ? "Saved." : "Removed."; });
+  };
+  document.getElementById("repOwnAdd").onclick = function () {
+    var client = document.getElementById("repOwnClient").value.trim(), raw = document.getElementById("repOwnUrl").value, label = document.getElementById("repOwnLabel").value.trim();
+    var files = document.getElementById("repOwnFile").files;
+    if (!client) { msg.textContent = "Type the client first."; return; }
+    var u = repSafeUrl(raw);
+    if (raw.trim() && !u) { msg.textContent = "That doesn't look like a link."; return; }
+    if (!u && !(files && files.length)) { msg.textContent = "Paste a link or attach a file."; return; }
+    var id = function () { return "own-" + Date.now().toString(36) + Math.random().toString(36).slice(2, 6); };
+    var p = Promise.resolve([]);
+    if (files && files.length) {
+      if (!window.PcmFiles) { msg.textContent = "Files can't be read here."; return; }
+      msg.textContent = "Saving…";
+      p = window.PcmFiles.add(client, files);
+    }
+    p.then(function (recs) {
+      return repSaveLinks(function (rl) {
+        var arr = rl.clients[client] = rl.clients[client] || [];
+        if (u) arr.push({ id: id(), kind: "link", url: u, label: label || u.replace(/^https?:\/\/(www\.)?/, "").slice(0, 60), at: Date.now() });
+        (recs || []).forEach(function (r) { arr.push({ id: id(), kind: "file", fileId: r.id, name: r.name, label: label || r.name, at: Date.now() }); });
+      });
+    }).then(function () {
+      msg.textContent = "Added to " + client + ".";
+      ["repOwnUrl", "repOwnLabel", "repOwnFile"].forEach(function (k) { document.getElementById(k).value = ""; });
+    }).catch(function (e) { msg.textContent = "Couldn't add: " + ((e && e.message) || e); });
+  };
+  var fileIn = document.getElementById("repOwnFile");
+  fileIn.onchange = function () { msg.textContent = fileIn.files.length ? fileIn.files.length + " file" + (fileIn.files.length === 1 ? "" : "s") + " ready - press Add." : ""; };
+  chrome.storage.onChanged.addListener(function (ch, area) { if (area === "local" && ch.reportLinks) renderReports(); });
+  chrome.storage.local.get("slackChannels").then(function (g) { var m = (g && g.slackChannels) || {}; Object.keys(m).forEach(function (k) { if (m[k] && m[k].client) insSlackClientsSeen[m[k].client] = 1; }); renderReports(); }).catch(function () {});
+})();
+(function wireSlackSla() {
+  if (typeof document === "undefined") return;
+  var on = document.getElementById("slackSlaOn"), min = document.getElementById("slackSlaMin");
+  if (!on || !min) return;
+  chrome.storage.local.get("slackSla").then(function (g) { var c = (g && g.slackSla) || {}; on.checked = c.on === true; min.value = String(c.min || 15); }).catch(function () {}); // off unless switched on
+  // Switching it on starts from now: messages already waiting never all fire at once.
+  var save = function () { var m = Math.max(1, Math.min(240, Number(min.value) || 15)); min.value = String(m); chrome.storage.local.get("slackSla").then(function (g) { var p = (g && g.slackSla) || {}; chrome.storage.local.set({ slackSla: { on: on.checked, min: m, snoozeMin: m, since: on.checked ? (p.on === true && p.since ? p.since : Date.now()) : 0 } }); }).catch(function () {}); };
+  on.onchange = save; min.onchange = save;
+})();
+(function wireReports() {
+  if (typeof document === "undefined") return; // (tests that load this file without a page)
+  var btn = document.getElementById("repCollect"), msg = document.getElementById("repMsg"), q = document.getElementById("repSearch");
+  if (!btn) return;
+  btn.onclick = function () {
+    btn.disabled = true; msg.textContent = "Looking in your clients' Slack channels…";
+    send({ type: "SLACK_POLL_NOW" }, 120000).catch(function () {}).then(function () { return send({ type: "SLACK_REPORTS_COLLECT" }, 180000); }).then(function (r) {
+      btn.disabled = false;
+      msg.textContent = !r ? "No answer - try again." : !r.ok ? (r.error || "Couldn't collect.") : (r.saved ? r.saved + " new report" + (r.saved === 1 ? "" : "s") + " saved" : "No new reports") + (r.failed ? " · " + r.failed + " couldn't be saved" : "") + (r.waiting ? " · " + r.waiting + " more next time" : "") + ".";
+      renderReports();
+    }).catch(function () { btn.disabled = false; msg.textContent = "Couldn't collect."; });
+  };
+  if (q) q.oninput = renderReports;
+  chrome.storage.onChanged.addListener(function (ch, area) { if (area === "local" && ch.clientReports) renderReports(); });
+  renderReports();
+})();
+// Slack tab › Waiting on your reply: messages in the clients' channels that tag you
+// (or @channel / @here, settings.slackTagChannel) with no reply from you yet. Search,
+// filter by kind / client, and per message: Open in Slack, Reply (posted in its
+// thread with your own Slack sign-in), Pin to the top, Done (and Undo).
+var slackF = { q: "", kind: "open", client: "" };
+function renderSlackTab() {
+  var box = document.getElementById("slackWait");
+  if (!box) return;
+  var all = (insSlackTags || []).filter(function (x) { return x && (insSlackChannelOn || x.kind !== "channel"); });
+  var isOpen = function (x) { return !x.answeredAt && !x.doneAt; };
+  var clients = Array.from(new Set(all.map(function (x) { return x.client || ""; }).filter(Boolean))).sort();
+  var n = { open: all.filter(isOpen).length, you: all.filter(function (x) { return isOpen(x) && x.kind === "you"; }).length, chan: all.filter(function (x) { return isOpen(x) && x.kind === "channel"; }).length, dm: all.filter(function (x) { return isOpen(x) && x.kind === "dm"; }).length, pinned: all.filter(function (x) { return x.pinnedAt && isOpen(x); }).length, done: all.filter(function (x) { return !isOpen(x); }).length };
+  if (!box.querySelector(".sk-bar")) {
+    box.innerHTML = '<div class="sk-bar"><input type="search" class="sk-q" placeholder="Search messages, people, channels…" aria-label="Search Slack messages" />' +
+      '<div class="sk-chips" role="tablist"></div><select class="sk-client" aria-label="Client"></select></div><div class="sk-list"></div>';
+    var q = box.querySelector(".sk-q");
+    q.oninput = function () { slackF.q = q.value; renderSlackTab(); };
+    box.querySelector(".sk-client").onchange = function (e) { slackF.client = e.target.value; renderSlackTab(); };
+  }
+  var chips = [["open", "All open", n.open], ["you", "Tagged you", n.you], ["dm", "DMs", n.dm], ["chan", "@channel / @here", n.chan], ["pinned", "📌 Pinned", n.pinned], ["done", "Done / answered", n.done]];
+  box.querySelector(".sk-chips").innerHTML = chips.map(function (c) { return '<button type="button" class="sk-chip' + (slackF.kind === c[0] ? " on" : "") + '" data-k="' + c[0] + '">' + c[1] + ' <b>' + c[2] + "</b></button>"; }).join("");
+  box.querySelectorAll(".sk-chip").forEach(function (b) { b.onclick = function () { slackF.kind = b.getAttribute("data-k"); renderSlackTab(); }; });
+  var sel = box.querySelector(".sk-client");
+  sel.innerHTML = '<option value="">All clients</option>' + clients.map(function (c) { return '<option value="' + escapeHtml(c) + '"' + (c === slackF.client ? " selected" : "") + ">" + escapeHtml(c) + "</option>"; }).join("");
+  var qq = slackF.q.trim().toLowerCase();
+  var rows = all.filter(function (x) {
+    if (slackF.kind === "done" ? isOpen(x) : !isOpen(x)) return false;
+    if (slackF.kind === "you" && x.kind !== "you") return false;
+    if (slackF.kind === "chan" && x.kind !== "channel") return false;
+    if (slackF.kind === "dm" && x.kind !== "dm") return false;
+    if (slackF.kind === "pinned" && !x.pinnedAt) return false;
+    if (slackF.client && x.client !== slackF.client) return false;
+    if (qq && ((x.text || "") + " " + (x.whoName || "") + " " + (x.channel || "") + " " + (x.client || "")).toLowerCase().indexOf(qq) < 0) return false;
+    return true;
+  }).sort(function (p, q2) { return ((q2.pinnedAt ? 1 : 0) - (p.pinnedAt ? 1 : 0)) || ((q2.at || 0) - (p.at || 0)); });
+  var list = box.querySelector(".sk-list");
+  if (!rows.length) { list.innerHTML = '<div class="sk-empty">' + (all.length ? "Nothing here with these filters." : "Nothing waiting on you in Slack. 🎉") + "</div>"; return; }
+  var ago = function (t) { var m = Math.round((Date.now() - t) / 60000); return m < 60 ? m + "m ago" : m < 1440 ? Math.round(m / 60) + "h ago" : Math.round(m / 1440) + "d ago"; };
+  // Grouped under a day heading (Pinned first); each message is a card with the sender's
+  // initial, a coloured edge for its kind (you / DM / @channel) and the channel + client as pills.
+  var dayOf = function (t) { var d = new Date(t), d0 = new Date(); d0.setHours(0, 0, 0, 0); var dd = new Date(d); dd.setHours(0, 0, 0, 0); var diff = Math.round((d0 - dd) / 86400000); return diff === 0 ? "Today" : diff === 1 ? "Yesterday" : d.toLocaleDateString([], { weekday: "long", month: "short", day: "numeric" }); };
+  var hue = function (s) { var h = 0; s = String(s || ""); for (var i = 0; i < s.length; i++) h = (h * 31 + s.charCodeAt(i)) % 360; return h; };
+  var lastDay = "";
+  list.innerHTML = rows.slice(0, 150).map(function (x) {
+    var open = isOpen(x), day = x.pinnedAt ? "📌 Pinned" : dayOf(x.at), sep = "";
+    if (day !== lastDay) { sep = '<div class="sk-day"><span>' + escapeHtml(day) + "</span></div>"; lastDay = day; }
+    var who = x.whoName || "Someone";
+    return sep + '<div class="sk-row k-' + escapeHtml(x.kind || "channel") + (x.pinnedAt ? " pinned" : "") + (open ? "" : " done") + '" data-k="' + escapeHtml(x.k) + '">' +
+      '<div class="sk-head"><span class="sk-av" style="--h:' + hue(who) + '">' + escapeHtml(who.trim().charAt(0).toUpperCase() || "?") + "</span>" +
+      '<div class="sk-who"><div><b>' + escapeHtml(who) + '</b><span class="badge ' + (x.kind === "you" ? "red" : x.kind === "dm" ? "blue" : "amber") + '">' + (x.kind === "you" ? "@ you" : x.kind === "dm" ? "DM" : "@channel") + "</span></div>" +
+      '<div class="sk-ch"><span class="sk-pill">' + (x.kind === "dm" ? (x.channel && x.channel !== "DM" ? escapeHtml(x.channel) : "direct message") : "#" + escapeHtml(x.channel || "channel")) + "</span>" + (x.client ? '<span class="sk-pill sk-cl">' + escapeHtml(x.client) + "</span>" : "") + "</div></div>" +
+      '<span class="sk-time" title="' + escapeHtml(new Date(x.at).toLocaleString()) + '">' + ago(x.at) + "</span>" + (x.pinnedAt ? '<span class="sk-pin">📌</span>' : "") + "</div>" +
+      '<div class="sk-text">' + (window.PcmSlackUi && x.raw ? window.PcmSlackUi.render(x.raw, x.names) : escapeHtml(x.text || "")) + '</div><button type="button" class="sk-more" hidden>View more</button>' +
+      (x.repliedText ? '<div class="sk-mine">↳ You: ' + escapeHtml(x.repliedText) + "</div>" : "") +
+      '<div class="sk-acts">' + (x.link ? '<a class="sk-a" href="' + escapeHtml(x.link) + '" target="_blank" rel="noopener">Open in Slack ↗</a>' : "") +
+      (open ? '<button type="button" class="sk-a" data-do="reply">Reply</button>' : "") +
+      '<button type="button" class="sk-a" data-do="pin">' + (x.pinnedAt ? "Unpin" : "Pin") + "</button>" +
+      '<button type="button" class="sk-a" data-do="' + (open ? "done" : "undo") + '">' + (open ? "Mark done" : "Back to open") + "</button></div>" +
+      '<div class="sk-reply" hidden><textarea rows="2" placeholder="Reply in the thread…"></textarea><div><button type="button" class="primary sk-send">Send reply</button> <button type="button" class="sk-a" data-do="cancel">Cancel</button> <span class="hint sk-msg"></span></div></div></div>';
+  }).join("");
+  list.querySelectorAll(".sk-row").forEach(function (row) {
+    var k = row.getAttribute("data-k"), rep = row.querySelector(".sk-reply");
+    // Long messages fold to a few lines; View more opens the whole message.
+    var txt = row.querySelector(".sk-text"), more = row.querySelector(".sk-more");
+    if (txt && more && txt.scrollHeight > txt.clientHeight + 4) { more.hidden = false; more.onclick = function () { var o = txt.classList.toggle("open"); more.textContent = o ? "Show less" : "View more"; }; }
+    row.querySelectorAll("[data-do]").forEach(function (b) {
+      b.onclick = function () {
+        var d = b.getAttribute("data-do");
+        if (d === "reply") { rep.hidden = false; if (!row._comp && window.PcmSlackUi) row._comp = window.PcmSlackUi.composer(rep.querySelector("textarea")); rep.querySelector("textarea").focus(); return; }
+        if (d === "cancel") { rep.hidden = true; return; }
+        b.disabled = true;
+        var m = d === "pin" ? { type: "SLACK_MENTION_PIN", k: k, on: !row.classList.contains("pinned") } : { type: "SLACK_MENTION_DONE", k: k, undo: d === "undo" };
+        send(m).catch(function () {});
+      };
+    });
+    var sendBtn = row.querySelector(".sk-send");
+    if (sendBtn) sendBtn.onclick = function () {
+      var t = (row._comp ? row._comp.value() : rep.querySelector("textarea").value).trim(), msg = rep.querySelector(".sk-msg");
+      if (!t) { msg.textContent = "Write a reply first."; return; }
+      sendBtn.disabled = true; msg.textContent = "Sending…";
+      send({ type: "SLACK_MENTION_REPLY", k: k, text: t }, 30000).then(function (r) {
+        if (r && r.ok) { msg.textContent = "Sent ✓"; return; }
+        sendBtn.disabled = false; msg.textContent = (r && r.error) || "Couldn't send.";
+      }).catch(function () { sendBtn.disabled = false; msg.textContent = "Couldn't send."; });
+    };
+  });
+}
 function insDrill(id, label, listArr, fmt) {
   var n = listArr.length, rendered = Math.min(n, INS_DRILL_MAX), body = "", i;
   for (i = 0; i < rendered; i++) {
@@ -9276,8 +9494,11 @@ function insDrill(id, label, listArr, fmt) {
   body += '<button type="button" class="det-more det-morebtn" data-more hidden></button>' +
     '<div class="det-more" data-none hidden>No task in this list matches the filter above.</div>';
   if (!n) body += '<div class="det-more">Nothing here — nice.</div>';
-  return '<details class="ins-det" data-drill="' + id + '"><summary><span class="caret">▸</span> ' + label +
-    ' <span class="count" data-count>(' + n + ')</span></summary>' +
+  // Shown as a card (a tone, an icon, the big number); opening one spreads it full width.
+  var tone = /^(late|overdue|blocked|wk-overdue)$/.test(id) ? "red" : /^(noest|nodue|holiday|nofile|dupe)$/.test(id) ? "amber" : /^(unread|readmention|readwait)$/.test(id) ? "blue" : "grey";
+  var ico = { late: "⏰", overdue: "🔥", blocked: "⛔", noest: "⏱", nodue: "📅", holiday: "🏖", nofile: "📎", dupe: "👯", unread: "💬", readmention: "@", readwait: "✉", archived: "🗄" }[id] || "•";
+  return '<details class="ins-det ins-card-' + tone + (n ? "" : " ins-zero") + '" data-drill="' + id + '"><summary><span class="ins-ico">' + ico + '</span><b class="ins-n" data-n>' + n + '</b><span class="caret">▸</span> <span class="ins-lab">' + label +
+    '</span> <span class="count" data-count>(' + n + ')</span></summary>' +
     '<div class="det-body" data-total="' + n + '">' + body + "</div></details>";
 }
 // One row against the current filter. Pure, so the rule is testable: a row with
@@ -9390,6 +9611,8 @@ function insApplyFilter() {
     hitAll += hit; totalAll += total;
     var cnt = d.querySelector("[data-count]");
     if (cnt) cnt.textContent = active ? "(" + hit + " of " + total + ")" : "(" + total + ")";
+    var big = d.querySelector("[data-n]");
+    if (big) big.textContent = String(active ? hit : total);
     var more = d.querySelector("[data-more]");
     if (more) {
       // Rows past INS_DRILL_MAX were never put in the DOM, so they can only be
@@ -9490,6 +9713,8 @@ function insWire(view) {
   if (clr) clr.onclick = function () { insSetFilter("", "", ""); };
   view.querySelectorAll(".ins-act").forEach(function (b) { b.onclick = function (e) { e.preventDefault(); insRowAction(b); }; });
   insApplyFilter();
+  // A whole Needs tidying / By client row opens its list (not only its small link).
+  view.querySelectorAll(".hy-row, tr").forEach(function (r) { var l = r.querySelector("[data-drill]"); if (!l || r.classList.contains("row-click")) return; r.classList.add("row-click"); r.addEventListener("click", function (e) { if (!e.target.closest("button, a, input, select")) l.click(); }); });
   if (insPendingDrill) { var p = insPendingDrill; insPendingDrill = ""; insOpenDrill(p, ""); }
 }
 // "Add estimate" / "Set due date" / "Change due date" in the Insights lists:
@@ -10164,7 +10389,7 @@ let smKickNote = ""; // why an automatic catch-up check didn't start, shown in t
 // comes in, and the page redraws (not while you're typing in or editing a row).
 let smLiveT = 0;
 chrome.storage.onChanged.addListener((ch, area) => {
-  if (area !== "local" || !(ch.siteMonitorState || ch.siteMonitorChecking || ch.sitePhp || ch.wpPhpRelay || ch.wpPhpProgress || ch.smMineOnly || ch.siteHosting || ch.wpLatest || ch.gtmScan || ch.smFilter || ch.sitePsi)) return;
+  if (area !== "local" || !(ch.siteMonitorState || ch.siteMonitorChecking || ch.sitePhp || ch.wpPhpRelay || ch.wpPhpProgress || ch.smMineOnly || ch.siteHosting || ch.wpLatest || ch.gtmScan || ch.smFilter || ch.sitePsi || ch.psiKey || ch.siteTagManual || ch.psiRunning || ch.psiCfg || ch.gdataAuth || ch.gdataAccounts || ch.gdataProps || ch.gdataHub)) return;
   clearTimeout(smLiveT);
   smLiveT = setTimeout(async () => {
     const box = $("siteMonitorStatus");
@@ -10276,17 +10501,44 @@ function wpRelayPoll() {
 document.addEventListener("click", (e) => {
   document.querySelectorAll("#siteMonitorStatus details.sm-more[open]").forEach((d) => { if (!d.contains(e.target)) d.open = false; });
 });
-// Site monitor › "This profile is signed in to the clients' WordPress" (the helper).
+// Site monitor › Helper profile: this copy works for the main profile (screenshots for
+// its Google account, WordPress versions), and the helpers the taskbar app can see.
 (() => {
   const box = document.getElementById("wpHelperOn"), msg = document.getElementById("wpHelperMsg");
   if (!box) return;
-  chrome.storage.local.get("wpHelper").then((g) => { box.checked = !!(g && g.wpHelper); }).catch(() => {});
-  box.addEventListener("change", async () => {
+  const acct = document.getElementById("helperAccount"), wp = document.getElementById("helperWp"), list = document.getElementById("helperList");
+  const ago = (t) => { const m = Math.round((Date.now() - t) / 60000); return m < 1 ? "just now" : m < 60 ? m + " min ago" : Math.round(m / 60) + " h ago"; };
+  const paint = (helpers) => {
+    if (!list) return;
+    list.innerHTML = "";
+    if (!helpers) return;
+    if (!helpers.length) { list.appendChild(Object.assign(document.createElement("div"), { className: "hint", textContent: "The taskbar app sees no helper yet." })); return; }
+    for (const x of helpers) {
+      const row = document.createElement("div");
+      row.className = "wph-h" + (x.fresh ? " on" : "");
+      row.innerHTML = '<span class="wph-dot"></span>';
+      row.appendChild(document.createTextNode((x.account || "helper (no account entered)") + " · " + (x.wp ? "screenshots + WordPress" : "screenshots") + " · " + (x.fresh ? "ready, seen " : "not seen since ") + ago(x.at) + (x.isYou ? " · this profile" : "")));
+      list.appendChild(row);
+    }
+  };
+  const refresh = () => send({ type: "HELPER_STATUS" }).then((r) => paint(r && r.app ? r.helpers || [] : null)).catch(() => {});
+  chrome.storage.local.get(["wpHelper", "helperAccount", "helperWp"]).then((g) => {
+    box.checked = !!(g && g.wpHelper); acct.value = (g && g.helperAccount) || ""; wp.checked = !g || g.helperWp !== false;
+  }).catch(() => {});
+  refresh();
+  const save = async () => {
     msg.textContent = "Saving\u2026";
-    const r = await send({ type: "WP_HELPER_SET", on: box.checked });
-    msg.textContent = !box.checked ? "Off - this profile won't read for the other one." : r && r.app ? "On \u2713 This profile now reads PHP versions when your other profile asks (it checks every minute)." : r && r.oldApp ? "On, but your ClickUp Tracker app is older than this - install version 0.4.2 or newer." : "On, but the ClickUp Tracker taskbar app isn't answering - start it (version 0.4.2 or newer).";
-  });
+    const r = await send({ type: "WP_HELPER_SET", on: box.checked, account: acct.value, wp: wp.checked });
+    if (r && r.ok === false) { msg.textContent = r.error || "Couldn't save."; return; }
+    msg.textContent = !box.checked ? "Off - this profile won't work for the other one." : !acct.value.trim() ? "On - enter the Google account this profile is signed in with, so report screenshots for it come here." : r && r.app && !r.oldApp ? "On \u2713 This profile now works for your main profile (it checks every minute)." : r && r.app ? "On, but your ClickUp Tracker app is older than this - update it (0.5.1 or newer)." : "On, but the ClickUp Tracker taskbar app isn't answering - start it.";
+    if (r && r.helpers) paint(r.helpers);
+  };
+  box.addEventListener("change", save);
+  wp.addEventListener("change", save);
+  acct.addEventListener("change", save);
 })();
+let smGdPanelOpen = false; // Tools › Google data stays open while the table redraws
+let smPsiPanelOpen = false; // Tools › PageSpeed settings stays open while the table redraws
 function renderSiteMonitorStatus(cfg) {
   const el = $("siteMonitorStatus");
   if (!el) return;
@@ -10299,12 +10551,14 @@ function renderSiteMonitorStatus(cfg) {
     return;
   }
   // Background replies { ok, state } - read the state object, not the wrapper.
-  Promise.all([send({ type: "GET_SITE_MONITOR_STATE" }), chrome.storage.local.get(["siteSnooze", "siteOff", "siteMonitorChecking", "sitePhp", "wpPhpRelay", "wpPhpProgress", "phpSheetUrl", "smMineOnly", "siteHosting", "wpLatest", "gtmScan", "smFilter", "sitePsi"]).catch(() => ({})),
+  Promise.all([send({ type: "GET_SITE_MONITOR_STATE" }), chrome.storage.local.get(["siteSnooze", "siteOff", "siteMonitorChecking", "sitePhp", "wpPhpRelay", "wpPhpProgress", "phpSheetUrl", "smMineOnly", "siteHosting", "wpLatest", "gtmScan", "smFilter", "sitePsi", "smMineLast", "psiKey", "siteTagManual", "psiRunning", "psiCfg", "gdataAuth", "gdataAccounts", "gdataProps", "gdataHub"]).catch(() => ({})),
     window.PcmMyClients ? window.PcmMyClients().catch(() => []) : Promise.resolve([])]).then(([resp, sg, mineNames]) => {
     // Only my clients (the Clients tab's list): just their sites are shown, counted
     // and checked (the background skips the rest too); the others stay saved.
     const smKey = (n) => String(n || "").toLowerCase().replace(/[^a-z0-9]+/g, "");
-    const isMineSite = (s) => mineNames.some((c) => smNameMatch(smKey(c), smKey(s && s.name)));
+    const liveHits = cfg.sites.some((s) => mineNames.some((c) => smNameMatch(smKey(c), smKey(s && s.name))));
+    const mineList = liveHits ? mineNames : Array.isArray(sg && sg.smMineLast) ? sg.smMineLast : []; // task lists empty for now: the last list the check used
+    const isMineSite = (s) => mineList.some((c) => smNameMatch(smKey(c), smKey(s && s.name)));
     const mineCount = cfg.sites.filter(isMineSite).length;
     const mineOnly = !!(sg && sg.smMineOnly) && mineCount > 0;
     const vSites = mineOnly ? cfg.sites.filter(isMineSite) : cfg.sites;
@@ -10331,32 +10585,50 @@ function renderSiteMonitorStatus(cfg) {
     const allStale = newest > 0 && nowTs - newest > SM_STALE_MS;
     // GTM / Clarity: from each site's page (and Clarity inside its GTM container).
     const gtmScan = (sg && sg.gtmScan) || {};
-    const tagsOf = (rec) => {
+    const tagManual = (sg && sg.siteTagManual) || {};
+    const handOn = (url, k) => !!(url && tagManual[url] && tagManual[url][k]);
+    const tagsOf = (rec, url) => {
       const t = rec && rec.tags;
       if (!t) return null;
       const viaGtm = (t.gtm || []).map((g) => gtmScan[g]).find((x) => x && x.clarity);
-      return { gtm: t.gtm || [], clarity: t.clarity || (viaGtm ? viaGtm.clarity : ""), via: !t.clarity && viaGtm ? "gtm" : "", gtmRead: (t.gtm || []).every((g) => gtmScan[g]), notWp: rec.platform && !/wordpress/i.test(rec.platform) };
+      const gaGtm = [...new Set((t.gtm || []).flatMap((g) => (gtmScan[g] && Array.isArray(gtmScan[g].ga) ? gtmScan[g].ga : [])))];
+      const gaFound = t.ga && t.ga.length ? t.ga : gaGtm;
+      // Not known yet (not "missing"): a container not read for GA yet (scans from before GA was looked for), or a site
+      // builder (Wix, Squarespace...) that adds GA from its own settings while the page runs, so it isn't in the page.
+      const gaWait = (t.gtm || []).some((g) => !(gtmScan[g] && Array.isArray(gtmScan[g].ga)));
+      const gaBuilder = !!(rec.platform && !/wordpress/i.test(rec.platform));
+      const gaHand = !gaFound.length && handOn(url, "ga");
+      const gtmHand = !(t.gtm || []).length && handOn(url, "gtm");
+      const clarityHand = !(t.clarity || viaGtm) && handOn(url, "clarity");
+      return { gtmHand, gaHand, gaUnknown: !gaFound.length && !gaHand && (gaWait || gaBuilder) ? (gaWait ? "wait" : "builder") : "", ga: gaHand ? ["set up (ticked by you)"] : gaFound, gaVia: !(t.ga && t.ga.length) && gaGtm.length ? "gtm" : "", gtm: t.gtm || [], clarity: t.clarity || (viaGtm ? viaGtm.clarity : "") || (clarityHand ? "hand" : ""), clarityHand, via: !t.clarity && viaGtm ? "gtm" : "", gtmRead: (t.gtm || []).every((g) => gtmScan[g]), notWp: rec.platform && !/wordpress/i.test(rec.platform) };
     };
+    // Tags: one line of short marks (GA, GTM, Clarity), the container IDs small underneath; the details are in each mark's tooltip.
     const tagsCell = (x) => {
       if (!x) return '<span class="sm-php hidden" title="The page could not be read yet (not checked, or its security turned the check away)">not read yet</span>';
-      const g = x.gtm.length ? '<span class="sm-php ' + (x.gtm.length > 1 ? "check" : "ok") + '" title="Google Tag Manager: ' + escapeHtml(x.gtm.join(", ")) + (x.gtm.length > 1 ? ". More than one container loads on this page: check whether both are meant to be there (double counting)." : "") + '">GTM ' + (x.gtm.length > 1 ? "×" + x.gtm.length : "✓") + "</span> " + x.gtm.map((id) => '<span class="hint sm-gtmid">' + escapeHtml(id) + "</span>").join(" ") : '<span class="sm-php bad" title="No Google Tag Manager snippet in the page">no GTM</span>';
-      const c = x.clarity ? '<span class="sm-php ok" title="Microsoft Clarity' + (x.clarity !== "yes" ? " project " + escapeHtml(x.clarity) : "") + (x.via ? " - set up inside the GTM container" : " - in the page") + '">Clarity ✓' + (x.via ? " via GTM" : "") + "</span>"
-        : x.gtm.length && !x.gtmRead ? '<span class="sm-php hidden" title="Not in the page; its GTM container is checked for Clarity within the next checks">Clarity: checking GTM</span>'
-        : '<span class="sm-php bad" title="No Clarity snippet in the page' + (x.gtm.length ? " or in its GTM container" : "") + '">no Clarity</span>';
-      return '<div>' + g + "</div><div>" + c + "</div>";
+      const mark = (k, text, tip) => '<span class="sm-tag ' + k + '" title="' + escapeHtml(tip) + '">' + escapeHtml(text) + "</span>";
+      const waiting = x.gtm.length && !x.gtmRead;
+      const a = x.ga.length ? mark("ok", "GA \u2713", x.gaHand ? "Google Analytics: ticked by you as set up outside the page (e.g. in Wix's marketing settings). Untick it in the site's \u22EF menu." : "Google Analytics (GA4) " + x.ga.join(", ") + (x.gaVia ? ", set up inside the GTM container" : ", in the page"))
+        : x.gaUnknown ? mark("hidden", "GA ?", x.gaUnknown === "wait" ? "Not in the page; its GTM container is read for GA within the next checks" : "Not in the page: " + (x.notWp ? "this site builder adds Google Analytics from its own settings while the page runs, so it can't be read here - check it in the builder's marketing settings" : "it may be added while the page runs")) : mark("bad", "GA \u2717", "No Google Analytics (GA4) in the page" + (x.gtm.length ? " or in its GTM container" : ""));
+      const g = x.gtmHand ? mark("ok", "GTM \u2713", "Google Tag Manager: ticked by you as set up outside the page (e.g. in Wix's marketing settings). Untick it in the site's \u22EF menu.") : x.gtm.length > 1 ? mark("check", "GTM \u00d7" + x.gtm.length, "More than one GTM container loads on this page (" + x.gtm.join(", ") + "): check both are meant to be there (double counting)")
+        : x.gtm.length ? mark("ok", "GTM \u2713", "Google Tag Manager " + x.gtm[0]) : mark("bad", "GTM \u2717", "No Google Tag Manager snippet in the page");
+      const c = x.clarityHand ? mark("ok", "Clarity \u2713", "Microsoft Clarity: ticked by you as set up outside the page (e.g. in the site builder's settings). Untick it in the site's \u22EF menu.")
+        : x.clarity ? mark("ok", "Clarity \u2713", "Microsoft Clarity" + (x.clarity !== "yes" ? " project " + x.clarity : "") + (x.via ? ", set up inside the GTM container" : ", in the page"))
+        : waiting ? mark("hidden", "Clarity ?", "Not in the page; its GTM container is read within the next checks") : mark("bad", "Clarity \u2717", "No Clarity in the page" + (x.gtm.length ? " or in its GTM container" : ""));
+      return '<div class="sm-tagline">' + a + g + c + "</div>" + (x.gtm.length ? '<div class="hint sm-ids">' + x.gtm.map((id) => "<span>" + escapeHtml(id) + "</span>").join(" ") + "</div>" : "");
     };
     // Show / Sort (storage smFilter, remembered): which sites the table lists, in what order.
     const smF = (sg && sg.smFilter) || {};
     const fShow = String(smF.show || ""), fSort = String(smF.sort || "");
-    const SM_SHOW = [["", "All sites"], ["nogtm", "No GTM"], ["multigtm", "More than one GTM"], ["noclarity", "No Clarity"], ["claritygtm", "Clarity via GTM"], ["wpold", "WordPress out of date"], ["wphidden", "WordPress version hidden"], ["phpbad", "PHP not patched / at risk"], ["slow", "Slow (over 2s)"], ["problem", "Down or a problem"], ["lowscore", "Page score under 50"], ["bigdom", "DOM over 1,500 elements"], ["unread", "Tags not read yet"]];
+    const SM_SHOW = [["", "All sites"], ["nogtm", "No GTM"], ["multigtm", "More than one GTM"], ["noga", "No GA"], ["noclarity", "No Clarity"], ["claritygtm", "Clarity via GTM"], ["wpold", "WordPress out of date"], ["wphidden", "WordPress version hidden"], ["phpbad", "PHP not patched / at risk"], ["slow", "Slow (over 2s)"], ["problem", "Down or a problem"], ["lowscore", "Page score under 50"], ["bigdom", "DOM over 1,500 elements"], ["unread", "Tags not read yet"]];
     const psiMap = (sg && sg.sitePsi) || {};
     const psiOk = (url) => (psiMap[url] && psiMap[url].score != null ? psiMap[url] : null);
     const showOk = (s) => {
-      const st = state[s.url] || {}, rec = phpMap[s.url], x = tagsOf(rec);
+      const st = state[s.url] || {}, rec = phpMap[s.url], x = tagsOf(rec, s.url);
       if (fShow && offMap[s.url]) return false; // monitoring off: nothing current to filter on
       switch (fShow) {
-        case "nogtm": return !!x && !x.gtm.length;
+        case "nogtm": return !!x && !x.gtm.length && !x.gtmHand;
         case "multigtm": return !!x && x.gtm.length > 1;
+        case "noga": return !!x && !x.ga.length && !x.gaUnknown;
         case "noclarity": return !!x && !x.clarity && (!x.gtm.length || x.gtmRead);
         case "claritygtm": return !!x && x.via === "gtm";
         case "wpold": { const k = wpJudge(rec, wpLatestV).k; return !!wpLatestV && (k === "bad" || k === "check"); }
@@ -10365,7 +10637,7 @@ function renderSiteMonitorStatus(cfg) {
         case "slow": return Number(st.lastMs) > 2000;
         case "problem": return st.up === false || !!st.lastError || !!st.blocked;
         case "lowscore": return !!psiOk(s.url) && psiOk(s.url).score < 50;
-        case "bigdom": return !!psiOk(s.url) && psiOk(s.url).dom > 1500;
+        case "bigdom": return ((psiOk(s.url) || {}).dom || (rec && rec.pageDom) || 0) > 1500;
         case "unread": return !x;
         default: return true;
       }
@@ -10374,11 +10646,12 @@ function renderSiteMonitorStatus(cfg) {
     const smCmp = fSort === "slow" ? (a, b) => num((state[b.url] || {}).lastMs) - num((state[a.url] || {}).lastMs)
       : fSort === "size" ? (a, b) => num((phpMap[b.url] || {}).pageKb) - num((phpMap[a.url] || {}).pageKb)
       : fSort === "score" ? (a, b) => (psiOk(a.url) ? psiOk(a.url).score : 101) - (psiOk(b.url) ? psiOk(b.url).score : 101)
-      : fSort === "dom" ? (a, b) => num((psiOk(b.url) || {}).dom) - num((psiOk(a.url) || {}).dom)
+      : fSort === "dom" ? (a, b) => num((psiOk(b.url) || {}).dom || (phpMap[b.url] || {}).pageDom) - num((psiOk(a.url) || {}).dom || (phpMap[a.url] || {}).pageDom)
       : fSort === "name" ? (a, b) => String(a.name || a.url).localeCompare(String(b.name || b.url)) : null;
     const shownSites = vSites.filter(showOk);
     if (smCmp) shownSites.sort(smCmp);
     const kbTxt = (kb) => (kb >= 1024 ? (kb / 1024).toFixed(1) + " MB" : kb + " KB");
+    const smCtx = new Map(); // a site's detail view (site-detail.js) reads what its row knew
     const rows = shownSites.map((s) => {
       const st = state[s.url] || { up: null, fails: 0, lastCheck: 0 };
       const isOff = !!offMap[s.url];
@@ -10386,7 +10659,7 @@ function renderSiteMonitorStatus(cfg) {
       // repeating the last known answer as if it were current.
       const stale = !isOff && !st.paused && st.lastCheck > 0 && nowTs - st.lastCheck > SM_STALE_MS;
       const was = st.up === true ? "Up" : st.up === false ? "down" : "not checked";
-      const statusText = isOff ? "\u23F9 Monitoring off for this site" : st.paused ? "\u23F8 Client paused - not checked"
+      const statusText = isOff ? "\u23F9 Monitoring off for this site" : st.paused ? "\u23F8 Client paused" + (st.lastCheck && st.up != null ? " \u00B7 " + (st.up ? "\u2705 Up" : "\uD83D\uDEA8 Down") + " " + smAgo(nowTs - st.lastCheck) : " - not checked (Check looks anyway)")
         : waitingOn(s.url) ? '<span class="sm-checking"><i class="sm-spin"></i>Checking now\u2026</span>' + (st.lastCheck ? " \u00B7 was " + was + " at " + smClock(st.lastCheck) : "")
         : stale ? '<span class="sm-stale">\u231B Not checked for ' + smGap(nowTs - st.lastCheck) + "</span> \u00B7 was " + was + " at " + smClock(st.lastCheck)
         : st.up === true ? "✅ Up" : st.up === false && Number(st.oks) > 0 ? "🟡 Answering again - confirming before it counts as back up" : st.up === false ? (st.blank || st.kind === "blank" ? "⚠️ Blank page" : st.kind === "5xx" ? "🔥 Server error" + (st.status ? " (HTTP " + st.status + ")" : "") : "🚨 Down") : "⚪ Not checked yet";
@@ -10418,6 +10691,7 @@ function renderSiteMonitorStatus(cfg) {
       // One row of the table: Site | Status | WordPress | Hosting | Last check | Check + ⋯ (the rest).
       const wz = wpJudge(pRec, wpLatestV);
       const wpTip = wz.tip;
+      smCtx.set(s.url, { site: s, st, pz, wz, rec: pRec, ps: psiMap[s.url], hzName, tags: tagsOf(pRec, s.url), isOff });
       // PHP (PHP2Shell): the version the server / Site Health / the team sheet gave, patched or not.
       const phpTip = (pz.tip ? pz.tip + " " : "") + wpNo + " " + PHP2SHELL_TIP + (pRec && pRec.at ? (pRec.src === "sheet" ? " From the team sheet, " : pRec.src === "wp" ? " From WordPress Site Health, " : " Seen in the server's reply, ") + new Date(pRec.at).toLocaleString() + "." : " Not read yet - it's noted at the next check.");
       const phpShort = !pRec ? "not read yet" : pz.k === "na" ? "no PHP" : pz.k === "hidden" ? "hidden" : pz.text.replace(/^PHP /, "").replace(/ - NOT patched \(needs (.+)\)$/, " ✗ needs $1").replace(/ - patched$/, " ✓").replace(/ - at risk \(end of life\)$/, " ✗ end of life").replace(/ - patch level not shown$/, " ?");
@@ -10425,24 +10699,31 @@ function renderSiteMonitorStatus(cfg) {
       const wpCell = isOff ? '<span class="hint">-</span>' : '<span class="sm-php ' + wz.k + '" title="' + escapeHtml(wpTip) + '">' + escapeHtml(wz.text) + "</span>" + (wz.k === "hidden" && pRec && pRec.wpErr ? '<div class="hint">' + escapeHtml(phpWhyNot(pRec)) + "</div>" : "");
       // Page: Google PageSpeed (mobile) score, then DOM size and page size on one grey line.
       const ps = psiMap[s.url], pk = pRec && pRec.pageKb;
+      const psiNow = !!(sg && sg.psiRunning && Array.isArray(sg.psiRunning.urls) && sg.psiRunning.urls[0] === s.url && Date.now() - (Number(sg.psiRunning.at) || 0) < 5 * 60000);
+      const psiOn = !!(sg && sg.psiKey);
       const psK = ps && ps.score != null ? (ps.score >= 90 ? "ok" : ps.score >= 50 ? "check" : "bad") : "hidden";
-      const psTip = ps && ps.score != null ? "Google PageSpeed score (mobile)" + (ps.lcp ? ", largest paint " + ps.lcp : "") + ", tested " + new Date(ps.at).toLocaleString() + (ps.ok === false ? ". The last test failed (" + ps.err + "); this score is from the one before." : ".") + " Each site is tested once a day."
-        : ps && ps.err ? "The PageSpeed test failed (" + ps.err + "). It tries again tomorrow." : "Not tested yet: one site is tested about every 5 minutes, each once a day.";
-      const pageLine = [ps && ps.dom ? "DOM " + Number(ps.dom).toLocaleString() : "", pk ? kbTxt(pk) : ""].filter(Boolean).join(" \u00b7 ");
-      const pageCell = isOff ? '<span class="hint">-</span>' : '<div><span class="sm-php ' + psK + '" title="' + escapeHtml(psTip) + '">' + (ps && ps.score != null ? "Score " + ps.score : ps && ps.err ? "test failed" : "not tested yet") + "</span></div>"
-        + (pageLine ? '<div class="hint" title="DOM: elements on the page (Google suggests under 1,500). Size: the HTML page alone, not its images or scripts.">' + escapeHtml(pageLine) + "</div>" : "");
+      const psTip = ps && ps.score != null ? "Google PageSpeed score (mobile)" + (ps.lcp ? ", largest paint " + ps.lcp : "") + ", tested " + new Date(ps.at).toLocaleString() + (ps.ok === false ? ". The last test failed (" + ps.err + "); this score is from the one before." : ".") + " Each site is tested again every few days (Tools › PageSpeed settings)."
+        : !psiOn ? "The PageSpeed score needs a free key: Tools › PageSpeed settings." : ps && ps.err ? "The PageSpeed test failed (" + ps.err + "). It tries again at its next turn." : "Not tested yet: a few sites are tested every 5 minutes.";
+      const domN = Number((ps && ps.dom) || (pRec && pRec.pageDom)) || 0;
+      const domTip = "Elements on the page (Google suggests under 1,500)" + (ps && ps.dom ? ", measured by PageSpeed." : ", counted from the page as served, before its scripts run.");
+      const pageLine = domN || pk ? '<div class="sm-pgline">' + (domN ? '<span class="sm-dom' + (domN > 1500 ? " big" : "") + '" title="' + escapeHtml(domTip) + '">DOM ' + domN.toLocaleString() + "</span>" : "")
+        + (pk ? '<span class="hint" title="The HTML page alone, not its images or scripts: ' + kbTxt(pk) + (pRec.pageGzKb ? ", " + kbTxt(pRec.pageGzKb) + " sent over the network (compressed, what DevTools calls transferred)" : "") + '">' + (domN ? " · " : "") + kbTxt(pk) + "</span>" : "") + "</div>" : "";
+      const pageCell = isOff ? '<span class="hint">-</span>' : (ps && ps.score != null ? (window.PcmSiteDetail ? '<div class="sm-psring" title="' + escapeHtml(psTip + " Click the site's name for LCP, CLS and TBT.") + '">' + '<span class="sm-psone" title="Mobile PageSpeed ' + ps.score + '">' + window.PcmSiteDetail.ring(ps.score, 32) + "</span>" + (ps.d && ps.d.score != null ? '<span class="sm-psone" title="Desktop PageSpeed ' + ps.d.score + '">' + window.PcmSiteDetail.ring(ps.d.score, 32) + "</span>" : "") + "</div>" : '<div><span class="sm-php ' + psK + '" title="' + escapeHtml(psTip) + '">Score ' + ps.score + "</span></div>") : psiOn ? '<div class="hint" title="' + escapeHtml(psTip) + '">' + (ps && ps.err ? "test failed" : "score soon") + "</div>" : "")
+        + (pageLine || (ps && ps.score != null ? "" : '<span class="hint" title="' + escapeHtml(psTip) + '">-</span>'));
+      const pageCellAll = psiNow && !isOff ? '<div class="sm-checking hint"><i class="sm-spin"></i>Testing speed…</div>' + pageCell : pageCell;
       const stCell = statusText + speed + (st.fails && st.up !== false ? " · " + st.fails + " failed" : "") + why + snoozeTxt;
       return '<div class="imp-row sm-tr" data-sm-row="' + u + '">'
-        + '<div class="imp-entry sm-c sm-site"><b>' + label + "</b></div>"
+        + '<div class="imp-entry sm-c sm-site" title="Click for this site\'s detail: graphs, trend and what to fix next"><b>' + label + '</b><span class="sm-open">Details ›</span></div>'
         + '<div class="sm-c sm-st" data-lbl="Status">' + stCell + "</div>"
         + '<div class="sm-c" data-lbl="WP / PHP"><div><span class="hint">WP</span> ' + wpCell + '</div><div><span class="hint">PHP</span> ' + phpCell + "</div></div>"
-        + '<div class="sm-c" data-lbl="Page">' + pageCell + "</div>"
-        + '<div class="sm-c sm-tags" data-lbl="Tags">' + (isOff ? '<span class="hint">-</span>' : tagsCell(tagsOf(pRec))) + "</div>"
+        + '<div class="sm-c" data-lbl="Page">' + pageCellAll + "</div>"
+        + '<div class="sm-c sm-tags" data-lbl="Tags">' + (isOff ? '<span class="hint">-</span>' : tagsCell(tagsOf(pRec, s.url))) + "</div>"
         + '<div class="sm-c" data-lbl="Hosting">' + hostTxt.replace(/^ · /, "") + "</div>"
         + '<div class="sm-c hint" data-lbl="Last check">' + lastCheckText + "</div>"
         + '<div class="sm-acts"><button type="button" class="sm-check" data-sm-url="' + u + '" title="Check this site right now"' + (isOff ? " disabled" : "") + ">Check</button>"
         + '<details class="sm-more"><summary title="More: monitor, read from WordPress, snooze, edit, delete">⋯</summary><div class="sm-menu">'
         + '<label class="sm-on" title="Untick to stop checking this site (and its alerts). Tick it again to start."><input type="checkbox" data-sm-on="' + u + '"' + (isOff ? "" : " checked") + " /> Monitor this site</label>"
+        + [["ga", "GA"], ["gtm", "GTM"], ["clarity", "Clarity"]].map(([k, l]) => '<label class="sm-on" title="For a site whose ' + l + ' is added outside the page (Wix, Squarespace or Shopify settings), which the check can\'t see. The row then shows ' + l + ' \u2713."><input type="checkbox" data-sm-tagset="' + u + '" data-k="' + k + '"' + (handOn(s.url, k) ? " checked" : "") + " /> " + l + " is set up (outside the page)</label>").join("")
         + '<button type="button" class="sm-check sm-wp1" data-sm-wp="' + u + '" title="Read this site\'s WordPress and PHP versions from its WordPress Site Health page (a WordPress sign-in already in Chrome - this profile or your WordPress profile)"' + (isOff ? " disabled" : "") + ">🔑 Read versions from WordPress</button>"
         + (snoozed
           ? '<button type="button" class="sm-act" data-sm-unsnooze="' + u + '" title="Alert me about this site again">Unsnooze</button>'
@@ -10468,33 +10749,117 @@ function renderSiteMonitorStatus(cfg) {
     // update waiting / up to date against the newest release.
     const wc = { bad: 0, check: 0, ok: 0, hidden: 0, na: 0 };
     for (const s of watched) wc[wpJudge(phpMap[s.url], wpLatestV).k]++;
-    const tc = { clarity: 0, noClarity: 0, gtm: 0, unread: 0 };
-    for (const s of watched) { const x = tagsOf(phpMap[s.url]); if (!x) { tc.unread++; continue; } if (x.clarity) tc.clarity++; else if (!x.gtm.length || x.gtmRead) tc.noClarity++; if (x.gtm.length) tc.gtm++; }
-    const tagBox = watched.length ? '<div class="sm-phpsum"><b>Tags</b> <span class="hint">(from each site\'s page; Clarity also inside its GTM container)</span> · ' +
-      '<span class="sm-php ok">Clarity set up on ' + tc.clarity + "</span> · " + (tc.noClarity ? '<span class="sm-php bad">missing on ' + tc.noClarity + "</span> · " : "") +
-      '<span class="sm-php ok">GTM on ' + tc.gtm + "</span>" + (tc.unread ? ' · <span class="sm-php hidden">' + tc.unread + " not read yet</span>" : "") + "</div>" : "";
-    const wpBox = watched.length ? '<div class="sm-phpsum"><b>WordPress</b> <span class="hint">' + (wpLatestV ? "newest release " + escapeHtml(wpLatestV) : "newest release not known yet") + "</span> \u00b7 " +
-      (wc.bad ? '<span class="sm-php bad">' + wc.bad + " out of date</span> \u00b7 " : "") + (wc.check ? '<span class="sm-php check">' + wc.check + (wpLatestV ? " small update waiting" : " read") + "</span> \u00b7 " : "") +
-      '<span class="sm-php ok">' + wc.ok + " up to date</span>" + (wc.hidden ? ' \u00b7 <span class="sm-php hidden">' + wc.hidden + " hidden</span>" : "") + (wc.na ? ' \u00b7 <span class="sm-php na">' + wc.na + " not WordPress</span>" : "") +
-      ' <button type="button" class="sm-act" data-sm-wpread="1" title="Read the WordPress and PHP versions of your clients\' sites (the clients on your Clients tab) from their WordPress Site Health page, with a WordPress sign-in that is already in Chrome (this profile, or your other profile through the taskbar app)">\uD83D\uDD11 Read from WordPress</button> ' +
-      // The team sheet, both ways: Copy the versions out, or bring them in (its link, or the two columns pasted).
-      '<button type="button" class="sm-act" data-sm-copy="1" title="Copy the sites shown below with their PHP version as two columns (site URL, PHP version), like the team sheet - paste into column A">\uD83D\uDCCB Copy</button> ' +
-      '<button type="button" class="sm-act" data-sm-phppaste="1" title="Bring in the PHP versions from the team sheet: its link, or the site URL and PHP version columns pasted (as Site Health shows them)">\uD83D\uDCE5 Paste from the sheet</button>' +
-      '<div class="sm-phppaste" hidden><div class="sm-sheetrow"><input type="url" data-sm-sheeturl placeholder="The sheet\'s link (docs.google.com/spreadsheets/...)" value="' + escapeHtml((sg && sg.phpSheetUrl) || "") + '" /> <button type="button" class="sm-act" data-sm-sheetget="1" title="Read the sheet straight from Google, with your Google sign-in in this Chrome profile">Update from the sheet</button></div><div class="hint">or paste the two columns:</div><textarea rows="4" placeholder="Copy the two columns (site URL, PHP version) in the sheet and paste them here, e.g.\nhttps://example.com/\t8.2.35 (Supports 64bit values)"></textarea>' +
-      '<div><button type="button" class="sm-act" data-sm-phpsave="1">Use these versions</button> <span class="hint" data-sm-phpmsg></span></div></div>' +
-      '<div class="hint sm-wpmsg" data-sm-wpmsg>' + wpStatusText(sg && sg.wpPhpRelay, sg && sg.wpPhpProgress) + "</div></div>" : "";
-    // PHP2Shell: folded away (its counts on the closed line), Copy and the sheet inside.
-    const phpBox = watched.length ? '<details class="sm-phpsum sm-phpfold"><summary><b>\uD83D\uDEE1 PHP2Shell check</b> <span class="hint">(PHP versions)</span> \u00b7 ' +
-      (cnt.bad ? '<span class="sm-php bad">' + cnt.bad + " not patched / at risk</span> \u00b7 " : "") + (cnt.check ? '<span class="sm-php check">' + cnt.check + " to check</span> \u00b7 " : "") +
-      '<span class="sm-php ok">' + cnt.ok + " patched</span>" + (cnt.na ? ' \u00b7 <span class="sm-php na">' + cnt.na + " not PHP</span>" : "") + (cnt.hidden ? ' \u00b7 <span class="sm-php hidden">' + cnt.hidden + " unknown</span>" : "") + "</summary>" +
-      '<div class="hint">Each site\'s PHP version is in the PHP column (point at it for where it came from). Copy and Paste from the sheet are on the line above.</div></details>' : "";
-    const thead = '<div class="imp-row sm-tr sm-thead"><div>Site</div><div>Status</div><div title="WordPress version, and PHP (PHP2Shell: fixed in 8.5.12, 8.4.27, 8.3.36, 8.2.35)">WP / PHP</div><div title="Google PageSpeed score (mobile), DOM size and page size">Page</div><div title="Google Tag Manager and Microsoft Clarity on the site">Tags</div><div>Hosting</div><div>Last check</div><div></div></div>';
-    const mineBox = mineCount ? '<label class="sm-mine" title="Show, count and check only the sites of the clients on your Clients tab (from your tasks). The other sites stay saved; untick to see and check them again."><input type="checkbox" data-sm-mine="1"' + (mineOnly ? " checked" : "") + " /> Only my clients (" + mineCount + ")</label>" + (mineOnly ? ' <span class="hint">' + (cfg.sites.length - mineCount) + " other site" + (cfg.sites.length - mineCount === 1 ? "" : "s") + " not shown or checked</span>" : "") : "";
-    el.innerHTML = '<div class="sm-headrow"><div class="cu-subhead">Current status</div>' + mineBox + '<button type="button" class="sm-act" data-sm-hostfind="1" title="Look up who hosts each site and the link to its control panel, from each domain\'s DNS (nothing is asked of the sites themselves). Links you set by hand are kept.">\uD83D\uDDA5 Find hosting</button><button type="button" class="sm-act" data-sm-add="1">+ Add site</button></div>' + banner + wpBox + tagBox + phpBox + '<div id="smBlankLine" class="hint"></div><div id="smAddSlot"></div>' +
+    // One summary line: small counts per check; a count filters the table to those sites.
+    const tc = { ga: 0, gaQ: 0, noGa: 0, gtm: 0, noGtm: 0, multi: 0, clarity: 0, noClarity: 0, unread: 0 };
+    for (const s of watched) {
+      const x = tagsOf(phpMap[s.url], s.url);
+      if (!x) { tc.unread++; continue; }
+      if (x.ga.length) tc.ga++; else if (x.gaUnknown) tc.gaQ++; else tc.noGa++;
+      if (x.gtm.length || x.gtmHand) tc.gtm++; else tc.noGtm++;
+      if (x.gtm.length > 1) tc.multi++;
+      if (x.clarity) tc.clarity++; else if (!x.gtm.length || x.gtmRead) tc.noClarity++;
+    }
+    const chip = (k, n, text, f, tip) => (n ? '<button type="button" class="sm-chip ' + k + (f && f === fShow ? " on" : "") + '"' + (f ? ' data-sm-f="' + f + '"' : " disabled") + ' title="' + escapeHtml(tip) + '">' + n + " " + escapeHtml(text) + "</button>" : "");
+    // One small dropdown per check: its button says only what needs a look (or ✓ all fine);
+    // opening it lists every count, and a count filters the table as before.
+    const grp = (name, tip, chips) => {
+      const c = chips.filter(Boolean);
+      if (!c.length) return "";
+      const probs = c.filter((h) => / (bad|check)[" ]/.test(h)), n = probs.reduce((a, h) => a + (Number((h.match(/>(\d+) /) || [])[1]) || 0), 0);
+      const k = c.some((h) => / bad[" ]/.test(h)) ? "bad" : probs.length ? "check" : c.some((h) => / ok[" ]/.test(h)) ? "ok" : "hidden";
+      const open = c.some((h) => / on"/.test(h));
+      return '<details class="sm-gd"' + (open ? " open" : "") + '><summary class="sm-gd-s ' + k + '" title="' + escapeHtml(tip) + '"><b>' + (name || "Not read") + "</b> " + (n ? n + " to look at" : k === "ok" ? "\u2713 all fine" : c.length + "") + ' <i>\u25BE</i></summary><div class="sm-gd-m">' + c.join("") + "</div></details>";
+    };
+    const summary = watched.length ? '<div class="sm-sum">'
+      + grp("WordPress", wpLatestV ? "Newest WordPress release: " + wpLatestV : "Newest WordPress release not known yet", [
+        chip("ok", wc.ok, "up to date", "", "On the newest release"), chip("check", wc.check, "update waiting", "wpold", "A small update is waiting - show these sites"),
+        chip("bad", wc.bad, "out of date", "wpold", "Show the sites on an old WordPress"), chip("hidden", wc.hidden, "hidden", "wphidden", "The site hides its version: Tools › Read from WordPress fills it in")])
+      + grp("PHP", "PHP2Shell: PHP is patched from 8.5.12, 8.4.27, 8.3.36 and 8.2.35", [
+        chip("ok", cnt.ok, "patched", "", "Patched against PHP2Shell"), chip("bad", cnt.bad, "at risk", "phpbad", "Not patched or end of life - show these sites"),
+        chip("check", cnt.check, "to check", "phpbad", "Patch level not shown"), chip("hidden", cnt.hidden, "unknown", "", "PHP version not read yet")])
+      + grp("GA", "Google Analytics (GA4) - in the page or inside its GTM container", [chip("ok", tc.ga, "set up", "", "GA4 found"), chip("bad", tc.noGa, "missing", "noga", "Show the sites without GA4"), chip("hidden", tc.gaQ, "not known yet", "", "Being read from the GTM container, or set up in a site builder's own settings")])
+      + grp("GTM", "Google Tag Manager", [chip("ok", tc.gtm, "set up", "", "GTM found"), chip("check", tc.multi, "more than one", "multigtm", "Show the sites loading more than one GTM container"), chip("bad", tc.noGtm, "missing", "nogtm", "Show the sites without GTM")])
+      + grp("Clarity", "Microsoft Clarity - in the page or inside its GTM container", [chip("ok", tc.clarity, "set up", "", "Clarity found"), chip("bad", tc.noClarity, "missing", "noclarity", "Show the sites without Clarity")])
+      + (tc.unread ? grp("Pages", "Sites whose page couldn't be read yet", [chip("hidden", tc.unread, "not read yet", "unread", "The page couldn't be read yet - show these sites")]) : "")
+      + "</div>" : "";
+    const psiKeySet = !!(sg && sg.psiKey);
+    const gdAccs = (sg && Array.isArray(sg.gdataAccounts) ? sg.gdataAccounts : sg && sg.gdataAuth && sg.gdataAuth.email ? [sg.gdataAuth] : []).map((a) => a.email).filter(Boolean);
+    const gdHub = (sg && sg.gdataHub) || null;
+    const gdEmail = gdHub && gdHub.ok ? "hub" : gdAccs.join(", ");
+    const gdCounts = ((sg && sg.gdataProps && sg.gdataProps.accounts) || []).reduce((m, a) => { m[a.email] = a; return m; }, {});
+    // Tools: everything that isn't looked at every day, in one menu.
+    const tools = '<details class="sm-more sm-tools"><summary title="Read from WordPress, Copy, Paste from the sheet, Find hosting, PageSpeed key">Tools ⋯</summary><div class="sm-menu">'
+      + '<button type="button" class="sm-act" data-sm-wpread="1" title="Read the WordPress and PHP versions of your clients\' sites from their WordPress Site Health page, with a WordPress sign-in already in Chrome (this profile, or your other profile through the taskbar app)">🔑 Read from WordPress</button>'
+      + '<button type="button" class="sm-act" data-sm-copy="1" title="Copy the sites with their PHP version as two columns (site URL, PHP version), like the team sheet">📋 Copy</button>'
+      + '<button type="button" class="sm-act" data-sm-phppaste="1" title="Bring in the PHP versions from the team sheet: its link, or the two columns pasted">📥 Paste from the sheet</button>'
+      + '<button type="button" class="sm-act" data-sm-hostfind="1" title="Look up who hosts each site and its control panel, from each domain\'s DNS (nothing is asked of the sites). Links you set by hand are kept.">🖥 Find hosting</button>'
+      + '<button type="button" class="sm-act" data-sm-psikey="1" title="Google only runs the PageSpeed test with a free API key">⚡ PageSpeed settings' + (psiKeySet ? " ✓" : "") + "</button>"
+      + '<button type="button" class="sm-act" data-sm-gdata="1" title="Connect Google Search Console and Analytics 4 to see each client\'s clicks, rankings and visits on its page">📈 Google data' + (gdEmail ? " ✓" : "") + "</button></div></details>";
+    const pastePanel = '<div class="sm-phppaste sm-panel" hidden><div class="sm-sheetrow"><input type="url" data-sm-sheeturl placeholder="The sheet\'s link (docs.google.com/spreadsheets/...)" value="' + escapeHtml((sg && sg.phpSheetUrl) || "") + '" /> <button type="button" class="sm-act" data-sm-sheetget="1" title="Read the sheet straight from Google, with your Google sign-in in this Chrome profile">Update from the sheet</button></div><textarea rows="3" placeholder="or paste the two columns (site URL, PHP version), e.g.\nhttps://example.com/\t8.2.35"></textarea>'
+      + '<div><button type="button" class="sm-act" data-sm-phpsave="1">Use these versions</button> <span class="hint" data-sm-phpmsg></span></div></div>';
+    // Tools › Google data: connect Search Console + GA4 once (read-only); each client's page then shows its data.
+    const gdHubLine = '<div class="sm-gdhub ' + (gdHub && gdHub.ok ? "ok" : "") + '">' + (gdHub && gdHub.ok
+        ? "✓ <b>The team hub reads it</b> as " + escapeHtml(gdHub.account || "its owner") + " - " + gdHub.gsc.length + " Search Console · " + gdHub.ga.length + " Analytics properties. Nobody needs to sign in to Google." + (gdHub.gsc.length + gdHub.ga.length ? "" : " <b>It sees no client properties</b>: add a data hub run by the Google account that has them (Admin › Team hub › Google data hubs).")
+        : "<b>Team hub:</b> " + (gdHub ? "can't read Google data yet (" + escapeHtml(gdHub.error || "") + "). Whoever runs the hub updates it once (Admin › Team hub › How to update the hub) - then everyone gets it with no Google sign-in." : "not checked yet."))
+      + ' <button type="button" class="sm-act" data-sm-gdre="1">Check again</button></div>';
+    const gdPanel = '<div class="sm-gdpanel sm-panel"' + (smGdPanelOpen ? "" : " hidden") + '>' + gdHubLine + '<div class="hint" style="margin:8px 0 4px">Or use your own Google account (only needed if the hub can\'t):</div><div class="sm-sheetrow">'
+      + (gdAccs.length ? '<div class="sm-gdaccs">' + gdAccs.map((e) => '<div class="sm-gdacc"><b>' + escapeHtml(e) + '</b><span class="hint">' + (gdCounts[e] ? gdCounts[e].gsc + " Search Console · " + gdCounts[e].ga + " Analytics" : "properties not read yet") + '</span><button type="button" class="sm-act" data-sm-gdoff="' + escapeHtml(e) + '">Disconnect</button></div>').join("") + "</div>"
+          + '<button type="button" class="sm-act" data-sm-gdon="1">+ Connect another Google account</button>'
+        : '<button type="button" class="sm-act" data-sm-gdon="1">Connect Google (Search Console + Analytics)</button>') + ' <span class="hint" data-sm-gdmsg></span></div>'
+      + '<div class="hint">Read-only. Connect every Google account that has some of your clients\' Search Console or Analytics (each client uses the account that can see its property). Each client\'s site is matched to its properties by its domain (change it on the client\'s page). Click a client\'s name to see its Google clicks, rankings and visits for the last 28 days against the 28 before; it\'s read again every 12 hours.</div>'
+      + '<details class="sm-gdsetup"><summary>Google says the app isn\x27t allowed for you?</summary><div class="hint">The Google data connection is in testing, so each Google account has to be added once as a test user: ask the person who manages the extension\x27s Google Cloud project to add your Google account under Google Auth Platform › Audience › Test users. Google shows a "Google hasn\x27t verified this app" screen the first time: press Continue - it only reads your Search Console and Analytics.</div></details></div>';
+    const psiC = (sg && sg.psiCfg) || {}, psiDays = Number(psiC.days) || 3, psiRuns = Number(psiC.runs) || 1;
+    const keyPanel = '<div class="sm-psipanel sm-panel"' + (smPsiPanelOpen ? "" : " hidden") + '><div class="sm-sheetrow"><input type="password" data-sm-psikeyin autocomplete="off" placeholder="' + (psiKeySet ? "A key is saved - paste a new one to replace it" : "PageSpeed Insights API key") + '" /> <button type="button" class="sm-act" data-sm-psisave="1">Save</button>' + (psiKeySet ? ' <button type="button" class="sm-act" data-sm-psidel="1">Remove</button>' : "") + "</div>"
+      + '<div class="hint">Free from Google Cloud: enable "PageSpeed Insights API", then Credentials › Create API key.</div>'
+      + '<div class="sm-sheetrow sm-psicfg">Test every site again every <select data-sm-psidays>' + [1, 2, 3, 5, 7, 14, 30].map((n) => '<option value="' + n + '"' + (n === psiDays ? " selected" : "") + ">" + n + " day" + (n === 1 ? "" : "s") + "</option>").join("") + "</select>"
+      + ' and average <select data-sm-psiruns>' + [1, 2, 3, 4, 5].map((n) => '<option value="' + n + '"' + (n === psiRuns ? " selected" : "") + ">" + n + " run" + (n === 1 ? "" : "s") + "</option>").join("") + "</select> into one score (mobile and desktop)</div>"
+      + '<div class="hint">Tests run by themselves in the background, a few sites every 5 minutes (at most 8 requests per 5 minutes, far inside Google\'s free limit); results stay shown until the next test. More runs give a steadier score but take longer to cover every site. A client can have its own number of runs on its page (click its name). Test now on a site\'s page re-tests it straight away.</div></div>';
+    const wpNote = wpStatusText(sg && sg.wpPhpRelay, sg && sg.wpPhpProgress);
+    const thead = '<div class="imp-row sm-tr sm-thead"><div>Site</div><div>Status</div><div title="WordPress version, and PHP (PHP2Shell: patched from 8.5.12, 8.4.27, 8.3.36, 8.2.35)">WP / PHP</div><div title="Google PageSpeed score (mobile, needs a key: Tools › PageSpeed key), DOM size and page size">Page</div><div title="Google Analytics, Google Tag Manager and Microsoft Clarity">Tags</div><div>Hosting</div><div>Last check</div><div></div></div>';
+    const mineBox = mineCount || (sg && sg.smMineOnly) ? '<label class="sm-mine" title="Show, count and check only the sites of the clients on your Clients tab (from your tasks). The other ' + (cfg.sites.length - mineCount) + ' sites stay saved; untick to see and check them again."><input type="checkbox" data-sm-mine="1"' + (mineOnly ? " checked" : "") + " /> Only my clients (" + mineCount + ")</label>" : "";
+    el.innerHTML = '<div class="sm-headrow"><div class="cu-subhead">Current status</div>' + mineBox + '<button type="button" class="sm-act" data-sm-add="1">+ Add site</button></div>' + banner + summary + '<div id="smBlankLine" class="hint"></div><div id="smAddSlot"></div>' +
       '<div class="sm-filter"><label>Show <select data-sm-show>' + SM_SHOW.map(([v, l]) => '<option value="' + v + '"' + (v === fShow ? " selected" : "") + ">" + escapeHtml(l) + "</option>").join("") + "</select></label>" +
       '<label>Sort <select data-sm-sort>' + [["", "As listed"], ["name", "Name"], ["slow", "Slowest first"], ["size", "Largest page first"], ["score", "Lowest page score"], ["dom", "Largest DOM"]].map(([v, l]) => '<option value="' + v + '"' + (v === fSort ? " selected" : "") + ">" + l + "</option>").join("") + "</select></label>" +
-      '<span class="hint">' + shownSites.length + " of " + vSites.length + " sites" + (fShow ? ' <button type="button" class="sm-act" data-sm-fclear="1">Show all</button>' : "") + "</span></div>" +
+      '<span class="hint">' + shownSites.length + " of " + vSites.length + " sites" + (fShow ? ' <button type="button" class="sm-act" data-sm-fclear="1">Show all</button>' : "") + "</span>" + tools + "</div>" +
+      pastePanel + keyPanel + gdPanel + '<div class="hint sm-wpmsg" data-sm-wpmsg' + (wpNote ? "" : " hidden") + ">" + wpNote + "</div>" +
       '<div class="sm-table">' + thead + (rows || '<div class="hint" style="padding:12px">No site matches this filter.</div>') + "</div>";
+    // A site's name opens its detail view (its address still opens the site).
+    el.querySelectorAll("[data-sm-row]").forEach((r) => {
+      const cell = r.querySelector(".sm-site"), url = r.getAttribute("data-sm-row");
+      if (!cell) return;
+      cell.onclick = (e) => {
+        if (e.target.closest("a") || !window.PcmSiteDetail) return;
+        const c = smCtx.get(url);
+        if (c) window.PcmSiteDetail.open({ ...c, onCheck: () => { const b = r.querySelector(".sm-check[data-sm-url]"); if (b) b.click(); } });
+      };
+    });
+    el.querySelectorAll("[data-sm-f]").forEach((b) => { b.onclick = () => fSave({ show: b.dataset.smF === fShow ? "" : b.dataset.smF }); });
+    // A Tags mark says why when clicked (a hover tooltip is lost when the table redraws during a check).
+    el.querySelectorAll(".sm-tag[title]").forEach((m) => { m.onclick = () => { const cell = m.closest(".sm-c"); const old = cell.querySelector(".sm-tagnote"); if (old && old.dataset.for === m.textContent) { old.remove(); return; } if (old) old.remove(); const n = document.createElement("div"); n.className = "hint sm-tagnote"; n.dataset.for = m.textContent; n.textContent = m.title; cell.appendChild(n); }; });
+    const pk = el.querySelector("[data-sm-psikey]"), kp = el.querySelector(".sm-psipanel");
+    if (pk && kp) pk.onclick = () => { kp.hidden = !kp.hidden; smPsiPanelOpen = !kp.hidden; pk.closest("details").open = false; if (!kp.hidden) kp.querySelector("input").focus(); };
+    const gdb = el.querySelector("[data-sm-gdata]"), gdp = el.querySelector(".sm-gdpanel");
+    if (gdb && gdp) gdb.onclick = () => { gdp.hidden = !gdp.hidden; smGdPanelOpen = !gdp.hidden; gdb.closest("details").open = false; };
+    const gdMsg = (t) => { const m = el.querySelector("[data-sm-gdmsg]"); if (m) m.textContent = t; };
+    const gdOn = el.querySelector("[data-sm-gdon]"), gdRe = el.querySelector("[data-sm-gdre]");
+    const gdConnect = async (b, type) => {
+      b.disabled = true; gdMsg(type === "GDATA_CONNECT" ? "Opening Google sign-in…" : "Looking for your properties…");
+      const r = type === "GDATA_CONNECT" ? await send({ type }, 300000).catch(() => null) : await send({ type: "GDATA_PROPS", force: true, urls: [] }, 120000).catch(() => null);
+      b.disabled = false;
+      if (!r || !r.ok) { gdMsg((r && (r.error || r.err)) || "Couldn't connect."); return; }
+      gdMsg((r.source === "hub" ? "Team hub: " : "") + "found " + (r.gsc && r.gsc.length != null ? r.gsc.length : r.gsc) + " Search Console and " + (r.ga && r.ga.length != null ? r.ga.length : r.ga) + " Analytics properties" + (r.errs && r.errs.length ? " · " + r.errs.join(" · ") : "") + ".");
+    };
+    if (gdOn) gdOn.onclick = () => gdConnect(gdOn, "GDATA_CONNECT");
+    if (gdRe) gdRe.onclick = () => gdConnect(gdRe, "GDATA_PROPS");
+    el.querySelectorAll("[data-sm-gdoff]").forEach((b) => { b.onclick = async () => { b.disabled = true; await send({ type: "GDATA_DISCONNECT", email: b.dataset.smGdoff }).catch(() => {}); renderSiteMonitorStatus(cfg); }; });
+    // PageSpeed settings for every site (a site's own runs are set on its page).
+    const pdays = el.querySelector("[data-sm-psidays]"), pruns = el.querySelector("[data-sm-psiruns]");
+    const psiCfgSave = async () => { const c = (await chrome.storage.local.get("psiCfg")).psiCfg || {}; await chrome.storage.local.set({ psiCfg: { ...c, days: Number(pdays.value) || 3, runs: Number(pruns.value) || 1 } }); };
+    if (pdays) pdays.onchange = psiCfgSave;
+    if (pruns) pruns.onchange = psiCfgSave;
+    const ksave = el.querySelector("[data-sm-psisave]"), kdel = el.querySelector("[data-sm-psidel]");
+    if (ksave) ksave.onclick = async () => { const v = kp.querySelector("input").value.trim(); if (!/^[A-Za-z0-9_-]{20,60}$/.test(v)) { kp.querySelector(".hint").textContent = "That doesn't look like an API key (it starts with AIza...)."; return; } await chrome.storage.local.set({ psiKey: v, psiPauseUntil: 0 }); send({ type: "PSI_SCAN_NOW" }).catch(() => {}); renderSiteMonitorStatus(cfg); };
+    if (kdel) kdel.onclick = async () => { await chrome.storage.local.remove("psiKey"); renderSiteMonitorStatus(cfg); };
     const fSave = async (patch) => { await chrome.storage.local.set({ smFilter: { show: fShow, sort: fSort, ...patch } }).catch(() => {}); renderSiteMonitorStatus(cfg); };
     const fsh = el.querySelector("[data-sm-show]"), fso = el.querySelector("[data-sm-sort]"), fcl = el.querySelector("[data-sm-fclear]");
     if (fsh) fsh.onchange = () => fSave({ show: fsh.value });
@@ -10503,7 +10868,7 @@ function renderSiteMonitorStatus(cfg) {
     const mb = el.querySelector("[data-sm-mine]");
     if (mb) mb.onchange = async () => { await chrome.storage.local.set({ smMineOnly: mb.checked }); renderSiteMonitorStatus(cfg); };
     const pp = el.querySelector("[data-sm-phppaste]"), pbox = el.querySelector(".sm-phppaste");
-    if (pp && pbox) pp.onclick = () => { pbox.hidden = !pbox.hidden; if (!pbox.hidden) pbox.querySelector("textarea").focus(); };
+    if (pp && pbox) pp.onclick = () => { pbox.hidden = !pbox.hidden; pp.closest("details").open = false; if (!pbox.hidden) pbox.querySelector("textarea").focus(); };
     const useSheet = async (text) => {
       const msg = el.querySelector("[data-sm-phpmsg]");
       const { found, unknown } = phpSheetParse(text, cfg.sites);
@@ -10530,15 +10895,16 @@ function renderSiteMonitorStatus(cfg) {
     };
     const wpBtn = el.querySelector("[data-sm-wpread]"), wpMsg = el.querySelector("[data-sm-wpmsg]");
     const wpStart = async (urls, scope, local, btn) => {
+      wpMsg.hidden = false;
       wpMsg.textContent = (local ? "Reading " + scope + " with this profile's WordPress sign-ins\u2026" : "Asking your WordPress profile to read " + scope + "\u2026");
       const r = await send({ type: "WP_PHP_START", urls, local });
-      if (btn) { btn.textContent = r && r.ok ? "\u23F3" : "\uD83D\uDD11"; btn.title = r && r.ok ? "Reading - its line updates when the answer comes" : "Couldn't start - see the note in the PHP2Shell box above"; }
+      if (btn) { btn.textContent = r && r.ok ? "\u23F3" : "\uD83D\uDD11"; btn.title = r && r.ok ? "Reading - its line updates when the answer comes" : "Couldn't start - see the note above the table"; }
       if (r && r.ok) { wpMsg.textContent = r.relay ? "Sent " + scope + " to your WordPress profile - it picks it up within a minute." : "Reading " + scope + "\u2026"; wpRelayPoll(); return; }
       const why = (r && r.why) || "";
       wpMsg.innerHTML = escapeHtml(why === "noapp" ? "The ClickUp Tracker taskbar app isn't running - start it (it's the go-between for your other Chrome profile)."
         : why === "oldapp" ? "Your ClickUp Tracker app is older than this - install version 0.4.2 or newer."
         : why === "selfhelper" ? "This profile is ticked as the WordPress helper - press Read from WordPress in your other profile."
-        : why === "nohelper" ? "No WordPress profile has checked in. In the Chrome profile signed in to the clients' WordPress: install this extension, and tick Site monitor \u203A \"This profile is signed in to the clients' WordPress\"."
+        : why === "nohelper" ? "No WordPress profile has checked in. In the Chrome profile signed in to the clients' WordPress: install this extension, open Site monitor \u203A Helper profile, tick Use this Chrome profile as a helper and This profile is signed in to the clients' WordPress."
         : "Couldn't start: " + ((r && r.error) || "no answer")) + ' <button type="button" class="sm-act" data-sm-wplocal="1">Read with this profile\'s sign-ins</button>';
       const lb = wpMsg.querySelector("[data-sm-wplocal]");
       if (lb) lb.onclick = () => wpStart(urls, scope, true, btn);
@@ -10603,7 +10969,7 @@ async function smPaintBlankLine(sites) {
   // Part of every automatic check (every 5 minutes), nothing to switch on. It
   // can only be missing if the extension wasn't reloaded after the update, or
   // its site access was limited in chrome://extensions - say how to fix that.
-  if (!missing.length) { line.textContent = "🔎 Each automatic check also looks at the page: a site that answers but shows an empty or error page is marked ⚠️ Blank page."; return; }
+  if (!missing.length) { line.style.margin = "0"; return; } // all fine: nothing to say
   line.textContent = "🔎 The blank-page check can't read " + (missing.length === sites.length ? "these sites" : missing.length + " of these sites") +
     " yet, so an empty page would still look Up. Reload the extension (chrome://extensions › ⟳), or set its Site access to \"On all sites\" in Details.";
 }
@@ -10679,6 +11045,17 @@ async function getSiteMonitorConfigOpt() {
 if ($("siteMonitorStatus")) $("siteMonitorStatus").addEventListener("change", async (e) => {
   // Monitor tick: this one site on or off (kept apart from the site list, so
   // editing the list as text never loses it).
+  const tagTick = e.target && e.target.closest && e.target.closest("[data-sm-tagset]");
+  if (tagTick) {
+    const g = await chrome.storage.local.get("siteTagManual").catch(() => ({}));
+    const map = { ...((g && g.siteTagManual) || {}) };
+    const url = tagTick.dataset.smTagset, k = tagTick.dataset.k;
+    const rec = { ...(map[url] || {}) };
+    if (tagTick.checked) rec[k] = Date.now(); else delete rec[k];
+    if (Object.keys(rec).length) map[url] = rec; else delete map[url];
+    await chrome.storage.local.set({ siteTagManual: map });
+    return; // the storage listener redraws
+  }
   const on = e.target && e.target.closest && e.target.closest("[data-sm-on]");
   if (on) {
     const g = await chrome.storage.local.get("siteOff").catch(() => ({}));
@@ -10931,7 +11308,7 @@ setInterval(() => { if (!document.hidden) syncClickupRunning(); }, 60000);
 // ---------- Sidebar navigation (tabbed layout) ----------
 // One section visible at a time; the choice is remembered (per browser) and can
 // be deep-linked with #dashboard / #clickup / #agent / #sites / #general.
-const OPT_TABS = ["dashboard", "insights", "clickup", "agent", "sites", "hub", "reminders", "files", "bulk", "admin", "general", "automation"];
+const OPT_TABS = ["dashboard", "insights", "slack", "clickup", "agent", "sites", "hub", "guide", "reminders", "files", "bulk", "admin", "general", "automation"];
 function showOptTab(name) {
   // "insights/plan" = the Insights tab on its Plan sub-tab (links, notifications).
   const subM = /^insights\/(health|plan|performance|descriptions)$/.exec(String(name || ""));
@@ -10943,6 +11320,7 @@ function showOptTab(name) {
   document.querySelectorAll(".panel[data-panel]").forEach((p) => p.classList.toggle("on", p.dataset.panel === name));
   try { renderDashStrip(); } catch (e) {}
   if (name === "insights") { try { renderInsights(); } catch (e) {} }
+  if (name === "slack") { try { renderSlackTab(); } catch (e) {} }
   try { localStorage.setItem("optTab", name); } catch (e) {}
   const want = "#" + name + (name === "insights" && insSub !== "health" ? "/" + insSub : "");
   if (location.hash !== want) history.replaceState(null, "", want);
@@ -11395,7 +11773,7 @@ const ADMIN_FILES = [
   "manifest.json", "background.js", "popup.html", "popup.js", "options.html", "options.js", "phone-timer.js",
   "offscreen.html", "offscreen.js", "update.html", "update.js", "auto-update.html", "auto-update.js", "wrapup.html", "wrapup.js",
   "notify-menu.js", "export-tasks.js", "lib-zip.js", "lib-unzip.js", "lib-automation.js",
-  "lib-availability.js", "lib-clickup.js", "lib-crypto.js", "lib-tidy.js", "lib-drive.js", "lib-syncall.js", "lib-drivemove.js", "lib-descfmt.js", "desc-check.js", "plain-timer.js", "find-many.js", "week-fold.js", "ar-status.js", "automation.js", "lib-rules.js", "nav-badges.js", "simple-view.js", "task-panel.js", "lib-updater.js", "offscreen-updater.js", "celebrate.js", "celebrate.html", "celebrate-window.js", "fx.js", "pcm-help.js", "tracker.html", "tracker.js", "bulk-edit.js", "pcm-search.js", "lib-taskfiles.js", "task-files.js", "reminders.js", "hub.js", "task-sort.js", "breakdown.js", "calendar.js", "notices.js", "insights-plus.js", "header-ui.js", "weather.js", "paused-clients.js", "client-notices.js", "lib-dailyupdate.js", "undo.js", "share.html", "plan-apply.js", "task-notes.js", "task-dupes.js", "rollup-help.js", "md-notes.js", "mention.js", "long-list.js", "local-tasks.js", "ui-extras.js", "assignees.js", "add-time.js", "team-hub.gs", "vendor/pdf.min.js", "vendor/pdf.worker.min.js", "vendor/pdfjs-LICENSE.txt",
+  "lib-availability.js", "lib-clickup.js", "lib-crypto.js", "lib-tidy.js", "lib-drive.js", "lib-syncall.js", "lib-drivemove.js", "lib-descfmt.js", "desc-check.js", "plain-timer.js", "find-many.js", "week-fold.js", "ar-status.js", "automation.js", "lib-rules.js", "nav-badges.js", "simple-view.js", "task-panel.js", "lib-updater.js", "offscreen-updater.js", "celebrate.js", "celebrate.html", "celebrate-window.js", "fx.js", "pcm-help.js", "tracker.html", "tracker.js", "bulk-edit.js", "pcm-search.js", "lib-taskfiles.js", "task-files.js", "reminders.js", "hub.js", "task-sort.js", "breakdown.js", "calendar.js", "notices.js", "insights-plus.js", "header-ui.js", "weather.js", "paused-clients.js", "client-notices.js", "lib-dailyupdate.js", "undo.js", "ui-theme.js", "studio.js", "guide-demo.js", "slack-ui.js", "site-detail.js", "lib-gdata.js", "report-export.js", "theme-studio.css", "share.html", "plan-apply.js", "task-notes.js", "task-dupes.js", "rollup-help.js", "md-notes.js", "mention.js", "long-list.js", "local-tasks.js", "ui-extras.js", "assignees.js", "add-time.js", "team-hub.gs", "vendor/pdf.min.js", "vendor/docx.iife.js", "vendor/docx-LICENSE.txt", "vendor/pdf.worker.min.js", "vendor/pdfjs-LICENSE.txt",
   "icons/icon16.png", "icons/icon48.png", "icons/icon128.png", "icons/celebrate.png", "icons/sad.png",
   "sounds/notify.wav", "sounds/danger.mp3", "sounds/winner.wav",
   "README.md", "CHANGELOG.md",
@@ -12110,7 +12488,7 @@ if ($("admCalCard")) {
 // Where the timer shows (Floating window / Taskbar / Both / Neither) is picked once
 // and kept; the Dashboard card invites people to try the taskbar until they pick.
 const DESK_REL = "https://github.com/Dipson-bot/personal-clickup-manager/releases";
-const DESK_TAG = "desktop-v0.5.0";
+const DESK_TAG = "desktop-v0.5.1";
 let deskOs = "";
 async function deskPlatform() {
   if (deskOs) return deskOs;
@@ -12119,7 +12497,7 @@ async function deskPlatform() {
 }
 async function deskDownload() {
   const os = await deskPlatform();
-  const file = os === "win" ? "ClickUp-Tracker-Setup.exe" : os === "mac-arm" ? "ClickUp-Tracker-arm64.dmg" : os === "mac-x64" ? "ClickUp-Tracker-x64.dmg" : "";
+  const file = os === "win" ? "ClickUp-Tracker-Setup.exe" : os === "mac-arm" ? "ClickUp-Tracker-arm64.dmg" : os === "mac-x64" ? "ClickUp-Tracker-x64.dmg" : os === "linux" ? "ClickUp-Tracker-linux.AppImage" : "";
   if (!file) { chrome.tabs.create({ url: DESK_REL }).catch(() => {}); return ""; }
   // Is it published yet? (GitHub's API: one read, only when the button is pressed.)
   try {
@@ -12140,6 +12518,10 @@ async function deskDownload() {
   try { await chrome.downloads.download({ url, filename: file, conflictAction: "overwrite", saveAs: false }); }
   catch (e) { return "Couldn't start the download (" + (e && e.message ? e.message : e) + "). Get it from " + DESK_REL + "/tag/" + DESK_TAG + " instead."; }
   deskWatch();
+  if (os === "linux") return "Downloading\u2026 Then, once:\n" +
+    "1. Make it runnable: right-click ClickUp-Tracker-linux.AppImage \u203A Properties \u203A Permissions \u203A Allow executing as a program (or in a terminal:  chmod +x ~/Downloads/ClickUp-Tracker-linux.AppImage ).\n" +
+    "2. Double-click it. It shows as a small floating timer strip (Linux has no taskbar spot for it) and signs in by itself within a minute.\n" +
+    "If it won't open on a newer Ubuntu / Mint, install libfuse2 (sudo apt install libfuse2). On Fedora, the .rpm from the release page installs like any other app. Fedora's GNOME hides tray icons unless the AppIndicator extension is on.";
   return os === "win"
     ? "Downloading… Open ClickUp-Tracker-Setup.exe when it finishes. If Windows says \"Windows protected your PC\", click More info › Run anyway (the app isn't from the Microsoft Store). It then appears on your taskbar and signs in by itself within a minute."
     // The app isn't notarized by Apple (that needs a paid Apple Developer account),
@@ -12170,13 +12552,13 @@ async function deskRefresh() {
   if (el) {
     el.classList.remove("desk-note", "warn"); // a status line, not a Get result
     const os = await deskPlatform();
-    const where = os.startsWith("mac") ? "menu bar" : "taskbar";
+    const where = os.startsWith("mac") ? "menu bar" : os === "linux" ? "small floating strip" : "taskbar";
     el.innerHTML = app.running
       ? '<span class="ok">✓ Taskbar timer is running</span>' + (app.version ? " (v" + escapeHtml(app.version) + ")" : "") + (app.signedIn ? (app.user ? " · signed in as " + escapeHtml(app.user) : " · signed in") : " · signing in…") +
         (app.shown === false ? " · hidden, because the timer is set to show in " + ($("timerPlace") && $("timerPlace").value === "off" ? "neither place" : "the floating window") + " - pick Taskbar or Both to see it." : ". Hide it with its own tray menu, or choose here.")
       : app.seenAt
         ? "The taskbar timer isn't running right now - open ClickUp Tracker from the Start menu" + (os.startsWith("mac") ? " / Applications" : "") + "."
-        : (os === "win" || os.startsWith("mac")) ? "The ClickUp Tracker app puts the timer in the " + where + ", with Stop and Done. One download; it starts with your computer and signs in by itself." : "The taskbar timer is for Windows and Mac.";
+        : (os === "win" || os.startsWith("mac") || os === "linux") ? "The ClickUp Tracker app puts the timer in the " + where + ", with Stop and Done. One download; it starts with your computer and signs in by itself." : "The taskbar timer is for Windows, Mac and Linux.";
   }
   // An older app than the newest one: say so and make the button the update.
   const newest = DESK_TAG.replace(/^desktop-v/, "");
@@ -12198,7 +12580,7 @@ async function renderDeskTry() {
   const g = await chrome.storage.local.get(["settings", "deskTryUntil", "deskApp"]).catch(() => ({}));
   const st = (g && g.settings) || {};
   const da = (g && g.deskApp) || {};
-  const show = (os === "win" || os.startsWith("mac")) && !st.timerPlaceChosen && !da.seenAt && !(Number(g.deskTryUntil) > Date.now());
+  const show = (os === "win" || os.startsWith("mac") || os === "linux") && !st.timerPlaceChosen && !da.seenAt && !(Number(g.deskTryUntil) > Date.now());
   card.style.display = show ? "" : "none";
   if (!show) return;
   card.querySelectorAll("[data-desk-where]").forEach((x) => { x.textContent = os.startsWith("mac") ? "menu bar" : "taskbar"; });

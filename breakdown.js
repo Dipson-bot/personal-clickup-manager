@@ -57,9 +57,9 @@
   function build(data, kind) {
     const fmt = data.fmt || ((ms) => Math.round(num(ms) / 60000) + "m");
     curFmt = fmt;
-    const due = (data.tasks || []).map((t) => ({ name: t.name, url: t.url, est: num(t.estimateMs), spent: num(t.spentMs), kind: "due" }));
-    const cfg = (data.cfg || []).map((t) => ({ name: t.name, url: t.url, est: num(t.dayEstimateMs || t.estimateMs), spent: num(t.spentMs), kind: "cfg" }));
-    const other = (data.other || []).map((t) => ({ name: t.name, url: t.url, est: 0, spent: num(t.spentMs), kind: "other" }));
+    const due = (data.tasks || []).map((t) => ({ id: t.id, name: t.name, url: t.url, est: num(t.estimateMs), spent: num(t.spentMs), kind: "due" }));
+    const cfg = (data.cfg || []).map((t) => ({ id: t.id, name: t.name, url: t.url, est: num(t.dayEstimateMs || t.estimateMs), spent: num(t.spentMs), kind: "cfg" }));
+    const other = (data.other || []).map((t) => ({ id: t.id, name: t.name, url: t.url, est: 0, spent: num(t.spentMs), kind: "other" }));
     const listed = due.concat(cfg);
     const listedSpent = listed.reduce((a, r) => a + r.spent, 0);
     const otherSpent = Math.max(other.reduce((a, r) => a + r.spent, 0), num(data.spentMs) - listedSpent, 0);
@@ -148,6 +148,33 @@
       : "Tracked on these tasks outside the card's dates", 0, restSpent);
     if (big(restEst) || big(restSpent)) foot("card", "Card total", num(data.estMs), num(data.spentMs));
     box.appendChild(tbl);
+    // Today's tracked time the rows don't account for: ask ClickUp's own time
+    // entries which tasks it went on, and name them (a task this list doesn't hold).
+    if (kind === "trk" && restSpent >= 60000 && data.today && window.chrome && chrome.runtime && chrome.runtime.sendMessage) {
+      const note = el("div", "sub", "Looking up today's other tasks in your ClickUp time entries\u2026");
+      note.style.marginTop = "8px";
+      box.appendChild(note);
+      const shownIds = new Set(listed.concat(other).map((r) => String(r.id || "")).filter(Boolean));
+      const forBox = box;
+      chrome.runtime.sendMessage({ type: "CLICKUP_TODAY_BY_TASK" }, (r) => {
+        void chrome.runtime.lastError;
+        if (box !== forBox || !note.isConnected) return;
+        if (!r || !r.ok) { note.textContent = "Couldn't read today's time entries from ClickUp" + (r && r.error ? " (" + r.error + ")" : "") + "."; return; }
+        const missing = (r.rows || []).filter((x) => !shownIds.has(String(x.id))).sort((a, b) => b.spentMs - a.spentMs);
+        if (!missing.length) { note.textContent = "Your ClickUp time entries for today are all on the tasks above; the rest is time ClickUp hasn't saved to an entry yet (a timer still running), and it settles at the next refresh."; return; }
+        note.textContent = "Also tracked today, on tasks not in this list (from your ClickUp time entries):";
+        note.style.fontWeight = "600";
+        const t2 = el("table");
+        for (const m of missing) {
+          const tr = el("tr"), td = el("td"), a = el("a", "", m.name || "(task)");
+          if (m.url) { a.href = m.url; a.target = "_blank"; a.rel = "noopener"; }
+          td.appendChild(a);
+          tr.append(td, el("td", "n", fmt(m.spentMs)));
+          t2.appendChild(tr);
+        }
+        note.after(t2);
+      });
+    }
   }
 
   function open(anchor, data, kind) {

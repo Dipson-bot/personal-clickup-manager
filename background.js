@@ -33,8 +33,9 @@ import {
 } from "./lib-drive.js";
 import { driveFree, newMoveJob, moveStep, remapSyncState, readMoved, writeMoved } from "./lib-drivemove.js"; // two Google accounts in Drive Sync
 import { runAllAccounts, runAccountLogin, readAgentRouterLogin, URLS, GITHUB_KEEP_COOKIES } from "./lib-automation.js";
-import { getCommentRepliesLite, getTaskShareInfo, getTaskHoldInfo, fetchArchivedMine, unarchiveTask, getLatestCommentBy, getTaskCommentsLite, getTaskTimeEntries, deleteTimeEntry, getUserGroups, getUser, verifyToken, getTeams, fetchTodayEstimate, fetchWeeklySummary, fetchDateRangeEstimate, createTaskCache, fetchTeamMembers, fetchWorkspaceTags, cuTagNames, fmtDuration, findExtraTaskByName, parseTaskIdFromUrl, getCurrentTimeEntry, getRunningTaskProgress, startTimer, stopTimer, getTaskById, setTaskStatus, setTaskDates, taskUrlFor, clientLabelFromContainer, resolveSpaceNamesFor, taskContainer, cuPriorityName, isTaskDone, getSubtasksOfParent, getTaskTree, getTaskDetail, updateTimeEntry, setTaskDueDate, setTaskStartDate, clearTaskTreeCache, listWorkspaceClients, cuRowAssignees, fetchDoneBetween, fetchDoneLite, fetchTrackedHistory, getTaskPanel, addTaskComment, postTaskComment, setTaskDescription, getTaskCommentLinks, getTaskCommentsFull, getListStatuses, createTask, relateTasks, removeTaskAssignee, addTaskAssignee, postAssignedComment, addTimeEntry, weeklyWithToday, listClientFieldOptions, listReachableClients, bgToken, patientToken, cuRawFetch, getRelatedTasks, slimIndexTask, fetchTeamTasksPage, listAllLists, setPausedClients, setExtraEvenSplit } from "./lib-clickup.js";
+import { fetchTodayTimeEntriesByTask, addRunningTimerToTodayMap, getCommentRepliesLite, getTaskShareInfo, getTaskHoldInfo, fetchArchivedMine, unarchiveTask, getLatestCommentBy, getTaskCommentsLite, getTaskTimeEntries, deleteTimeEntry, getUserGroups, getUser, verifyToken, getTeams, fetchTodayEstimate, fetchWeeklySummary, fetchDateRangeEstimate, createTaskCache, fetchTeamMembers, fetchWorkspaceTags, cuTagNames, fmtDuration, findExtraTaskByName, parseTaskIdFromUrl, getCurrentTimeEntry, getRunningTaskProgress, startTimer, stopTimer, getTaskById, setTaskStatus, setTaskDates, taskUrlFor, clientLabelFromContainer, resolveSpaceNamesFor, taskContainer, cuPriorityName, isTaskDone, getSubtasksOfParent, getTaskTree, getTaskDetail, updateTimeEntry, setTaskDueDate, setTaskStartDate, clearTaskTreeCache, listWorkspaceClients, cuRowAssignees, fetchDoneBetween, fetchDoneLite, fetchTrackedHistory, getTaskPanel, addTaskComment, postTaskComment, setTaskDescription, getTaskCommentLinks, getTaskCommentsFull, getListStatuses, createTask, relateTasks, removeTaskAssignee, addTaskAssignee, postAssignedComment, addTimeEntry, weeklyWithToday, listClientFieldOptions, listReachableClients, bgToken, patientToken, cuRawFetch, getRelatedTasks, slimIndexTask, fetchTeamTasksPage, listAllLists, setPausedClients, setExtraEvenSplit } from "./lib-clickup.js";
 import { resolveRelayKey, pickProbeModel, probeRelay } from "./lib-availability.js";
+import { gdataConnect, gdataAccounts, gdataDisconnect, gdataProps, gdataPick, gdataReport, gdataMonthly } from "./lib-gdata.js"; // Site monitor › Search Console + GA4 per client
 import { tidyCollect, tidyLines, tidyResolved, tidyDayOk, tidyUrgent, tidyDateShort, tidyComments, tidyClip } from "./lib-tidy.js";
 import "./lib-rules.js"; // globalThis.PcmRules - the Automation tab's rule blocks
 import "./lib-dailyupdate.js"; // globalThis.PcmDailyUpdate - the Daily Tasks Update text (wrap-up page + scheduled send)
@@ -52,7 +53,7 @@ let helperOnly = false;
 chrome.storage.local.get("wpHelper").then((g) => { helperOnly = !!(g && g.wpHelper); }).catch(() => {});
 chrome.storage.onChanged.addListener((ch, area) => { if (area === "local" && ch.wpHelper) helperOnly = !!ch.wpHelper.newValue; });
 async function isHelperOnly() { try { helperOnly = !!(await chrome.storage.local.get("wpHelper")).wpHelper; } catch (e) {} return helperOnly; }
-const HELPER_BLOCKED = new Set(["RUN_ALL", "RUN_ONE", "SLACK_CONNECT", "SLACK_POLL_NOW", "SLACK_TASK_LOOKUP", "SLACK_FILE_GET", "CNOTE_REFRESH", "DAILY_UPDATE_SEND", "SLACK_OUT_NOW", "SLACK_AWAY_SET", "SLACK_AHEAD_SYNC", "SITE_MONITOR_CHECK_NOW", "SYNC_NOW", "CLICKUP_SAVE_TOKEN", "CLICKUP_SAVE_ADMIN_TOKEN"]);
+const HELPER_BLOCKED = new Set(["RUN_ALL", "RUN_ONE", "SLACK_CONNECT", "GDATA_CONNECT", "GDATA_REPORT", "SLACK_MENTION_REPLY", "SLACK_REPORTS_COLLECT", "SLACK_POLL_NOW", "SLACK_TASK_LOOKUP", "SLACK_FILE_GET", "CNOTE_REFRESH", "DAILY_UPDATE_SEND", "SLACK_OUT_NOW", "SLACK_AWAY_SET", "SLACK_AHEAD_SYNC", "SITE_MONITOR_CHECK_NOW", "SYNC_NOW", "CLICKUP_SAVE_TOKEN", "CLICKUP_SAVE_ADMIN_TOKEN"]);
 const CHECK_ALARM = "dailyLoginCheck";
 const CLICKUP_ALARM = "clickupRefresh";
 const SYNC_ALARM = "driveAutoSync";
@@ -1174,7 +1175,7 @@ async function hostingFill(urls, force) {
   for (const u of urls) {
     const c = cur[u];
     if (c && c.src === "you") continue;
-    if (!force && c && Date.now() - (Number(c.at) || 0) < 30 * 86400000) continue;
+    if (!force && c && Date.now() - (Number(c.at) || 0) < (c.provider ? 30 : 1) * 86400000) continue; // an unknown host is looked up again the next day (detection gets better)
     const d = await hostingDetect(u, siteHostingSeen.get(u)).catch(() => null);
     if (d) { out[u] = d; n++; }
     await new Promise((r) => setTimeout(r, 400)); // gentle on the DNS service
@@ -1187,55 +1188,149 @@ async function hostingFill(urls, force) {
 // "" when it doesn't say (many hosts hide it). Saved per site (storage sitePhp)
 // for Site monitor's PHP2Shell line (options.js).
 const sitePhpSeen = new Map();
+// The page's size as sent over the network (compressed), like DevTools' "transferred".
+// The server's Content-Length when it compressed the page; else the page gzipped here
+// (shortcut: gzip estimate, a brotli server sends a little less).
+async function pageSentKb(res, html) {
+  const enc = String(res.headers.get("content-encoding") || "").toLowerCase(), len = Number(res.headers.get("content-length")) || 0;
+  if (enc && enc !== "identity" && len > 0) return Math.max(1, Math.round(len / 1024));
+  if (typeof CompressionStream === "undefined") return 0;
+  const buf = await new Response(new Blob([String(html)]).stream().pipeThrough(new CompressionStream("gzip"))).arrayBuffer();
+  return Math.max(1, Math.round(buf.byteLength / 1024));
+}
 function phpFromHeaders(res, html) {
   const xp = String((res && res.headers && res.headers.get("x-powered-by")) || "");
   const sv = String((res && res.headers && res.headers.get("server")) || "");
   const m = (xp + " " + sv).match(/PHP\/(\d+\.\d+(?:\.\d+)?)/i);
   return { php: m ? m[1] : "", powered: xp.slice(0, 80), server: sv.slice(0, 80), platform: sitePlatform(res, html), wp: wpVersionFromPage(html), tags: siteTagsFromPage(html),
-    pageKb: String(html || "").length > 200 ? Math.round(new Blob([String(html)]).size / 1024) : 0 }; // the HTML page's own size (not its images / scripts)
+    pageKb: String(html || "").length > 200 ? Math.round(new Blob([String(html)]).size / 1024) : 0, // the HTML page's own size (not its images / scripts)
+    pageDom: String(html || "").length > 200 ? (String(html).match(/<[a-z][a-z0-9-]*(?=[\s>/])/gi) || []).length : 0 }; // elements in the page as served (before its scripts add more)
 }
 // Google Tag Manager and Microsoft Clarity in the page the check already read (no
 // extra request): GTM's container IDs, Clarity's project ID (its pasted snippet or
 // the WordPress plugin's). null when there was no page to read. Clarity added
 // INSIDE a GTM container isn't in the page - see gtmClarityScan.
 function siteTagsFromPage(html) {
-  const p = String(html || "").slice(0, 600000);
+  const p = String(html || "").slice(0, 4000000); // a big inline-CSS head (WP Rocket) can push the GTM snippet past 600k characters
   if (p.length < 200) return null;
   const gtm = [...new Set((p.match(/\bGTM-[A-Z0-9]{5,9}\b/g) || []))].filter((g) => !/^GTM-X+$/.test(g)).slice(0, 4); // not a GTM-XXXXXX placeholder
   const cm = p.match(/clarity\.ms\/tag\/["'+\s]*([a-z0-9]{6,14})/i) || p.match(/["']clarity["']\s*,\s*["']script["']\s*,\s*["']([a-z0-9]{6,14})["']/i);
   const clarity = cm ? cm[1] : /clarity\.ms\/tag\//i.test(p) ? "yes" : "";
-  return { gtm, clarity, at: Date.now() };
+  const ga = [...new Set([...p.matchAll(/(?:gtag\/js\?id=|gtag\(\s*["']config["']\s*,\s*["'])(G-[A-Z0-9]{6,12})/g)].map((x) => x[1]))].slice(0, 4);
+  return { gtm, clarity, ga, at: Date.now() };
 }
-// Page speed score and DOM size (Site monitor › Page): Google's PageSpeed Insights
-// (a mobile Lighthouse test run by Google). One site per run - about one every 5
-// minutes - and each site once a day, so Google's tester loads a client's homepage
-// once a day at most. A "too many requests" answer pauses it for 6 hours.
-// storage sitePsi { [url]: { at, score 0-100, dom, lcp, ok, err } }, psiPauseUntil.
+// Page speed (Site monitor › Page, and a site's Performance card): Google's PageSpeed
+// Insights with the user's own key, MOBILE and DESKTOP, plus Chrome's real-user data
+// (Core Web Vitals, last 28 days) that comes in the same reply. At most PSI_BUDGET requests
+// per monitor run (every 5 minutes); each site every psiCfg.days days (default 3), averaged over psiCfg.runs runs:
+// far under Google's 25,000 a day and 400 per 100 seconds. The last result is kept and
+// shown with its age until the next test (stale, never blank). A "too many requests"
+// answer pauses it for 6 hours. While tests run, storage psiRunning { urls, at } lets
+// the page show "Testing…".
+// storage sitePsi { [url]: { at, ok, err, score, dom, lcp, m, crux, d: { at, ok, err, score, m } } }
+// (mobile at the top level, as before; d = desktop), psiPauseUntil.
 const PSI_EVERY = 86400000;
-async function pageSpeedScan(urls) {
-  const g = await chrome.storage.local.get(["sitePsi", "psiPauseUntil"]).catch(() => ({}));
-  if (Number(g.psiPauseUntil) > Date.now()) return;
-  const psi = { ...(g.sitePsi || {}) };
-  const url = (urls || []).filter((u) => /^https?:\/\//.test(u)).sort((a, b) => ((psi[a] && psi[a].at) || 0) - ((psi[b] && psi[b].at) || 0))
-    .find((u) => !(psi[u] && Date.now() - (psi[u].at || 0) < PSI_EVERY));
-  if (!url) return;
+let psiBusy = false;
+// LCP / FCP / TBT in ms, CLS unitless, Speed Index in ms (null when Lighthouse didn't measure one).
+function psiMetrics(au) {
+  const v = (k, dp) => { const n = au && au[k] && Number(au[k].numericValue); return Number.isFinite(n) ? Number(n.toFixed(dp || 0)) : null; };
+  return { lcp: v("largest-contentful-paint"), fcp: v("first-contentful-paint"), tbt: v("total-blocking-time"), cls: v("cumulative-layout-shift", 3), si: v("speed-index") };
+}
+// Core Web Vitals from real Chrome users (CrUX): this page's own data, else the whole
+// site's (origin). null when Google has too little traffic for the site.
+function psiCrux(j) {
+  const pick = (le) => (le && le.metrics && (le.metrics.LARGEST_CONTENTFUL_PAINT_MS || le.metrics.INTERACTION_TO_NEXT_PAINT || le.metrics.CUMULATIVE_LAYOUT_SHIFT_SCORE) ? le : null);
+  const le = pick(j && j.loadingExperience) || pick(j && j.originLoadingExperience);
+  if (!le) return null;
+  const one = (k, div) => { const x = le.metrics[k]; return x && x.percentile != null ? { v: Number(x.percentile) / (div || 1), c: String(x.category || "") } : null; };
+  return { scope: le === (j && j.loadingExperience) && !le.origin_fallback ? "page" : "site", overall: String(le.overall_category || ""),
+    lcp: one("LARGEST_CONTENTFUL_PAINT_MS"), inp: one("INTERACTION_TO_NEXT_PAINT"), cls: one("CUMULATIVE_LAYOUT_SHIFT_SCORE", 100), fcp: one("FIRST_CONTENTFUL_PAINT_MS"), ttfb: one("EXPERIMENTAL_TIME_TO_FIRST_BYTE") };
+}
+// One strategy for one site: { ok, score, dom, lcp, m, crux } or { ok: false, err } or "429".
+async function psiRun(url, strategy, key) {
   const ctl = new AbortController();
   const timer = setTimeout(() => ctl.abort(), 90000);
   try {
-    const r = await fetch("https://www.googleapis.com/pagespeedonline/v5/runPagespeed?strategy=mobile&category=performance&url=" + encodeURIComponent(url), { cache: "no-store", credentials: "omit", signal: ctl.signal });
-    if (r.status === 429) { await chrome.storage.local.set({ psiPauseUntil: Date.now() + 6 * 3600000 }); return; }
+    const r = await fetch("https://www.googleapis.com/pagespeedonline/v5/runPagespeed?strategy=" + strategy + "&category=performance&key=" + encodeURIComponent(key) + "&url=" + encodeURIComponent(url), { cache: "no-store", credentials: "omit", signal: ctl.signal });
+    if (r.status === 429) return "429";
     const j = r.ok ? await r.json() : null;
     const lh = j && j.lighthouseResult;
     const cat = lh && lh.categories && lh.categories.performance;
     const au = (lh && lh.audits) || {};
-    psi[url] = lh && cat && cat.score != null
-      ? { at: Date.now(), ok: true, score: Math.round(Number(cat.score) * 100), dom: Math.round(Number(au["dom-size"] && au["dom-size"].numericValue) || 0), lcp: String((au["largest-contentful-paint"] && au["largest-contentful-paint"].displayValue) || "").slice(0, 12) }
-      : { ...(psi[url] || {}), at: Date.now(), ok: false, err: r.ok ? "no result" : "HTTP " + r.status };
+    if (!(lh && cat && cat.score != null)) return { ok: false, err: r.ok ? "no result" : "HTTP " + r.status };
+    return { ok: true, score: Math.round(Number(cat.score) * 100), dom: Math.round(Number(au["dom-size"] && au["dom-size"].numericValue) || 0),
+      lcp: String((au["largest-contentful-paint"] && au["largest-contentful-paint"].displayValue) || "").slice(0, 12), m: psiMetrics(au), crux: psiCrux(j) };
   } catch (e) {
-    psi[url] = { ...(psi[url] || {}), at: Date.now(), ok: false, err: e && e.name === "AbortError" ? "timed out" : "couldn't reach it" };
+    return { ok: false, err: e && e.name === "AbortError" ? "timed out" : "couldn't reach it" };
   } finally { clearTimeout(timer); }
-  for (const k of Object.keys(psi)) if (Date.now() - (psi[k].at || 0) > 30 * PSI_EVERY) delete psi[k];
-  await chrome.storage.local.set({ sitePsi: psi });
+}
+// Several runs of one strategy averaged into one result (Lighthouse varies run to run).
+function psiAverage(list) {
+  const ok = list.filter((r) => r && r.ok);
+  if (!ok.length) return list.find((r) => r && r.err) || { ok: false, err: "no result" };
+  const mean = (f) => { const v = ok.map(f).filter((x) => x != null && Number.isFinite(x)); return v.length ? v.reduce((a, b) => a + b, 0) / v.length : null; };
+  const m = {};
+  for (const k of ["lcp", "fcp", "tbt", "si"]) { const v = mean((r) => r.m && r.m[k]); m[k] = v == null ? null : Math.round(v); }
+  const c = mean((r) => r.m && r.m.cls); m.cls = c == null ? null : Number(c.toFixed(3));
+  return { ...ok[ok.length - 1], score: Math.round(mean((r) => r.score)), m, n: ok.length, crux: (ok.find((r) => r.crux) || {}).crux || null };
+}
+// Settings (Site monitor › Tools › PageSpeed settings): storage psiCfg { days: re-test
+// every N days (default 3), runs: average of N runs (default 1), site: { [url]: { runs } } }.
+async function psiSettings() {
+  const { psiCfg } = await chrome.storage.local.get("psiCfg").catch(() => ({}));
+  const c = psiCfg || {};
+  return { days: Math.min(30, Math.max(1, Number(c.days) || 3)), runs: Math.min(5, Math.max(1, Number(c.runs) || 1)), site: c.site || {} };
+}
+const PSI_BUDGET = 8; // Google requests per monitor run (every 5 minutes), whatever the settings
+async function pageSpeedScan(urls, force) {
+  if (psiBusy) return;
+  const g = await chrome.storage.local.get(["sitePsi", "psiPauseUntil", "psiKey"]).catch(() => ({}));
+  const key = String(g.psiKey || "").trim();
+  if (!key || Number(g.psiPauseUntil) > Date.now()) return; // no key: Google turns keyless tests away (shared daily quota)
+  const cfg = await psiSettings(), every = cfg.days * PSI_EVERY;
+  const runsOf = (u) => Math.min(5, Math.max(1, Number(cfg.site[u] && cfg.site[u].runs) || cfg.runs));
+  const psi0 = g.sitePsi || {};
+  // Oldest first; a site tested before desktop existed counts as due. Sites are added
+  // until the run's request budget is used (2 strategies x runs each; at least one site).
+  const due = (urls || []).filter((u) => /^https?:\/\//.test(u)).sort((a, b) => ((psi0[a] && psi0[a].at) || 0) - ((psi0[b] && psi0[b].at) || 0))
+    .filter((u) => force || !(psi0[u] && psi0[u].d && Date.now() - (psi0[u].at || 0) < every));
+  const todo = [];
+  let spent = 0;
+  for (const u of due) { const cost = 2 * runsOf(u); if (todo.length && (force || spent + cost > PSI_BUDGET)) break; todo.push(u); spent += cost; }
+  if (!todo.length) return;
+  psiBusy = true;
+  try {
+    await chrome.storage.local.set({ psiRunning: { urls: todo, at: Date.now() } }).catch(() => {});
+    let limited = false;
+    for (const url of todo) {
+      const res = { mobile: [], desktop: [] };
+      for (let i = 0; i < runsOf(url) && !limited; i++) {
+        for (const strat of ["mobile", "desktop"]) {
+          const r = await psiRun(url, strat, key);
+          if (r === "429") { limited = true; break; }
+          res[strat].push(r);
+        }
+        if (i + 1 < runsOf(url)) await new Promise((x) => setTimeout(x, 1000));
+      }
+      if (limited) { await chrome.storage.local.set({ psiPauseUntil: Date.now() + 6 * 3600000 }); if (!res.mobile.length) break; }
+      const mob = psiAverage(res.mobile), desk = psiAverage(res.desktop);
+      // Read again before saving: the page (or another run) may have saved meanwhile.
+      const psi = { ...((await chrome.storage.local.get("sitePsi")).sitePsi || {}) };
+      const prev = psi[url] || {}, now = Date.now();
+      const top = mob.ok ? { ...mob, at: now } : { ...prev, at: now, ok: false, err: mob.err }; // a failed test keeps the last good numbers
+      const d = desk.ok ? { ...desk, at: now } : { ...(prev.d || {}), at: now, ok: false, err: desk.err };
+      // (crux stays per form factor: top.crux = phones, d.crux = computers)
+      psi[url] = { ...top, d };
+      for (const k of Object.keys(psi)) if (now - (psi[k].at || 0) > 30 * PSI_EVERY) delete psi[k];
+      const left = limited ? [] : todo.slice(todo.indexOf(url) + 1);
+      await chrome.storage.local.set({ sitePsi: psi, psiRunning: left.length ? { urls: left, at: now } : null });
+      if (limited) break;
+      if (left.length) await new Promise((x) => setTimeout(x, 1500));
+    }
+  } finally {
+    psiBusy = false;
+    await chrome.storage.local.set({ psiRunning: null }).catch(() => {});
+  }
 }
 // Clarity set up inside a GTM container: the container's script, from Google's own
 // server (googletagmanager.com - not the client's site), read at most once a day per
@@ -1243,7 +1338,7 @@ async function pageSpeedScan(urls) {
 async function gtmClarityScan(ids) {
   const { gtmScan } = await chrome.storage.local.get("gtmScan").catch(() => ({}));
   const scan = { ...(gtmScan || {}) };
-  const todo = [...new Set(ids)].filter((id) => /^GTM-[A-Z0-9]{4,10}$/.test(id) && !(scan[id] && Date.now() - (scan[id].at || 0) < 86400000)).slice(0, 4);
+  const todo = [...new Set(ids)].filter((id) => /^GTM-[A-Z0-9]{4,10}$/.test(id) && !(scan[id] && Array.isArray(scan[id].ga) && Date.now() - (scan[id].at || 0) < 86400000)).slice(0, 8); // (read again once for GA if an older scan has none)
   if (!todo.length) return;
   for (const id of todo) {
     try {
@@ -1251,8 +1346,9 @@ async function gtmClarityScan(ids) {
       const js = r.ok ? await r.text() : "";
       // (Addresses in the container are written with escaped slashes: clarity.ms\/tag\/.)
       const m = js.match(/clarity\.ms\\?\/tag\\?\/["'+\\\s]*([a-z0-9]{6,14})/i) || js.match(/"vtp_[a-z_]*project[a-z_]*id"\s*,\s*"([a-z0-9]{6,14})"/i);
-      scan[id] = { at: Date.now(), ok: r.ok, clarity: m ? m[1] : /clarity\.ms/i.test(js) ? "yes" : "" };
-    } catch (e) { scan[id] = { at: Date.now(), ok: false, clarity: "" }; }
+      const ga = [...new Set([...js.matchAll(/"vtp_(?:tagId|measurementId|measurementIdOverride|value)"\s*:\s*"(G-[A-Z0-9]{6,12})"/g)].map((x) => x[1]))].slice(0, 4);
+      scan[id] = { at: Date.now(), ok: r.ok, clarity: m ? m[1] : /clarity\.ms/i.test(js) ? "yes" : "", ga };
+    } catch (e) { scan[id] = { at: Date.now(), ok: false, clarity: "", ga: [] }; }
     await new Promise((x) => setTimeout(x, 400));
   }
   for (const k of Object.keys(scan)) if (Date.now() - (scan[k].at || 0) > 30 * 86400000) delete scan[k];
@@ -1263,7 +1359,7 @@ async function gtmClarityScan(ids) {
 // files (the block styles, the emoji script). A plugin like Gutenberg can put its
 // own number there (19.x), so only a 4-9 major counts. "" when hidden.
 function wpVersionFromPage(html) {
-  const p = String(html || "").slice(0, 400000);
+  const p = String(html || "").slice(0, 4000000); // the generator tag can sit after a very large inline-CSS head
   const m = p.match(/<meta[^>]+name=["']generator["'][^>]+content=["']WordPress\s+(\d+\.\d+(?:\.\d+)?)/i)
     || p.match(/<meta[^>]+content=["']WordPress\s+(\d+\.\d+(?:\.\d+)?)["'][^>]*name=["']generator/i)
     || p.match(/wp-includes\/css\/dist\/block-library\/style(?:\.min)?\.css\?ver=(\d+\.\d+(?:\.\d+)?)/i)
@@ -1303,7 +1399,7 @@ async function readOneSite(url, timeoutMs, confirming = false) {
   }
   try {
     const html = await res.text();
-    try { sitePhpSeen.set(url, phpFromHeaders(res, html)); } catch (e) {}
+    try { const ph = phpFromHeaders(res, html); sitePhpSeen.set(url, ph); if (ph.pageKb) ph.pageGzKb = await pageSentKb(res, html); } catch (e) {}
     try { siteHostingSeen.set(url, hostingFromReply(res, html)); } catch (e) {}
     clearTimeout(timer);
     const ms = Date.now() - t0;
@@ -1447,6 +1543,21 @@ function siteDecide(prevIn, result, o) {
   return { prev, note };
 }
 
+// Second opinion for a site that fails from this computer: the team hub loads it
+// from Google's servers. Up there = this network is blocked by the site's firewall
+// (it opens on another Wi-Fi), not an outage. Asked at most once per 10 minutes per
+// site from here (the hub shares one answer for 5 minutes across the team).
+const siteProbeSeen = new Map(); // url -> { at, r }
+async function siteProbe(url) {
+  const c = siteProbeSeen.get(url);
+  if (c && Date.now() - c.at < 10 * 60000) return c.r;
+  let r = null;
+  try { r = await hubCall("probe", { url }); } catch (e) { r = null; }
+  r = r && r.ok && typeof r.up === "boolean" ? r : null; // an older hub (no probe) or no hub: no opinion
+  siteProbeSeen.set(url, { at: Date.now(), r });
+  return r;
+}
+
 // opts.manual (the options page's "Check now" buttons): decide up/down from this
 // one check - no 2-check wait and no notification, since the user is looking at
 // the result. The offline test and the slow retry still apply, so a blip on the
@@ -1455,7 +1566,7 @@ const sleepMs = (ms) => new Promise((r) => setTimeout(r, ms));
 
 // The clients the Clients tab lists - from my tasks (Today, This week, Next week,
 // tracked), plus ones added by hand, minus ones hidden (task-files.js mine()).
-async function smMyClientKeys() {
+async function smMyClientKeys(sites) {
   const g = await chrome.storage.local.get(["clickupState", "settings"]);
   const st = g.clickupState || {}, set = g.settings || {};
   const k = (n) => String(n || "").toLowerCase().replace(/[^a-z0-9]+/g, "");
@@ -1466,12 +1577,41 @@ async function smMyClientKeys() {
   }
   for (const c of Array.isArray(set.tfAdded) ? set.tfAdded : []) keys.add(k(c));
   for (const h of Array.isArray(set.tfHidden) ? set.tfHidden : []) keys.delete(h);
-  return [...keys].filter((x) => x.length >= 3);
+  const out = [...keys].filter((x) => x.length >= 3);
+  // Kept only when it names a monitored site; otherwise (task lists empty or not loaded) the last good list stands in.
+  if (out.length && (!sites || sites.some((s) => smSiteIsMine(s, out)))) { chrome.storage.local.set({ smMineLast: out }).catch(() => {}); return out; }
+  const last = (await chrome.storage.local.get("smMineLast").catch(() => ({}))).smMineLast;
+  return Array.isArray(last) ? last : [];
 }
 // The same rule as the page (options.js smNameMatch): equal, or one starts with the other when both have 4+ letters.
 function smSiteIsMine(s, keys) {
   const b = String((s && s.name) || "").toLowerCase().replace(/[^a-z0-9]+/g, "");
   return b.length >= 3 && keys.some((a) => a.length >= 3 && (a === b || (a.length >= 4 && b.length >= 4 && (a.startsWith(b) || b.startsWith(a)))));
+}
+// Site monitor › a site's detail view: one row per site per day (last 60 days) -
+// checks / up, average reply time, and that day's PageSpeed score, DOM size and
+// page size. storage siteHist { [url]: [{ d: "YYYY-MM-DD", n, up, ms, msN, score, dom, kb, gz }] }.
+async function siteHistRecord(pairs) {
+  if (!pairs.length) return;
+  const g = await chrome.storage.local.get(["siteHist", "sitePsi", "sitePhp"]);
+  const hist = g.siteHist || {}, psi = g.sitePsi || {}, php = g.sitePhp || {};
+  const t = new Date(), d = t.getFullYear() + "-" + String(t.getMonth() + 1).padStart(2, "0") + "-" + String(t.getDate()).padStart(2, "0");
+  for (const [url, r] of pairs) {
+    if (!url || !r) continue;
+    const arr = Array.isArray(hist[url]) ? hist[url] : [];
+    let day = arr[arr.length - 1];
+    if (!day || day.d !== d) { day = { d, n: 0, up: 0, ms: 0, msN: 0 }; arr.push(day); }
+    day.n++;
+    if (r.ok) day.up++;
+    if (r.ok && Number(r.ms) > 0) { day.ms += Math.round(r.ms); day.msN++; }
+    const p = psi[url], h = php[url];
+    if (p && p.score != null) day.score = p.score;
+    if (p && p.dom) day.dom = p.dom; else if (h && h.pageDom) day.dom = h.pageDom;
+    if (h && h.pageKb) day.kb = h.pageKb;
+    if (h && h.pageGzKb) day.gz = h.pageGzKb;
+    hist[url] = arr.slice(-60);
+  }
+  await chrome.storage.local.set({ siteHist: hist });
 }
 async function checkSitesImpl(opts = {}) {
   const cfg = await getSiteMonitorConfig();
@@ -1493,9 +1633,9 @@ async function checkSitesImpl(opts = {}) {
   for (const s of cfg.sites) if (s && s.url && siteOff[s.url]) state[s.url] = { ...(state[s.url] || { up: null, fails: 0, lastCheck: 0 }), off: true };
   for (const s of cfg.sites) if (s && s.url && !siteOff[s.url] && state[s.url] && state[s.url].off) { const { off, ...rest } = state[s.url]; state[s.url] = rest; }
   // Site monitor › Only my clients: the other sites aren't checked (a single site's own Check still is).
-  const mine = !opts.url && (await chrome.storage.local.get("smMineOnly")).smMineOnly ? await smMyClientKeys().catch(() => []) : [];
+  const mine = !opts.url && (await chrome.storage.local.get("smMineOnly")).smMineOnly ? await smMyClientKeys(cfg.sites).catch(() => []) : [];
   const anyMine = mine.length && cfg.sites.some((s) => smSiteIsMine(s, mine));
-  const sites = cfg.sites.filter((s) => s && s.url && (!opts.url || s.url === opts.url) && !isPausedSite(s) && !siteOff[s.url] && (!anyMine || smSiteIsMine(s, mine)));
+  const sites = cfg.sites.filter((s) => s && s.url && (!opts.url || s.url === opts.url) && (!isPausedSite(s) || (opts.url && opts.manual)) && !siteOff[s.url] && (!anyMine || smSiteIsMine(s, mine)));
   // Site monitor shows "Checking now…" on these until each one's own result is in
   // (startSiteCheck clears it when the run ends, however it ends).
   try { await chrome.storage.local.set({ siteMonitorChecking: { startedAt: now, urls: sites.map((s) => s.url) } }); } catch (e) {}
@@ -1522,7 +1662,12 @@ async function checkSitesImpl(opts = {}) {
       done.add(key);
       try {
         const prev = state[key] || { up: null, fails: 0, lastCheck: 0, lastDownNotified: 0 };
-        const result = res(site);
+        let result = res(site);
+        // Fails from here but opens from outside: blocked on this network, not down.
+        if (!result.ok && !localProblem && result.kind !== "blank" && !result.blank) {
+          const pr = await siteProbe(site.url).catch(() => null);
+          if (pr && pr.up) result = { ok: true, ms: result.ms || 0, blocked: "Doesn't open on this network (" + (result.error || "HTTP " + (result.status || "?")) + "), but opens from outside - the site's firewall is likely blocking this office's IP" };
+        }
         if (localProblem && !result.ok && !result.read) {
           // Leave up/fails untouched; just note why nothing was decided.
           prev.lastCheck = now;
@@ -1544,7 +1689,7 @@ async function checkSitesImpl(opts = {}) {
         // timestamp in it either, so a card that does slip through REPLACES the
         // old one in the tray instead of stacking another copy on top.
         const repeat = !!d.note && !!toldBefore && toldBefore.kind === d.note.kind && now - (Number(toldBefore.at) || 0) < SITE_NOTE_REPEAT_MS;
-        if (d.note && !snoozed && !repeat) {
+        if (d.note && !snoozed && !repeat && !isPausedSite(site)) { // a paused client's site checked by hand: shown, never alerted
           // Written down BEFORE it is sent, so a worker that dies here can't
           // come back and announce the same thing all over again.
           d.prev.lastNote = { kind: d.note.kind, at: now };
@@ -1575,7 +1720,7 @@ async function checkSitesImpl(opts = {}) {
       // The WordPress version seen in the page; one read from WordPress itself (🔑) wins until a newer page shows another.
       const { wp: pageWp, tags: pageTags, ...hh } = h;
       // GTM / Clarity: only from a page that was read (an unread one keeps what was known).
-      const tagPart = pageTags ? { tags: pageTags, ...(hh.pageKb ? { pageKb: hh.pageKb } : {}) } : {};
+      const tagPart = pageTags ? { tags: pageTags, ...(hh.pageKb ? { pageKb: hh.pageKb, pageGzKb: hh.pageGzKb || 0 } : {}), ...(hh.pageDom ? { pageDom: hh.pageDom } : {}) } : {};
       // A version read from Site Health (the key) is only replaced by a NEWER one from the page - a cached page can show an old number.
       const verNum = (v) => String(v || "").split(".").reduce((a, x, i) => a + (Number(x) || 0) * Math.pow(1000, 2 - i), 0);
       const pageWins = pageWp && (!prev || prev.wp !== pageWp) && !(prev && prev.wpSrc === "wp" && verNum(pageWp) <= verNum(prev.wp));
@@ -1590,12 +1735,12 @@ async function checkSitesImpl(opts = {}) {
     // Clarity added inside a GTM container: read those containers from Google (once a day each).
     gtmClarityScan(Object.values(sp).flatMap((r) => (r && r.tags && Array.isArray(r.tags.gtm) ? r.tags.gtm : []))).catch(() => {});
   } catch (e) {}
-  pageSpeedScan(sites.map((s) => s.url)).catch(() => {}); // one site per run, each once a day
+  pageSpeedScan(sites.map((s) => s.url)).catch(() => {}); // a few sites per run, each once a day (mobile + desktop)
   wpLatestRefresh().catch(() => {}); // the newest WordPress release, for Site monitor's WordPress column (twice a day at most)
   // Hosting (Site monitor › 🖥): up to 4 sites with none yet, each run - DNS only.
   try {
     const hz = (await chrome.storage.local.get("siteHosting")).siteHosting || {};
-    const todo = sites.map((s) => s.url).filter((u) => !hz[u]).slice(0, 4);
+    const todo = sites.map((s) => s.url).filter((u) => !hz[u] || (!hz[u].provider && hz[u].src !== "you" && Date.now() - (Number(hz[u].at) || 0) > 86400000)).slice(0, 4); // new, or unknown for a day
     if (todo.length) hostingFill(todo, false).catch(() => {});
   } catch (e) {}
   let failed = sites.filter((s) => !res(s).ok);
@@ -1619,6 +1764,7 @@ async function checkSitesImpl(opts = {}) {
     failed = failed.filter((s) => !res(s).ok);
   }
   await decide(sites);
+  if (!localProblem) siteHistRecord(sites.map((s) => [s.url, res(s)])).catch(() => {});
   // What the last run did, so the page and Copy diagnostics can tell "checked,
   // all fine" from "hasn't run for hours".
   try { await chrome.storage.local.set({ siteMonitorRun: { at: Date.now(), startedAt: now, checked: sites.length, ms: Date.now() - now, manual: !!opts.manual } }); } catch (e) {}
@@ -3527,7 +3673,7 @@ async function pushAllToDrive(tok, accounts) {
 const EXTRA_KEYS = ["autoRules", "siteMonitorConfig", "theme", "cuFilter", "cuFilterMode", "cuFilterDefault", "customSounds", "cuManualOrder", "siteDirSeen", "reminders", "clientNotes", "taskNotes", "taskPins", "planOverrides", "localTasks", "cuDupesOk", "siteHosting"];
 // Drive Sync › "Sync everything with my other computers" (settings.syncEverything)
 // also carries the history kept on each computer.
-const EXTRA_KEYS_MORE = ["descAppliedLog", "descStyleExamples", "cnoteDismissed", "cnoteFold", "siteOff", "siteSnooze", "sitePhp", "smMineOnly", "autoCompleteLead", "driveSpareShared"];
+const EXTRA_KEYS_MORE = ["descAppliedLog", "descStyleExamples", "cnoteDismissed", "cnoteFold", "siteOff", "siteSnooze", "sitePhp", "siteTagManual", "smMineOnly", "autoCompleteLead", "driveSpareShared"];
 const EXTRA_KEYS_ALL = [...EXTRA_KEYS, ...EXTRA_KEYS_MORE];
 async function extraKeys() { const s = await getSettings().catch(() => ({})); return s.syncEverything ? EXTRA_KEYS_ALL : EXTRA_KEYS; }
 const EXTRAS_MAX_SOUNDS = 1500000; // skip very large custom-sound files in the Drive copy
@@ -5695,8 +5841,10 @@ function dropStaleDueRows(state) {
     const rows = holder && holder[key];
     if (!Array.isArray(rows)) return 0;
     let less = 0;
-    const keep = rows.filter((t) => { if (stale(t, at)) { less += Number(t.estimateMs) || 0; return false; } return true; });
+    const moved = [];
+    const keep = rows.filter((t) => { if (stale(t, at)) { less += Number(t.estimateMs) || 0; if (Number(t.spentMs) > 0) moved.push({ ...t, type: "tracked", hasEstimate: false }); return false; } return true; });
     if (keep.length !== rows.length) holder[key] = keep;
+    if (moved.length) holder.trackedTasks = (Array.isArray(holder.trackedTasks) ? holder.trackedTasks : []).concat(moved); // its time is still counted
     return less;
   };
   const lessToday = prune(state, "tasks", state.at);
@@ -5767,6 +5915,7 @@ function applyChangedTasks(state, fresh) {
     const ranged = ranged0 && byDue, refetch = refetch0 && byDue;
     const lo = from || (ranged ? Number(b.fromTs) || 0 : 0), hi = to || (ranged ? Number(b.toTs) || 0 : 0);
     const inside = (ms) => !lo || !hi || (day(ms) >= day(lo) && day(ms) <= hi);
+    const movedOut = []; // due rows whose due date left the dates but whose tracked time is still counted
     for (const key of ["tasks", "deadlineTasks", "trackedTasks"]) {
       const rows = b[key];
       if (!Array.isArray(rows)) continue;
@@ -5777,6 +5926,7 @@ function applyChangedTasks(state, fresh) {
         // Its due date left this list's dates (only the plain "due in these dates" list): it goes.
         if (key === "tasks" && lo && hi && f.dueDateMs && !inside(f.dueDateMs) && day(f.dueDateMs) !== day(t.dueDateMs)) {
           if (fullEst(t)) b.estimateMs = Math.max(0, (Number(b.estimateMs) || 0) - (Number(t.estimateMs) || 0));
+          if (Number(t.spentMs) > 0) movedOut.push({ ...t, dueDateMs: f.dueDateMs, type: "tracked", hasEstimate: false });
           n++; continue;
         }
         if (key === "tasks" && fullEst(t) && f.estimateMs !== (Number(t.estimateMs) || 0)) {
@@ -5791,6 +5941,7 @@ function applyChangedTasks(state, fresh) {
       }
       if (keep.length !== rows.length) b[key] = keep;
     }
+    if (movedOut.length) b.trackedTasks = (Array.isArray(b.trackedTasks) ? b.trackedTasks : []).concat(movedOut);
     if ("taskCount" in b && Array.isArray(b.tasks)) b.taskCount = b.tasks.length;
     // Moved INTO this cached list's dates but not in it yet: re-fetch it next time.
     if (refetch && lo && hi) {
@@ -6494,7 +6645,7 @@ async function refreshClickupImpl({ includeTasks = false, viaAlarm = false, forc
         const prevQ = (await getClickupState().catch(() => null)) || {};
         const quick = { ...prevQ, estimateMs: data.estimateMs, spentMs: data.spentMs, targetMs: data.targetMs, targetHours: data.targetHours, fullTargetMs,
           taskCount: data.taskCount, noEstimateCount: data.noEstimateCount, targetMet: data.targetMet, deadlineTasks: data.deadlineTasks,
-          deadlineEstimateMs: data.deadlineEstimateMs, deadlineSpentMs: data.deadlineSpentMs, tasks: data.tasks, error: null };
+          deadlineEstimateMs: data.deadlineEstimateMs, deadlineSpentMs: data.deadlineSpentMs, tasks: data.tasks, trackedTasks: data.trackedTasks || [], error: null };
         // The filter list for the Tasks card; if ClickUp is slow it follows with
         // the full refresh instead of holding today's list back.
         quick.todayFilter = await Promise.race([getTodayFilterData(cfg, settings), new Promise((r) => setTimeout(() => r(prevQ.todayFilter || null), 10000))]);
@@ -6714,6 +6865,9 @@ async function refreshClickupImpl({ includeTasks = false, viaAlarm = false, forc
       deadlineEstimateMs: data.deadlineEstimateMs,
       deadlineSpentMs: data.deadlineSpentMs,
       tasks: data.tasks, // always stored so the popup can show the breakdown
+      // Time tracked today on tasks NOT due today: it is in spentMs, so its rows must be
+      // here too, or the Tracked breakdown can't name it ("1h ... not in a task above").
+      trackedTasks: data.trackedTasks || [],
       weekly, // Mon→today/Fri accumulated estimate + tracked
       thisWeek, // this Sun→Sat "due this week" bundle (own ~60-min TTL)
       thisWorkweek, // this Mon→Fri "due Mon-Fri" bundle (in-memory subset of thisWeek)
@@ -9040,6 +9194,17 @@ const HUB_URL_RE = /^https:\/\/script\.google\.com\/macros\/s\/[A-Za-z0-9_-]{20,
 const HUB_HELLO_MS = 20 * 3600000;
 const HUB_ACTIVE_MS = 60 * 60000; // opening the popup / options counts as "active", at most hourly
 const HUB_POLL_MS = 10 * 60000;
+// Admin › Team hub › Check: the version the deployed hub reports (GET) against the
+// script shipped with this extension (team-hub.gs). An older hub reports none.
+async function hubVersionCheck() {
+  const url = await hubUrl();
+  const latest = ((await (await fetch(chrome.runtime.getURL("team-hub.gs"))).text()).match(/const HUB_VERSION = "([^"]+)"/) || [])[1] || "";
+  if (!url) return { ok: false, latest, error: "The hub isn't set up on this computer." };
+  let running = "", reached = false;
+  try { const r = await fetch(url, { cache: "no-store", credentials: "omit" }); const j = await r.json().catch(() => null); reached = !!(j && j.ok); running = (j && j.version) || ""; } catch (e) {}
+  if (!reached) return { ok: false, latest, error: "Couldn't reach the hub." };
+  return { ok: true, running, latest, upToDate: !!running && running >= latest };
+}
 async function hubUrl() {
   const { updatePolicy, hubUrlLocal } = await chrome.storage.local.get(["updatePolicy", "hubUrlLocal"]);
   const u = (updatePolicy && updatePolicy.policy && updatePolicy.policy.hubUrl) || hubUrlLocal || "";
@@ -9148,6 +9313,169 @@ async function hubAdminKey() {
   const { adminHubEnc } = await chrome.storage.local.get("adminHubEnc");
   const a = await decryptJSON(adminHubEnc, null);
   return a && a.key ? String(a.key) : "";
+}
+// Google data through the team hub: the hub reads Search Console / GA4 as its owner, so
+// nobody else ever signs in to Google (team-hub.gs gdataProps / gdataReport). A personal
+// connection (lib-gdata.js) is only the fallback when the hub can't (not updated yet, or
+// not set up). storage gdataHub { ok, at, account, gsc, ga, errs | error } (6 hours; a
+// failure is remembered 10 minutes so a page full of sites doesn't ask again and again).
+async function gdataHubProps(force) {
+  const { gdataHub: c } = await chrome.storage.local.get("gdataHub");
+  if (!force && c && c.ok && Date.now() - (c.at || 0) < 6 * 3600000) return c;
+  if (!force && c && !c.ok && Date.now() - (c.at || 0) < 10 * 60000) return null;
+  if (!(await hubUrl())) return null;
+  const r = await hubCall("gdataProps", { force: !!force }).catch(() => null);
+  if (!r || !r.ok) { await chrome.storage.local.set({ gdataHub: { ok: false, at: Date.now(), error: String((r && r.error) || "no answer").slice(0, 200) } }); return null; }
+  const v = { ok: true, at: Date.now(), account: String(r.account || ""), gsc: r.gsc || [], gscAcct: r.gscAcct || {}, ga: r.ga || [], errs: r.errs || [] };
+  await chrome.storage.local.set({ gdataHub: v });
+  return v;
+}
+async function gdataReportViaHub(url, force, props) {
+  const g = await chrome.storage.local.get(["gdataCache", "gdataMap"]);
+  const cache = g.gdataCache || {}, hit = cache[url];
+  if (!force && hit && hit.src === "hub" && Date.now() - (hit.at || 0) < 12 * 3600000) return { ...hit, cached: true };
+  const pick = gdataPick(url, props, g.gdataMap || {});
+  let out = { ok: true, at: Date.now(), pick, gsc: null, ga: null, errs: [], src: "hub" };
+  if (pick.gsc || pick.ga) {
+    const r = await hubCall("gdataReport", { gsc: pick.gsc || "", ga: pick.ga || "", force: !!force }).catch(() => null);
+    if (!r || !r.ok) return { ok: false, err: (r && r.error) || "The team hub didn't answer" };
+    out = { ...out, gsc: r.gsc || null, ga: r.ga || null, errs: r.errs || [] };
+  }
+  const c2 = { ...((await chrome.storage.local.get("gdataCache")).gdataCache || {}), [url]: out };
+  for (const k of Object.keys(c2)) if (Date.now() - (c2[k].at || 0) > 7 * 86400000) delete c2[k];
+  await chrome.storage.local.set({ gdataCache: c2 });
+  return out;
+}
+// Client Wins (site-detail.js): whole calendar months from msg.from, through the team hub
+// (as with Search & traffic), else a personal connection. storage gdataMonthCache 12h.
+async function gdataMonthlyViaHub(url, from, force, props, gaId) {
+  const g = await chrome.storage.local.get(["gdataMonthCache", "gdataMap"]);
+  const ck = url + "|" + from + (gaId ? "|" + gaId : ""), hit = (g.gdataMonthCache || {})[ck];
+  if (!force && hit && hit.src === "hub" && Date.now() - (hit.at || 0) < 12 * 3600000) return { ...hit, cached: true };
+  const pick = { ...gdataPick(url, props, g.gdataMap || {}), ...(gaId ? { ga: gaId } : {}) };
+  let out = { ok: true, at: Date.now(), from, today: new Date().toISOString().slice(0, 10), pick, gsc: null, ga: null, errs: [], src: "hub" };
+  if (pick.gsc || pick.ga) {
+    const r = await hubCall("gdataMonthly", { gsc: pick.gsc || "", ga: pick.ga || "", from, force: !!force }).catch(() => null);
+    if (!r || !r.ok) return { ok: false, err: (r && r.error) || "The team hub didn't answer" };
+    out = { ...out, today: r.today || out.today, gsc: r.gsc || null, ga: r.ga || null, errs: r.errs || [] };
+  }
+  const c2 = { ...((await chrome.storage.local.get("gdataMonthCache")).gdataMonthCache || {}), [ck]: out };
+  for (const k of Object.keys(c2)) if (Date.now() - (c2[k].at || 0) > 7 * 86400000) delete c2[k];
+  await chrome.storage.local.set({ gdataMonthCache: c2 });
+  return out;
+}
+// ---- Export report › GA proof screenshot ----
+// The GA4 Events explorer for one property and month (filter generate_lead, event name +
+// session source / medium), opened in a hidden tab of THIS Chrome profile, signed in as
+// `account` when known. GA4 doesn't document its deep-link parameters; these are the ones
+// its own share links use - if GA ignores one, the capture still shows the month's Events.
+function gaProofUrl(propertyId, ym, account) {
+  const [y, m] = String(ym).split("-"), last = new Date(Date.UTC(Number(y), Number(m), 0)).getUTCDate();
+  const d0 = y + m + "01", d1 = y + m + String(last).padStart(2, "0");
+  const params = "_u..nav=maui&_u.date00=" + d0 + "&_u.date01=" + d1 + "&_r.explorerCard..filterTerm=generate_lead&_r.explorerCard..seldim=[\"eventName\",\"sessionSourceMedium\"]"; // both dimensions in one list (checked on a live GA4 report)
+  return "https://analytics.google.com/analytics/web/" + (account ? "?authuser=" + encodeURIComponent(account) : "") + "#/p" + encodeURIComponent(propertyId) + "/reports/explorer?params=" + encodeURIComponent(params) + "&r=top-events&collectionId=life-cycle";
+}
+// Waits up to 20s for the table, tidies the page (side menu, charts, insight cards), clips to
+// breadcrumb + date range + table and captures a lossless PNG at 2.5x with the debugger.
+// { ok, png (base64), w, h, account } or { ok: false, reason: permission | signin | timeout | error, account }.
+async function gaProofCapture(msg) {
+  const account = String(msg.account || ""), url = gaProofUrl(String(msg.propertyId || "").replace(/\D/g, ""), String(msg.ym || ""), account);
+  let tab = null, attached = false;
+  try {
+    tab = await chrome.tabs.create({ url, active: false });
+    const t = { tabId: tab.id };
+    await chrome.debugger.attach(t, "1.3"); attached = true;
+    // A tall, fixed-width page so the whole report is laid out with nothing hidden in a scroll box.
+    await chrome.debugger.sendCommand(t, "Emulation.setDeviceMetricsOverride", { width: 1440, height: 2200, deviceScaleFactor: 1, mobile: false });
+    const ev = async (expr) => { const r = await chrome.debugger.sendCommand(t, "Runtime.evaluate", { expression: expr, returnByValue: true, awaitPromise: true }); return r && r.result ? r.result.value : null; };
+    const until = Date.now() + 20000;
+    let st = null;
+    while (Date.now() < until) {
+      await sleepMs(1000);
+      st = await ev(`(() => {
+        if (/accounts\\.google\\.com$/.test(location.host)) return { signin: true };
+        const txt = document.body ? document.body.innerText : "";
+        if (/missing permissions|you (do not|don't) have (permission|access)|no access to this property|request access/i.test(txt)) return { perm: true };
+        const tbl = [...document.querySelectorAll("table, [role=grid]")].find((e) => /generate_lead/i.test(e.innerText || ""));
+        const me = ([...document.querySelectorAll("[aria-label]")].map((e) => e.getAttribute("aria-label")).find((s) => /@/.test(s || "")) || "").match(/[\\w.+-]+@[\\w.-]+/);
+        return { ready: !!tbl || /no data available/i.test(txt), me: me ? me[0] : "" };
+      })()`).catch(() => null);
+      if (st && (st.perm || st.signin || st.ready)) break;
+    }
+    if (!st || !st.ready) return { ok: false, reason: st && st.perm ? "permission" : st && st.signin ? "signin" : "timeout", account: account || (st && st.me) || "" };
+    // The page must be signed in as the recipe's account (GA can quietly show another one).
+    if (msg.expect && st.me && st.me.toLowerCase() !== String(msg.expect).toLowerCase()) return { ok: false, reason: "account", account: String(msg.expect), seen: st.me };
+    await sleepMs(1500); // let the table finish drawing
+    // The unedited capture (before any tidying) for the internal file.
+    const raw = await chrome.debugger.sendCommand(t, "Page.captureScreenshot", { format: "png", captureBeyondViewport: true, fromSurface: true }).catch(() => null);
+    // Client copy: only the rows the report lists (session source / medium ending in "/ organic"); the
+    // all-sources Total row goes too, since it counts non-organic events.
+    if (msg.organicOnly) await ev(`(() => {
+      const tbl = [...document.querySelectorAll("table, [role=grid]")].find((e) => /generate_lead/i.test(e.innerText || ""));
+      if (!tbl) return 0;
+      let hidden = 0;
+      for (const row of tbl.querySelectorAll("tr, [role=row]")) {
+        const t = (row.innerText || "").replace(/\\s+/g, " ");
+        if (/total/i.test(t) && !/\\/\\s*organic/i.test(t)) { row.style.setProperty("display", "none", "important"); hidden++; continue; }
+        const cells = [...row.querySelectorAll("td, [role=gridcell], [role=cell]")].map((c) => (c.innerText || "").trim());
+        const sm = cells.find((x) => /^[^\\s].* \\/ .+$/.test(x));
+        if (sm && !/\\/\\s*organic$/i.test(sm)) { row.style.setProperty("display", "none", "important"); hidden++; }
+      }
+      // Promo banners and notification badges.
+      document.querySelectorAll("ga-announcements, [class*=promo], [class*=banner], [class*=notification-badge]").forEach((e) => e.style.setProperty("display", "none", "important"));
+      return hidden;
+    })()`).catch(() => 0);
+    const clip = await ev(`(() => {
+      const hide = (e) => { if (e && e.style) e.style.setProperty("display", "none", "important"); };
+      // Side menu.
+      document.querySelectorAll("nav, [role=navigation], ga-nav-bar, ga-nav-container, mat-sidenav, .gmp-nav, [class*=side-nav], [class*=sidenav]").forEach(hide);
+      const tbl = [...document.querySelectorAll("table, [role=grid]")].find((e) => /generate_lead/i.test(e.innerText || "")) || document.querySelector("table, [role=grid]");
+      // GA's Reports menu is a narrow panel beside the report (not a nav element): hide any
+      // narrow, tall panel to the left of the table on the way up, so the report moves left.
+      if (tbl) {
+        let n = tbl;
+        while (n && n !== document.body) {
+          const p = n.parentElement, tl = tbl.getBoundingClientRect().left;
+          if (p) for (const s of [...p.children]) { if (s === n || s.contains(tbl)) continue; const b = s.getBoundingClientRect(); if (b.width > 0 && b.width < 450 && b.right <= tl + 2 && b.height > 200) hide(s); }
+          n = p;
+        }
+      }
+      // The date range at the top of the report (e.g. "Oct 1 - Oct 31, 2026").
+      const dateRe = /^(?:[A-Z][a-z]{2,8}\\s+\\d{1,2}(?:,\\s*\\d{4})?\\s*[-–]\\s*[A-Z][a-z]{2,8}\\s+\\d{1,2},\\s*\\d{4}|Custom.*\\d{4})$/;
+      const date = [...document.querySelectorAll("span, div, button")].filter((e) => dateRe.test((e.innerText || "").trim())).sort((a, b) => a.innerText.length - b.innerText.length)[0];
+      // Charts and insight cards: every sibling, on the way up from the table, that holds a big chart or "Insights" and not the table / date range.
+      if (tbl) {
+        let n = tbl;
+        while (n && n !== document.body) {
+          for (const s of [...(n.parentElement ? n.parentElement.children : [])]) {
+            if (s === n || s.contains(tbl) || (date && s.contains(date))) continue;
+            const big = [...s.querySelectorAll("svg, canvas")].some((g) => g.getBoundingClientRect().width > 220);
+            if (big || /insights|recommendations/i.test((s.innerText || "").slice(0, 200))) hide(s);
+          }
+          n = n.parentElement;
+        }
+      }
+      window.scrollTo(0, 0);
+      const r = (e) => { if (!e) return null; const b = e.getBoundingClientRect(); return b.width && b.height ? { x: b.left + scrollX, y: b.top + scrollY, r: b.right + scrollX, b: b.bottom + scrollY } : null; };
+      // The breadcrumb with the property name sits in the top bar.
+      const top = [...document.querySelectorAll("header, [role=banner], ga-top-bar, .gmp-top-bar")].map(r).filter(Boolean).sort((a, b) => a.y - b.y)[0];
+      let card = tbl; for (let i = 0; i < 4 && card && card.parentElement; i++) { const p = card.parentElement.getBoundingClientRect(), c0 = card.getBoundingClientRect(); if (p.height > c0.height + 260) break; card = card.parentElement; }
+      const boxes = [top, r(date), r(card)].filter(Boolean);
+      if (!boxes.length) return null;
+      const x = Math.max(0, Math.min(...boxes.map((b) => b.x)) - 12), y = Math.max(0, Math.min(...boxes.map((b) => b.y)) - 8);
+      const right = Math.max(...boxes.map((b) => b.r)) + 12, bottom = Math.max(...boxes.map((b) => b.b)) + 12;
+      return { x, y, width: Math.min(right - x, 1440 - x), height: bottom - y };
+    })()`);
+    await sleepMs(500);
+    const shot = await chrome.debugger.sendCommand(t, "Page.captureScreenshot", { format: "png", captureBeyondViewport: true, fromSurface: true, ...(clip ? { clip: { ...clip, scale: 2.5 } } : {}) });
+    if (!shot || !shot.data) return { ok: false, reason: "error", account };
+    return { ok: true, png: shot.data, w: Math.round((clip ? clip.width : 1440) * 2.5), h: Math.round((clip ? clip.height : 2200) * 2.5), raw: raw && raw.data ? raw.data : "", rawW: 1440, rawH: 2200, account: account || (st && st.me) || "", url };
+  } catch (e) {
+    return { ok: false, reason: "error", error: String((e && e.message) || e), account };
+  } finally {
+    if (attached && tab) await chrome.debugger.detach({ tabId: tab.id }).catch(() => {});
+    if (tab) await chrome.tabs.remove(tab.id).catch(() => {});
+  }
 }
 async function hubPost(url, body) {
   const ctl = new AbortController();
@@ -10144,7 +10472,7 @@ async function saveSlackFile(blob, name, client, channel, tag) {
 // storage slackSession { team, name, domain, token, user, mode, at } - this
 // computer only (not in the Drive backup, not in settings).
 // storage slackChannels { [channelId]: { name, client } } · slackPoll { at, err, since: { [channelId]: ms }, seen: { [fileId]: ms } }
-const SLACK_POLL_MS = 20 * 60000;
+const SLACK_POLL_MS = 10 * 60000; // (was 20: a 15-minute reply window needs messages found sooner)
 const SLACK_AUTH_ERR = /^(invalid_auth|not_authed|account_inactive|token_revoked|token_expired|no_permission)$/;
 async function slackTab() {
   const tabs = await chrome.tabs.query({ url: "https://app.slack.com/*" }).catch(() => []);
@@ -10660,9 +10988,48 @@ function slackTagOf(m, me) {
   return "";
 }
 function slackTagLink(s, cid, ts) { return "https://" + (s.domain || "slack.com") + "/archives/" + cid + "/p" + String(ts).replace(".", ""); }
+// Your direct / group DMs with something new: their new messages, for the Slack tab (a
+// message to you there, with no reply from you, is waiting on you). Which DMs have new
+// messages comes from Slack's own counts (client.counts: each DM's latest message - what
+// the Slack web app uses); without them, the 15 most recently opened DMs are read.
+// NOTE: a DM's "updated" in conversations.list is when the DM was opened, not its last
+// message - skipping on it hid every new message in an older DM (the "DMs 0" bug).
+async function slackDmFetch(s, me) {
+  const { slackDmSince } = await chrome.storage.local.get("slackDmSince");
+  const since = { ...(slackDmSince || {}) }, out = {};
+  const floor = String(Math.floor((Date.now() - 3 * 86400000) / 1000));
+  const r = await slackApi("conversations.list", { types: "im,mpim", exclude_archived: "true", limit: "500" }, s).catch(() => null);
+  const info = new Map(r && r.ok ? (r.channels || []).filter((c) => c && c.id).map((c) => [c.id, c]) : []);
+  const cc = await slackApi("client.counts", { thread_counts_by_channel: "false" }, s).catch(() => null);
+  let cands = cc && cc.ok && (Array.isArray(cc.ims) || Array.isArray(cc.mpims))
+    ? [...(cc.ims || []), ...(cc.mpims || [])].filter((x) => x && x.id).map((x) => ({ id: x.id, latest: String(x.latest || "") }))
+    : [...info.values()].sort((a, b) => (Number(b.updated) || 0) - (Number(a.updated) || 0)).slice(0, 15).map((c) => ({ id: c.id, latest: "" }));
+  cands = cands.filter((x) => { const c = info.get(x.id); return !c || (c.user !== me && c.user !== "USLACKBOT" && !c.is_user_deleted); })
+    .filter((x) => !x.latest || Number(x.latest) > Number(since[x.id] || floor))
+    .sort((a, b) => (Number(b.latest) || 0) - (Number(a.latest) || 0)).slice(0, 15);
+  for (const x of cands) {
+    const c = info.get(x.id) || {};
+    const oldest = since[x.id] || floor;
+    const h = await slackApi("conversations.history", { channel: x.id, oldest, limit: "30" }, s).catch(() => null);
+    await new Promise((y) => setTimeout(y, 300));
+    if (!h || !h.ok) continue;
+    const msgs = h.messages || [];
+    let newest = oldest;
+    for (const m of msgs) if (Number(m.ts) > Number(newest)) newest = String(m.ts);
+    since[x.id] = newest;
+    out[x.id] = { name: c.is_mpim ? String(c.name || "group DM").replace(/^mpdm-/, "").replace(/-\d+$/, "").replace(/--/g, ", ") : "", msgs, user: c.user || "" };
+  }
+  await chrome.storage.local.set({ slackDmSince: since });
+  return out;
+}
 async function slackMentionsUpdate(byChannel, ids, map, s) {
   const me = String((s && s.userId) || "");
   if (!me) return;
+  const dmIds = new Set();
+  try {
+    const dms = await slackDmFetch(s, me);
+    for (const [cid, d] of Object.entries(dms)) { dmIds.add(cid); byChannel[cid] = d.msgs; map = { ...map, [cid]: { name: d.name || "DM", client: "" } }; }
+  } catch (e) {}
   const g = await chrome.storage.local.get(["slackMentions", "slackMentionsBack"]);
   const items = new Map((((g.slackMentions && g.slackMentions.items) || [])).map((x) => [x.k, x]));
   const back = { ...(g.slackMentionsBack || {}) };
@@ -10682,7 +11049,7 @@ async function slackMentionsUpdate(byChannel, ids, map, s) {
   }
   for (const [cid, msgs] of Object.entries(byChannel)) {
     for (const m of msgs || []) {
-      const kind = slackTagOf(m, me);
+      const kind = dmIds.has(cid) ? (m && m.ts && m.user && m.user !== me && !m.bot_id && !m.subtype ? "dm" : "") : slackTagOf(m, me);
       if (!kind) continue;
       const k = cid + ":" + m.ts;
       const at = Math.round(Number(m.ts) * 1000);
@@ -10690,7 +11057,7 @@ async function slackMentionsUpdate(byChannel, ids, map, s) {
       const replied = Array.isArray(m.reply_users) && m.reply_users.includes(me);
       const old = items.get(k);
       items.set(k, { ...(old || {}), k, cid, ts: String(m.ts), at, kind, client: String((map[cid] && map[cid].client) || ""), channel: String((map[cid] && map[cid].name) || ""),
-        who: String(m.user || ""), raw: String(m.text || "").slice(0, 2000), link: slackTagLink(s, cid, m.ts), ...(replied && !(old && old.answeredAt) ? { answeredAt: now } : {}) });
+        who: String(m.user || ""), raw: String(m.text || "").slice(0, 6000), link: slackTagLink(s, cid, m.ts), ...(replied && !(old && old.answeredAt) ? { answeredAt: now } : {}) });
       if (!old && !replied && kind === "you" && !firstLook.has(cid)) fresh.push(k);
     }
     // You posted in the channel after it: answered there.
@@ -10706,9 +11073,13 @@ async function slackMentionsUpdate(byChannel, ids, map, s) {
     await new Promise((x) => setTimeout(x, 300));
   }
   // Names for the people and the text (Slack's <@U…> ids).
-  const need = [...new Set([...items.values()].filter((it) => !it.text).flatMap((it) => [it.who].concat((it.raw.match(/<@([UW][A-Z0-9]+)/g) || []).map((x) => x.slice(2)))).filter(Boolean))];
+  const need = [...new Set([...items.values()].filter((it) => !it.text || !it.names).flatMap((it) => [it.who].concat((it.raw.match(/<@([UW][A-Z0-9]+)/g) || []).map((x) => x.slice(2)))).filter(Boolean))];
   const names = need.length ? await cnoteNames(need, s).catch(() => ({})) : {};
-  for (const it of items.values()) if (!it.text) { it.text = cnotePlain(it.raw, names).slice(0, 600); it.whoName = names[it.who] || it.whoName || ""; }
+  for (const it of items.values()) if (!it.text || !it.names) {
+    it.text = cnotePlain(it.raw, names).slice(0, 4000); it.whoName = names[it.who] || it.whoName || "";
+    // The names the message mentions, so the Slack tab can draw @people from its raw text.
+    it.names = {}; for (const id of [it.who].concat((it.raw.match(/<@([UW][A-Z0-9]+)/g) || []).map((x) => x.slice(2)))) if (names[id]) it.names[id] = names[id];
+  }
   // Kept: open ones for 14 days; answered / done ones 2 more days (then gone).
   const list = [...items.values()].filter((it) => now - it.at < SLACK_TAG_KEEP_MS && !((it.answeredAt || it.doneAt) && now - (it.answeredAt || it.doneAt) > 2 * 86400000))
     .sort((a, b) => b.at - a.at).slice(0, 200);
@@ -10796,10 +11167,33 @@ async function wpPhpReadOne(url) {
   // that isn't from a page) and a tab of that site is open: ask from inside it,
   // the way the page itself would.
   if (!out.ok && out.reason !== "notwp") {
-    const inTab = await wpPhpReadInTab(base).catch(() => null);
-    if (inTab) return inTab.ok || inTab.reason === "signin" ? inTab : out;
+    const inTab = (await wpPhpReadInTab(base).catch(() => null)) || (await wpPhpReadNewTab(base).catch(() => null));
+    if (inTab) return inTab.ok || inTab.reason === "signin" || !out.reason ? inTab : out;
   }
   return out;
+}
+// A request from the extension itself can be refused, or arrive without the WordPress
+// cookie (Chrome's third-party cookie rules), even though this profile is signed in.
+// Opening Site Health as a normal page (background tab, closed after) is what a person
+// would do: one page load, with the profile's own sign-in.
+async function wpPhpReadNewTab(base) {
+  let tab = null;
+  try {
+    tab = await chrome.tabs.create({ url: base + "/wp-admin/site-health.php?tab=debug", active: false });
+    const until = Date.now() + 40000;
+    while (Date.now() < until) {
+      await sleepMs(1500);
+      const t = await chrome.tabs.get(tab.id).catch(() => null);
+      if (!t) return null;
+      if (t.status !== "complete") continue;
+      const [r] = await chrome.scripting.executeScript({ target: { tabId: tab.id }, func: () => ({ url: location.href, html: document.documentElement ? document.documentElement.outerHTML.slice(0, 3000000) : "", title: document.title }) }).catch(() => [null]);
+      const v = r && r.result;
+      if (!v) return null;
+      if (/site-health/.test(v.url) && !/php/i.test(v.html) && Date.now() < until - 30000) continue; // the debug tab can fill in a moment later
+      return wpPhpJudge(String(v.url || ""), /page not found|404/i.test(v.title || "") ? 404 : 200, String(v.html || ""));
+    }
+    return { ok: false, error: "No answer within 40s" };
+  } finally { if (tab) chrome.tabs.remove(tab.id).catch(() => {}); }
 }
 async function wpPhpReadInTab(base) {
   const host = new URL(base).hostname.replace(/^www\./, "");
@@ -10850,11 +11244,46 @@ async function wpRelayTick() {
   if (g.wpPhpRelay && g.wpPhpRelay.state === "waiting") await wpRelayCollect();
 }
 async function wpHelperTake() {
-  if (wpPhpRunning) return;
-  const r = await deskFiles({ op: "phpTake", install: await installId() }, 3000);
-  if (!r || !r.ok || !r.job) return;
-  const job = r.job;
-  await wpPhpRead(job.urls, (url, res) => deskFiles({ op: "phpDone", install: "", id: job.id, results: { [url]: res } }, 5000));
+  const me = await installId(), g = await chrome.storage.local.get(["helperAccount", "helperWp"]);
+  const wp = g.helperWp !== false; // helpers set up before 2026-11-29 read WordPress
+  if (!wpPhpRunning) {
+    const r = await deskFiles({ op: "phpTake", install: me, account: String(g.helperAccount || ""), wp }, 3000);
+    if (r && r.ok && r.job) { const job = r.job; wpPhpRead(job.urls, (url, res) => deskFiles({ op: "phpDone", install: "", id: job.id, results: { [url]: res } }, 5000)).catch(() => {}); }
+  }
+  await helperJobs(me).catch(() => {});
+}
+// Screenshot jobs left for this helper's Google account (Export report): only the kinds
+// below, and only pages of the tool itself (e.g. analytics.google.com) - never a free URL.
+let helperJobBusy = false;
+async function helperJobs(me) {
+  if (helperJobBusy) return;
+  helperJobBusy = true;
+  try {
+    for (let n = 0; n < 3; n++) {
+      const r = await deskFiles({ op: "jobTake", install: me }, 3000);
+      if (!r || !r.ok || !r.job) return;
+      const j = r.job, p = j.params || {};
+      let out;
+      if (j.kind === "ga-proof") out = await gaProofCapture({ propertyId: String(p.propertyId || ""), ym: String(p.ym || ""), account: String(p.account || ""), expect: String(p.account || ""), organicOnly: !!p.organicOnly }).catch((e) => ({ ok: false, reason: "error", error: String((e && e.message) || e) }));
+      else out = { ok: false, reason: "error", error: "This helper is older than the job - update the extension in that profile." };
+      await deskFiles({ op: "jobDone", install: me, id: j.id, result: out }, 60000);
+    }
+  } finally { helperJobBusy = false; }
+}
+// Main profile: a screenshot through the helper signed in as the account ({ none } = no such helper running).
+async function helperJob(kind, account, params, waitMs) {
+  const me = await installId(), wait = waitMs || 150000; // the helper knocks once a minute, then ~30s to capture
+  const put = await deskFiles({ op: "jobPut", install: me, kind, account, params }, 3000);
+  if (!put) return { none: true, why: "noapp" };
+  if (!put.ok) return { none: true, why: put.why || "oldapp", helpers: put.helpers || [] };
+  const until = Date.now() + wait;
+  while (Date.now() < until) {
+    await sleepMs(2000);
+    const g = await deskFiles({ op: "jobGet", install: me, id: put.id }, 60000);
+    if (!g || g.gone) return { ok: false, reason: "error", error: "The taskbar app lost the job - try again." };
+    if (g.done) return { ...(g.result || { ok: false }), via: "helper" };
+  }
+  return { ok: false, reason: "helpertimeout", error: "The helper for " + account + " didn't finish within " + Math.round(wait / 1000) + " seconds (is that Chrome profile open?)." };
 }
 async function wpRelayCollect() {
   const { wpPhpRelay: rl } = await chrome.storage.local.get("wpPhpRelay");
@@ -10949,6 +11378,7 @@ async function slackPoll(force) {
   const count = Object.values(index).reduce((n, c) => n + ((c && c.files) || []).length, 0);
   await chrome.storage.local.set({ slackIndex: index, slackPoll: { at: Date.now(), err: authErr ? "Slack signed out - open Slack in Chrome and press Reconnect" : err, authErr, listed: count } });
   if (authErr && !poll.authErr) await notify("slack-auth", "Slack needs reconnecting", "Slack signed this browser out, so the briefs can't look in your Slack channels. Open Slack in Chrome, then Clients › Slack › Reconnect.", undefined, chrome.runtime.getURL("options.html#files")).catch(() => {});
+  if (!authErr) slackReportsCollect().catch(() => {}); // new monthly reports, filed for their client
   return { ok: !authErr, listed: count, error: authErr ? "Slack signed out - open Slack in Chrome and press Reconnect" : err };
 }
 // What Slack has for one task: its client's channel(s), the files that fit it
@@ -11084,6 +11514,107 @@ async function slackTrashCopies(list) {
   await chrome.storage.local.set({ slackHashes: hashes });
   return { ok: !needUpdate, moved, failed, needUpdate, error: needUpdate ? "Update the ClickUp Tracker app (0.4.1 or later) first - it does the moving." : "" };
 }
+// ---------- Monthly reports from the clients' Slack channels (Clients › Monthly reports) ----------
+// The Slack check already lists every document posted in each matched channel
+// (slackIndex). A file that reads as a report (its name says report, or a month and a
+// year) is downloaded once with your Slack sign-in and saved to that client's files
+// (their folder through the Tracker app, else the Clients inbox) - so each client keeps
+// its own history of monthly reports, for tracking and growth analysis. Never twice:
+// storage clientReports { [fileId]: { client, name, created, channel, permalink, savedAt, where, err } }.
+const REPORT_NAME_RE = /report|reporting|\b(jan|feb|mar|apr|may|jun|jul|aug|sep|sept|oct|nov|dec)[a-z]*[\s_.-]*(20\d\d)\b|\b(20\d\d)[\s_.-]*(0[1-9]|1[0-2])\b/i;
+const REPORT_TYPE_RE = /\.(pdf|docx?|xlsx?|pptx?|csv)$/i;
+let reportsBusy = false;
+async function slackReportsCollect(onlyClient) {
+  if (await isHelperOnly()) return { ok: false, error: "helper only" };
+  if (reportsBusy) return { ok: false, error: "already collecting" };
+  const g = await chrome.storage.local.get(["slackSession", "slackIndex", "slackChannels", "clientReports"]);
+  const sess = g.slackSession, map = g.slackChannels || {}, have = { ...(g.clientReports || {}) };
+  if (!sess) return { ok: false, error: "Connect Slack first (Slack \u203A Client channels)." };
+  const todo = [];
+  for (const [cid, c] of Object.entries(g.slackIndex || {})) {
+    const client = map[cid] && map[cid].client;
+    if (!client || (onlyClient && client !== onlyClient)) continue;
+    for (const f of (c && c.files) || []) {
+      if (!f || !f.id || have[f.id] || !f.url || !REPORT_TYPE_RE.test(f.name || "") || !REPORT_NAME_RE.test(f.name || "")) continue;
+      todo.push({ f, client, channel: (map[cid] && map[cid].name) || "" });
+    }
+  }
+  todo.sort((a, b) => b.f.created - a.f.created);
+  reportsBusy = true;
+  let saved = 0, failed = 0;
+  try {
+    for (const t of todo.slice(0, 12)) { // a few at a time: never a burst of downloads
+      const rec = { client: t.client, name: t.f.name, created: t.f.created, channel: t.channel, permalink: t.f.permalink || "", size: t.f.size || 0, savedAt: Date.now() };
+      try {
+        if (t.f.size > 25 * 1048576) throw new Error("over 25 MB");
+        const blob = await slackFetchFile(t.f.url, sess);
+        if (/text\/html/i.test(blob.type) && !/\.html?$/i.test(t.f.name)) throw new Error("Slack sent its sign-in page");
+        rec.where = await saveSlackFile(blob, t.f.name, t.client, t.channel, t.f.id);
+        saved++;
+      } catch (e) { rec.err = String((e && e.message) || e).slice(0, 120); failed++; }
+      have[t.f.id] = rec;
+      await new Promise((x) => setTimeout(x, 700));
+    }
+  } finally { reportsBusy = false; }
+  await chrome.storage.local.set({ clientReports: have });
+  return { ok: true, saved, failed, waiting: Math.max(0, todo.length - 12) };
+}
+// ---------- Slack › reply-by reminder ----------
+// A message that tags you, or a DM, still unanswered after your reply window (storage
+// slackSla { on, min }, default on, 15 min): ONE notification with Already addressed /
+// Remind me later. Never repeats by itself: only after a snooze runs out. Checked every
+// minute against the messages the Slack check found.
+const SLACK_SLA_PREFIX = "slack-sla-";
+// The workspace's people, for @mentions in the Slack tab's reply box (once a day).
+async function slackUsers(force) {
+  const g = await chrome.storage.local.get(["slackSession", "slackUsersCache"]);
+  const c = g.slackUsersCache;
+  if (!force && c && Date.now() - (Number(c.at) || 0) < 86400000 && Array.isArray(c.list)) return { ok: true, list: c.list };
+  if (!g.slackSession) return { ok: false, error: "Slack isn't connected." };
+  const list = [];
+  let cursor = "";
+  for (let i = 0; i < 5; i++) {
+    const r = await slackApi("users.list", { limit: "200", ...(cursor ? { cursor } : {}) }, g.slackSession).catch(() => null);
+    if (!r || !r.ok) break;
+    for (const u of r.members || []) if (u && u.id && !u.deleted && !u.is_bot && u.id !== "USLACKBOT") list.push({ id: u.id, name: String((u.profile && (u.profile.display_name || u.profile.real_name)) || u.real_name || u.name || "").slice(0, 60), handle: String(u.name || "").slice(0, 40) });
+    cursor = r.response_metadata && r.response_metadata.next_cursor;
+    if (!cursor) break;
+  }
+  if (list.length) await chrome.storage.local.set({ slackUsersCache: { at: Date.now(), list } });
+  return { ok: !!list.length, list: list.length ? list : (c && c.list) || [] };
+}
+async function slackSlaCheck() {
+  const g = await chrome.storage.local.get(["slackMentions", "slackSla"]);
+  // OFF unless switched on (people already get Slack's own notifications); once on, only
+  // messages that arrived after it was switched on (cfg.since) - never a burst of old ones.
+  const cfg = { on: false, min: 15, since: 0, ...(g.slackSla || {}) };
+  if (!cfg.on) return;
+  const sm = g.slackMentions || { items: [] }, now = Date.now(), win = Math.max(1, Number(cfg.min) || 15) * 60000;
+  let changed = false;
+  const items = (sm.items || []).map((it) => {
+    if (!it || it.answeredAt || it.doneAt || (it.kind !== "you" && it.kind !== "dm")) return it;
+    if (now - (Number(it.at) || now) < win) return it;
+    if (now - (Number(it.at) || 0) > 2 * 86400000 && !it.snoozeUntil) return it; // older than 2 days when first seen: not "late", just old
+    if ((Number(it.at) || 0) < (Number(cfg.since) || now) && !it.snoozeUntil) return it; // from before the reminder was switched on
+    if (it.slaAt && !(it.snoozeUntil && now >= it.snoozeUntil)) return it;
+    changed = true;
+    const who = it.whoName || "Someone", where = it.kind === "dm" ? "in a DM" : "in #" + (it.channel || "a channel");
+    notify(SLACK_SLA_PREFIX + it.k, "Reply waiting: " + who + " " + where, String(it.text || "").slice(0, 180), undefined, it.link || null,
+      { priority: 2, requireInteraction: true, buttons: [{ title: "Already addressed" }, { title: "Remind me later" }] }).catch(() => {});
+    return { ...it, slaAt: now, snoozeUntil: 0 };
+  });
+  if (changed) await chrome.storage.local.set({ slackMentions: { ...sm, items } });
+}
+if (chrome.notifications && chrome.notifications.onButtonClicked) chrome.notifications.onButtonClicked.addListener((id, btn) => {
+  if (!id.startsWith(SLACK_SLA_PREFIX)) return;
+  const k = id.slice(SLACK_SLA_PREFIX.length);
+  chrome.notifications.clear(id).catch(() => {});
+  chrome.storage.local.get(["slackMentions", "slackSla"]).then((g) => {
+    const sm = g.slackMentions || { items: [] }, snooze = Math.max(5, Number((g.slackSla || {}).snoozeMin) || 15) * 60000;
+    const items = (sm.items || []).map((x) => (x.k !== k ? x : btn === 0 ? { ...x, doneAt: Date.now(), addressedAt: Date.now() } : { ...x, snoozeUntil: Date.now() + snooze }));
+    return chrome.storage.local.set({ slackMentions: { ...sm, items } });
+  }).catch(() => {});
+});
 async function slackFileGet(id) {
   const g = await chrome.storage.local.get(["slackSession", "slackIndex"]);
   const s = g.slackSession;
@@ -11611,6 +12142,7 @@ chrome.alarms.onAlarm.addListener(async (alarm) => {
     // adding one on the 30-min check only guarantees an overlapping burst.
     autoSyncIfSignedIn();
   } else if (alarm.name === UPDATE_ALARM) {
+    slackSlaCheck().catch(() => {}); // Slack: a message waiting past your reply window
     rulesTick().catch((e) => diagLog("rules", "tick: " + ((e && e.message) || e))); // Automation rules: time of day, timers, due / overdue, waits
     archiveWatch(false).catch(() => {}); // archived tasks: self-gated (30 min, or a minute after a task vanished)
     await checkForUpdate().catch(() => {});
@@ -12256,6 +12788,24 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       case "PERF_HISTORY": {
         try { sendResponse(await getPerfHistory(!!msg.force, msg.weeks)); }
         catch (e) { sendResponse({ ok: false, error: String(e && e.message ? e.message : e) }); }
+        break;
+      }
+      case "CLICKUP_TODAY_BY_TASK": {
+        // Today's tracked time per task straight from my ClickUp time entries (and a
+        // running timer), named - for the Tracked panel when its rows add up to less
+        // than the card (a task it doesn't list). Asked only when that panel opens.
+        const cfg = await getClickupConfig();
+        if (!cfg || !cfg.token || !cfg.teamId || cfg.userId == null) { sendResponse({ ok: false, reason: "not-configured" }); break; }
+        try {
+          const map = await fetchTodayTimeEntriesByTask(cfg.token, cfg.teamId, Date.now(), [String(cfg.userId)]);
+          await addRunningTimerToTodayMap(cfg.token, cfg.teamId, map, Date.now());
+          const rows = [];
+          for (const [id, ms] of [...map].filter(([, m]) => Number(m) > 0).slice(0, 40)) {
+            const t = await getTaskById(cfg.token, id).catch(() => null);
+            rows.push({ id: String(id), name: (t && t.name) || "(a task you can't open)", url: (t && t.url) || taskUrlFor(id), spentMs: Number(ms) || 0 });
+          }
+          sendResponse({ ok: true, rows });
+        } catch (e) { sendResponse({ ok: false, error: String((e && e.message) || e) }); }
         break;
       }
       case "CLICKUP_OPEN_TASKS": {
@@ -13819,22 +14369,145 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       }
       case "WP_PHP_START": { sendResponse(await wpPhpStart(msg.urls, !!msg.local).catch((e) => ({ ok: false, error: String(e && e.message || e) }))); break; }
       case "WP_RELAY_COLLECT": { sendResponse((await wpRelayCollect().catch(() => null)) || { state: "" }); break; }
+      case "HELPER_STATUS": { const ps = await deskFiles({ op: "phpStatus", install: await installId() }, 3000); sendResponse({ ok: !!ps, app: !!(ps && ps.ok), helpers: (ps && ps.helpers) || null }); break; }
       case "WP_HELPER_SET": {
-        await chrome.storage.local.set({ wpHelper: !!msg.on });
+        const acct = String(msg.account == null ? (await chrome.storage.local.get("helperAccount")).helperAccount || "" : msg.account).trim().toLowerCase();
+        if (acct && !/^[^@\s]+@[^@\s]+\.[a-z]{2,}$/.test(acct)) { sendResponse({ ok: false, error: "That doesn't look like an email address." }); break; }
+        await chrome.storage.local.set({ wpHelper: !!msg.on, helperAccount: acct, ...(msg.wp == null ? {} : { helperWp: !!msg.wp }) });
         if (msg.on) await wpHelperTake().catch(() => {}); // say "I'm here" to the app straight away
         const ps = await deskFiles({ op: "phpStatus", install: await installId() }, 3000);
-        sendResponse({ ok: true, app: !!(ps && ps.ok), oldApp: !!(ps && !ps.ok) });
+        sendResponse({ ok: true, app: !!(ps && ps.ok), oldApp: !!(ps && (!ps.ok || !ps.helpers)), helpers: (ps && ps.helpers) || [] });
         break;
       }
       case "SLACK_MENTION_DONE": {
         // Insights › Slack: tagged, no reply yet › Done (answered somewhere the check can't see, or nothing to say).
         const g = await chrome.storage.local.get("slackMentions");
         const sm = g.slackMentions || { items: [] };
-        const items = (sm.items || []).map((x) => (x.k === String(msg.k || "") ? { ...x, doneAt: Date.now() } : x));
+        // msg.undo: back on the list.
+        const items = (sm.items || []).map((x) => (x.k === String(msg.k || "") ? (msg.undo ? (({ doneAt, answeredAt, ...r }) => r)(x) : { ...x, doneAt: Date.now() }) : x));
         await chrome.storage.local.set({ slackMentions: { ...sm, items } });
         sendResponse({ ok: true });
         break;
       }
+      case "SLACK_MENTION_PIN": {
+        // Slack tab › Pin: kept at the top of the list (here only, nothing changes in Slack).
+        const g = await chrome.storage.local.get("slackMentions");
+        const sm = g.slackMentions || { items: [] };
+        const items = (sm.items || []).map((x) => (x.k === String(msg.k || "") ? (msg.on ? { ...x, pinnedAt: Date.now() } : (({ pinnedAt, ...r }) => r)(x)) : x));
+        await chrome.storage.local.set({ slackMentions: { ...sm, items } });
+        sendResponse({ ok: true });
+        break;
+      }
+      case "SLACK_MENTION_REPLY": {
+        // Slack tab › Reply: posted in the message's thread with your own Slack sign-in
+        // (the same way the daily update posts), then it counts as answered.
+        const text = String(msg.text || "").trim().slice(0, 4000);
+        if (!text) { sendResponse({ ok: false, error: "Write a reply first." }); break; }
+        const g = await chrome.storage.local.get(["slackMentions", "slackSession"]);
+        const s = g.slackSession;
+        if (!s) { sendResponse({ ok: false, error: "Slack isn't connected (Slack \u203A Client channels \u203A Connect Slack)." }); break; }
+        const sm = g.slackMentions || { items: [] };
+        const it = (sm.items || []).find((x) => x.k === String(msg.k || ""));
+        if (!it || !it.cid || !it.ts) { sendResponse({ ok: false, error: "That message isn't on the list any more." }); break; }
+        // Slack's own tokens stay as they are (<@U123> mentions, <https://…|label> links, <!here>); the rest is escaped.
+        const safe = text.split(/(<(?:@[UW][A-Z0-9]+|#C[A-Z0-9]+(?:\|[^>]*)?|!(?:here|channel|everyone)|https?:\/\/[^>\s]+(?:\|[^>]*)?)>)/).map((p, i) => (i % 2 ? p : p.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;"))).join("");
+        const r = await slackApi("chat.postMessage", { channel: it.cid, thread_ts: it.ts, text: safe }, s).catch((e) => ({ ok: false, error: String((e && e.message) || e) }));
+        if (!r || !r.ok) { const err = String((r && r.error) || "no answer"); sendResponse({ ok: false, error: err === "not_in_channel" ? "You're not in that channel." : SLACK_AUTH_ERR.test(err) ? "Slack signed you out - open app.slack.com and sign in, then try again." : "Slack said: " + err }); break; }
+        const latest = ((await chrome.storage.local.get("slackMentions")).slackMentions) || sm;
+        const items = (latest.items || []).map((x) => (x.k === it.k ? { ...x, answeredAt: Date.now(), repliedText: text.slice(0, 300) } : x));
+        await chrome.storage.local.set({ slackMentions: { ...latest, items } });
+        sendResponse({ ok: true });
+        break;
+      }
+      case "SLACK_USERS": { sendResponse(await slackUsers(!!msg.force).catch((e) => ({ ok: false, error: String((e && e.message) || e) }))); break; }
+      case "SLACK_REPORTS_COLLECT": { sendResponse(await slackReportsCollect(msg.client ? String(msg.client) : "").catch((e) => ({ ok: false, error: String((e && e.message) || e) }))); break; }
+      case "PSI_TEST_NOW": { // Site monitor › a site's detail: test this one site now (uses the user's PageSpeed key)
+        const u = String(msg.url || "");
+        if (!/^https?:\/\//.test(u)) { sendResponse({ ok: false, error: "No site." }); break; }
+        const { psiKey } = await chrome.storage.local.get("psiKey");
+        if (!psiKey) { sendResponse({ ok: false, error: "Add a PageSpeed key first (Site monitor › Tools › PageSpeed key)." }); break; }
+        const { psiPauseUntil } = await chrome.storage.local.get("psiPauseUntil");
+        if (Number(psiPauseUntil) > Date.now()) { sendResponse({ ok: false, error: "Google asked to slow down; tests start again at " + new Date(psiPauseUntil).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" }) + "." }); break; }
+        for (let i = 0; psiBusy && i < 300; i++) await sleepMs(1000); // the background run finishes first (one run at a time)
+        await pageSpeedScan([u], true).catch(() => {});
+        sendResponse({ ok: true, psi: ((await chrome.storage.local.get("sitePsi")).sitePsi || {})[u] || null });
+        break;
+      }
+      // ---- Site monitor › Google data (Search Console + GA4), lib-gdata.js ----
+      case "GDATA_CONNECT": {
+        const t = await gdataConnect().catch(() => null); // another Google account (or the same one again)
+        if (!t) { sendResponse({ ok: false, error: "Google sign-in was cancelled or refused. If Google said the app isn't verified or the API is off, see the setup steps here." }); break; }
+        const p = await gdataProps(true).catch((e) => ({ errs: [String(e && e.message || e)], gsc: [], ga: [] }));
+        sendResponse({ ok: true, email: t, accounts: p.accounts || [], gsc: p.gsc.length, ga: p.ga.length, errs: p.errs || [] });
+        break;
+      }
+      case "GDATA_DISCONNECT": { await gdataDisconnect(msg.email ? String(msg.email) : "").catch(() => {}); gdataProps(true).catch(() => {}); sendResponse({ ok: true }); break; }
+      case "GDATA_PROPS": { // the properties, and which one each asked site uses
+        const hp = await gdataHubProps(!!msg.force).catch(() => null);
+        if (hp) {
+          const m = (await chrome.storage.local.get("gdataMap")).gdataMap || {};
+          sendResponse({ ok: true, source: "hub", account: hp.account, accounts: [], gsc: hp.gsc, gscAcct: hp.gscAcct || {}, ga: hp.ga.map((x) => ({ id: x.id, name: x.name, account: x.account, acct: x.acct || hp.account })), errs: hp.errs || [], picks: Object.fromEntries((msg.urls || []).map((u) => [u, gdataPick(u, hp, m)])) });
+          break;
+        }
+        try {
+          const p = await gdataProps(!!msg.force), m = (await chrome.storage.local.get("gdataMap")).gdataMap || {};
+          sendResponse({ ok: true, accounts: p.accounts || [], gsc: p.gsc, gscAcct: p.gscAcct || {}, ga: p.ga.map((x) => ({ id: x.id, name: x.name, account: x.account, acct: x.acct })), errs: p.errs || [], picks: Object.fromEntries((msg.urls || []).map((u) => [u, gdataPick(u, p, m)])) });
+        } catch (e) { sendResponse({ ok: false, error: String(e && e.message || e) }); }
+        break;
+      }
+      case "GDATA_SET_MAP": { // a property picked by hand for one site ("" = none, null = back to automatic)
+        const u = String(msg.url || "");
+        const g = await chrome.storage.local.get(["gdataMap", "gdataCache"]), m = { ...(g.gdataMap || {}) }, c = { ...(g.gdataCache || {}) };
+        const rec = { ...(m[u] || {}) };
+        for (const k of ["gsc", "ga"]) if (k in msg) { if (msg[k] === null) delete rec[k]; else rec[k] = String(msg[k]); }
+        if (Object.keys(rec).length) m[u] = rec; else delete m[u];
+        delete c[u];
+        await chrome.storage.local.set({ gdataMap: m, gdataCache: c });
+        sendResponse({ ok: true });
+        break;
+      }
+      // ---- Export report: client recipes + delivered totals (team hub), this profile's Google account ----
+      case "RECIPES_GET": {
+        const { reportRecipes: c } = await chrome.storage.local.get("reportRecipes");
+        if (!msg.force && c && c.ok && Date.now() - (c.at || 0) < 10 * 60000) { sendResponse(c); break; }
+        const r = await hubCall("recipes", {}).catch(() => null);
+        if (r && r.ok) { const v = { ok: true, at: Date.now(), recipes: r.recipes || [], delivered: r.delivered || {} }; await chrome.storage.local.set({ reportRecipes: v }); sendResponse(v); }
+        else sendResponse(c && c.ok ? { ...c, stale: true, error: (r && r.error) || "" } : { ok: false, error: (r && r.error) || "The team hub didn't answer." });
+        break;
+      }
+      case "RECIPES_SAVE": { const r = await hubCall("recipesSave", { json: String(msg.json || "") }, true).catch((e) => ({ ok: false, error: String(e && e.message || e) })); if (r && r.ok) await chrome.storage.local.remove("reportRecipes"); sendResponse(r); break; }
+      case "DELIVERED_SAVE": { const r = await hubCall("deliveredSave", { key: msg.key, ym: msg.ym, total: msg.total }).catch(() => null); await chrome.storage.local.remove("reportRecipes"); sendResponse(r || { ok: false }); break; }
+      case "GA_PROOF": {
+        const fail = (e) => ({ ok: false, reason: "error", error: String((e && e.message) || e) });
+        let h = null;
+        if (msg.account && !(await isHelperOnly())) {
+          h = await helperJob("ga-proof", String(msg.account).toLowerCase(), { propertyId: String(msg.propertyId || ""), ym: String(msg.ym || ""), account: String(msg.account), organicOnly: !!msg.organicOnly }).catch(fail);
+          if (h && !h.none) { sendResponse(h); break; }
+        }
+        const local = await gaProofCapture(msg).catch(fail);
+        sendResponse(h && h.none ? { ...local, helperWhy: h.why, helpers: h.helpers || [] } : local);
+        break;
+      }
+      case "GDATA_MONTHLY": {
+        const u = String(msg.url || ""), from = /^\d{4}-\d{2}$/.test(String(msg.from || "")) ? String(msg.from) : "";
+        const hp = await gdataHubProps(false).catch(() => null);
+        const gaId = String(msg.ga || "").replace(/\D/g, "");
+        sendResponse(await (hp ? gdataMonthlyViaHub(u, from, !!msg.force, hp, gaId) : gdataMonthly(u, from, !!msg.force, gaId)).catch((e) => ({ ok: false, err: String(e && e.message || e) })));
+        break;
+      }
+      case "GDATA_REPORT": {
+        const u = String(msg.url || "");
+        const hp = await gdataHubProps(false).catch(() => null);
+        sendResponse(await (hp ? gdataReportViaHub(u, !!msg.force, hp) : gdataReport(u, !!msg.force)).catch((e) => ({ ok: false, err: String(e && e.message || e) })));
+        break;
+      }
+      case "PSI_SCAN_NOW": { // a PageSpeed key was just saved: start on the sites now instead of at the next check
+        const cfg = await getSiteMonitorConfig().catch(() => null);
+        pageSpeedScan(((cfg && cfg.sites) || []).map((s) => s && s.url).filter(Boolean)).catch(() => {});
+        sendResponse({ ok: true });
+        break;
+      }
+      case "HUB_VERSION_CHECK": { sendResponse(await hubVersionCheck().catch((e) => ({ ok: false, error: String((e && e.message) || e) }))); break; }
       case "SLACK_POLL_NOW": { sendResponse(await slackPoll(true).catch((e) => ({ ok: false, error: String(e && e.message || e) }))); break; }
       case "ASG_CANCEL": {
         const g = await chrome.storage.local.get(ASG_KEY);

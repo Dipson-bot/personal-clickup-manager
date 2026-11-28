@@ -56,12 +56,15 @@
   .remind.autosend { margin-top: 10px; padding-top: 10px; border-top: 1px dashed var(--border); }
   button:disabled { opacity: .6; cursor: progress; }
 </style>
+<link rel="stylesheet" href="theme-studio.css" />
+<script src="ui-theme.js"></script>
 </head>
-<body>
+<body class="wrapup">
   <div class="wrap">
-    <div>
-      <h1>Wrap up the day 📋</h1>
-      <div class="sub" id="today"></div>
+    <div class="wu-head">
+      <span class="wu-logo" aria-hidden="true">📋</span>
+      <div><h1>Wrap up the day</h1>
+      <div class="sub" id="today"></div></div>
     </div>
 
     <div class="card" id="progCard">

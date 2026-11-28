@@ -80,6 +80,7 @@
         run = st.running && st.running.taskId ? st.running : null;
         rp = g && g.runningProgress && run && String(g.runningProgress.taskId) === String(run.taskId) ? g.runningProgress : null;
         dirty = true;
+        if (!on) { chipText = ""; paintChips(); }
       }).catch(() => {});
     } catch (e) {}
   }
@@ -361,7 +362,8 @@
     const f = forecast();
     if (f.text === chipText) return;
     chipText = f.text;
-    document.querySelectorAll(".pcm-wx-chip").forEach((el) => { el.textContent = f.text; el.title = "Task weather: the running task's time against its estimate - snow at the start, sun on the estimate, storms past it. Change it with the ☀ button (Background)."; });
+    const idle = f.g.p == null && !f.g.preview; // no timer running: nothing to say
+    document.querySelectorAll(".pcm-wx-chip").forEach((el) => { el.hidden = idle; el.textContent = f.text; el.title = "Task weather: the running task's time against its estimate - snow at the start, sun on the estimate, storms past it. Change it with the ☀ button (Background)."; });
   }
   function placeChips() {
     if (document.querySelector(".pcm-wx-chip")) return;
@@ -388,8 +390,9 @@
   html.pcm-sky .header, html.pcm-wall .header { background: color-mix(in srgb, var(--card) 80%, transparent); backdrop-filter: blur(8px); border-radius: 11px; padding: 6px 8px; margin: -4px -6px 6px; width: auto; }
   html.pcm-sky .header { background: color-mix(in srgb, var(--card) var(--pcm-glass, 84%), transparent); }
   html.pcm-sky .pcm-dash-strip, html.pcm-wall .pcm-dash-strip { background: color-mix(in srgb, var(--card) var(--pcm-glass, 84%), transparent) !important; backdrop-filter: blur(8px); }
-  .pcm-wx-chip { display: none; }
-  html.pcm-sky .pcm-wx-chip { display: block; margin-top: 8px; padding: 7px 9px; border-radius: 10px; font-size: 11.5px; line-height: 1.35; color: var(--text); background: color-mix(in srgb, var(--card) 70%, transparent); border: 1px solid var(--border); overflow-wrap: anywhere; }
+  /* The running task's time against its estimate: shown with any background, not only Task weather. */
+  .pcm-wx-chip[hidden] { display: none !important; }
+  .pcm-wx-chip { display: block; margin-top: 8px; padding: 7px 9px; border-radius: 10px; font-size: 11.5px; line-height: 1.35; color: var(--text); background: color-mix(in srgb, var(--card) 70%, transparent); border: 1px solid var(--border); overflow-wrap: anywhere; }
   html.pcm-sky .pcm-wx-chip.pcm-wx-foot { margin: 10px 0 0; text-align: center; }
   @media (max-width: 860px) { html.pcm-sky .sidenav .pcm-wx-chip { display: none; } }`;
   (document.head || document.documentElement).appendChild(css);
@@ -434,6 +437,9 @@
       if (ch.themeWeather) applyStrength(ch.themeWeather.newValue && ch.themeWeather.newValue.strength);
     });
   } catch (e) { applySettings({}); }
+  // The chip keeps its words fresh without the sky: a light repaint, no animation.
+  try { if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", () => { placeChips(); load(); }); else { placeChips(); load(); } } catch (e) {}
+  if (typeof setInterval === "function") setInterval(() => { if (!on && !document.hidden) { chipText = ""; paintChips(); } }, 20000);
   window.PcmWeather = {
     start, stop, weatherAt, forecast,
     get on() { return on; },

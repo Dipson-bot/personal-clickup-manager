@@ -111,7 +111,12 @@ const setting = (k, d) => { const v = props().getProperty(k); return v == null ?
 
 // ---------- web app ----------
 function out(o) { return ContentService.createTextOutput(JSON.stringify(o)).setMimeType(ContentService.MimeType.JSON); }
-function doGet() { return out({ ok: true, service: "pcm-hub" }); }
+// Bumped whenever this script changes, so Admin › Team hub can say "your hub needs updating".
+const HUB_VERSION = "2026-11-29";
+function doGet() { return out({ ok: true, service: "pcm-hub", version: HUB_VERSION }); }
+// Run once from the Apps Script editor (pick "authorize" next to Run): makes Google ask for every
+// permission in appsscript.json - a new version doesn't always ask, and the hub then can't fetch.
+function authorize() { ScriptApp.requireAllScopes(ScriptApp.AuthMode.FULL); return "Authorized - the hub can now read Google data and reach data hubs."; }
 function doPost(e) {
   let q;
   try { q = JSON.parse(e.postData.contents); } catch (err) { return out({ ok: false, error: "bad request" }); }
@@ -137,6 +142,11 @@ function doPost(e) {
       case "threads": return out(threads(q, admin));
       case "thread": return out(thread(q, admin));
       case "notices": return out(notices());
+      case "probe": return out(probe(q, meRow, owner));
+      case "gdataProps": return out(gdataPropsHub(q, meRow, owner));
+      case "gdataReport": return out(gdataReportHub(q, meRow, owner));
+      case "gdataMonthly": return out(gdataMonthlyHub(q, meRow, owner));
+      case "recipes": return out(recipesGet(q, meRow, owner));
       case "cnotes": return out(cnotes(q));
       case "users": if (admin) { const r = users(); r.youOwner = !!q._owner; return out(r); } break;
       case "nudges": if (!nudgesWaiting(q)) return out({ ok: true, nudges: [] }); break; // most checks: nothing new, no lock
@@ -152,6 +162,7 @@ function doPost(e) {
         case "deleteOwn": return out(deleteOwn(q));
         case "react": return out(react(q));
         case "cnotePost": return out(cnotePost(q));
+        case "deliveredSave": return out(deliveredSave(q, meRow, owner));
         case "nudge": return out(nudge(q));
         case "nudges": return out(nudges(q));
       }
@@ -160,6 +171,8 @@ function doPost(e) {
         case "mod": return out(mod(q));
         case "settings": return out(saveSettings(q));
         case "notice": return out(notice(q));
+        case "gdataHubs": return out(gdataHubs(q));
+        case "recipesSave": return out(recipesSave(q));
       }
       return out({ ok: false, error: "unknown action" });
     } finally { lock.releaseLock(); }
@@ -198,6 +211,286 @@ function touchPresence(install, act, day) {
     props().setProperty(k, v);
     c.put(k, v, 21600);
   } catch (e) {}
+}
+
+// ---------- site probe ----------
+// Site monitor's second opinion: a site that doesn't open from someone's office
+// is loaded once from Google's servers. Up from here = that office's network is
+// blocked by the site's firewall, not an outage. Team members only, http(s) only,
+// no private addresses. One answer per site is shared for 5 minutes, so a client
+// site gets at most one extra request per 5 minutes however many copies ask.
+// ---------- Google data for Site monitor (Search Console + GA4), read as the hub's owner ----------
+// The hub runs as the Google account that deployed it, so the team never signs in to
+// Google: the extension asks the hub, the hub reads with its owner's access (scopes in
+// appsscript.json: webmasters.readonly, analytics.readonly). That account must be able
+// to see every client's Search Console / Analytics property. Cached: the property list
+// 6 hours, each report 6 hours (CacheService's maximum).
+function gfetch(url, body) {
+  const opt = { muteHttpExceptions: true, headers: { Authorization: "Bearer " + ScriptApp.getOAuthToken() } };
+  if (body) { opt.method = "post"; opt.contentType = "application/json"; opt.payload = JSON.stringify(body); }
+  const res = UrlFetchApp.fetch(url, opt), code = res.getResponseCode(), txt = res.getContentText();
+  if (code >= 300) { let m = "HTTP " + code; try { const j = JSON.parse(txt); m = (j.error && (j.error.message || j.error.status)) || m; } catch (e) {} throw new Error(m); }
+  return JSON.parse(txt);
+}
+function cacheBig(key, val, secs) { // CacheService keeps 100 KB a value: split longer ones
+  const c = CacheService.getScriptCache(), s = JSON.stringify(val), parts = Math.ceil(s.length / 90000);
+  const m = {}; for (let i = 0; i < parts; i++) m[key + ":" + i] = s.slice(i * 90000, (i + 1) * 90000);
+  m[key] = String(parts);
+  c.putAll(m, secs);
+}
+function cacheBigGet(key) {
+  const c = CacheService.getScriptCache(), n = Number(c.get(key) || 0);
+  if (!n) return null;
+  const keys = []; for (let i = 0; i < n; i++) keys.push(key + ":" + i);
+  const got = c.getAll(keys); let s = "";
+  for (const k of keys) { if (got[k] == null) return null; s += got[k]; }
+  try { return JSON.parse(s); } catch (e) { return null; }
+}
+function gdataAllowed(meRow, owner) { return owner || !!(meRow && userState(meRow) === "ok"); }
+// Data hubs: small copies of this Google-data code running as OTHER Google accounts (the
+// ones that can see the clients' properties), asked with their own secret key. The team
+// hub merges what they see and forwards each report to the hub that owns the property,
+// so the team hub's own account needs no client access. Script property GDATA_HUBS =
+// [{ url, key }] (Admin › Team hub › Google data hubs).
+function gdataRemotes() { const v = js(setting("GDATA_HUBS", "[]"), []); return Array.isArray(v) ? v : []; }
+function gdataAsk(h, body) {
+  const res = UrlFetchApp.fetch(h.url, { method: "post", contentType: "application/json", payload: JSON.stringify(Object.assign({}, body, { key: h.key })), muteHttpExceptions: true, followRedirects: true });
+  let j = null; try { j = JSON.parse(res.getContentText()); } catch (e) {}
+  if (!j) throw new Error("data hub said HTTP " + res.getResponseCode());
+  if (!j.ok) throw new Error(j.error || "data hub error");
+  return j;
+}
+function gdataPropsHub(q, meRow, owner) {
+  if (!gdataAllowed(meRow, owner)) return { ok: false, error: "not allowed" };
+  if (!q.force) { const hit = cacheBigGet("gd:props"); if (hit) return hit; }
+  const out = { ok: true, at: now(), gsc: [], gscHub: {}, gscAcct: {}, ga: [], errs: [], account: Session.getEffectiveUser().getEmail(), accounts: [] };
+  const remotes = gdataRemotes();
+  // This hub's own account first (often sees nothing), then every data hub.
+  const own = gdataPropsOwn();
+  const addFrom = function (p, hubIdx, label) {
+    let ng = 0, na = 0;
+    (p.gsc || []).forEach(function (u) { if (!(u in out.gscHub)) { out.gsc.push(u); out.gscHub[u] = hubIdx; out.gscAcct[u] = label || ""; ng++; } });
+    (p.ga || []).forEach(function (x) { if (!out.ga.some(function (y) { return y.id === x.id; })) { out.ga.push({ id: x.id, name: x.name, account: x.account, uris: x.uris || [], hub: hubIdx, acct: label || "" }); na++; } });
+    (p.errs || []).forEach(function (e) { if (ng + na === 0 || hubIdx >= 0) out.errs.push((label ? label + ": " : "") + e); });
+    out.accounts.push({ email: label || p.account || "", gsc: ng, ga: na });
+  };
+  addFrom(own, -1, own.account);
+  remotes.forEach(function (h, i) {
+    try { const p = gdataAsk(h, { action: "gdataProps", force: !!q.force }); addFrom(p, i, p.account || "data hub " + (i + 1)); }
+    catch (e) { out.errs.push("data hub " + (i + 1) + ": " + e.message); }
+  });
+  if (remotes.length && own.gsc.length + own.ga.length === 0) out.errs = out.errs.filter(function (e) { return e.indexOf(own.account) !== 0; });
+  out.account = out.accounts.filter(function (a) { return a.gsc + a.ga > 0; }).map(function (a) { return a.email; }).join(", ") || out.account;
+  cacheBig("gd:props", out, 21600);
+  return out;
+}
+// What THIS script's own Google account can see.
+function gdataPropsOwn() {
+  const out = { ok: true, gsc: [], ga: [], errs: [], account: Session.getEffectiveUser().getEmail() };
+  try { const j = gfetch("https://www.googleapis.com/webmasters/v3/sites"); out.gsc = (j.siteEntry || []).filter(function (x) { return x && x.siteUrl && x.permissionLevel !== "siteUnverifiedUser"; }).map(function (x) { return x.siteUrl; }); }
+  catch (e) { out.errs.push("Search Console: " + e.message); }
+  try {
+    let page = "", n = 0;
+    do {
+      const j = gfetch("https://analyticsadmin.googleapis.com/v1beta/accountSummaries?pageSize=200" + (page ? "&pageToken=" + encodeURIComponent(page) : ""));
+      (j.accountSummaries || []).forEach(function (a) { (a.propertySummaries || []).forEach(function (p) { out.ga.push({ id: String(p.property || "").replace("properties/", ""), name: String(p.displayName || ""), account: String(a.displayName || ""), uris: [] }); }); });
+      page = j.nextPageToken || "";
+    } while (page && ++n < 5);
+    const list = out.ga.slice(0, 200), tok = ScriptApp.getOAuthToken();
+    if (list.length) {
+      const res = UrlFetchApp.fetchAll(list.map(function (p) { return { url: "https://analyticsadmin.googleapis.com/v1beta/properties/" + p.id + "/dataStreams?pageSize=20", headers: { Authorization: "Bearer " + tok }, muteHttpExceptions: true }; }));
+      res.forEach(function (r, i) { try { if (r.getResponseCode() < 300) list[i].uris = (JSON.parse(r.getContentText()).dataStreams || []).map(function (d) { return d.webStreamData && d.webStreamData.defaultUri; }).filter(Boolean); } catch (e) {} });
+    }
+  } catch (e) { out.errs.push("Analytics: " + e.message); }
+  return out;
+}
+function gdYmd(d) { return Utilities.formatDate(d, "UTC", "yyyy-MM-dd"); }
+function gdAgo(n) { const d = new Date(); d.setUTCDate(d.getUTCDate() - n); return d; }
+function gdPeriods(lag) { return { cur: [gdYmd(gdAgo(lag + 27)), gdYmd(gdAgo(lag))], prev: [gdYmd(gdAgo(lag + 55)), gdYmd(gdAgo(lag + 28))] }; }
+function gdSum(rows, k) { return rows.reduce(function (a, r) { return a + (Number(r[k]) || 0); }, 0); }
+function gdGsc(site) {
+  const p = gdPeriods(3), base = "https://www.googleapis.com/webmasters/v3/sites/" + encodeURIComponent(site) + "/searchAnalytics/query";
+  const daily = gfetch(base, { startDate: p.prev[0], endDate: p.cur[1], dimensions: ["date"], rowLimit: 100 });
+  const rows = (daily.rows || []).map(function (r) { return { d: r.keys[0], clicks: r.clicks, imp: r.impressions, pos: r.position }; });
+  const inCur = rows.filter(function (r) { return r.d >= p.cur[0]; }), inPrev = rows.filter(function (r) { return r.d < p.cur[0]; });
+  const agg = function (rs) { const imp = gdSum(rs, "imp"), clicks = gdSum(rs, "clicks"); return { clicks: clicks, imp: imp, ctr: imp ? clicks / imp : 0, pos: imp ? rs.reduce(function (a, r) { return a + r.pos * r.imp; }, 0) / imp : null }; };
+  const q = gfetch(base, { startDate: p.cur[0], endDate: p.cur[1], dimensions: ["query"], rowLimit: 10 });
+  const pg = gfetch(base, { startDate: p.cur[0], endDate: p.cur[1], dimensions: ["page"], rowLimit: 5 });
+  return { range: p, cur: agg(inCur), prev: agg(inPrev),
+    daily: inCur.map(function (r) { return { d: r.d, v: r.clicks, imp: r.imp, pos: r.pos }; }), prevDaily: inPrev.map(function (r) { return { d: r.d, v: r.clicks, imp: r.imp }; }),
+    queries: (q.rows || []).map(function (r) { return { q: r.keys[0], clicks: r.clicks, imp: r.impressions, pos: r.position }; }),
+    pages: (pg.rows || []).map(function (r) { return { p: r.keys[0], clicks: r.clicks, imp: r.impressions }; }) };
+}
+function gdGa(id) {
+  const p = gdPeriods(1), url = "https://analyticsdata.googleapis.com/v1beta/properties/" + encodeURIComponent(id) + ":runReport";
+  const day = function (v) { return v.slice(0, 4) + "-" + v.slice(4, 6) + "-" + v.slice(6); };
+  const j = gfetch(url, { dateRanges: [{ startDate: p.prev[0], endDate: p.cur[1] }], dimensions: [{ name: "date" }], metrics: [{ name: "sessions" }, { name: "totalUsers" }, { name: "engagedSessions" }, { name: "keyEvents" }], limit: 100 });
+  const rows = (j.rows || []).map(function (r) { return { d: day(r.dimensionValues[0].value), s: +r.metricValues[0].value, u: +r.metricValues[1].value, e: +r.metricValues[2].value, k: +r.metricValues[3].value }; }).sort(function (a, b) { return a.d < b.d ? -1 : 1; });
+  const o = gfetch(url, { dateRanges: [{ startDate: p.prev[0], endDate: p.cur[1] }], dimensions: [{ name: "date" }], metrics: [{ name: "sessions" }], limit: 100, dimensionFilter: { filter: { fieldName: "sessionDefaultChannelGroup", stringFilter: { value: "Organic Search" } } } });
+  const org = {}; (o.rows || []).forEach(function (r) { org[day(r.dimensionValues[0].value)] = +r.metricValues[0].value; });
+  rows.forEach(function (r) { r.o = org[r.d] || 0; });
+  const inCur = rows.filter(function (r) { return r.d >= p.cur[0]; }), inPrev = rows.filter(function (r) { return r.d < p.cur[0]; });
+  const agg = function (rs) { const s = gdSum(rs, "s"); return { sessions: s, users: gdSum(rs, "u"), organic: gdSum(rs, "o"), engaged: s ? gdSum(rs, "e") / s : 0, keyEvents: gdSum(rs, "k") }; };
+  return { range: p, cur: agg(inCur), prev: agg(inPrev), daily: inCur.map(function (r) { return { d: r.d, v: r.s, o: r.o, u: r.u }; }), prevDaily: inPrev.map(function (r) { return { d: r.d, v: r.s, o: r.o }; }) };
+}
+// One report for the properties the extension picked (q.gsc: a Search Console site, q.ga:
+// a GA4 property id) - each read here or by the data hub that can see it.
+function gdataReportHub(q, meRow, owner) {
+  if (!gdataAllowed(meRow, owner)) return { ok: false, error: "not allowed" };
+  const gsc = String(q.gsc || "").slice(0, 300), ga = String(q.ga || "").replace(/\D/g, "").slice(0, 20);
+  const ck = "gd:r:" + Utilities.base64EncodeWebSafe(Utilities.computeDigest(Utilities.DigestAlgorithm.MD5, gsc + "|" + ga));
+  if (!q.force) { const hit = cacheBigGet(ck); if (hit) return hit; }
+  const out = { ok: true, at: now(), gsc: null, ga: null, errs: [] };
+  const remotes = gdataRemotes(), p = remotes.length ? (cacheBigGet("gd:props") || gdataPropsHub({ force: false }, meRow, true)) : null;
+  const hubOf = function (kind) {
+    if (!p) return -1;
+    if (kind === "gsc") return gsc in (p.gscHub || {}) ? p.gscHub[gsc] : -1;
+    const x = (p.ga || []).find(function (y) { return y.id === ga; }); return x ? x.hub : -1;
+  };
+  const hg = gsc ? hubOf("gsc") : -1, ha = ga ? hubOf("ga") : -1;
+  if (gsc && hg >= 0 && remotes[hg]) { try { out.gsc = gdataAsk(remotes[hg], { action: "gdataReport", gsc: gsc, force: !!q.force }).gsc; } catch (e) { out.errs.push("Search Console: " + e.message); } }
+  else if (gsc) { try { out.gsc = gdGsc(gsc); } catch (e) { out.errs.push("Search Console: " + e.message); } }
+  if (ga && ha >= 0 && remotes[ha]) { try { out.ga = gdataAsk(remotes[ha], { action: "gdataReport", ga: ga, force: !!q.force }).ga; } catch (e) { out.errs.push("Analytics: " + e.message); } }
+  else if (ga) { try { out.ga = gdGa(ga); } catch (e) { out.errs.push("Analytics: " + e.message); } }
+  cacheBig(ck, out, 21600);
+  return out;
+}
+// ---- Monthly numbers for Client Wins (site-detail.js clientWins): whole calendar months
+// from q.from ("YYYY-MM") up to this month (this month = month to date, not final). Per
+// month: Search Console clicks / impressions / impression-weighted position, and GA4
+// generate_lead by session source / medium (organic + all), organic sessions + page
+// views, key events and all sessions (a month with no sessions = no GA data, never 0).
+function gdMonthRange(from) {
+  const m = /^(\d{4})-(\d{2})$/.exec(String(from || ""));
+  const s = m ? new Date(Date.UTC(+m[1], +m[2] - 1, 1)) : gdAgo(480);
+  return { start: Utilities.formatDate(s, "UTC", "yyyy-MM-dd"), end: gdYmd(new Date()) };
+}
+function gdGscMonthly(site, from) {
+  const r = gdMonthRange(from), out = {};
+  const j = gfetch("https://www.googleapis.com/webmasters/v3/sites/" + encodeURIComponent(site) + "/searchAnalytics/query", { startDate: r.start, endDate: r.end, dimensions: ["date"], rowLimit: 25000 });
+  (j.rows || []).forEach(function (x) {
+    const k = String(x.keys[0]).slice(0, 7), o = out[k] || (out[k] = { clicks: 0, imp: 0, posw: 0, days: 0 });
+    o.clicks += x.clicks || 0; o.imp += x.impressions || 0; o.posw += (x.position || 0) * (x.impressions || 0); o.days++;
+  });
+  return out;
+}
+function gdGaMonthly(id, from) {
+  const r = gdMonthRange(from), url = "https://analyticsdata.googleapis.com/v1beta/properties/" + encodeURIComponent(id) + ":runReport";
+  const ym = function (v) { return String(v).slice(0, 4) + "-" + String(v).slice(4, 6); }, out = {};
+  const get = function (k) { return out[k] || (out[k] = { leadsOrg: 0, leadsAll: 0, orgSessions: 0, orgViews: 0, keyEvents: 0, sessions: 0 }); };
+  const range = [{ startDate: r.start, endDate: r.end }];
+  const all = gfetch(url, { dateRanges: range, dimensions: [{ name: "yearMonth" }], metrics: [{ name: "sessions" }, { name: "keyEvents" }], limit: 100 });
+  (all.rows || []).forEach(function (x) { const o = get(ym(x.dimensionValues[0].value)); o.sessions += +x.metricValues[0].value; o.keyEvents += +x.metricValues[1].value; });
+  const org = gfetch(url, { dateRanges: range, dimensions: [{ name: "yearMonth" }], metrics: [{ name: "sessions" }, { name: "screenPageViews" }], limit: 100,
+    dimensionFilter: { filter: { fieldName: "sessionDefaultChannelGroup", stringFilter: { value: "Organic Search" } } } });
+  (org.rows || []).forEach(function (x) { const o = get(ym(x.dimensionValues[0].value)); o.orgSessions += +x.metricValues[0].value; o.orgViews += +x.metricValues[1].value; });
+  const leads = gfetch(url, { dateRanges: range, dimensions: [{ name: "yearMonth" }, { name: "sessionSourceMedium" }], metrics: [{ name: "eventCount" }], limit: 10000,
+    dimensionFilter: { filter: { fieldName: "eventName", stringFilter: { value: "generate_lead", matchType: "EXACT" } } } });
+  (leads.rows || []).forEach(function (x) {
+    const o = get(ym(x.dimensionValues[0].value)), sm = String(x.dimensionValues[1].value || "").trim().toLowerCase(), n = +x.metricValues[0].value;
+    if (/^tagassistant\.google\.com\s*\/\s*referral$/.test(sm)) return;
+    o.leadsAll += n;
+    if (/\/\s*organic$/.test(sm)) { o.leadsOrg += n; o.srcOrg = o.srcOrg || {}; o.srcOrg[sm] = (o.srcOrg[sm] || 0) + n; }
+  });
+  return out;
+}
+function gdataMonthlyHub(q, meRow, owner) {
+  if (!gdataAllowed(meRow, owner)) return { ok: false, error: "not allowed" };
+  const gsc = String(q.gsc || "").slice(0, 300), ga = String(q.ga || "").replace(/\D/g, "").slice(0, 20), from = String(q.from || "").slice(0, 7);
+  const ck = "gd:m:" + Utilities.base64EncodeWebSafe(Utilities.computeDigest(Utilities.DigestAlgorithm.MD5, gsc + "|" + ga + "|" + from));
+  if (!q.force) { const hit = cacheBigGet(ck); if (hit) return hit; }
+  const out = { ok: true, at: now(), from: from, today: gdYmd(new Date()), gsc: null, ga: null, errs: [] };
+  const remotes = gdataRemotes(), p = remotes.length ? (cacheBigGet("gd:props") || gdataPropsHub({ force: false }, meRow, true)) : null;
+  const hubOf = function (kind) {
+    if (!p) return -1;
+    if (kind === "gsc") return gsc in (p.gscHub || {}) ? p.gscHub[gsc] : -1;
+    const x = (p.ga || []).find(function (y) { return y.id === ga; }); return x ? x.hub : -1;
+  };
+  const hg = gsc ? hubOf("gsc") : -1, ha = ga ? hubOf("ga") : -1;
+  if (gsc && hg >= 0 && remotes[hg]) { try { out.gsc = gdataAsk(remotes[hg], { action: "gdataMonthly", gsc: gsc, from: from, force: !!q.force }).gsc; } catch (e) { out.errs.push("Search Console: " + e.message); } }
+  else if (gsc) { try { out.gsc = gdGscMonthly(gsc, from); } catch (e) { out.errs.push("Search Console: " + e.message); } }
+  if (ga && ha >= 0 && remotes[ha]) { try { out.ga = gdataAsk(remotes[ha], { action: "gdataMonthly", ga: ga, from: from, force: !!q.force }).ga; } catch (e) { out.errs.push("Analytics: " + e.message); } }
+  else if (ga) { try { out.ga = gdGaMonthly(ga, from); } catch (e) { out.errs.push("Analytics: " + e.message); } }
+  cacheBig(ck, out, 21600);
+  return out;
+}
+// Admin › Team hub › Google data hubs: add { url, key }, remove an index, or just list (keys never sent back).
+function gdataHubs(q) {
+  let list = gdataRemotes();
+  if (q.add) {
+    const url = String(q.add.url || "").trim(), key = String(q.add.key || "").trim();
+    if (!/^https:\/\/script\.google\.com\/macros\/s\/[A-Za-z0-9_-]+\/exec$/.test(url)) return { ok: false, error: "That isn't a web app link (https://script.google.com/macros/s/…/exec)." };
+    if (!/^[A-Za-z0-9]{24,64}$/.test(key)) return { ok: false, error: "Missing the data hub's key - copy the data hub script again." };
+    try { const t = gdataAsk({ url: url, key: key }, { action: "gdataProps", force: true }); list = list.filter(function (h) { return h.url !== url; }); list.push({ url: url, key: key, account: String(t.account || "") }); }
+    catch (e) { return { ok: false, error: "The data hub didn't answer: " + e.message }; }
+  }
+  if (q.remove != null) list = list.filter(function (h, i) { return i !== Number(q.remove); });
+  if (q.add || q.remove != null) { props().setProperty("GDATA_HUBS", JSON.stringify(list)); CacheService.getScriptCache().remove("gd:props"); }
+  return { ok: true, hubs: list.map(function (h, i) { return { i: i, account: h.account || "", url: h.url.replace(/\/s\/(.{6}).*(.{4})\/exec$/, "/s/$1…$2/exec") }; }) };
+}
+// ---------- Client report recipes (Site monitor › 📄 Export report) ----------
+// Each client's fixed report recipe (format, title, Chrome profile, GA property, note,
+// delivered history) lives HERE, never in the extension's public code. Admins save the
+// list (Admin › Team hub › Report recipes); everyone's extension reads it. Delivered totals
+// (what each month's client report printed) are recorded after every export, so next
+// month's "rose from N" always matches what the client was sent. Script Properties keep 9
+// KB a value, so both are stored in chunks.
+function bigPropGet(name) {
+  const p = props(), n = Number(p.getProperty(name + "_n") || 0);
+  let s = ""; for (let i = 0; i < n; i++) s += p.getProperty(name + "_" + i) || "";
+  return s;
+}
+function bigPropSet(name, s) {
+  const p = props(), old = Number(p.getProperty(name + "_n") || 0), parts = [];
+  for (let i = 0; i < s.length; i += 8000) parts.push(s.slice(i, i + 8000));
+  const m = {}; parts.forEach(function (x, i) { m[name + "_" + i] = x; }); m[name + "_n"] = String(parts.length);
+  p.setProperties(m);
+  for (let i = parts.length; i < old; i++) p.deleteProperty(name + "_" + i);
+}
+function recipesGet(q, meRow, owner) {
+  if (!gdataAllowed(meRow, owner)) return { ok: false, error: "not allowed" };
+  return { ok: true, recipes: js(bigPropGet("REPORT_RECIPES"), []), delivered: js(bigPropGet("REPORT_DELIVERED"), {}) };
+}
+function recipesSave(q) {
+  let list;
+  try { list = JSON.parse(String(q.json || "")); } catch (e) { return { ok: false, error: "That isn't valid JSON: " + e.message }; }
+  if (!Array.isArray(list)) return { ok: false, error: "Recipes must be a list [ … ]." };
+  for (let i = 0; i < list.length; i++) { const r = list[i]; if (!r || !r.key || !r.name || !r.format) return { ok: false, error: "Recipe " + (i + 1) + " needs key, name and format." }; }
+  const s = JSON.stringify(list);
+  if (s.length > 200000) return { ok: false, error: "Too big (over 200 KB)." };
+  bigPropSet("REPORT_RECIPES", s);
+  return { ok: true, count: list.length };
+}
+// After an export: { key, ym, total } -> REPORT_DELIVERED[key][ym] = total (the client file's printed total).
+function deliveredSave(q, meRow, owner) {
+  if (!gdataAllowed(meRow, owner)) return { ok: false, error: "not allowed" };
+  const key = String(q.key || "").slice(0, 60), ym = String(q.ym || ""), total = Number(q.total);
+  if (!key || !/^\d{4}-\d{2}$/.test(ym) || !isFinite(total) || total < 0) return { ok: false, error: "bad delivered total" };
+  const d = js(bigPropGet("REPORT_DELIVERED"), {});
+  d[key] = d[key] || {}; d[key][ym] = { total: total, at: now(), by: String((meRow && meRow.name) || (owner ? "owner" : "")).slice(0, 60) };
+  bigPropSet("REPORT_DELIVERED", JSON.stringify(d));
+  return { ok: true };
+}
+function probe(q, meRow, owner) {
+  if (!owner && !(meRow && userState(meRow) === "ok")) return { ok: false, error: "not allowed" };
+  const url = String(q.url || "");
+  if (url.length > 300 || !/^https?:\/\/[a-z0-9.-]+(?::\d+)?(?:[\/?#]|$)/i.test(url)) return { ok: false, error: "bad url" };
+  const host = url.replace(/^https?:\/\//i, "").split(/[\/:?#]/)[0].toLowerCase();
+  if (!/\.[a-z]{2,}$/.test(host) || /^(?:localhost|127\.|10\.|192\.168\.|169\.254\.|0\.)|\.(?:local|internal|lan)$/.test(host)) return { ok: false, error: "bad url" };
+  const cache = CacheService.getScriptCache(), ck = "probe:" + url.slice(0, 200);
+  const hit = cache.get(ck);
+  if (hit) return JSON.parse(hit);
+  const t0 = Date.now();
+  let r;
+  try {
+    const res = UrlFetchApp.fetch(url, { muteHttpExceptions: true, followRedirects: true, headers: { "User-Agent": "Mozilla/5.0 (compatible; PCM site check)" } });
+    const st = res.getResponseCode();
+    r = { ok: true, status: st, up: st >= 200 && st < 400, ms: Date.now() - t0 };
+  } catch (e) {
+    r = { ok: true, status: 0, up: false, error: String((e && e.message) || e).slice(0, 120), ms: Date.now() - t0 };
+  }
+  cache.put(ck, JSON.stringify(r), 300);
+  return r;
 }
 
 // ---------- users ----------

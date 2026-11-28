@@ -2476,6 +2476,8 @@
     if (d.dueDateMs) meta.appendChild(mchip("Due", fmtDay(d.dueDateMs)));
     if (d.estimateMs) meta.appendChild(mchip("Estimate", fmtDur(d.estimateMs)));
     const macts = el("span", "pcm-meta-acts");
+    // Share just this task (the dashboard; the client heading's Share does the whole client).
+    if (window.PcmShareOne && safeUrl(d.url)) { try { macts.appendChild(window.PcmShareOne(d)); } catch (e) {} }
     if (safeUrl(d.url)) macts.appendChild(link(d.url, "Open in ClickUp ↗"));
     const refresh = el("button", "pcm-link", "↻ Refresh");
     refresh.type = "button";

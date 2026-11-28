@@ -1,7 +1,7 @@
 {
   "name": "clickup-tracker",
   "productName": "ClickUp Tracker",
-  "version": "0.5.0",
+  "version": "0.5.1",
   "description": "Always-on-top ClickUp timer companion for Personal ClickUp Manager",
   "main": "src/main.js",
   "author": "Dipson-bot",
@@ -11,7 +11,7 @@
     "start": "electron .",
     "dist": "electron-builder --win nsis",
     "dist:mac": "electron-builder --mac dmg --arm64 --x64",
-    "dist:linux": "electron-builder --linux AppImage"
+    "dist:linux": "electron-builder --linux AppImage deb rpm --x64"
   },
   "devDependencies": {
     "electron": "^33.2.0",
@@ -57,10 +57,18 @@
       "identity": null
     },
     "linux": {
-      "target": "AppImage",
+      "target": [
+        "AppImage",
+        "deb",
+        "rpm"
+      ],
       "icon": "build/icon.png",
-      "category": "Utility"
+      "category": "Utility",
+      "artifactName": "ClickUp-Tracker-linux.${ext}",
+      "maintainer": "Dipson-bot <72684581+Dipson-bot@users.noreply.github.com>",
+      "synopsis": "Taskbar timer for Personal ClickUp Manager"
     },
     "afterPack": "scripts/adhoc-sign.js"
-  }
+  },
+  "homepage": "https://github.com/Dipson-bot/personal-clickup-manager"
 }

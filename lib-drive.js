@@ -44,7 +44,7 @@ function buildAuthUrl({ prompt = "", scope = SCOPE, loginHint = "", clientId = G
   return `https://accounts.google.com/o/oauth2/v2/auth?${params.toString()}`;
 }
 
-async function launchAuth({ interactive = false, prompt = "", scope = SCOPE, loginHint = "", clientId = GOOGLE_CLIENT_ID } = {}) {
+export async function launchAuth({ interactive = false, prompt = "", scope = SCOPE, loginHint = "", clientId = GOOGLE_CLIENT_ID } = {}) {
   try {
     const opts = { url: buildAuthUrl({ prompt, scope, loginHint, clientId }), interactive };
     // A silent sign-in that Google doesn't finish at once (needs consent, picks an

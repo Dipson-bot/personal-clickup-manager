@@ -1321,8 +1321,10 @@
   // its files back from the backup first.
   let loaded = false;
   const panel = document.querySelector('.panel[data-panel="files"]');
+  // The Slack tab holds the client-channel box (#tfSlack), so opening it loads too.
+  const slackPanel = document.querySelector('.panel[data-panel="slack"]');
   const maybeLoad = async () => {
-    if (loaded || !panel || !panel.classList.contains("on")) return;
+    if (loaded || !((panel && panel.classList.contains("on")) || (slackPanel && slackPanel.classList.contains("on")))) return;
     loaded = true;
     await load();
     if (!files.length) {
@@ -1331,6 +1333,7 @@
     }
   };
   new MutationObserver(maybeLoad).observe(panel, { attributes: true, attributeFilter: ["class"] });
+  if (slackPanel) new MutationObserver(maybeLoad).observe(slackPanel, { attributes: true, attributeFilter: ["class"] });
   maybeLoad();
   chrome.storage.onChanged.addListener((ch, area) => { if (area === "local" && (ch.taskFilesChangedAt || ch.clientNotes) && loaded) load(); });
   // "My clients" as the Clients tab lists them (from my tasks, plus ones added by

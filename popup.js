@@ -3534,7 +3534,7 @@ function renderClickup() {
   else renderClickupTasks(taskList, deadlineList, trackedList, view.scope);
   // Click Estimated / Tracked: the tasks behind the number and why they differ.
   if (window.PcmBreakdown) {
-    const bd = () => ({ label: view.label || CU_SCOPE_LABEL[view.scope] || "today", estMs, spentMs: spentTot, tasks: taskList, cfg: deadlineList, other: trackedList, fmt: fmtDur });
+    const bd = () => ({ label: view.label || CU_SCOPE_LABEL[view.scope] || "today", today: !view.scope || view.scope === "today" || view.scope === "extended", estMs, spentMs: spentTot, tasks: taskList, cfg: deadlineList, other: trackedList, fmt: fmtDur });
     PcmBreakdown.attach($("cuEstVal"), "est", bd);
     PcmBreakdown.attach($("cuTrkVal"), "trk", bd);
   }

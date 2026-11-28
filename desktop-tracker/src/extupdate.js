@@ -30,7 +30,10 @@ function browserRoots() {
     return ["Google/Chrome", "Google/Chrome Beta", "Google/Chrome Canary", "Microsoft Edge", "BraveSoftware/Brave-Browser", "Chromium", "Vivaldi", "Comet"].map((p) => path.join(as, p));
   }
   const cfg = path.join(home, ".config");
-  return ["google-chrome", "chromium", "microsoft-edge", "BraveSoftware/Brave-Browser", "vivaldi"].map((p) => path.join(cfg, p));
+  return ["google-chrome", "chromium", "microsoft-edge", "BraveSoftware/Brave-Browser", "vivaldi"].map((p) => path.join(cfg, p))
+    // Flatpak (Fedora's software centre) and Snap (Ubuntu's Chromium) keep theirs inside the sandbox.
+    .concat([["com.google.Chrome", "google-chrome"], ["org.chromium.Chromium", "chromium"], ["com.brave.Browser", "BraveSoftware/Brave-Browser"], ["com.microsoft.Edge", "microsoft-edge"]].map(([id, p]) => path.join(home, ".var", "app", id, "config", p)))
+    .concat([path.join(home, "snap", "chromium", "common", "chromium")]);
 }
 // Every folder a browser has on record for this extension id (installed from a folder).
 function findFolders(extId) {
